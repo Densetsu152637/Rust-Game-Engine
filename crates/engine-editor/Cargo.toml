@@ -1,0 +1,22 @@
+[package]
+name = "engine-editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Native Windows authoring editor and revision-aware controller"
+
+[dependencies]
+engine-core = { path = "../engine-core" }
+engine-project = { path = "../engine-project" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "warn"
