@@ -63,6 +63,7 @@ ignored `build/rust-worktrees/` directory, never inside Unsealed's submodule.
 | E7 audio | `crates/engine-audio/` | `codex/rust-audio`, `audio` |
 | E8 native editor | `crates/engine-editor/` | `codex/rust-editor`, `editor` |
 | E9 native examples (after E7) | `examples/`, applicable `assets/scripts/` | `codex/rust-audio`, `audio` reused |
+| E10 MCP | `crates/engine-mcp/` | `codex/rust-mcp`, `mcp` |
 
 Documentation/CI migration and independent acceptance are queued until their
 public interfaces exist. No stream may remove an existing
@@ -164,3 +165,76 @@ reported device errors. This is device activity evidence, not audible-quality or
 physical-disconnect verification. Root reviewed the crate documentation and test
 coverage before integration. Scene attachments, listener ownership and desktop
 shutdown ordering still require integrated runtime acceptance.
+
+### Current integration checkpoint
+
+This checkpoint is for continuing the active rewrite, not a completion claim.
+The task is the user-created goal in chat `01a15cff-55de-7ad2-ba80-39a49eb7a02d`.
+The user explicitly selected **heavy** and then authorized removing mobile
+features. Both assigned repositories began on `main`; the custom workflow's
+starting-main publication rule applies, subject to checks and host permissions.
+No task commits have been pushed at this checkpoint. Unsealed remains unchanged.
+
+Primary engine is `D:\Git Repositories\CPP-Game-Engine`, currently `main` at
+`443c87d` (before this checkpoint's commit). Integrated milestones:
+
+- Core `a6a0067`: accepted as described above.
+- Audio `ea1f168`: accepted component; scene/device integration still covered later.
+- Authored runtime `98047f2`, then helpers/audio/lifecycle `aa000d2`: worker passed
+  all 25 project tests and Clippy. Followup audit is correcting old persistence
+  profile/path/version/backup behavior before final parity acceptance.
+- Native compiler `a243827`: eight actual external-build/process tests passed,
+  plus the native custom-component/system proof reran on the imported project
+  dependency graph. Compilation, diagnostics, startup barrier, graceful shutdown,
+  owned process-tree cancellation and last-good retention work. CLI/runtime entry,
+  packaging and compiler-backed editor play are still being implemented. An
+  external package's ancestor Cargo workspace/config fingerprint edge remains
+  assigned for correction.
+- Native editor `c8847a3`: five controller tests, format, Clippy and actual bounded
+  Win32 control smoke passed. Real compiler-backed play remains an integration gate.
+- Desktop `443c87d`: all-target compilation passes. Real GPU pixel/window tests
+  and final lint/behavior acceptance are running; this is a compile checkpoint.
+
+Active child assignments (canonical names under `/root`):
+
+- `engine_inventory`: E4, project runtime fixes in `project` worktree. Owns only
+  `crates/engine-project/`; persistence compatibility/failure-path patch next.
+- `consumer_inventory`: E5, compiler/CLI/runtime entry/assets/package/editor
+  PlayHost in `tooling`; owns only `crates/engine-tooling/`.
+- `desktop_render`: E6, real GPU/window/input/audio-runner acceptance in `desktop`;
+  owns `crates/engine-desktop/` and keeps PNG/log evidence under its ignored build.
+- `audio_runtime`: E9, engine native examples and full walkthrough conversion in
+  reused `audio` worktree. Audio implementation is complete; now owns examples.
+- `rust_architecture`: E11, read-only independent critique of project/compiler
+  contracts; core/editor authoring is complete. Its `editor` worktree is retained
+  until play integration is accepted, then root retires it.
+- `mcp_port`: E10, independent read-only MCP protocol implementation in `mcp`;
+  owns `crates/engine-mcp/`, transcript tests and crate docs.
+
+Six active child slots are a monitored allowance, justified by independent
+subsystems/protocol verification. Astra high is selected for architecture,
+graphics and consequential critique; Sol high for bounded subsystem execution.
+Heavy's general and applicable research ceiling is Frontier; no numeric budget
+was requested. Root owns all integration, shared lockfile, publication, legacy
+removal and task-worktree retirement. Do not cherry-pick a worker's prerequisite
+commits twice: root propagates only the owned feature commits to dependent trees.
+Before changing a worker index, coordinate a pause of its staging/commit and
+verify the index is empty. Local generated lockfiles in worktrees are deliberately
+uncommitted; preserve them until checks finish, then retire with the task worktree.
+
+The authoritative instruction entry is
+`D:\Git Repositories\Agent-Custom-Workflow\AGENTS.md`; root owner is
+`workflows/AGENTS.root.md` relative to that root. Applicable owners loaded at intake
+include root delegation/planning/recovery; manager/delegation/controls; architecture
+and research/dispatch; coding standards/conventions, validation, Git usage,
+worktrees/publication, subagent coordination, GitHub Actions and usage accounting.
+There were no unresolved instruction-read gaps after bounded recovery. On context
+recovery load their applicable authoritative text again as required; this record
+is a locator, not replacement instructions or new authority.
+
+Next gates: finish subsystem fixes and real-device tests; integrate examples,
+CLI/MCP/editor play/relocatable package; independent critique and combined checks;
+align root docs and desktop CI; remove superseded C++/Lua/mobile/dependency paths;
+validate/publish the standalone engine; only then migrate Unsealed and its engine
+pin. Its sole existing script is normalized 2 m/s Player movement; planned story,
+quests and other narrative features are not new implementation scope.
