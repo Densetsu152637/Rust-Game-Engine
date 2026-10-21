@@ -1,5 +1,6 @@
 //! Authored projects, deterministic desktop gameplay, and CPU render extraction.
 //! Native game systems register directly on [`engine_core::EngineApp`].
+pub mod audio;
 pub mod content;
 pub mod document;
 pub mod gameplay2d;
@@ -7,6 +8,7 @@ pub mod input;
 pub mod persistence;
 pub mod runtime;
 pub mod schema;
+pub mod services;
 pub mod ui;
 
 pub use document::{EditOperation, SceneDocument};

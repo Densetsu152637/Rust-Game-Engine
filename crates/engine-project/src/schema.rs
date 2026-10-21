@@ -210,6 +210,7 @@ pub struct Project {
     pub root: PathBuf,
     pub manifest: PathBuf,
     pub startup_scene: PathBuf,
+    pub rust_manifest: PathBuf,
     pub assets: BTreeMap<String, Asset>,
     pub input_actions: BTreeMap<String, String>,
     pub input_bindings: BindingMap,
@@ -222,10 +223,17 @@ struct Manifest {
     name: String,
     startup_scene: PathBuf,
     assets: Vec<Asset>,
+    #[serde(default)]
+    rust: Option<RustConfig>,
     #[serde(default, rename = "inputActions")]
     input_actions: BTreeMap<String, String>,
     #[serde(default, rename = "inputBindings")]
     input_bindings: BindingMap,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RustConfig {
+    pub manifest: PathBuf,
 }
 
 /// Canonicalize an existing file and reject traversal, absolute paths, and symlink escapes.
@@ -478,12 +486,21 @@ impl Project {
                 validation.errors.join("; "),
             ));
         }
+        let rust_manifest = raw
+            .rust
+            .as_ref()
+            .map(|r| r.manifest.clone())
+            .unwrap_or_else(|| PathBuf::from("Cargo.toml"));
+        if raw.rust.is_some() {
+            confined_file(&root, &rust_manifest)?;
+        }
         let project = Self {
             schema: 1,
             name: raw.name,
             root,
             manifest,
             startup_scene: raw.startup_scene,
+            rust_manifest,
             assets,
             input_actions: raw.input_actions,
             input_bindings: bindings,
@@ -491,6 +508,9 @@ impl Project {
         };
         project.validate()?;
         Ok(project)
+    }
+    pub fn rust_manifest(&self) -> Result<PathBuf> {
+        confined_file(&self.root, &self.rust_manifest)
     }
     pub fn resolve_asset(&self, id: &str) -> Result<PathBuf> {
         let asset = self

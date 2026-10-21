@@ -22,6 +22,12 @@ pub struct AuthoredId {
     pub id: String,
     pub name: String,
 }
+#[derive(Resource, Clone)]
+pub struct ProjectResource(pub Arc<Project>);
+#[derive(Resource, Clone, Default)]
+pub struct RuntimeLog(pub Vec<String>);
+pub use crate::audio::RuntimeAudio;
+pub use crate::services::{find_entity, move_entity, request_scene, resolve_asset, safe_position};
 #[derive(Resource, Clone, Default)]
 pub struct EntityLookup(pub BTreeMap<String, Entity>);
 impl EntityLookup {
@@ -68,6 +74,57 @@ pub struct SceneRequest {
 pub struct PendingScene(pub Option<SceneRequest>);
 #[derive(Component, Clone, Copy, Debug)]
 pub struct SpriteFrame(pub usize);
+#[derive(Component, Clone, Copy, Debug)]
+pub struct OwnedBy(pub Entity);
+
+/// Explicit ownership for native systems outside a script callback. ECS storage is Bevy's.
+pub fn spawn_owned<B: Bundle>(world: &mut World, owner: Entity, bundle: B) -> Result<Entity> {
+    if world.get_entity(owner).is_err() {
+        return Err(Error::new(
+            "script.owner.dead",
+            "Cannot spawn for a dead owner",
+        ));
+    }
+    Ok(world.spawn((OwnedBy(owner), bundle)).id())
+}
+fn invoke_owned<T>(
+    world: &mut World,
+    owner: Entity,
+    callback: impl FnOnce(&mut World) -> Result<T>,
+) -> Result<T> {
+    let before: BTreeSet<_> = world.iter_entities().map(|e| e.id()).collect();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(world)))
+        .unwrap_or_else(|_| {
+            Err(Error::new(
+                "script.panic",
+                "Native script callback panicked",
+            ))
+        });
+    let created: Vec<_> = world
+        .iter_entities()
+        .filter(|e| {
+            !before.contains(&e.id())
+                && !e.contains::<OwnedBy>()
+                && !e.contains::<bevy_ecs::resource::IsResource>()
+        })
+        .map(|e| e.id())
+        .collect();
+    for entity in created {
+        world.entity_mut(entity).insert(OwnedBy(owner));
+    }
+    result
+}
+fn despawn_owned(world: &mut World, owner: Entity) {
+    let children: Vec<_> = world
+        .iter_entities()
+        .filter(|e| e.get::<OwnedBy>().is_some_and(|o| o.0 == owner))
+        .map(|e| e.id())
+        .collect();
+    for child in children {
+        despawn_owned(world, child);
+        world.despawn(child);
+    }
+}
 
 /// Native code has full World access; callbacks run serially at lifecycle boundaries.
 /// Use ordinary Bevy schedules for data-parallel custom component systems.
@@ -113,6 +170,13 @@ struct ActiveScript {
     owner: Entity,
     asset: String,
     script: Box<dyn NativeScript>,
+}
+fn destroy_script(world: &mut World, mut script: ActiveScript) -> Result<()> {
+    let result = invoke_owned(world, script.owner, |world| {
+        script.script.on_destroy(world, script.owner)
+    });
+    despawn_owned(world, script.owner);
+    result
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +227,7 @@ pub struct RuntimeSnapshot {
     pub active_scripts: usize,
     pub scene_revision: u64,
     pub triggers: Vec<TriggerEvent>,
+    pub logs: Vec<String>,
 }
 
 #[derive(Default)]
@@ -219,6 +284,9 @@ impl Runtime {
         let content = Content::load(&project)?;
         let scene = project.scene.clone();
         let mut app = EngineApp::new();
+        app.world_mut()
+            .insert_resource(ProjectResource(Arc::new(project.clone())));
+        app.world_mut().insert_resource(RuntimeLog::default());
         app.world_mut().insert_resource(EntityLookup::default());
         app.world_mut().insert_resource(ActionFrame::default());
         app.world_mut().insert_resource(InputSettings {
@@ -239,7 +307,7 @@ impl Runtime {
         }
         let collision = collision_from_scene(&scene)?;
         app.world_mut().insert_resource(collision);
-        Ok(Self {
+        let mut runtime = Self {
             app,
             project,
             scene,
@@ -251,7 +319,12 @@ impl Runtime {
             elapsed: 0.0,
             scene_revision: 0,
             geometry: RefCell::new(BTreeMap::new()),
-        })
+        };
+        let id = blake3::hash(runtime.project.name.as_bytes()).to_hex()[..16].to_string();
+        if let Ok(root) = PersistenceStore::default_user_data_root(&id) {
+            runtime.set_user_data_root(root)?;
+        }
+        Ok(runtime)
     }
     pub fn app(&self) -> &EngineApp {
         &self.app
@@ -274,6 +347,17 @@ impl Runtime {
     }
     pub fn bindings(&self) -> &BindingMap {
         &self.app.world().resource::<InputSettings>().bindings
+    }
+    pub fn set_audio(&mut self, control: engine_audio::AudioControl) -> Result<()> {
+        if self.started {
+            return Err(Error::new(
+                "runtime.started",
+                "Configure audio before startup",
+            ));
+        }
+        let audio = crate::audio::RuntimeAudio::new(control, &self.project)?;
+        self.app.world_mut().insert_resource(audio);
+        Ok(())
     }
     pub fn set_user_data_root(&mut self, root: PathBuf) -> Result<()> {
         if self.started {
@@ -343,9 +427,25 @@ impl Runtime {
                         format!("Unregistered script asset {asset}"),
                     )
                 })?;
-            let mut script = factory(self.app.world_mut(), owner)?;
-            if let Err(error) = script.on_create(self.app.world_mut(), owner) {
-                let _ = script.on_destroy(self.app.world_mut(), owner);
+            let mut script =
+                match invoke_owned(self.app.world_mut(), owner, |world| factory(world, owner)) {
+                    Ok(script) => script,
+                    Err(error) => {
+                        despawn_owned(self.app.world_mut(), owner);
+                        return Err(error);
+                    }
+                };
+            if let Err(error) = invoke_owned(self.app.world_mut(), owner, |world| {
+                script.on_create(world, owner)
+            }) {
+                let _ = destroy_script(
+                    self.app.world_mut(),
+                    ActiveScript {
+                        owner,
+                        asset,
+                        script,
+                    },
+                );
                 return Err(error);
             }
             self.scripts.push(ActiveScript {
@@ -367,9 +467,11 @@ impl Runtime {
             return Ok(());
         }
         self.validate_script_bindings(&self.scene)?;
-        self.app
-            .startup()
-            .map_err(|e| Error::new("runtime.startup", e.to_string()))?;
+        if let Err(error) = self.app.startup() {
+            let error = Error::new("runtime.startup", error.to_string());
+            let _ = self.stop();
+            return Err(error);
+        }
         self.started = true;
         if let Err(error) = self.attach_scripts() {
             let _ = self.stop();
@@ -408,10 +510,14 @@ impl Runtime {
         let mut scripts = std::mem::take(&mut self.scripts);
         let mut failure = None;
         for script in &mut scripts {
-            if self.app.world().get_entity(script.owner).is_ok()
-                && let Err(error) = script
-                    .script
-                    .on_update(self.app.world_mut(), script.owner, dt)
+            if self
+                .app
+                .world()
+                .get::<Script>(script.owner)
+                .is_some_and(|s| s.asset == script.asset)
+                && let Err(error) = invoke_owned(self.app.world_mut(), script.owner, |world| {
+                    script.script.on_update(world, script.owner, dt)
+                })
             {
                 failure = Some(error);
                 break;
@@ -425,14 +531,17 @@ impl Runtime {
             .tick(dt)
             .map_err(|e| Error::new("runtime.update", e.to_string()))?;
         self.sync_collision()?;
+        crate::audio::synchronize(self.app.world_mut())?;
         let triggers = self
             .app
             .world_mut()
             .resource_mut::<gameplay2d::World>()
             .advance_triggers();
         self.app.world_mut().resource_mut::<TriggerEvents>().0 = triggers;
+        crate::audio::notify_triggers(self.app.world_mut())?;
         let mut retained = Vec::new();
-        for mut script in std::mem::take(&mut self.scripts) {
+        let mut retirement_error = None;
+        for script in std::mem::take(&mut self.scripts) {
             let still_attached = self
                 .app
                 .world()
@@ -441,12 +550,17 @@ impl Runtime {
             if still_attached {
                 retained.push(script);
             } else {
-                script
-                    .script
-                    .on_destroy(self.app.world_mut(), script.owner)?;
+                if let Err(error) = destroy_script(self.app.world_mut(), script)
+                    && retirement_error.is_none()
+                {
+                    retirement_error = Some(error);
+                }
             }
         }
         self.scripts = retained;
+        if let Some(error) = retirement_error {
+            return Err(error);
+        }
         let request = self.app.world_mut().resource_mut::<PendingScene>().0.take();
         if let Some(request) = request {
             self.transition(request)?;
@@ -470,14 +584,35 @@ impl Runtime {
             return Ok(());
         }
         let mut error = None;
-        for mut script in std::mem::take(&mut self.scripts).into_iter().rev() {
-            if let Err(e) = script.script.on_destroy(self.app.world_mut(), script.owner)
+        for script in std::mem::take(&mut self.scripts).into_iter().rev() {
+            if let Err(e) = destroy_script(self.app.world_mut(), script)
                 && error.is_none()
             {
                 error = Some(e);
             }
         }
         self.app.world_mut().resource_mut::<UiModel>().clear();
+        self.app
+            .world_mut()
+            .resource_mut::<ControlLocks>()
+            .0
+            .clear();
+        self.app.world_mut().resource_mut::<PendingScene>().0 = None;
+        let remaining: Vec<_> = self
+            .app
+            .world()
+            .iter_entities()
+            .filter(|e| e.contains::<OwnedBy>())
+            .map(|e| e.id())
+            .collect();
+        for entity in remaining {
+            self.app.world_mut().despawn(entity);
+        }
+        if let Err(e) = crate::audio::shutdown(self.app.world_mut())
+            && error.is_none()
+        {
+            error = Some(e);
+        }
         if let Err(e) = self.app.shutdown()
             && error.is_none()
         {
@@ -514,32 +649,7 @@ impl Runtime {
         Ok(result)
     }
     fn sync_collision(&mut self) -> Result<()> {
-        let bodies: Vec<_> = self
-            .app
-            .world()
-            .iter_entities()
-            .filter_map(|e| {
-                Some((
-                    e.get::<AuthoredId>()?.id.clone(),
-                    e.get::<Transform>()?.clone(),
-                    e.get::<Collider2D>()?.clone(),
-                ))
-            })
-            .collect();
-        let mut collision = self.app.world_mut().resource_mut::<gameplay2d::World>();
-        let ids: BTreeSet<_> = bodies.iter().map(|(id, _, _)| id.clone()).collect();
-        let old: Vec<_> = collision
-            .ids()
-            .filter(|id| !ids.contains(*id))
-            .map(str::to_owned)
-            .collect();
-        for id in old {
-            collision.remove(&id);
-        }
-        for (id, t, b) in bodies {
-            collision.upsert(id, body_from(&t, &b))?;
-        }
-        Ok(())
+        crate::services::sync_collision(self.app.world_mut())
     }
     pub fn request_scene(
         &mut self,
@@ -563,66 +673,7 @@ impl Runtime {
         Ok(())
     }
     fn prepare_transition(&self, request: &SceneRequest) -> Result<(Scene, gameplay2d::World)> {
-        let asset = self.project.require_asset(&request.asset, "scene")?;
-        let mut scene = load_scene(&self.project.root, &asset.path)?;
-        self.project.validate_scene(&scene)?;
-        if !request.traveller.is_empty() {
-            let entity = self
-                .entity(&request.traveller)
-                .ok_or_else(|| Error::new("runtime.scene.traveller", "Traveller does not exist"))?;
-            let old = self.snapshot_entity(entity)?;
-            if let Some(target) = scene
-                .entities
-                .iter_mut()
-                .find(|e| e.id == request.traveller)
-            {
-                *target = old;
-            } else {
-                scene.entities.push(old);
-            }
-        }
-        if !request.spawn.is_empty() {
-            let position = scene
-                .entities
-                .iter()
-                .find(|e| e.id == request.spawn)
-                .and_then(|e| e.components.transform.as_ref())
-                .map(|t| t.position)
-                .ok_or_else(|| {
-                    Error::new(
-                        "runtime.scene.spawn",
-                        "Spawn must name a transformed destination entity",
-                    )
-                })?;
-            let traveller = scene
-                .entities
-                .iter_mut()
-                .find(|e| e.id == request.traveller)
-                .ok_or_else(|| {
-                    Error::new("runtime.scene.traveller", "Spawn requires a traveller")
-                })?;
-            traveller
-                .components
-                .transform
-                .as_mut()
-                .ok_or_else(|| {
-                    Error::new("runtime.scene.traveller", "Traveller requires Transform")
-                })?
-                .position = position;
-        }
-        self.project.validate_scene(&scene)?;
-        self.validate_script_bindings(&scene)?;
-        let collision = collision_from_scene(&scene)?;
-        if !request.traveller.is_empty()
-            && let Some(body) = collision.body(&request.traveller)
-            && !collision.is_safe(body, &request.traveller)?
-        {
-            return Err(Error::new(
-                "runtime.scene.spawn.blocked",
-                "Traveller spawn overlaps a solid body",
-            ));
-        }
-        Ok((scene, collision))
+        crate::services::prepare_scene(self.app.world(), &self.project, request)
     }
     fn transition(&mut self, request: SceneRequest) -> Result<()> {
         // All authored data is prepared before mutating the live generation. Native callback
@@ -630,16 +681,22 @@ impl Runtime {
         let (scene, collision) = self.prepare_transition(&request)?;
         let retained = self.entity(&request.traveller);
         let mut keep_scripts = Vec::new();
-        for mut script in std::mem::take(&mut self.scripts) {
+        let mut retirement_error = None;
+        for script in std::mem::take(&mut self.scripts) {
             if Some(script.owner) == retained {
                 keep_scripts.push(script);
             } else {
-                script
-                    .script
-                    .on_destroy(self.app.world_mut(), script.owner)?;
+                if let Err(error) = destroy_script(self.app.world_mut(), script)
+                    && retirement_error.is_none()
+                {
+                    retirement_error = Some(error);
+                }
             }
         }
         self.scripts = keep_scripts;
+        if let Some(error) = retirement_error {
+            return Err(error);
+        }
         let previous: Vec<_> = self
             .app
             .world()
@@ -682,6 +739,7 @@ impl Runtime {
             .0
             .clear();
         self.app.world_mut().resource_mut::<UiModel>().clear();
+        crate::audio::synchronize(self.app.world_mut())?;
         self.attach_scripts()?;
         Ok(())
     }
@@ -720,10 +778,16 @@ impl Runtime {
         RuntimeSnapshot {
             ticks: self.ticks,
             scene,
-            live_entities: self.app.world().entities().len() as usize,
+            live_entities: self
+                .app
+                .world()
+                .iter_entities()
+                .filter(|e| !e.contains::<bevy_ecs::resource::IsResource>())
+                .count(),
             active_scripts: self.scripts.len(),
             scene_revision: self.scene_revision,
             triggers: self.app.world().resource::<TriggerEvents>().0.clone(),
+            logs: self.app.world().resource::<RuntimeLog>().0.clone(),
         }
     }
     fn cached_mesh(&self, id: &str, mesh: Mesh) -> Arc<Mesh> {

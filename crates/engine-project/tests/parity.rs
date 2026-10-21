@@ -496,3 +496,263 @@ fn validated_scene_transition_retains_traveller_identity_and_custom_components()
     );
     assert_eq!(runtime.snapshot().scene_revision, 1);
 }
+
+struct FailingCreate;
+impl NativeScript for FailingCreate {
+    fn on_create(&mut self, world: &mut World, _: Entity) -> Result<()> {
+        world.spawn(CustomCounter(9));
+        world
+            .resource_mut::<ControlLocks>()
+            .0
+            .insert("failure".into());
+        world.resource_mut::<UiModel>().open(PanelOptions {
+            id: "failure".into(),
+            ..Default::default()
+        })?;
+        Err(Error::new(
+            "fixture.create.failed",
+            "Deliberate create failure",
+        ))
+    }
+    fn on_destroy(&mut self, world: &mut World, _: Entity) -> Result<()> {
+        world
+            .resource_mut::<RuntimeLog>()
+            .0
+            .push("destroy:create-failure".into());
+        Ok(())
+    }
+}
+fn failing_create(_: &mut World, _: Entity) -> Result<Box<dyn NativeScript>> {
+    Ok(Box::new(FailingCreate))
+}
+#[test]
+fn failed_creation_cleans_spawned_entities_ui_locks_and_attempts_teardown() {
+    let dir = fixture(true);
+    let mut runtime = Runtime::new(project(&dir)).unwrap();
+    register_script(runtime.app_mut(), "player", failing_create).unwrap();
+    assert_eq!(
+        runtime.start().unwrap_err().diagnostics[0].code,
+        "fixture.create.failed"
+    );
+    assert_eq!(
+        runtime
+            .app()
+            .world()
+            .iter_entities()
+            .filter(|e| !e.contains::<bevy_ecs::resource::IsResource>())
+            .count(),
+        2
+    );
+    assert!(
+        runtime
+            .app()
+            .world()
+            .resource::<ControlLocks>()
+            .0
+            .is_empty()
+    );
+    assert!(
+        runtime
+            .app()
+            .world()
+            .resource::<UiModel>()
+            .panels()
+            .is_empty()
+    );
+    assert_eq!(runtime.snapshot().logs, vec!["destroy:create-failure"]);
+    assert!(!runtime.running());
+}
+fn failing_factory(world: &mut World, _: Entity) -> Result<Box<dyn NativeScript>> {
+    world.spawn(CustomCounter(9));
+    Err(Error::new(
+        "fixture.factory.failed",
+        "Deliberate factory failure",
+    ))
+}
+#[test]
+fn failing_factory_cleans_created_entities_without_script_instance() {
+    let dir = fixture(true);
+    let mut runtime = Runtime::new(project(&dir)).unwrap();
+    register_script(runtime.app_mut(), "player", failing_factory).unwrap();
+    assert!(runtime.start().is_err());
+    assert_eq!(
+        runtime
+            .app()
+            .world()
+            .iter_entities()
+            .filter(|e| !e.contains::<bevy_ecs::resource::IsResource>())
+            .count(),
+        2
+    );
+}
+struct Destruction {
+    fail: bool,
+    name: String,
+}
+impl NativeScript for Destruction {
+    fn on_create(&mut self, world: &mut World, _: Entity) -> Result<()> {
+        world.spawn(CustomCounter(1));
+        Ok(())
+    }
+    fn on_destroy(&mut self, world: &mut World, _: Entity) -> Result<()> {
+        world.resource_mut::<RuntimeLog>().0.push(self.name.clone());
+        if self.fail {
+            Err(Error::new(
+                "fixture.destroy.failed",
+                "Deliberate teardown failure",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+fn destruction(world: &mut World, owner: Entity) -> Result<Box<dyn NativeScript>> {
+    let name = world.get::<AuthoredId>(owner).unwrap().id.clone();
+    Ok(Box::new(Destruction {
+        fail: name == "player",
+        name,
+    }))
+}
+fn two_scripts(dir: &tempfile::TempDir) {
+    let mut scene = serde_json::to_value(&project(dir).scene).unwrap();
+    scene["entities"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":"second","name":"Second","components":{"Script":{"asset":"player"}}}));
+    set_scene(dir, &scene);
+}
+#[test]
+fn transition_teardown_failure_attempts_every_script_and_cleans_owned_spawns() {
+    let dir = fixture(true);
+    two_scripts(&dir);
+    let mut runtime = Runtime::new(project(&dir)).unwrap();
+    register_script(runtime.app_mut(), "player", destruction).unwrap();
+    runtime.start().unwrap();
+    assert_eq!(
+        runtime
+            .app()
+            .world()
+            .iter_entities()
+            .filter(|e| !e.contains::<bevy_ecs::resource::IsResource>())
+            .count(),
+        5
+    );
+    runtime.request_scene("scene:a", "", "").unwrap();
+    assert_eq!(
+        runtime
+            .tick(0.01, ActionFrame::default())
+            .unwrap_err()
+            .diagnostics[0]
+            .code,
+        "fixture.destroy.failed"
+    );
+    assert_eq!(runtime.snapshot().logs, vec!["player", "second"]);
+    assert_eq!(
+        runtime
+            .app()
+            .world()
+            .iter_entities()
+            .filter(|e| !e.contains::<bevy_ecs::resource::IsResource>())
+            .count(),
+        3
+    );
+    assert!(!runtime.running());
+}
+#[test]
+fn detached_script_teardown_failure_still_retires_other_scripts() {
+    let dir = fixture(true);
+    two_scripts(&dir);
+    let mut runtime = Runtime::new(project(&dir)).unwrap();
+    register_script(runtime.app_mut(), "player", destruction).unwrap();
+    runtime.start().unwrap();
+    for id in ["player", "second"] {
+        let entity = runtime.entity(id).unwrap();
+        runtime
+            .app_mut()
+            .world_mut()
+            .entity_mut(entity)
+            .remove::<Script>();
+    }
+    assert!(runtime.tick(0.01, ActionFrame::default()).is_err());
+    assert_eq!(runtime.snapshot().logs, vec!["player", "second"]);
+    assert_eq!(
+        runtime
+            .app()
+            .world()
+            .iter_entities()
+            .filter(|e| !e.contains::<bevy_ecs::resource::IsResource>())
+            .count(),
+        3
+    );
+}
+#[test]
+fn world_services_use_authoritative_transforms_and_validate_scene_before_queue() {
+    let dir = fixture(false);
+    let mut runtime = Runtime::new(project(&dir)).unwrap();
+    let world = runtime.app_mut().world_mut();
+    assert!(find_entity(world, "player").is_some());
+    assert_eq!(
+        move_entity(world, "player", [1.0, 2.0]).unwrap().position,
+        [1.0, 2.0]
+    );
+    assert!(safe_position(world, "player", 1.0, 0.1).unwrap().is_some());
+    assert!(
+        request_scene(
+            world,
+            SceneRequest {
+                asset: "missing".into(),
+                spawn: String::new(),
+                traveller: String::new()
+            }
+        )
+        .is_err()
+    );
+    assert!(world.resource::<PendingScene>().0.is_none());
+    assert!(resolve_asset(world, "texture").unwrap().is_file());
+}
+#[test]
+fn native_audio_tracks_entity_attachment_and_resets_listener_on_teardown() {
+    let dir = fixture(false);
+    let mut runtime = Runtime::new(project(&dir)).unwrap();
+    let engine = engine_audio::AudioEngine::offline(Default::default()).unwrap();
+    let control = engine.control();
+    runtime.set_audio(control.clone()).unwrap();
+    let owner = runtime.entity("player").unwrap();
+    let world = runtime.app_mut().world_mut();
+    world.resource_mut::<RuntimeAudio>().clips.insert(
+        "clip".into(),
+        engine_audio::Clip::new(48000, 1, vec![0.5; 480]).unwrap(),
+    );
+    let source = engine_project::audio::source(
+        world,
+        owner,
+        "clip",
+        engine_audio::PlayOptions {
+            looped: true,
+            ..Default::default()
+        },
+        Some(owner),
+    )
+    .unwrap();
+    engine_project::audio::control(world, owner, source, engine_audio::SourceAction::Play).unwrap();
+    engine_project::audio::listener(world, owner, Default::default(), Some(owner)).unwrap();
+    world.get_mut::<Transform>(owner).unwrap().position = [2.0, 0.0, 0.0];
+    engine_project::audio::synchronize(world).unwrap();
+    let voice = world
+        .get::<engine_project::audio::EntityAudio>(owner)
+        .unwrap()
+        .sources
+        .voice(source)
+        .unwrap();
+    assert_eq!(
+        control.voice(voice).unwrap().options.spatial.position,
+        [2.0, 0.0, 0.0]
+    );
+    assert_eq!(control.listener().unwrap().position, [2.0, 0.0, 0.0]);
+    runtime.stop().unwrap();
+    assert_eq!(control.voice_count(), 0);
+    assert_eq!(
+        control.listener().unwrap(),
+        engine_audio::Listener::default()
+    );
+}
