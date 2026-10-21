@@ -62,9 +62,10 @@ ignored `build/rust-worktrees/` directory, never inside Unsealed's submodule.
 | E6 desktop graphics | `crates/engine-desktop/` | `codex/rust-desktop`, `desktop` |
 | E7 audio | `crates/engine-audio/` | `codex/rust-audio`, `audio` |
 | E8 native editor | `crates/engine-editor/` | `codex/rust-editor`, `editor` |
+| E9 native examples (after E7) | `examples/`, applicable `assets/scripts/` | `codex/rust-audio`, `audio` reused |
 
-Examples, documentation/CI migration and independent acceptance are queued until
-their public interfaces exist. No stream may remove an existing
+Documentation/CI migration and independent acceptance are queued until their
+public interfaces exist. No stream may remove an existing
 capability merely because its replacement has not yet been implemented.
 
 ## Implementation and acceptance gates
@@ -147,3 +148,19 @@ external compilation, examples, editor, removal and Unsealed gates remain open.
 Builds currently use `RUSTUP_TOOLCHAIN=stable` selecting the installed, verified
 1.99.1 compiler, and the ignored `build/cargo-home` registry cache because the
 default Cargo home is not writable in the sandbox. Targets remain per checkout.
+
+### Audio milestone: accepted, runtime integration pending
+
+Worker commit `d1085b86d3f6333134c1768743f6f354071c8839` was integrated on
+main as `ea1f168`. `engine-audio` uses CPAL for native output and Hound for WAV
+sample decoding. Engine-owned deterministic mixing, source ownership and event
+policy remain explicit; it does not introduce a second library mixer alongside
+the existing policy. The crate README records the dependency decision.
+
+The audio worker passed formatting, Clippy with warnings denied, ten offline
+behavior/fault tests and the explicit native device test on the final source.
+That test submitted 7,842 stereo frames, consumed clip PCM and shut down without
+reported device errors. This is device activity evidence, not audible-quality or
+physical-disconnect verification. Root reviewed the crate documentation and test
+coverage before integration. Scene attachments, listener ownership and desktop
+shutdown ordering still require integrated runtime acceptance.
