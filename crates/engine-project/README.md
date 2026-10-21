@@ -49,6 +49,11 @@ wheel and focus). Physical input uses canonical binding tokens through ActionMap
 focus/rebind/gamepad reconnect quarantine held controls. `input::merge_input` merges
 one-tick injected actions with physical holds. `runtime::InputSettings` is a resource
 whose `rebind` increments a revision for the host to synchronize.
+After opening/closing UI or changing control locks within one callback, read
+`runtime::gameplay_input(world)` to recompute capture immediately. Runtime refreshes
+the ActionFrame resource after each script callback. Native scheduled systems chain
+UI/control writers, `runtime::refresh_gameplay_input`, and gameplay readers with
+ordinary Bevy dependency edges so a copied input snapshot cannot outlive its gate.
 
 Collision is swept AABB with positive-area overlap, deterministic penetration
 resolution, layer/mask filtering, sorted trigger phases, safe-position search and
@@ -60,6 +65,11 @@ envelopes have schema/content versions and bounded size/depth. Cross-process slo
 locks protect writes. A flushed temporary file replaces atomically; explicit backup
 read/recover never silently rewrites a corrupt primary. Named failure stages support
 deterministic durability tests.
+The existing `content_version` envelope key, `saves/` and
+`settings/preferences.json` layout, FNV-derived `project-<decimal>` profile IDs and
+CPPGameEngine user-data directory are retained, so the language migration does not
+change save locations. Newer primary or backup versions are never overwritten or
+passed to an older migration function.
 
 The desktop host supplies `set_audio(AudioControl)` before startup. `audio` exposes
 entity-scoped source creation/configuration/control/observers and listener attachment.

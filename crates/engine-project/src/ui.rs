@@ -1,7 +1,11 @@
 use crate::{Error, Result, input::ActionFrame};
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+};
+pub type GlyphAdvance = Arc<dyn Fn(char) -> f32 + Send + Sync>;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Rect {
     pub x: f32,
@@ -86,6 +90,8 @@ pub struct UiModel {
     release_suppressed: BTreeSet<String>,
     raw: ActionFrame,
     transition: bool,
+    font_metrics: BTreeMap<String, GlyphAdvance>,
+    panel_metrics: BTreeMap<String, GlyphAdvance>,
 }
 fn valid_rect(r: Rect) -> bool {
     [r.x, r.y, r.width, r.height].iter().all(|n| n.is_finite())
@@ -111,7 +117,10 @@ impl UiModel {
             .extend(self.raw.held.iter().chain(&self.raw.pressed).cloned());
         self.transition = true;
     }
-    fn layout(panel: &mut PanelSnapshot, advance: Option<&dyn Fn(char) -> f32>) -> Result<()> {
+    fn layout(
+        panel: &mut PanelSnapshot,
+        advance: Option<&(dyn Fn(char) -> f32 + Send + Sync)>,
+    ) -> Result<()> {
         let o = &panel.options;
         let row = o.line_height * o.scale;
         if !row.is_finite() || row <= 0.0 {
@@ -153,12 +162,16 @@ impl UiModel {
         Ok(())
     }
     pub fn open(&mut self, options: PanelOptions) -> Result<()> {
-        self.open_with_metrics(options, None)
+        let metrics = self.font_metrics.get(&options.font_asset).cloned();
+        self.open_with_metrics(options, metrics)
+    }
+    pub fn set_font_metrics(&mut self, font_asset: impl Into<String>, advance: GlyphAdvance) {
+        self.font_metrics.insert(font_asset.into(), advance);
     }
     pub fn open_with_metrics(
         &mut self,
         options: PanelOptions,
-        advance: Option<&dyn Fn(char) -> f32>,
+        advance: Option<GlyphAdvance>,
     ) -> Result<()> {
         if self.panels.len() >= 64
             || options.id.is_empty()
@@ -199,7 +212,10 @@ impl UiModel {
             selected: 0,
             lines: vec![],
         };
-        Self::layout(&mut panel, advance)?;
+        Self::layout(&mut panel, advance.as_deref())?;
+        if let Some(advance) = advance {
+            self.panel_metrics.insert(panel.options.id.clone(), advance);
+        }
         if let Some(last) = self.panels.last_mut() {
             last.focused = false;
         }
@@ -211,6 +227,7 @@ impl UiModel {
         if let Some(index) = self.panels.iter().position(|p| p.options.id == id) {
             self.capture();
             self.panels.remove(index);
+            self.panel_metrics.remove(id);
             if let Some(last) = self.panels.last_mut() {
                 last.focused = true;
             }
@@ -223,6 +240,7 @@ impl UiModel {
         if text.len() > 65536 {
             return Err(Error::new("ui.text.limit", "Text exceeds 64KiB"));
         }
+        let advance = self.panel_metrics.get(id).cloned();
         let panel = self
             .panels
             .iter_mut()
@@ -230,7 +248,7 @@ impl UiModel {
             .ok_or_else(|| Error::new("ui.panel.unknown", "Unknown panel"))?;
         let mut candidate = panel.clone();
         candidate.options.text = text;
-        Self::layout(&mut candidate, None)?;
+        Self::layout(&mut candidate, advance.as_deref())?;
         *panel = candidate;
         Ok(())
     }
@@ -238,6 +256,7 @@ impl UiModel {
         if !valid_rect(rect) {
             return Err(Error::new("ui.panel.invalid", "Invalid panel rectangle"));
         }
+        let advance = self.panel_metrics.get(id).cloned();
         let panel = self
             .panels
             .iter_mut()
@@ -245,7 +264,7 @@ impl UiModel {
             .ok_or_else(|| Error::new("ui.panel.unknown", "Unknown panel"))?;
         let mut candidate = panel.clone();
         candidate.options.rect = rect;
-        Self::layout(&mut candidate, None)?;
+        Self::layout(&mut candidate, advance.as_deref())?;
         *panel = candidate;
         Ok(())
     }
@@ -266,6 +285,7 @@ impl UiModel {
         self.capture();
         self.panels.clear();
         self.events.clear();
+        self.panel_metrics.clear();
     }
     pub fn poll_event(&mut self) -> Option<UiEvent> {
         self.events.pop_front()

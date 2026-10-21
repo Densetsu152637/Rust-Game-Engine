@@ -10,6 +10,26 @@ use crate::{
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::World;
 use std::{collections::BTreeSet, path::PathBuf};
+/// Recompute capture/lock state for same-callback reads after UI or control mutations.
+pub fn gameplay_input(world: &World) -> crate::InputSnapshot {
+    let mut input = world.resource::<crate::ui::UiModel>().gameplay_frame();
+    if !world
+        .resource::<crate::runtime::ControlLocks>()
+        .0
+        .is_empty()
+    {
+        input = crate::InputSnapshot {
+            focused: input.focused,
+            ..Default::default()
+        };
+    }
+    input
+}
+/// Native schedules chain UI/control writers -> this exclusive gate -> gameplay readers.
+pub fn refresh_gameplay_input(world: &mut World) {
+    let input = gameplay_input(world);
+    world.insert_resource(input);
+}
 pub fn find_entity(world: &World, id: &str) -> Option<Entity> {
     world
         .get_resource::<EntityLookup>()?

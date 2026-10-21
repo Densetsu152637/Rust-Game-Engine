@@ -27,7 +27,10 @@ pub struct ProjectResource(pub Arc<Project>);
 #[derive(Resource, Clone, Default)]
 pub struct RuntimeLog(pub Vec<String>);
 pub use crate::audio::RuntimeAudio;
-pub use crate::services::{find_entity, move_entity, request_scene, resolve_asset, safe_position};
+pub use crate::services::{
+    find_entity, gameplay_input, move_entity, refresh_gameplay_input, request_scene, resolve_asset,
+    safe_position,
+};
 #[derive(Resource, Clone, Default)]
 pub struct EntityLookup(pub BTreeMap<String, Entity>);
 impl EntityLookup {
@@ -112,6 +115,7 @@ fn invoke_owned<T>(
     for entity in created {
         world.entity_mut(entity).insert(OwnedBy(owner));
     }
+    refresh_gameplay_input(world);
     result
 }
 fn despawn_owned(world: &mut World, owner: Entity) {
@@ -294,7 +298,12 @@ impl Runtime {
             deadzone: 0.2,
             revision: 0,
         });
-        app.world_mut().insert_resource(UiModel::default());
+        let mut ui = UiModel::default();
+        for (id, font) in &content.fonts {
+            let font = font.clone();
+            ui.set_font_metrics(id.clone(), Arc::new(move |c| font.glyph(c).advance));
+        }
+        app.world_mut().insert_resource(ui);
         app.world_mut()
             .insert_resource(gameplay2d::World::default());
         app.world_mut().insert_resource(TriggerEvents::default());
@@ -320,7 +329,7 @@ impl Runtime {
             scene_revision: 0,
             geometry: RefCell::new(BTreeMap::new()),
         };
-        let id = blake3::hash(runtime.project.name.as_bytes()).to_hex()[..16].to_string();
+        let id = crate::persistence::project_id(&runtime.project.name);
         if let Ok(root) = PersistenceStore::default_user_data_root(&id) {
             runtime.set_user_data_root(root)?;
         }
@@ -366,7 +375,7 @@ impl Runtime {
                 "Configure user data before startup",
             ));
         }
-        let id = blake3::hash(self.project.name.as_bytes()).to_hex()[..16].to_string();
+        let id = crate::persistence::project_id(&self.project.name);
         let store = PersistenceStore::new(PersistenceOptions::new(root, id))?;
         self.app
             .world_mut()
@@ -401,7 +410,7 @@ impl Runtime {
         Ok(())
     }
     fn attach_scripts(&mut self) -> Result<()> {
-        let pending: Vec<_> = self
+        let mut pending: Vec<_> = self
             .app
             .world()
             .iter_entities()
@@ -413,6 +422,13 @@ impl Runtime {
                     .any(|s| s.owner == *owner && s.asset == *asset)
             })
             .collect();
+        pending.sort_by_key(|(entity, _)| {
+            self.app
+                .world()
+                .get::<AuthoredId>(*entity)
+                .map(|id| id.id.clone())
+                .unwrap_or_else(|| format!("entity:{}", entity.to_bits()))
+        });
         for (owner, asset) in pending {
             let factory = self
                 .app
@@ -527,6 +543,7 @@ impl Runtime {
         if let Some(error) = failure {
             return Err(error);
         }
+        refresh_gameplay_input(self.app.world_mut());
         self.app
             .tick(dt)
             .map_err(|e| Error::new("runtime.update", e.to_string()))?;

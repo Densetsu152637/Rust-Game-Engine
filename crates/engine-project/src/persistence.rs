@@ -46,8 +46,18 @@ pub struct PersistenceStore {
 #[serde(deny_unknown_fields)]
 struct Envelope {
     schema: u32,
+    #[serde(rename = "content_version")]
     content: u32,
     data: Map<String, Value>,
+}
+/// Retains the stable on-disk profile directory used by authored desktop projects.
+pub fn project_id(name: &str) -> String {
+    let mut hash = 14695981039346656037_u64;
+    for byte in name.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    format!("project-{hash}")
 }
 fn safe_name(name: &str) -> bool {
     !name.is_empty()
@@ -157,12 +167,14 @@ impl PersistenceStore {
         let root = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")));
-        root.map(|r| r.join("RustGameEngine")).ok_or_else(|| {
-            Error::new(
-                "persistence.root.unavailable",
-                "User data root is unavailable",
-            )
-        })
+        root.filter(|r| r.is_absolute())
+            .map(|r| r.join("CPPGameEngine"))
+            .ok_or_else(|| {
+                Error::new(
+                    "persistence.root.unavailable",
+                    "User data root is unavailable",
+                )
+            })
     }
     fn path(&self, area: &str, slot: &str) -> Result<PathBuf> {
         if !safe_name(slot) {
@@ -171,7 +183,12 @@ impl PersistenceStore {
                 "Slot must be a bounded safe identifier",
             ));
         }
-        reject_link(&self.options.root)?;
+        let absolute = std::path::absolute(&self.options.root)?;
+        let mut prefix = PathBuf::new();
+        for component in absolute.components() {
+            prefix.push(component);
+            reject_link(&prefix)?;
+        }
         fs::create_dir_all(&self.options.root)?;
         let mut directory = fs::canonicalize(&self.options.root)?;
         for component in [&self.options.project_id, area] {
@@ -200,15 +217,38 @@ impl PersistenceStore {
     }
     fn read(&self, path: &Path, migration: Option<Migration>) -> Result<Map<String, Value>> {
         reject_link(path)?;
+        if !path.exists() {
+            return Err(Error::new("persistence.missing", "No snapshot exists").at(path, ""));
+        }
         let bytes = read_bounded(path, self.options.max_bytes)?;
-        let value: Value = serde_json::from_slice(&bytes)?;
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| Error::new("persistence.corrupt", e.to_string()))?;
         if !depth(&value, 0, self.options.max_depth) {
             return Err(Error::new(
                 "persistence.depth.exceeded",
                 "Snapshot JSON nesting exceeds limit",
             ));
         }
-        let envelope: Envelope = serde_json::from_value(value)?;
+        let schema = value
+            .get("schema")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0 && *v <= u32::MAX as u64)
+            .ok_or_else(|| Error::new("persistence.corrupt", "Invalid snapshot schema"))?;
+        let content = value
+            .get("content_version")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0 && *v <= u32::MAX as u64)
+            .ok_or_else(|| Error::new("persistence.corrupt", "Invalid content version"))?;
+        if schema > self.options.schema_version as u64
+            || content > self.options.content_version as u64
+        {
+            return Err(Error::new(
+                "persistence.version.newer",
+                "Snapshot was written by a newer schema/content version",
+            ));
+        }
+        let envelope: Envelope = serde_json::from_value(value)
+            .map_err(|e| Error::new("persistence.corrupt", e.to_string()))?;
         if envelope.schema == self.options.schema_version
             && envelope.content == self.options.content_version
         {
@@ -216,15 +256,29 @@ impl PersistenceStore {
         }
         let migrate = migration.ok_or_else(|| {
             Error::new(
-                "persistence.version.unsupported",
+                "persistence.migration.required",
                 "Snapshot needs an explicit migration",
             )
         })?;
-        let data = migrate(envelope.schema, envelope.content, envelope.data)?;
+        let data = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            migrate(envelope.schema, envelope.content, envelope.data)
+        }))
+        .map_err(|_| {
+            Error::new(
+                "persistence.migration.failed",
+                "Migration callback panicked",
+            )
+        })??;
         if !depth(&Value::Object(data.clone()), 0, self.options.max_depth) {
             return Err(Error::new(
                 "persistence.depth.exceeded",
                 "Migrated snapshot exceeds depth limit",
+            ));
+        }
+        if serde_json::to_vec(&data)?.len() as u64 > self.options.max_bytes {
+            return Err(Error::new(
+                "persistence.migration.invalid",
+                "Migrated snapshot exceeds byte limit",
             ));
         }
         Ok(data)
@@ -257,12 +311,24 @@ impl PersistenceStore {
         if path.exists() {
             self.read(path, migration)?;
             let previous = read_bounded(path, self.options.max_bytes)?;
+            let backup = path.with_extension("json.bak");
+            if backup.exists() {
+                match self.read(&backup, None) {
+                    Ok(_) => {}
+                    Err(error)
+                        if error
+                            .diagnostics
+                            .first()
+                            .is_some_and(|d| d.code == "persistence.migration.required") => {}
+                    Err(error) => return Err(error),
+                }
+            }
             atomic_replace(&path.with_extension("json.bak"), &previous, None)?;
         }
         atomic_replace(path, &bytes, self.options.fail)
     }
     pub fn load(&self, slot: &str, migration: Option<Migration>) -> Result<Map<String, Value>> {
-        let path = self.path("save", slot)?;
+        let path = self.path("saves", slot)?;
         let _lock = Self::lock(&path)?;
         self.read(&path, migration)
     }
@@ -272,7 +338,7 @@ impl PersistenceStore {
         data: Map<String, Value>,
         migration: Option<Migration>,
     ) -> Result<()> {
-        let path = self.path("save", slot)?;
+        let path = self.path("saves", slot)?;
         let _lock = Self::lock(&path)?;
         self.write(&path, data, migration)
     }
@@ -281,12 +347,12 @@ impl PersistenceStore {
         slot: &str,
         migration: Option<Migration>,
     ) -> Result<Map<String, Value>> {
-        let path = self.path("save", slot)?;
+        let path = self.path("saves", slot)?;
         let _lock = Self::lock(&path)?;
         self.read(&path.with_extension("json.bak"), migration)
     }
     pub fn recover_backup(&self, slot: &str, migration: Option<Migration>) -> Result<()> {
-        let path = self.path("save", slot)?;
+        let path = self.path("saves", slot)?;
         let _lock = Self::lock(&path)?;
         let data = self.read(&path.with_extension("json.bak"), migration)?;
         let bytes = serde_json::to_vec(&Envelope {
@@ -297,7 +363,7 @@ impl PersistenceStore {
         atomic_replace(&path, &bytes, self.options.fail)
     }
     pub fn load_settings(&self, migration: Option<Migration>) -> Result<Map<String, Value>> {
-        let path = self.path("settings", "settings")?;
+        let path = self.path("settings", "preferences")?;
         let _lock = Self::lock(&path)?;
         self.read(&path, migration)
     }
@@ -306,7 +372,7 @@ impl PersistenceStore {
         data: Map<String, Value>,
         migration: Option<Migration>,
     ) -> Result<()> {
-        let path = self.path("settings", "settings")?;
+        let path = self.path("settings", "preferences")?;
         let _lock = Self::lock(&path)?;
         self.write(&path, data, migration)
     }

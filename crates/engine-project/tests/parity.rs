@@ -389,7 +389,7 @@ fn persistence_backup_recovery_and_failed_replace_retain_previous_snapshot() {
             .is_err()
     );
     assert_eq!(store.load("slot", None).unwrap()["n"], 2);
-    fs::write(dir.path().join("game/save/slot.json"), b"corrupt").unwrap();
+    fs::write(dir.path().join("game/saves/slot.json"), b"corrupt").unwrap();
     assert!(store.load("slot", None).is_err());
     store.recover_backup("slot", None).unwrap();
     assert_eq!(store.load("slot", None).unwrap()["n"], 2);
@@ -755,4 +755,195 @@ fn native_audio_tracks_entity_attachment_and_resets_listener_on_teardown() {
         control.listener().unwrap(),
         engine_audio::Listener::default()
     );
+}
+
+#[test]
+fn save_envelope_paths_and_profile_identity_match_existing_authored_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = PersistenceStore::new(PersistenceOptions::new(
+        dir.path().to_owned(),
+        "game".into(),
+    ))
+    .unwrap();
+    store
+        .save("slot", json!({"n":1}).as_object().unwrap().clone(), None)
+        .unwrap();
+    let path = dir.path().join("game/saves/slot.json");
+    let value: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(value["content_version"], 1);
+    assert!(value.get("content").is_none());
+    store
+        .save_settings(json!({"volume":0.5}).as_object().unwrap().clone(), None)
+        .unwrap();
+    assert!(dir.path().join("game/settings/preferences.json").is_file());
+    assert_eq!(project_id(""), "project-14695981039346656037");
+}
+fn migration(
+    _schema: u32,
+    _content: u32,
+    mut data: serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>> {
+    data.insert("migrated".into(), json!(true));
+    Ok(data)
+}
+#[test]
+fn newer_primary_or_backup_is_never_migrated_or_overwritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = PersistenceStore::new(PersistenceOptions::new(
+        dir.path().to_owned(),
+        "game".into(),
+    ))
+    .unwrap();
+    store.save("slot", Default::default(), None).unwrap();
+    let path = dir.path().join("game/saves/slot.json");
+    let backup = dir.path().join("game/saves/slot.json.bak");
+    let newer = serde_json::to_vec(&json!({"schema":2,"content_version":2,"data":[]})).unwrap();
+    fs::write(&backup, &newer).unwrap();
+    assert_eq!(
+        store
+            .save("slot", Default::default(), Some(migration))
+            .unwrap_err()
+            .diagnostics[0]
+            .code,
+        "persistence.version.newer"
+    );
+    assert_eq!(fs::read(&backup).unwrap(), newer);
+    fs::write(&path, &newer).unwrap();
+    assert_eq!(
+        store.load("slot", Some(migration)).unwrap_err().diagnostics[0].code,
+        "persistence.version.newer"
+    );
+    assert_eq!(fs::read(&path).unwrap(), newer);
+}
+#[test]
+fn explicit_migration_preserves_original_until_save_and_respects_slot_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = PersistenceOptions::new(dir.path().to_owned(), "game".into());
+    let old = PersistenceStore::new(options.clone()).unwrap();
+    old.save("slot", json!({"n":1}).as_object().unwrap().clone(), None)
+        .unwrap();
+    options.content_version = 2;
+    let new = PersistenceStore::new(options).unwrap();
+    assert_eq!(
+        new.load("slot", None).unwrap_err().diagnostics[0].code,
+        "persistence.migration.required"
+    );
+    assert_eq!(new.load("slot", Some(migration)).unwrap()["migrated"], true);
+    assert_eq!(old.load("slot", None).unwrap()["n"], 1);
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .read(true)
+        .open(dir.path().join("game/saves/slot.json.lock"))
+        .unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    assert!(
+        new.save("slot", Default::default(), Some(migration))
+            .is_err()
+    );
+    fs2::FileExt::unlock(&lock).unwrap();
+}
+
+#[test]
+fn custom_glyph_metrics_survive_text_updates_and_resize() {
+    let mut ui = UiModel::default();
+    let rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 15.0,
+        height: 20.0,
+    };
+    ui.open_with_metrics(
+        PanelOptions {
+            id: "metrics".into(),
+            text: "aaa".into(),
+            rect,
+            glyph_advance: 10.0,
+            ..Default::default()
+        },
+        Some(Arc::new(|_| 5.0)),
+    )
+    .unwrap();
+    assert_eq!(ui.panels()[0].lines, vec!["aaa"]);
+    ui.set_text("metrics", "aaa".into()).unwrap();
+    assert_eq!(ui.panels()[0].lines, vec!["aaa"]);
+    ui.resize("metrics", rect).unwrap();
+    assert_eq!(ui.panels()[0].lines, vec!["aaa"]);
+    ui.set_text("metrics", "bbb".into()).unwrap();
+    assert_eq!(ui.panels()[0].lines, vec!["bbb"]);
+}
+
+struct ModalScript {
+    opener: bool,
+}
+impl NativeScript for ModalScript {
+    fn on_update(&mut self, w: &mut World, _: Entity, _: f32) -> Result<()> {
+        if self.opener && w.resource::<InputSnapshot>().pressed("interact") {
+            w.resource_mut::<UiModel>().open(PanelOptions {
+                id: "modal".into(),
+                ..Default::default()
+            })?;
+            assert!(!gameplay_input(w).pressed("interact"));
+            w.resource_mut::<RuntimeLog>()
+                .0
+                .push("capture:immediate".into());
+        } else if !self.opener && w.resource::<InputSnapshot>().pressed("interact") {
+            w.resource_mut::<RuntimeLog>()
+                .0
+                .push("capture:leaked".into());
+        }
+        Ok(())
+    }
+}
+fn modal_script(w: &mut World, e: Entity) -> Result<Box<dyn NativeScript>> {
+    Ok(Box::new(ModalScript {
+        opener: w.get::<AuthoredId>(e).unwrap().id == "player",
+    }))
+}
+#[test]
+fn opening_modal_refreshes_input_before_later_native_script() {
+    let dir = fixture(true);
+    two_scripts(&dir);
+    let mut runtime = Runtime::new(project(&dir)).unwrap();
+    register_script(runtime.app_mut(), "player", modal_script).unwrap();
+    runtime
+        .tick(
+            0.01,
+            InputSnapshot {
+                pressed: BTreeSet::from(["interact".into()]),
+                held: BTreeSet::from(["interact".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(runtime.snapshot().logs, vec!["capture:immediate"]);
+    assert!(
+        !runtime
+            .app()
+            .world()
+            .resource::<InputSnapshot>()
+            .held("interact")
+    );
+}
+#[test]
+fn immediate_lock_mutation_is_observable_via_dynamic_input_service() {
+    let dir = fixture(false);
+    let mut runtime = Runtime::new(project(&dir)).unwrap();
+    runtime
+        .tick(
+            0.01,
+            InputSnapshot {
+                pressed: BTreeSet::from(["move".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let world = runtime.app_mut().world_mut();
+    assert!(gameplay_input(world).pressed("move"));
+    world
+        .resource_mut::<ControlLocks>()
+        .0
+        .insert("cutscene".into());
+    assert!(!gameplay_input(world).pressed("move"));
+    refresh_gameplay_input(world);
+    assert!(!world.resource::<InputSnapshot>().pressed("move"));
 }
