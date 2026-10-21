@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "name": "Rust desktop renderer smoke",
+  "startup_scene": "scene.json",
+  "inputBindings": {
+    "left": ["Key:Left"], "right": ["Key:Right"],
+    "up": ["Key:Up"], "down": ["Key:Down"]
+  },
+  "assets": [
+    {"id": "atlas", "path": "atlas.ppm", "kind": "texture"}
+  ]
+}
