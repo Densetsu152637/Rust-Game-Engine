@@ -8,6 +8,7 @@ agents.*.md
 
 # build directories
 build/
+target/
 **/.derived/
 *-build/
 *-build-*/
