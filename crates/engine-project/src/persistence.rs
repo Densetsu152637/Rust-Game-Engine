@@ -134,6 +134,35 @@ fn depth(value: &Value, current: usize, limit: usize) -> bool {
         _ => true,
     }
 }
+// The configured payload limit is <=64; reject excessive nesting before recursive
+// parsing, keeping parser safety refusals distinct from recoverable malformed JSON.
+fn parser_nesting_within(bytes: &[u8]) -> bool {
+    let (mut nesting, mut quoted, mut escaped) = (0_u32, false, false);
+    for byte in bytes {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                quoted = false;
+            }
+        } else {
+            match *byte {
+                b'"' => quoted = true,
+                b'{' | b'[' => {
+                    nesting += 1;
+                    if nesting > 96 {
+                        return false;
+                    }
+                }
+                b'}' | b']' => nesting = nesting.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    true
+}
 impl PersistenceStore {
     pub fn new(options: PersistenceOptions) -> Result<Self> {
         if !safe_name(&options.project_id)
@@ -221,6 +250,12 @@ impl PersistenceStore {
             return Err(Error::new("persistence.missing", "No snapshot exists").at(path, ""));
         }
         let bytes = read_bounded(path, self.options.max_bytes)?;
+        if !parser_nesting_within(&bytes) {
+            return Err(Error::new(
+                "persistence.depth.exceeded",
+                "Snapshot exceeds parser nesting safety limit",
+            ));
+        }
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|e| Error::new("persistence.corrupt", e.to_string()))?;
         if !depth(&value, 0, self.options.max_depth) {
@@ -354,12 +389,38 @@ impl PersistenceStore {
     pub fn recover_backup(&self, slot: &str, migration: Option<Migration>) -> Result<()> {
         let path = self.path("saves", slot)?;
         let _lock = Self::lock(&path)?;
+        // Explicit recovery may replace a recognized corrupt or missing primary,
+        // but must never erase newer/unrecognized data or conceal an I/O refusal.
+        if let Err(error) = self.read(&path, migration)
+            && !error.diagnostics.first().is_some_and(|d| {
+                matches!(
+                    d.code.as_str(),
+                    "persistence.missing" | "persistence.corrupt"
+                )
+            })
+        {
+            return Err(error);
+        }
         let data = self.read(&path.with_extension("json.bak"), migration)?;
-        let bytes = serde_json::to_vec(&Envelope {
+        let envelope = Envelope {
             schema: self.options.schema_version,
             content: self.options.content_version,
             data,
-        })?;
+        };
+        let value = serde_json::to_value(&envelope)?;
+        if !depth(&value, 0, self.options.max_depth) {
+            return Err(Error::new(
+                "persistence.depth.exceeded",
+                "Recovered snapshot exceeds depth limit",
+            ));
+        }
+        let bytes = serde_json::to_vec(&envelope)?;
+        if bytes.len() as u64 > self.options.max_bytes {
+            return Err(Error::new(
+                "persistence.size.exceeded",
+                "Recovered snapshot exceeds byte limit",
+            ));
+        }
         atomic_replace(&path, &bytes, self.options.fail)
     }
     pub fn load_settings(&self, migration: Option<Migration>) -> Result<Map<String, Value>> {

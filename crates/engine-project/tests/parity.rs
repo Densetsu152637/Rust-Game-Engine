@@ -947,3 +947,102 @@ fn immediate_lock_mutation_is_observable_via_dynamic_input_service() {
     refresh_gameplay_input(world);
     assert!(!world.resource::<InputSnapshot>().pressed("move"));
 }
+
+#[test]
+fn backup_recovery_refuses_future_primary_and_preserves_both_exact_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = PersistenceStore::new(PersistenceOptions::new(
+        dir.path().to_owned(),
+        "game".into(),
+    ))
+    .unwrap();
+    store
+        .save(
+            "slot",
+            json!({"snapshot":"A"}).as_object().unwrap().clone(),
+            None,
+        )
+        .unwrap();
+    store
+        .save(
+            "slot",
+            json!({"snapshot":"B"}).as_object().unwrap().clone(),
+            None,
+        )
+        .unwrap();
+    let primary = dir.path().join("game/saves/slot.json");
+    let backup = dir.path().join("game/saves/slot.json.bak");
+    let old_backup = fs::read(&backup).unwrap();
+    let future = br#"{"schema":2,"content_version":2,"data":{"future":true}}"#;
+    fs::write(&primary, future).unwrap();
+    assert_eq!(
+        store
+            .recover_backup("slot", Some(migration))
+            .unwrap_err()
+            .diagnostics[0]
+            .code,
+        "persistence.version.newer"
+    );
+    assert_eq!(fs::read(&primary).unwrap(), future);
+    assert_eq!(fs::read(&backup).unwrap(), old_backup);
+}
+#[test]
+fn backup_recovery_refuses_unrecognized_deep_future_primary() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = PersistenceStore::new(PersistenceOptions::new(
+        dir.path().to_owned(),
+        "game".into(),
+    ))
+    .unwrap();
+    store.save("slot", Default::default(), None).unwrap();
+    store.save("slot", Default::default(), None).unwrap();
+    let primary = dir.path().join("game/saves/slot.json");
+    let backup = dir.path().join("game/saves/slot.json.bak");
+    let old_backup = fs::read(&backup).unwrap();
+    let future = format!(
+        "{{\"schema\":2,\"content_version\":2,\"data\":{}0{}}}",
+        "[".repeat(140),
+        "]".repeat(140)
+    );
+    fs::write(&primary, &future).unwrap();
+    assert_eq!(
+        store.recover_backup("slot", None).unwrap_err().diagnostics[0].code,
+        "persistence.depth.exceeded"
+    );
+    assert_eq!(fs::read(&primary).unwrap(), future.as_bytes());
+    assert_eq!(fs::read(&backup).unwrap(), old_backup);
+}
+fn expanded_migration(
+    _: u32,
+    _: u32,
+    _: serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>> {
+    Ok(json!({"padding":"x".repeat(105)})
+        .as_object()
+        .unwrap()
+        .clone())
+}
+#[test]
+fn backup_recovery_checks_full_migrated_envelope_size_before_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = PersistenceOptions::new(dir.path().to_owned(), "game".into());
+    options.max_bytes = 128;
+    let old = PersistenceStore::new(options.clone()).unwrap();
+    old.save("slot", Default::default(), None).unwrap();
+    old.save("slot", Default::default(), None).unwrap();
+    let primary = dir.path().join("game/saves/slot.json");
+    let backup = dir.path().join("game/saves/slot.json.bak");
+    let backup_bytes = fs::read(&backup).unwrap();
+    fs::write(&primary, b"corrupt").unwrap();
+    options.content_version = 2;
+    let new = PersistenceStore::new(options).unwrap();
+    assert_eq!(
+        new.recover_backup("slot", Some(expanded_migration))
+            .unwrap_err()
+            .diagnostics[0]
+            .code,
+        "persistence.size.exceeded"
+    );
+    assert_eq!(fs::read(primary).unwrap(), b"corrupt");
+    assert_eq!(fs::read(backup).unwrap(), backup_bytes);
+}
