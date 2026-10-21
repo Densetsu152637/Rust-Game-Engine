@@ -37,6 +37,36 @@ deleted locally; preserve these changes and keep their ownership explicit.
 - Remove the superseded C++/Lua/mobile build paths once their desktop replacements
   have passed acceptance. Do not retain a second implementation as the final design.
 
+The selected libraries are standalone Bevy ECS (rather than the full Bevy app),
+winit and wgpu. Versions are pinned only after successful registry resolution and
+compilation. Bevy owns archetypes, access-aware schedules and queries; wgpu owns
+GPU resources and backend synchronization. Relevant primary references:
+[Bevy ECS](https://docs.rs/bevy_ecs/latest/bevy_ecs/),
+[wgpu](https://docs.rs/wgpu/30.0.1/wgpu/),
+[winit event-loop ownership](https://docs.rs/winit/0.30.13/winit/event_loop/struct.EventLoopBuilder.html),
+[Rust ABI](https://doc.rust-lang.org/reference/items/external-blocks.html#abi).
+
+### Implementation ownership
+
+Core is the first implementation writer on the primary checkout. Other streams
+start from plan commit `72ca433` and receive the committed core before integrated
+compilation. Root owns shared integration, the final lockfile and retirement of
+these task-created worktrees. Each worktree is inside the standalone engine's
+ignored `build/rust-worktrees/` directory, never inside Unsealed's submodule.
+
+| Stream | Owned paths | Branch / worktree suffix |
+| --- | --- | --- |
+| E3 core | Root Cargo files, toolchain, `crates/engine-core/` | `main`, primary |
+| E4 authored runtime | `crates/engine-project/` | `codex/rust-project`, `project` |
+| E5 compiler and tooling | `crates/engine-tooling/` | `codex/rust-tooling`, `tooling` |
+| E6 desktop graphics | `crates/engine-desktop/` | `codex/rust-desktop`, `desktop` |
+| E7 audio | `crates/engine-audio/` | `codex/rust-audio`, `audio` |
+| E8 native editor | `crates/engine-editor/` | `codex/rust-editor`, `editor` |
+
+Examples, documentation/CI migration and independent acceptance are queued until
+their public interfaces exist. No stream may remove an existing
+capability merely because its replacement has not yet been implemented.
+
 ## Implementation and acceptance gates
 
 1. **Core foundation:** Cargo workspace, pinned dependencies/toolchain, public ECS
@@ -88,11 +118,32 @@ is not a Rust size target.
 
 ## Evidence and outstanding work
 
-Initial source inventories are static evidence only. No Rust implementation or
-parity gate has passed at this checkpoint. Rust 1.99.1 and Cargo are installed at
+Initial source inventories are static evidence only. Rust 1.99.1 and Cargo are installed at
 `C:\Users\Nicholas\.cargo\bin` but are not initially on this shell's PATH;
 Visual Studio C++ build tools are installed. Use explicit tool paths/environment.
 
 Root owns integration, acceptance, publication and cleanup. Independent writers
 use separate worktrees; shared manifests/lockfile/API changes have one owner.
 Record actual test commands/results and remaining gaps here as gates progress.
+
+### Core milestone: accepted
+
+Commit `a6a006784d18ea12b5309d2e4473b1e5e996b00a` adds `engine-core` and
+the workspace. The core worker ran `cargo check -p engine-core`,
+`cargo test -p engine-core` (11 passed), `cargo fmt --all --check`, and
+`cargo clippy -p engine-core --all-targets -- -D warnings` successfully. Root
+reviewed the resulting implementation and test coverage before accepting this
+bounded milestone. All subsystem worktrees received that commit.
+
+Tests cover native types/bundles/labels, deferred command visibility, conflicting
+or cyclic schedules, fixed ticks/lifecycle, old/new buffered visibility, dirty
+render extraction, component removal, stale entity generations and phase-boundary
+stop requests. Empty or cross-schedule set references retain Bevy's documented
+limitations; this wrapper does not invent a parallel graph validator. Native
+system panics remain process-level failures for the supervisor to report.
+
+This is not complete engine acceptance: authored runtime, devices, tooling,
+external compilation, examples, editor, removal and Unsealed gates remain open.
+Builds currently use `RUSTUP_TOOLCHAIN=stable` selecting the installed, verified
+1.99.1 compiler, and the ignored `build/cargo-home` registry cache because the
+default Cargo home is not writable in the sandbox. Targets remain per checkout.
