@@ -11,6 +11,7 @@ engine-core = { path = "../engine-core" }
 engine-audio = { path = "../engine-audio" }
 engine-project = { path = "../engine-project" }
 gilrs = "=0.11.2"
+naga = { version = "=30.0.1", features = ["wgsl-in"] }
 pollster = "0.4"
 serde = { version = "1", features = ["derive"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }

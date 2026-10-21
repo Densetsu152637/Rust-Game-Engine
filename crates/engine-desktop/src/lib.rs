@@ -11,6 +11,7 @@ mod offscreen;
 mod passes;
 mod renderer;
 mod runner;
+mod shader;
 mod window;
 
 pub use camera::*;
@@ -20,6 +21,7 @@ pub use offscreen::*;
 pub use passes::*;
 pub use renderer::*;
 pub use runner::*;
+pub use shader::validate_wgsl;
 pub use wgpu;
 pub use window::*;
 pub use winit;

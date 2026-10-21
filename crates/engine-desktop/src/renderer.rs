@@ -237,16 +237,16 @@ impl GpuRenderer {
         self.gpu.check_errors()?;
         let camera = CameraView::new(&frame.camera, self.info.width, self.info.height)?;
         self.validate(frame, &camera)?;
-        if self.submissions.len() >= self.limits.max_frames_in_flight {
-            if let Some(index) = self.submissions.pop_front() {
-                self.gpu
-                    .device
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: Some(index),
-                        timeout: Some(std::time::Duration::from_secs(30)),
-                    })
-                    .context("GPU frame backpressure")?;
-            }
+        if self.submissions.len() >= self.limits.max_frames_in_flight
+            && let Some(index) = self.submissions.pop_front()
+        {
+            self.gpu
+                .device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(index),
+                    timeout: Some(std::time::Duration::from_secs(30)),
+                })
+                .context("GPU frame backpressure")?;
         }
         let mut stats = RenderStats::default();
         let mut live_meshes = HashSet::new();
@@ -459,29 +459,29 @@ impl GpuRenderer {
                     ensure!(count % 3 == 0, "mesh must contain complete triangles");
                 }
             }
-            if let Some(texture) = &draw.texture {
-                if textures.insert(Arc::as_ptr(texture) as usize) {
-                    let expected = (texture.width as usize)
-                        .checked_mul(texture.height as usize)
-                        .and_then(|n| n.checked_mul(4))
-                        .context("texture size overflow")?;
-                    ensure!(
-                        texture.width > 0 && texture.height > 0 && expected == texture.pixels.len(),
-                        "invalid RGBA texture dimensions/data"
-                    );
-                    ensure!(
-                        texture.width <= self.gpu.device.limits().max_texture_dimension_2d
-                            && texture.height <= self.gpu.device.limits().max_texture_dimension_2d,
-                        "texture exceeds device limit"
-                    );
-                    texture_bytes = texture_bytes
-                        .checked_add(expected)
-                        .context("texture byte total overflow")?;
-                    ensure!(
-                        texture_bytes <= self.limits.max_texture_bytes,
-                        "frame texture byte limit exceeded"
-                    );
-                }
+            if let Some(texture) = &draw.texture
+                && textures.insert(Arc::as_ptr(texture) as usize)
+            {
+                let expected = (texture.width as usize)
+                    .checked_mul(texture.height as usize)
+                    .and_then(|n| n.checked_mul(4))
+                    .context("texture size overflow")?;
+                ensure!(
+                    texture.width > 0 && texture.height > 0 && expected == texture.pixels.len(),
+                    "invalid RGBA texture dimensions/data"
+                );
+                ensure!(
+                    texture.width <= self.gpu.device.limits().max_texture_dimension_2d
+                        && texture.height <= self.gpu.device.limits().max_texture_dimension_2d,
+                    "texture exceeds device limit"
+                );
+                texture_bytes = texture_bytes
+                    .checked_add(expected)
+                    .context("texture byte total overflow")?;
+                ensure!(
+                    texture_bytes <= self.limits.max_texture_bytes,
+                    "frame texture byte limit exceeded"
+                );
             }
         }
         Ok(())

@@ -355,10 +355,10 @@ impl ApplicationHandler for DesktopRunner {
         self.raw.focused = false;
         self.raw.down.clear();
         self.mapper.sample(&self.raw);
-        if let Some(host) = &mut self.surface {
-            if let Err(error) = host.resize(0, 0) {
-                self.fail(event_loop, error);
-            }
+        if let Some(host) = &mut self.surface
+            && let Err(error) = host.resize(0, 0)
+        {
+            self.fail(event_loop, error);
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {

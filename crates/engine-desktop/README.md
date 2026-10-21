@@ -73,6 +73,11 @@ another host. It exposes `window`, `renderer`, `resize` and `present`.
 same renderer and supports real RGBA readback, including row-alignment removal.
 Custom hosts must call runtime cleanup and `gpu.wait_idle()` before teardown.
 
+`validate_wgsl(source)` performs bounded CPU-only Naga parsing and semantic
+validation with source diagnostics. It requires a shader entry point. Native
+capabilities are admitted at this stage; actual device feature and limit checks
+remain part of pipeline creation.
+
 ## Verification
 
 ```text

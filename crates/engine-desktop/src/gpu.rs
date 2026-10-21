@@ -58,20 +58,19 @@ impl GpuContext {
         let errors = Arc::new(Mutex::new(Vec::new()));
         let sink = errors.clone();
         device.on_uncaptured_error(Arc::new(move |error| {
-            if let Ok(mut errors) = sink.lock() {
-                if errors.len() < 16 {
-                    errors.push(format!("GPU validation: {error}"));
-                }
+            if let Ok(mut errors) = sink.lock()
+                && errors.len() < 16
+            {
+                errors.push(format!("GPU validation: {error}"));
             }
         }));
         let sink = errors.clone();
         device.set_device_lost_callback(move |reason, message| {
-            if reason != wgpu::DeviceLostReason::Destroyed {
-                if let Ok(mut errors) = sink.lock() {
-                    if errors.len() < 16 {
-                        errors.push(format!("GPU device lost ({reason:?}): {message}"));
-                    }
-                }
+            if reason != wgpu::DeviceLostReason::Destroyed
+                && let Ok(mut errors) = sink.lock()
+                && errors.len() < 16
+            {
+                errors.push(format!("GPU device lost ({reason:?}): {message}"));
             }
         });
         Ok(Self {

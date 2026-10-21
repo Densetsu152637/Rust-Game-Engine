@@ -149,8 +149,10 @@ mod tests {
     use super::*;
     #[test]
     fn fit_snap_clip_and_minimize() {
-        let mut camera = Camera2D::default();
-        camera.center = [0.04, -0.04];
+        let camera = Camera2D {
+            center: [0.04, -0.04],
+            ..Default::default()
+        };
         let v = CameraView::new(&camera, 1000, 700).unwrap();
         assert_eq!(
             v.viewport,

@@ -237,6 +237,16 @@ fn depth_and_straight_alpha_are_distinct_draw_states() -> anyhow::Result<()> {
     let color = pixel(&target.read_rgba(&renderer.gpu)?, 64, 32, 32);
     assert!((187..=188).contains(&color[0]) && (187..=188).contains(&color[1]));
     assert_eq!(&color[2..], &[0, 255]);
+    frame.draws[0].id = "a".into();
+    frame.draws[1].id = "z".into();
+    frame.draws[1].layer = 0;
+    frame.draws.reverse();
+    renderer.render(&frame, &target.view, None)?;
+    assert_eq!(
+        pixel(&target.read_rgba(&renderer.gpu)?, 64, 32, 32),
+        color,
+        "equal-layer painter order must follow stable IDs, not input iteration"
+    );
     Ok(())
 }
 impl NativeRenderPass for CustomTriangle {

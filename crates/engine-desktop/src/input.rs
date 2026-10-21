@@ -92,10 +92,10 @@ pub(crate) fn window_input(
 ) {
     match event {
         WindowEvent::KeyboardInput { event, .. } => {
-            if let PhysicalKey::Code(code) = event.physical_key {
-                if let Some(token) = key_token(code) {
-                    set_down(raw, token, event.state.is_pressed());
-                }
+            if let PhysicalKey::Code(code) = event.physical_key
+                && let Some(token) = key_token(code)
+            {
+                set_down(raw, token, event.state.is_pressed());
             }
         }
         WindowEvent::MouseInput { state, button, .. } => {
