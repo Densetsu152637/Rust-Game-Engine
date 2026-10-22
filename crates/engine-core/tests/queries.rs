@@ -512,6 +512,8 @@ fn entities_that_gain_a_component_join_matching_queries_next_run() {
 
 // ---- change detection -------------------------------------------------------
 
+type EitherChanged = Or<(Changed<A>, Changed<B>)>;
+
 #[derive(Resource, Default)]
 struct Plan(Vec<u8>);
 
@@ -677,7 +679,7 @@ fn a_system_that_skips_ticks_still_sees_changes_since_its_last_run() {
     let e = app.world_mut().spawn(A(1)).id();
     update(&mut app).add_systems(
         (|q: Query<(), Changed<A>>, mut s: ResMut<Seen>| s.0.push(q.iter().count() as i64))
-            .run_if(|time: Res<Time>| time.tick % 3 == 0),
+            .run_if(|time: Res<Time>| time.tick.is_multiple_of(3)),
     );
     app.tick(DT).unwrap();
     app.world_mut().get_mut::<A>(e).unwrap().0 = 2;
@@ -708,11 +710,9 @@ fn changed_in_or_filter_matches_any_changed_member() {
     let mut app = app();
     app.world_mut().init_resource::<Seen>();
     let e = app.world_mut().spawn((A(1), B(1))).id();
-    update(&mut app).add_systems(
-        |q: Query<(), Or<(Changed<A>, Changed<B>)>>, mut s: ResMut<Seen>| {
-            s.0.push(q.iter().count() as i64);
-        },
-    );
+    update(&mut app).add_systems(|q: Query<(), EitherChanged>, mut s: ResMut<Seen>| {
+        s.0.push(q.iter().count() as i64);
+    });
     app.tick(DT).unwrap();
     app.tick(DT).unwrap();
     app.world_mut().get_mut::<B>(e).unwrap().0 = 5;

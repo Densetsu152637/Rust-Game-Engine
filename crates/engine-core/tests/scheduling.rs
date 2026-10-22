@@ -652,7 +652,7 @@ fn run_if_skips_a_system_without_affecting_its_neighbours() {
     update(&mut app).add_systems(
         (
             mark(1),
-            mark(2).run_if(|time: Res<Time>| time.tick % 2 == 0),
+            mark(2).run_if(|time: Res<Time>| time.tick.is_multiple_of(2)),
             mark(3),
         )
             .chain(),
