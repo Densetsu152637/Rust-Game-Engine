@@ -2,13 +2,16 @@
 
 This page describes the engine as it exists in the Rust workspace. Per-crate
 READMEs under `crates/` are the detailed contract for each layer; this page shows
-how the layers fit together. For decisions, acceptance gates and open work see
-[Rust migration](rust-migration.md).
+how the layers fit together; [Design decisions](#design-decisions) records why the
+engine is built this way.
 
 ## Layers
 
 ```text
-engine-core      EngineApp, stages, Time, buffered values, render extraction
+engine-ecs       Bevy ECS re-export, buffered values, render-world extraction
+engine-log       stderr-only tracing subscriber with a queryable LogHistory
+   ^
+engine-core      EngineApp, stages, Time, run control (re-exports engine-ecs)
    ^
 engine-audio     clips, mixer, sources, CPAL output   (no ECS dependency)
    ^
@@ -39,10 +42,11 @@ state. See [Native game crates](scripting.md) and [Project commands](commands.md
 
 ## ECS and the scheduling model
 
-`engine-core` does not implement ECS storage, queries or an executor. Bevy ECS owns
+`engine-ecs` does not implement ECS storage, queries or an executor. Bevy ECS owns
 entities, components, resources, archetypes, queries, change detection, deferred
-`Commands` and the access-aware parallel executor. The crate re-exports `bevy_ecs`,
-`glam` and `anyhow` so the engine and game code use one dependency identity.
+`Commands` and the access-aware parallel executor. `engine-ecs` re-exports `bevy_ecs`
+and `glam`, and `engine-core` re-exports `engine-ecs` and `anyhow`, so the engine and
+game code use one dependency identity.
 
 `EngineApp` owns two worlds: a simulation world and a separate render world. It
 exposes one schedule per `Stage`: `Startup`, `Update`, `Extract`, `Render` and
@@ -148,3 +152,25 @@ native extension points.
 keeps the last good generation when a candidate fails, builds asset indexes,
 validates WGSL and creates relocatable packages. See [Project commands](commands.md),
 [Desktop packages](desktop-packaging.md), [Editor](editor.md) and [MCP](mcp.md).
+
+## Design decisions
+
+These decisions replaced the earlier C++ implementation and remain the basis of the
+current design:
+
+- **ECS:** Bevy ECS replaces EnTT and the custom wall-based job scheduler. Native
+  component types and newtypes replace tag-parameterised component aliases; graph
+  ordering with access-aware parallel execution replaces wall batching, and invalid
+  graphs are rejected rather than silently misordered.
+- **Windowing and GPU:** winit replaces GLFW. Rendering goes through a Rust GPU
+  backend with real device errors, resize and shutdown behaviour.
+- **Gameplay code:** Lua is replaced by external Rust crates compiled on demand with
+  the engine into one native generation sharing one Rust type universe. No Rust
+  objects cross independently compiled library boundaries, and a failed candidate
+  build never destroys the last working generation.
+- **Identity:** authored asset/entity IDs stay separate from generation-aware ECS
+  handles.
+- **Platforms:** mobile support was removed; desktop is the supported target.
+- **Libraries:** serde_json replaces picojson, `image` replaces stb_image, CPAL and
+  Hound provide audio output and WAV decoding, and `tracing` (via `engine-log`)
+  replaces the C++ logger.

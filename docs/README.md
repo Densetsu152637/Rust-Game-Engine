@@ -40,9 +40,4 @@
 - [Editor](editor.md): the native Windows editor and its play host.
 - [MCP adapter](mcp.md): the read-only stdio protocol, tools and limits.
 
-## Project direction
-
-- [Rust migration](rust-migration.md): decisions, acceptance gates, parity inventory
-  and the evidence recorded so far.
-
 Per-crate details are in `crates/*/README.md`.

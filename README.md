@@ -9,9 +9,7 @@ with the engine itself, into a native executable generation.
 
 This repository replaces the earlier C++ implementation (EnTT, GLFW, Lua, Vulkan).
 Lua scripting and mobile (Android/iOS) support were removed by design. See
-[Rust migration](docs/rust-migration.md) for the decisions, acceptance gates and the
-current migration status; that file is the authoritative record of what is and is
-not finished.
+[Architecture](docs/architecture.md#design-decisions) for the design decisions.
 
 ## Workspace layout
 
