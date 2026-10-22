@@ -23,7 +23,9 @@ python examples/desktop-2d/tools/validate_fixture.py
 
 Some tests build real external Rust crates through Cargo (`engine-tooling`,
 `examples/first-project` fixtures). They need network access or a populated Cargo
-registry cache on the first run and can take minutes.
+registry cache on the first run and can take minutes. Run them without
+`RUSTFLAGS=-D warnings`: the spawned builds inherit it, and fixtures that
+intentionally contain warnings then fail to compile.
 
 ## What the tests establish
 
@@ -65,8 +67,12 @@ runs, pinned action SHAs and the toolchain installed from `rust-toolchain.toml` 
 
 `scripts/ci/test-count.sh` parses libtest `test result:` lines (ANSI colour is
 stripped); tests that are ignored or filtered out never count as passed. The minimum
-is the `MINIMUM_PASSED_TESTS` environment value in the workflow. The `RUSTFLAGS`
-value `-D warnings` is set on the Windows jobs; the Linux job does not set it so
+is the `MINIMUM_PASSED_TESTS` environment value in the workflow. Warnings are denied
+by the lint job (`RUSTFLAGS=-D warnings` and clippy `-D warnings` over every target).
+The example test jobs also build with `RUSTFLAGS=-D warnings`. The Windows
+workspace test job does not set it: `engine-tooling` tests build real crates through
+Cargo, which inherit it as part of the generation's build configuration, and their
+fixtures deliberately contain warnings. The Linux job does not deny warnings either, so
 platform-specific warnings do not block portability checks.
 
 Notes and limits:

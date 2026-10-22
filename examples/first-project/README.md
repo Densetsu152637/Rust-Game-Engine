@@ -29,8 +29,8 @@ claim Lua-style in-process callback hot replacement or sandboxed native code.
 From the repository root:
 
     cargo test --manifest-path examples/first-project/Cargo.toml
-    cargo run -p engine-cli -- project validate examples/first-project/project.json
-    cargo run -p engine-cli -- run examples/first-project/project.json --headless --ticks 120 --input move_right:0
+    cargo run -p engine-tooling --bin engine -- project validate examples/first-project/project.json
+    cargo run -p engine-tooling --bin engine -- run examples/first-project/project.json --headless --ticks 120 --input move_right:0
 
 The tests exercise the real public Runtime and EngineApp APIs. They verify owner
 identity, exact positions and counters, lifecycle cleanup, error propagation and

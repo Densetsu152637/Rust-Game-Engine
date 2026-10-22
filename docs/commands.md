@@ -1,12 +1,13 @@
 # Project commands
 
-> Status note: the `engine` command-line tool belongs to the `engine-tooling` crate,
-> which is being completed in a parallel stream (its `cli.rs`, `arguments.rs`,
-> `artifacts.rs`, `runtime_entry.rs` and `play_host.rs` were uncommitted when this
-> page was written). The command surface below was read from that source and the
-> crate README, not from a released binary. Treat details marked *(unverified)* as
-> subject to change and check `engine` usage output and the merged source before
-> relying on them.
+> Verification: the command surface below matches `crates/engine-tooling/src/cli.rs`
+> and was exercised on Windows against `examples/first-project` (`project init`,
+> `validate` with and without `--no-rust`, `assets`, `shaders` including an invalid
+> WGSL file, `scene inspect`, headless `run` with `--input`, `package` and its
+> `run.cmd` launcher from another directory) together with the exit codes for
+> success, validation failure and invalid arguments. `editor` (interactive) and
+> `mcp` (covered by the `engine-mcp` transcript tests) were not run by hand, and
+> Unix packaging has not been exercised.
 
 ## Running the tool
 
@@ -65,8 +66,8 @@ directory.
 - **`project package`** compiles the game (release by default, `--profile dev` for a
   debug build) and exports a relocatable directory: `runtime` (`runtime.exe` on
   Windows), `game/` (the project content with `project.json`), `licenses/` (the
-  engine `LICENSE`, the generation's `Cargo.lock` and per-dependency notices with
-  `dependencies.json`), `generation.json`, `PACKAGE.txt`, and the launchers
+  engine licence as `engine-LICENSE`, the generation's lockfile as
+  `runtime-Cargo.lock` and per-dependency notices with `dependencies.json`), `generation.json`, `PACKAGE.txt`, and the launchers
   `run.cmd` and `run.sh`. The destination must be new. See
   [Desktop packages](desktop-packaging.md).
 - **`scene inspect`** loads a scene, validates it against the project's asset
@@ -111,9 +112,10 @@ pixels.
 
 - `ENGINE_CARGO`, `ENGINE_RUSTC`: select the Cargo and rustc executables used to
   compile games (default: the Cargo that built the tool, and its sibling rustc).
-- `ENGINE_SOURCE_ROOT`: engine checkout containing `crates/engine-core`, used when
-  the tool cannot find the sources next to itself *(unverified for relocated
-  binaries)*.
+- `ENGINE_SOURCE_ROOT`: engine checkout containing `crates/engine-core`. When set it
+  takes precedence (a directory without `crates/engine-core` is an argument error,
+  exit `2`); otherwise the tool uses the checkout it was built from, then searches
+  the directories above its executable.
 - `ENGINE_NATIVE_TARGET_DIR`: shared Cargo target directory for generation builds.
 
 ## Compilation model
