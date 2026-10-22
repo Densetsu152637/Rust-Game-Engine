@@ -79,7 +79,10 @@ pub fn resolve_wgpu_backends(
     Ok(WgpuBackends::from_env_value(env_value)?.unwrap_or_default())
 }
 
-fn resolve_from_environment(option: Option<WgpuBackends>) -> Result<WgpuBackends> {
+/// [`resolve_wgpu_backends`] reading `ENGINE_RENDER_BACKEND` from the process
+/// environment. Every consumer of the selection (visible runs, headless runs,
+/// offscreen screenshots) goes through this so a typo fails the same way.
+pub fn resolve_backends_from_environment(option: Option<WgpuBackends>) -> Result<WgpuBackends> {
     match std::env::var(BACKEND_ENV_VAR) {
         Ok(value) => resolve_wgpu_backends(option, Some(&value)),
         Err(std::env::VarError::NotPresent) => resolve_wgpu_backends(option, None),
@@ -111,7 +114,7 @@ pub fn run_with_wgpu_backends(
     options: RunOptions,
     backends: Option<WgpuBackends>,
 ) -> Result<RunReport> {
-    let backends = resolve_from_environment(backends)?;
+    let backends = resolve_backends_from_environment(backends)?;
     ensure!(
         (1..=1_000_000).contains(&options.ticks),
         "ticks must be 1..=1000000"

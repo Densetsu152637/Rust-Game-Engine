@@ -93,17 +93,33 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Va
 /// through an offscreen GPU target. The report is the normal run report plus a
 /// `screenshot` object. No GPU adapter yields the diagnostic
 /// `render.gpu.unavailable`.
+///
+/// The wgpu graphics API is chosen like a visible run's: `--render-backend`,
+/// else `ENGINE_RENDER_BACKEND`, else the platform default; an invalid
+/// environment value fails before anything is simulated or written.
 fn screenshot(
+    runtime: Runtime,
+    arguments: &RunArguments,
+    path: &Path,
+    shutdown: &AtomicBool,
+) -> Result<serde_json::Value> {
+    let backends = engine_desktop::resolve_backends_from_environment(arguments.render_backend);
+    screenshot_on(runtime, arguments, path, shutdown, backends)
+}
+
+fn screenshot_on(
     mut runtime: Runtime,
     arguments: &RunArguments,
     path: &Path,
     shutdown: &AtomicBool,
+    backends: Result<engine_desktop::WgpuBackends>,
 ) -> Result<serde_json::Value> {
     use engine_desktop::{
         FIXED_DELTA, GpuContext, GpuRenderer, GpuRequirements, NativeRenderPasses, OffscreenTarget,
         RenderLimits,
     };
     use engine_project::input::merge_input;
+    let backends = backends?;
     let [width, height] = arguments.screenshot_size;
     if let Some(root) = &arguments.user_data {
         runtime.set_user_data_root(root.clone())?;
@@ -137,7 +153,7 @@ fn screenshot(
             .remove_resource::<NativeRenderPasses>()
             .unwrap_or_default();
         let gpu = pollster::block_on(GpuContext::request_with_requirements(
-            GpuContext::instance_with(arguments.render_backend.unwrap_or_default()),
+            GpuContext::instance_with(backends),
             None,
             requirements,
         ))
@@ -234,5 +250,68 @@ impl Drop for StopMonitor {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_desktop::resolve_wgpu_backends;
+
+    fn runtime(directory: &Path) -> Runtime {
+        std::fs::write(
+            directory.join("project.json"),
+            r#"{"schema":1,"name":"shot","startup_scene":"main.scene.json","assets":[],"inputActions":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("main.scene.json"),
+            r#"{"schema":1,"scene_id":"scene:main","entities":[]}"#,
+        )
+        .unwrap();
+        Runtime::new(Project::load(directory.join("project.json")).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn an_invalid_graphics_api_fails_the_screenshot_path_before_anything_is_written() {
+        let directory = tempfile::tempdir().unwrap();
+        let png = directory.path().join("shot.png");
+        let arguments = parse_run(&[
+            directory.path().join("project.json").into_os_string(),
+            "--screenshot".into(),
+            png.clone().into_os_string(),
+        ])
+        .unwrap();
+        let error = screenshot_on(
+            runtime(directory.path()),
+            &arguments,
+            &png,
+            &AtomicBool::new(false),
+            resolve_wgpu_backends(arguments.render_backend, Some("glide")),
+        )
+        .unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("ENGINE_RENDER_BACKEND"), "{text}");
+        assert!(
+            text.contains("primary, vulkan, dx12, metal, gl or all"),
+            "{text}"
+        );
+        assert!(!png.exists());
+        assert!(
+            error
+                .downcast_ref::<engine_project::Error>()
+                .is_none_or(|e| e
+                    .diagnostics
+                    .iter()
+                    .all(|d| d.code != "render.gpu.unavailable")),
+            "a bad selection is not a missing GPU"
+        );
+    }
+
+    #[test]
+    fn the_render_backend_flag_overrides_a_bad_environment_value() {
+        let backends =
+            resolve_wgpu_backends(Some(engine_desktop::WgpuBackends::Dx12), Some("glide"));
+        assert_eq!(backends.unwrap(), engine_desktop::WgpuBackends::Dx12);
     }
 }
