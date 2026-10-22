@@ -26,13 +26,15 @@ From the repository root:
     cargo fmt --check --manifest-path examples/desktop-2d/Cargo.toml
     cargo clippy --manifest-path examples/desktop-2d/Cargo.toml --all-targets -- -D warnings
     python examples/desktop-2d/tools/validate_fixture.py
-    cargo run -p engine-cli -- run examples/desktop-2d/project.json --ticks 36000 --user-data build/desktop-example-user
+    cargo run -p engine-tooling --bin engine -- run examples/desktop-2d/project.json --ticks 36000 --user-data build/desktop-example-user
 
 The native compiler entry uses the manifest's rust.manifest Cargo.toml. First native
-compilation may take minutes. After the engine CLI is built, the end-to-end runner
-also verifies its compilation/launch/JSON contract and retains stdout/stderr:
+compilation may take minutes. After the engine CLI is built
+(`cargo build -p engine-tooling --bin engine`; the binary is `target/debug/engine.exe`
+on Windows, `target/debug/engine` elsewhere), the end-to-end runner also verifies
+its compilation/launch/JSON contract and retains stdout/stderr:
 
-    python examples/desktop-2d/tools/run_walkthrough.py --engine PATH_TO_ENGINE --artifacts build/desktop-example-check --timeout 600
+    python examples/desktop-2d/tools/run_walkthrough.py --engine target/debug/engine.exe --artifacts build/desktop-example-check --timeout 600
 
 Use a fresh artifacts directory for each independent new walkthrough. The Rust
 integration suite runs each male/female new session and restore session in separate

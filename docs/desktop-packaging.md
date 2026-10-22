@@ -1,9 +1,7 @@
 # Desktop runtime packages
 
-> Packaging is implemented by `engine-tooling` (`artifacts::package_project`), which
-> was still uncommitted in a parallel worktree when this page was written. Behavior
-> below is read from that source; confirm against the merged crate and its tests
-> (`tests/artifacts.rs`, `tests/runtime_pipeline.rs`).
+> Packaging is implemented by `engine-tooling` (`artifacts::package_project`) and
+> tested by its `tests/artifacts.rs` and `tests/runtime_pipeline.rs`.
 
 `engine project package <manifest> <new-directory> [--profile release|dev]`
 compiles the project's Rust gameplay crate with the engine into a native generation
@@ -14,7 +12,7 @@ checkout to run.
 my-package/
   runtime[.exe]           compiled engine + game executable
   game/                   project content copied from the project root (project.json at top)
-  licenses/               engine LICENSE, runtime-Cargo.lock, per-dependency notices,
+  licenses/               engine-LICENSE, runtime-Cargo.lock, per-dependency notices,
                           dependencies.json inventory
   generation.json         generation number, fingerprint and build metadata
   run.cmd, run.sh         launchers
@@ -48,8 +46,11 @@ my-package/
 
 ## Verification status
 
-Package tests build and run real external fixture crates. Launching the packaged
-binary from an unrelated working directory with a real window, GPU playback and
-audio are separate integration checks; headless package launches do not establish
-them. Windows is the validated packaging platform; `run.sh` and Unix packaging are
-unverified.
+Package tests build and run real external fixture crates, and launch the packaged
+runtime and `run.cmd` headlessly from an unrelated working directory. Packaging
+`examples/first-project` with the default release profile on Windows produced the
+layout above, and `run.cmd --headless --ticks 3` run from another directory printed
+an `ok` run result and returned the runtime's exit status (`2` for invalid
+arguments). A packaged run with a real window, GPU playback and audio is a separate
+check that headless launches do not establish. Windows is the validated packaging
+platform; `run.sh` and Unix packaging are unverified.

@@ -47,8 +47,10 @@ the original asset root; the host must launch that clone, not the saved files.
 Runtime mutations never replace the editable document, and failed compilation resets
 the document's play state with diagnostics in the log pane. The tooling
 implementation (`NativePlayHost`) runs the game with a scene snapshot override and a
-private user-data directory so editor play never touches player saves
-*(read from in-progress tooling source; unverified)*.
+private user-data directory so editor play never touches player saves. The
+`engine-tooling` `runtime_pipeline` test plays an unsaved edit headlessly through
+`NativePlayHost` and checks that the authored scene file is unchanged; the private
+user-data location is read from the play host source.
 
 ## Verification
 
