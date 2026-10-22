@@ -1,6 +1,5 @@
 //! GPU tests of the wgpu backend through `RenderDevice<WgpuBackend>` with
-//! offscreen targets (they mirror `engine-vulkan`'s `gpu_offscreen.rs` so both
-//! backends honour the same contract). They fail (not skip) without a wgpu
+//! offscreen targets. They fail (not skip) without a wgpu
 //! adapter and are ignored in ordinary runs:
 //! `cargo test -p engine-render-wgpu -- --ignored --nocapture`.
 

@@ -34,7 +34,7 @@ pub mod translate;
 pub mod uniforms;
 
 pub use backend::{WgpuBackend, WgpuStats};
-pub use backends::WgpuBackends;
+pub use backends::{BACKEND_ENV_VAR, WgpuBackends};
 pub use context::{GpuContext, GpuRequirements, WgpuOptions};
 pub use surface::WindowSource;
 pub use target::{

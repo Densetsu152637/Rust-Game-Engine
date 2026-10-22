@@ -2,7 +2,7 @@
 //!
 //! [`SpriteRenderer`] turns an engine [`RenderFrame`] into neutral draw commands
 //! and submits them through a [`RenderDevice`], so any [`RenderBackend`]
-//! (wgpu, Vulkan, the recording backend) renders the same pixels.
+//! (wgpu or the recording backend) renders the same pixels.
 
 use super::cache::{ResourceCache, address};
 use super::vertex::VERTEX_STRIDE;

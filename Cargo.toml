@@ -15,14 +15,9 @@ bytemuck = { version = "1", features = ["derive"] }
 naga = { version = "=30.0.1", default-features = false }
 wgpu = { version = "=30.0.1", default-features = false }
 winit = "=0.30.13"
-raw-window-handle = "=0.6.2"
-ash = { version = "=0.38.0", default-features = false, features = ["std", "loaded"] }
-ash-window = "=0.13.0"
-gpu-allocator = { version = "=0.28.0", default-features = false, features = ["std", "vulkan"] }
 engine-core = { path = "crates/engine-core" }
 engine-render = { path = "crates/engine-render" }
 engine-render-wgpu = { path = "crates/engine-render-wgpu" }
-engine-vulkan = { path = "crates/engine-vulkan" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

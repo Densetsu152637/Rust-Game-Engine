@@ -4,6 +4,10 @@ use engine_render::RenderError;
 use std::fmt;
 use std::str::FromStr;
 
+/// Environment variable that selects the wgpu graphics API for hosts that
+/// honour it (`primary|vulkan|dx12|metal|gl|all`; `wgpu` and `auto` mean primary).
+pub const BACKEND_ENV_VAR: &str = "ENGINE_RENDER_BACKEND";
+
 /// Which graphics APIs wgpu may use for adapter selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum WgpuBackends {
@@ -42,6 +46,31 @@ impl WgpuBackends {
         }
     }
 
+    /// Read [`BACKEND_ENV_VAR`]. `Ok(None)` when unset or blank; an unrecognized
+    /// value is an error listing the accepted spellings.
+    pub fn from_env() -> Result<Option<Self>, RenderError> {
+        match std::env::var(BACKEND_ENV_VAR) {
+            Ok(value) => Self::from_env_value(Some(&value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(RenderError::Unavailable(format!(
+                "{BACKEND_ENV_VAR} is not valid unicode"
+            ))),
+        }
+    }
+
+    /// Pure form of [`Self::from_env`] taking the variable's content.
+    pub fn from_env_value(value: Option<&str>) -> Result<Option<Self>, RenderError> {
+        match value.map(str::trim) {
+            None | Some("") => Ok(None),
+            Some(text) => text.parse().map(Some).map_err(|_| {
+                RenderError::Unavailable(format!(
+                    "{BACKEND_ENV_VAR}={text:?} is not a valid graphics API; expected \
+                     primary, vulkan, dx12, metal, gl or all (wgpu and auto mean primary)"
+                ))
+            }),
+        }
+    }
+
     pub fn to_wgpu(self) -> wgpu::Backends {
         match self {
             Self::Primary => wgpu::Backends::PRIMARY,
@@ -65,7 +94,7 @@ impl FromStr for WgpuBackends {
 
     fn from_str(text: &str) -> Result<Self, RenderError> {
         match text.trim().to_ascii_lowercase().as_str() {
-            "primary" | "default" => Ok(Self::Primary),
+            "primary" | "default" | "wgpu" | "auto" => Ok(Self::Primary),
             "vulkan" | "vk" => Ok(Self::Vulkan),
             "dx12" | "d3d12" | "directx12" => Ok(Self::Dx12),
             "metal" => Ok(Self::Metal),
@@ -101,6 +130,32 @@ mod tests {
             .parse::<WgpuBackends>()
             .unwrap_err()
             .to_string();
+        assert!(
+            error.contains("primary, vulkan, dx12, metal, gl or all"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn environment_values_select_an_api_or_name_the_accepted_ones() {
+        assert_eq!(WgpuBackends::from_env_value(None).unwrap(), None);
+        assert_eq!(WgpuBackends::from_env_value(Some("  ")).unwrap(), None);
+        assert_eq!(
+            WgpuBackends::from_env_value(Some("DX12")).unwrap(),
+            Some(WgpuBackends::Dx12)
+        );
+        assert_eq!(
+            WgpuBackends::from_env_value(Some("wgpu")).unwrap(),
+            Some(WgpuBackends::Primary)
+        );
+        assert_eq!(
+            WgpuBackends::from_env_value(Some("auto")).unwrap(),
+            Some(WgpuBackends::Primary)
+        );
+        let error = WgpuBackends::from_env_value(Some("glide"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ENGINE_RENDER_BACKEND"), "{error}");
         assert!(
             error.contains("primary, vulkan, dx12, metal, gl or all"),
             "{error}"

@@ -2,31 +2,32 @@
 
 Rendering is split in two. `engine-project` produces a backend-neutral CPU frame
 (`runtime::RenderFrame`) from the simulation, and `engine-desktop` draws that frame
-through the backend-neutral `engine-render` adapter on either wgpu (Vulkan, DX12 or
-Metal underneath) or a native Vulkan backend. Shaders are authored in WGSL and
-validated with Naga (`engine_render::validate_wgsl`); wgpu consumes WGSL directly and
-the Vulkan backend translates it to SPIR-V. The crate README
+through the thin `engine-render` adapter onto wgpu (which selects Vulkan, DX12, Metal
+or GL). Shaders are authored in WGSL and validated with Naga
+(`engine_render::validate_wgsl`); wgpu consumes WGSL directly. The crate README
 (`crates/engine-desktop/README.md`) is the detailed contract; this page summarizes
 the 2D content pipeline.
 
-## Backends and crate layout
+## Crates and graphics API selection
 
 | Crate | Role |
 | --- | --- |
-| `engine-render` | `RenderBackend` trait, `RenderDevice`, command buffer, WGSL reflection, recording backend. |
-| `engine-render-wgpu` | `WgpuBackend`, `GpuContext`/`GpuRequirements`, `OffscreenTarget`. |
-| `engine-vulkan` | `VulkanBackend` (cargo feature `vulkan` of `engine-desktop`, on by default). |
-| `engine-desktop` | `SpriteRenderer<B>`, wgpu-native `GpuRenderer`, window hosts, runner. |
+| `engine-render` | `RenderBackend` trait, `RenderDevice` (handles, deferred destruction), command buffer, WGSL reflection, deterministic recording backend. |
+| `engine-render-wgpu` | `WgpuBackend`, `GpuContext`/`GpuRequirements`, `OffscreenTarget`, `WgpuBackends`. |
+| `engine-desktop` | `SpriteRenderer<B>`, wgpu-native `GpuRenderer`, `WindowSurface`, runner. |
 
-Select the backend for a run with `ENGINE_RENDER_BACKEND=wgpu|vulkan` (default
-`wgpu`; an invalid value fails startup, even for headless runs) or by calling
-`engine_desktop::run_with_render_backend`. Both backends follow the same
-conventions: sRGB RGBA8 targets and textures, y-up clip space, top-left scissor
-and viewport, straight alpha, depth `LessEqual`/`Always` with a write flag, a
-depth attachment owned by the backend, and nearest/clamp sampling. The two
-backends render byte-identical pixels for the sprite scenes (`backend_parity`
-tests). `NativeRenderPass` and `GpuRequirements` are wgpu-specific by design: with
-Vulkan selected they are rejected at startup rather than ignored.
+The adapter exists to keep the renderer independent of wgpu types and to make
+headless tests deterministic (the recording backend), not to host several GPU
+implementations. Choose the wgpu graphics API with
+`ENGINE_RENDER_BACKEND=primary|vulkan|dx12|metal|gl|all` (default primary; `wgpu`
+and `auto` are aliases of primary; an invalid value fails startup, even for
+headless runs) or `engine_desktop::run_with_wgpu_backends`. Conventions are the
+same on every API: sRGB RGBA8 targets and textures, y-up clip space, top-left
+scissor and viewport, straight alpha, depth `LessEqual`/`Always` with a write
+flag, a backend-owned depth attachment, and nearest/clamp sampling. The
+`backend_parity` tests render the sprite scenes on each API available on the
+machine and assert exact, byte-identical pixels. Native render passes and
+`GpuRequirements` work on every API.
 
 ## CPU content (`engine_project::content`)
 
@@ -88,7 +89,7 @@ colours are linear. Sampling is nearest with clamped edges.
 ## Native extensions
 
 Games compile into the host executable and use `engine_desktop::wgpu`, so there is
-no cross-compiler Rust ABI. Native passes need the wgpu backend. Implement `NativeRenderPass` and register it with
+no cross-compiler Rust ABI. Implement `NativeRenderPass` and register it with
 `NativeRenderPasses::register(name, pass)`, then insert the resource into
 `EngineApp::world_mut()` during configuration. Passes run after built-in draws in
 insertion order and receive the device, queue, command encoder, target view and the
@@ -114,9 +115,10 @@ cargo test -p engine-desktop --test backend_parity -- --ignored --nocapture
 cargo test -p engine-render-wgpu -- --ignored --nocapture
 ```
 
-`backend_parity` renders the same scenes through `SpriteRenderer` on both the wgpu
-and Vulkan backends, asserts the exact pixels, and asserts that the two readbacks
-are byte-identical.
+`backend_parity` has deterministic tests that assert the recorded command stream
+without a GPU, and ignored tests that render the same scenes on each wgpu API
+(primary, Vulkan, DX12, GL), skipping an API with no adapter and comparing the
+readbacks of those that ran.
 
 They cover atlas orientation, sprite and UTF-8 font geometry, clipping, stable
 ordering, dirty uploads, cache eviction, resizing, bounded input, an external custom

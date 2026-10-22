@@ -117,12 +117,12 @@ fn initialization_failure_is_reported_verbatim() {
     let backend = RecordingBackend::new();
     backend.log().fail_next(
         FailPoint::Initialize,
-        RenderError::Unavailable("no Vulkan loader".into()),
+        RenderError::Unavailable("no adapter".into()),
     );
     let error = RenderDevice::new(backend, DeviceConfig::default())
         .err()
         .unwrap();
-    assert_eq!(error, RenderError::Unavailable("no Vulkan loader".into()));
+    assert_eq!(error, RenderError::Unavailable("no adapter".into()));
 }
 
 #[test]

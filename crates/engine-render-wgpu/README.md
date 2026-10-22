@@ -30,14 +30,15 @@ in a sticky log and surface as `RenderError::Backend` / `RenderError::DeviceLost
 ## Selection
 
 `WgpuBackends` (`Primary` (default), `Vulkan`, `Dx12`, `Metal`, `Gl`, `All`) with
-`FromStr`/`Display`, and `WgpuOptions { backends, power_preference, requirements,
+`FromStr`/`Display`, `WgpuBackends::from_env()` (the `ENGINE_RENDER_BACKEND` variable:
+`primary|vulkan|dx12|metal|gl|all`, with `wgpu`/`auto` as aliases of primary), and `WgpuOptions { backends, power_preference, requirements,
 frames_in_flight }`. `Primary` still honours wgpu's `WGPU_BACKEND` override. The
 backend reports `wgpu/<vulkan|dx12|metal|gl>` and the adapter name in its
 capabilities.
 
 ## Conventions
 
-Same as `engine-vulkan`: sRGB RGBA8 textures and targets, y-up clip space with depth
+The `engine-render` contract: sRGB RGBA8 textures and targets, y-up clip space with depth
 0..1, top-left scissor and viewport, uniforms by `@group/@binding` (packed into one
 per-frame arena addressed with dynamic offsets; identical contents share an offset
 and distinct contents never overlap within a frame), the draw's texture at
@@ -54,5 +55,5 @@ cargo test -p engine-render-wgpu                        # pure translation tests
 cargo test -p engine-render-wgpu -- --ignored --nocapture   # real adapter
 ```
 
-The ignored tests in `tests/gpu_offscreen.rs` mirror `engine-vulkan`'s so both
-backends honour one contract; they fail (not skip) without an adapter.
+The ignored tests in `tests/gpu_offscreen.rs` cover the contract on a real device;
+they fail (not skip) without an adapter.

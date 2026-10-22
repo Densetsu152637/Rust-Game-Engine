@@ -1,7 +1,7 @@
 use crate::{
-    CameraView, RenderLimits,
+    BACKEND_ENV_VAR, CameraView, GpuRequirements, NativeRenderPasses, RenderLimits, WgpuBackends,
+    WgpuOptions, WindowSurface,
     input::{Gamepads, window_input},
-    render_host::{RenderHost, ensure_wgpu_only_features_unused, resolve_from_environment},
 };
 use anyhow::{Context, Result, ensure};
 use engine_audio::{AudioConfig, AudioEngine};
@@ -10,7 +10,6 @@ use engine_project::{
     input::{ActionMapper, RawInput, merge_input},
     runtime::{InputSettings, RuntimeSnapshot},
 };
-use engine_render::BackendKind;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -63,32 +62,53 @@ pub struct RunReport {
     pub presented_frames: u64,
 }
 
+/// Pick the wgpu graphics API for a run. An explicit `option` wins and the
+/// environment is ignored; otherwise `env_value` (the content of
+/// `ENGINE_RENDER_BACKEND`) selects it, and unset or blank means
+/// [`WgpuBackends::Primary`]. Unknown values are an error listing the accepted ones.
+pub fn resolve_wgpu_backends(
+    option: Option<WgpuBackends>,
+    env_value: Option<&str>,
+) -> Result<WgpuBackends> {
+    if let Some(backends) = option {
+        return Ok(backends);
+    }
+    Ok(WgpuBackends::from_env_value(env_value)?.unwrap_or_default())
+}
+
+fn resolve_from_environment(option: Option<WgpuBackends>) -> Result<WgpuBackends> {
+    match std::env::var(BACKEND_ENV_VAR) {
+        Ok(value) => resolve_wgpu_backends(option, Some(&value)),
+        Err(std::env::VarError::NotPresent) => resolve_wgpu_backends(option, None),
+        Err(std::env::VarError::NotUnicode(_)) if option.is_some() => {
+            resolve_wgpu_backends(option, None)
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("{BACKEND_ENV_VAR} is not valid unicode")
+        }
+    }
+}
+
 /// Run a native generation. Headless mode never initializes winit, GPU, gamepad
 /// or audio devices. Native mode must be called from the process main thread.
 ///
-/// The render backend comes from `ENGINE_RENDER_BACKEND` (`wgpu` or `vulkan`,
-/// default `wgpu`); see [`run_with_render_backend`] to choose it explicitly.
+/// The wgpu graphics API comes from `ENGINE_RENDER_BACKEND`
+/// (`primary|vulkan|dx12|metal|gl|all`, default primary); see
+/// [`run_with_wgpu_backends`] to choose it explicitly.
 pub fn run(runtime: Runtime, options: RunOptions) -> Result<RunReport> {
-    run_with_render_backend(runtime, options, None)
+    run_with_wgpu_backends(runtime, options, None)
 }
 
-/// [`run`] with an explicit render backend. `None` resolves the
+/// [`run`] with an explicit wgpu graphics API. `None` resolves the
 /// `ENGINE_RENDER_BACKEND` environment variable (invalid values are an error,
-/// even for headless runs, so typos surface). `Some(kind)` ignores the
-/// environment; `Headless` is not a presentable backend and is rejected for
-/// native runs (use [`RunOptions::headless`]). Headless runs never open a
-/// backend. Native render passes and `GpuRequirements` need the wgpu backend:
-/// with Vulkan selected, startup fails if either is configured.
-pub fn run_with_render_backend(
+/// even for headless runs, so typos surface). `Some(backends)` ignores the
+/// environment. Headless runs never create a device.
+pub fn run_with_wgpu_backends(
     mut runtime: Runtime,
     options: RunOptions,
-    render_backend: Option<BackendKind>,
+    backends: Option<WgpuBackends>,
 ) -> Result<RunReport> {
-    let backend = resolve_from_environment(render_backend)?;
-    ensure!(
-        options.headless || backend != BackendKind::Headless,
-        "the headless render backend is not presentable; use RunOptions::headless for runs without a window"
-    );
+    let backends = resolve_from_environment(backends)?;
     ensure!(
         (1..=1_000_000).contains(&options.ticks),
         "ticks must be 1..=1000000"
@@ -136,7 +156,7 @@ pub fn run_with_render_backend(
         runtime,
         audio,
         options,
-        backend,
+        backends,
         surface: None,
         mapper,
         raw: RawInput::default(),
@@ -153,7 +173,10 @@ pub fn run_with_render_backend(
     let cleanup = app.runtime.stop().map_err(anyhow::Error::from);
     let audio_error = app.audio.device_error();
     app.audio.shutdown();
-    let gpu_cleanup = app.surface.as_mut().map_or(Ok(()), RenderHost::wait_idle);
+    let gpu_cleanup = app
+        .surface
+        .as_ref()
+        .map_or(Ok(()), |host| host.renderer.gpu.wait_idle());
     combine(
         app.error.take().map_or(event_result, Err),
         combine(
@@ -231,8 +254,8 @@ struct DesktopRunner {
     runtime: Runtime,
     audio: AudioEngine,
     options: RunOptions,
-    backend: BackendKind,
-    surface: Option<RenderHost>,
+    backends: WgpuBackends,
+    surface: Option<WindowSurface>,
     mapper: ActionMapper,
     raw: RawInput,
     pointer: [f32; 2],
@@ -274,7 +297,7 @@ impl DesktopRunner {
             gamepads.sample(&mut self.raw);
         }
         let frame = self.runtime.extract_frame()?;
-        let size = host.window().inner_size();
+        let size = host.window.inner_size();
         let camera = CameraView::new(&frame.camera, size.width, size.height)?;
         self.raw.pointer = camera.logical_pointer(self.pointer);
         if self.mapper.bindings() != self.runtime.bindings() {
@@ -322,14 +345,13 @@ impl ApplicationHandler for DesktopRunner {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.surface.is_some() {
             let host = self.surface.as_mut().unwrap();
-            let size = host.window().inner_size();
+            let size = host.window.inner_size();
             if let Err(error) = host.resize(size.width, size.height) {
                 self.fail(event_loop, error);
             }
             return;
         }
         let result = (|| -> Result<()> {
-            ensure_wgpu_only_features_unused(self.backend, self.runtime.app().world())?;
             let frame = self.runtime.extract_frame()?;
             let [width, height] = frame.camera.logical_size;
             let window = Arc::new(
@@ -345,18 +367,34 @@ impl ApplicationHandler for DesktopRunner {
                     )
                     .context("creating desktop window")?,
             );
-            let mut host = RenderHost::open(
-                self.backend,
+            let requirements = self
+                .runtime
+                .app_mut()
+                .world_mut()
+                .remove_resource::<GpuRequirements>()
+                .unwrap_or_default();
+            let mut host = pollster::block_on(WindowSurface::with_options(
                 window,
-                self.runtime.app_mut().world_mut(),
                 RenderLimits::default(),
-            )?;
+                WgpuOptions {
+                    backends: self.backends,
+                    requirements,
+                    ..Default::default()
+                },
+            ))?;
+            let passes = self
+                .runtime
+                .app_mut()
+                .world_mut()
+                .remove_resource::<NativeRenderPasses>()
+                .unwrap_or_default();
+            host.renderer.set_passes(passes)?;
             // Failure to initialize the controller service is propagated. A
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);
             host.present(&frame, Some(self.runtime.app().render_world()))?;
-            host.window().set_visible(true);
-            host.window().request_redraw();
+            host.window.set_visible(true);
+            host.window.request_redraw();
             self.surface = Some(host);
             Ok(())
         })();
@@ -375,7 +413,7 @@ impl ApplicationHandler for DesktopRunner {
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.surface.as_ref().is_none_or(|s| s.window().id() != id) {
+        if self.surface.as_ref().is_none_or(|s| s.window.id() != id) {
             return;
         }
         window_input(&mut self.raw, &event, &mut self.pointer);
@@ -400,7 +438,7 @@ impl ApplicationHandler for DesktopRunner {
                 .resize(size.width, size.height),
             WindowEvent::ScaleFactorChanged { .. } => {
                 let host = self.surface.as_mut().unwrap();
-                let size = host.window().inner_size();
+                let size = host.window.inner_size();
                 host.resize(size.width, size.height)
             }
             WindowEvent::RedrawRequested => self.redraw(event_loop),
@@ -425,7 +463,7 @@ impl ApplicationHandler for DesktopRunner {
                     self.fail(event_loop, error);
                 }
             } else if let Some(host) = &self.surface {
-                host.window().request_redraw();
+                host.window.request_redraw();
             }
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
@@ -480,5 +518,60 @@ mod run_tests {
         assert!(options.inputs.is_empty());
         assert!(options.user_data.is_none());
         assert!(options.shutdown.is_none());
+    }
+
+    #[test]
+    fn explicit_backends_win_over_the_environment() {
+        assert_eq!(
+            resolve_wgpu_backends(Some(WgpuBackends::Dx12), Some("vulkan")).unwrap(),
+            WgpuBackends::Dx12
+        );
+        assert_eq!(
+            resolve_wgpu_backends(Some(WgpuBackends::Gl), Some("garbage")).unwrap(),
+            WgpuBackends::Gl
+        );
+    }
+
+    #[test]
+    fn environment_selects_the_graphics_api_case_insensitively() {
+        for (value, expected) in [
+            ("vulkan", WgpuBackends::Vulkan),
+            (" DX12 ", WgpuBackends::Dx12),
+            ("Metal", WgpuBackends::Metal),
+            ("gl", WgpuBackends::Gl),
+            ("all", WgpuBackends::All),
+            ("wgpu", WgpuBackends::Primary),
+            ("auto", WgpuBackends::Primary),
+        ] {
+            assert_eq!(
+                resolve_wgpu_backends(None, Some(value)).unwrap(),
+                expected,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn unset_or_blank_environment_defaults_to_primary() {
+        assert_eq!(
+            resolve_wgpu_backends(None, None).unwrap(),
+            WgpuBackends::Primary
+        );
+        assert_eq!(
+            resolve_wgpu_backends(None, Some("  ")).unwrap(),
+            WgpuBackends::Primary
+        );
+    }
+
+    #[test]
+    fn unknown_values_name_the_variable_and_the_accepted_apis() {
+        let error = resolve_wgpu_backends(None, Some("glide"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ENGINE_RENDER_BACKEND"), "{error}");
+        assert!(
+            error.contains("primary, vulkan, dx12, metal, gl or all"),
+            "{error}"
+        );
     }
 }

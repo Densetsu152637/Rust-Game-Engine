@@ -1,7 +1,7 @@
 //! The backend contract: capabilities and the [`RenderBackend`] trait.
 
 use crate::command::DrawCommand;
-use crate::error::{RenderError, Result};
+use crate::error::Result;
 use crate::frame::{FrameDesc, FrameOutcome, OffscreenDesc, ReadbackImage};
 use crate::resources::{
     MeshHandle, MeshResource, ResourceId, ShaderHandle, ShaderResource, TargetHandle, Texture2D,
@@ -9,12 +9,8 @@ use crate::resources::{
 };
 use std::collections::BTreeMap;
 use std::fmt;
-use std::str::FromStr;
 
-/// Environment variable that selects the backend for hosts that honor it.
-pub const BACKEND_ENV_VAR: &str = "ENGINE_RENDER_BACKEND";
-
-/// Which graphics implementation sits behind the adapter.
+/// Which implementation sits behind the adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum BackendKind {
     /// Deterministic in-memory recording backend (no GPU).
@@ -22,30 +18,15 @@ pub enum BackendKind {
     /// The `wgpu` portability layer (itself over Vulkan, DX12, Metal or GL).
     #[default]
     Wgpu,
-    /// The native Vulkan backend.
-    Vulkan,
 }
 
 impl BackendKind {
-    pub const ALL: [BackendKind; 3] = [Self::Headless, Self::Wgpu, Self::Vulkan];
+    pub const ALL: [BackendKind; 2] = [Self::Headless, Self::Wgpu];
 
     pub const fn name(self) -> &'static str {
         match self {
             Self::Headless => "headless",
             Self::Wgpu => "wgpu",
-            Self::Vulkan => "vulkan",
-        }
-    }
-
-    /// Read [`BACKEND_ENV_VAR`]. `Ok(None)` when unset or blank; an
-    /// unrecognized value is an error naming the accepted spellings.
-    pub fn from_env() -> Result<Option<Self>> {
-        match std::env::var(BACKEND_ENV_VAR) {
-            Ok(value) if !value.trim().is_empty() => value.parse().map(Some),
-            Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
-            Err(std::env::VarError::NotUnicode(_)) => Err(RenderError::Unavailable(format!(
-                "{BACKEND_ENV_VAR} is not valid unicode"
-            ))),
         }
     }
 }
@@ -53,20 +34,6 @@ impl BackendKind {
 impl fmt::Display for BackendKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
-    }
-}
-
-impl FromStr for BackendKind {
-    type Err = RenderError;
-    fn from_str(text: &str) -> Result<Self> {
-        match text.trim().to_ascii_lowercase().as_str() {
-            "headless" | "recording" | "none" => Ok(Self::Headless),
-            "wgpu" => Ok(Self::Wgpu),
-            "vulkan" | "vk" => Ok(Self::Vulkan),
-            other => Err(RenderError::Unavailable(format!(
-                "unknown render backend {other:?}; expected wgpu, vulkan or headless"
-            ))),
-        }
     }
 }
 
@@ -310,23 +277,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backend_kind_parses_case_insensitively_with_aliases_and_rejects_unknowns() {
-        assert_eq!("WGPU".parse::<BackendKind>().unwrap(), BackendKind::Wgpu);
-        assert_eq!(
-            " Vulkan ".parse::<BackendKind>().unwrap(),
-            BackendKind::Vulkan
-        );
-        assert_eq!("vk".parse::<BackendKind>().unwrap(), BackendKind::Vulkan);
-        assert_eq!(
-            "recording".parse::<BackendKind>().unwrap(),
-            BackendKind::Headless
-        );
-        let error = "metal".parse::<BackendKind>().unwrap_err().to_string();
-        assert!(error.contains("wgpu, vulkan or headless"), "{error}");
-        for kind in BackendKind::ALL {
-            assert_eq!(kind.to_string().parse::<BackendKind>().unwrap(), kind);
-        }
+    fn backend_kind_names_are_stable_and_wgpu_is_the_default() {
+        assert_eq!(BackendKind::Headless.to_string(), "headless");
+        assert_eq!(BackendKind::Wgpu.to_string(), "wgpu");
         assert_eq!(BackendKind::default(), BackendKind::Wgpu);
+        assert_eq!(BackendKind::ALL.len(), 2);
     }
 
     #[test]
@@ -353,13 +308,13 @@ mod tests {
 
     #[test]
     fn diagnostics_list_every_feature_in_a_stable_order() {
-        let mut caps = RenderCapabilities::full(BackendKind::Vulkan, "vk");
+        let mut caps = RenderCapabilities::full(BackendKind::Wgpu, "wgpu/test");
         caps.device_name = Some("Test GPU".into());
         caps.depth_attachment = false;
         caps.unsupported_reasons
             .insert(RenderFeature::DepthAttachment, "no D32".into());
         let text = caps.diagnostics();
-        assert!(text.starts_with("backend vk (vulkan) on Test GPU; frames in flight 2"));
+        assert!(text.starts_with("backend wgpu/test (wgpu) on Test GPU; frames in flight 2"));
         assert!(text.contains("depth-attachment: no (no D32)"));
         assert!(text.contains("sampled-textures: yes"));
         assert_eq!(text.lines().count(), 1 + RenderFeature::ALL.len());

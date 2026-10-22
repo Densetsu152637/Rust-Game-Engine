@@ -1,26 +1,25 @@
-//! Main-thread desktop hosting and the sprite renderer, on any graphics backend.
+//! Main-thread desktop hosting and the sprite renderer on wgpu.
 //!
 //! Layout:
 //!
-//! * `engine-render`: the backend-neutral graphics adapter interface.
-//! * `engine-render-wgpu` / `engine-vulkan`: the wgpu and native Vulkan
-//!   backends. [`GpuContext`], [`OffscreenTarget`] and friends are re-exported
-//!   from `engine-render-wgpu`.
-//! * this crate: [`SpriteRenderer`] (neutral), [`GpuRenderer`] (wgpu-native,
-//!   with [`NativeRenderPass`]es), [`WindowSurface`] / [`BackendWindow`] window
-//!   hosts, and the [`run`] loop with backend selection
-//!   (`ENGINE_RENDER_BACKEND=wgpu|vulkan`).
+//! * `engine-render`: the thin backend-neutral adapter (handles, command
+//!   buffer, deferred destruction) plus a deterministic recording backend for
+//!   GPU-free tests.
+//! * `engine-render-wgpu`: the wgpu backend and the native [`GpuContext`]; wgpu
+//!   itself selects Vulkan, DX12, Metal or GL ([`WgpuBackends`]).
+//! * this crate: [`SpriteRenderer`] (adapter-based), [`GpuRenderer`] (shares a
+//!   [`GpuContext`], runs [`NativeRenderPass`]es), [`WindowSurface`], and the
+//!   [`run`] loop. `ENGINE_RENDER_BACKEND=primary|vulkan|dx12|metal|gl|all`
+//!   picks the wgpu graphics API.
 //!
 //! Games compile into the host executable and use this exact `wgpu` type universe.
 //! Register [`NativeRenderPass`] implementations in [`NativeRenderPasses`] before
 //! launching the runner, or construct [`GpuRenderer`] directly for another host.
-//! Native passes are wgpu-specific by design and need the wgpu backend.
 
 mod backend;
 mod camera;
 mod input;
 mod passes;
-mod render_host;
 mod renderer;
 mod runner;
 mod shader;
@@ -29,14 +28,12 @@ mod window;
 pub use backend::*;
 pub use camera::*;
 pub use engine_render;
-pub use engine_render::BackendKind;
 pub use engine_render_wgpu::{
-    GpuContext, GpuRequirements, OffscreenTarget, RenderTargetInfo, WgpuBackend, WgpuBackends,
-    WgpuOptions,
+    BACKEND_ENV_VAR, GpuContext, GpuRequirements, OffscreenTarget, RenderTargetInfo, WgpuBackend,
+    WgpuBackends, WgpuOptions,
 };
 pub use input::key_token;
 pub use passes::*;
-pub use render_host::resolve_render_backend;
 pub use renderer::*;
 pub use runner::*;
 pub use shader::validate_wgsl;

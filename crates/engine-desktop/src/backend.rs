@@ -1,154 +1,15 @@
-//! Backend-neutral hosts: a backend factory, a window host and an offscreen
-//! helper, all built on [`SpriteRenderer`].
-//!
-//! The wgpu-native path ([`crate::WindowSurface`] + [`crate::GpuRenderer`]) is
-//! the only one that runs [`crate::NativeRenderPass`]es; everything here works
-//! with any `engine-render` backend.
+//! Offscreen sprite rendering on any [`RenderBackend`], with readback.
 
 use crate::{RenderLimits, RenderStats, SpriteRenderer};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use engine_project::runtime::RenderFrame;
-use engine_render::{BackendKind, RenderBackend, RenderTarget, TargetHandle};
-use engine_render_wgpu::{WgpuBackend, WgpuOptions};
-use std::sync::Arc;
-use winit::window::Window;
+use engine_render::{RenderBackend, RenderTarget, TargetHandle, headless::RecordingBackend};
+use engine_render_wgpu::{WgpuBackend, WgpuBackends, WgpuOptions};
 
-/// Create the backend of `kind`.
-///
-/// * `window = Some((window, size))`: a backend presenting to that window, whose
-///   inner size is `size`.
-/// * `window = None`: an offscreen-only backend.
-///
-/// [`BackendKind::Headless`] has no presentation surface: with a window it is an
-/// error ("not presentable"), without one it is the recording backend of
-/// `engine-render` (no GPU, useful for tests). Selecting
-/// [`BackendKind::Vulkan`] in a build without the `vulkan` cargo feature is an
-/// error that says so.
-pub fn create_backend(
-    kind: BackendKind,
-    window: Option<(Arc<Window>, (u32, u32))>,
-    limits: &RenderLimits,
-) -> Result<Box<dyn RenderBackend>> {
-    let frames = limits.max_frames_in_flight as u32;
-    match kind {
-        BackendKind::Wgpu => {
-            let options = WgpuOptions {
-                frames_in_flight: frames,
-                ..Default::default()
-            };
-            Ok(match window {
-                Some((window, size)) => Box::new(WgpuBackend::for_window(window, size, options)),
-                None => Box::new(WgpuBackend::offscreen(options)),
-            })
-        }
-        BackendKind::Vulkan => create_vulkan(window, frames),
-        BackendKind::Headless => {
-            if window.is_some() {
-                bail!("the headless backend is not presentable: it has no window surface");
-            }
-            Ok(Box::new(engine_render::headless::RecordingBackend::new()))
-        }
-    }
-}
-
-#[cfg(feature = "vulkan")]
-fn create_vulkan(
-    window: Option<(Arc<Window>, (u32, u32))>,
-    frames: u32,
-) -> Result<Box<dyn RenderBackend>> {
-    use engine_vulkan::{VulkanBackend, VulkanConfig};
-    let config = VulkanConfig {
-        frames_in_flight: frames,
-        ..Default::default()
-    };
-    Ok(match window {
-        Some((window, size)) => Box::new(VulkanBackend::for_window(window, size, config)),
-        None => Box::new(VulkanBackend::offscreen(config)),
-    })
-}
-
-#[cfg(not(feature = "vulkan"))]
-fn create_vulkan(
-    _window: Option<(Arc<Window>, (u32, u32))>,
-    _frames: u32,
-) -> Result<Box<dyn RenderBackend>> {
-    Err(anyhow!(
-        "the Vulkan backend is not compiled in: build engine-desktop with the `vulkan` cargo feature"
-    ))
-}
-
-/// A winit window presenting through any [`RenderBackend`].
-///
-/// Create on the winit event-loop thread after `resumed`. Suspension follows
-/// [`crate::WindowSurface`]: a zero-sized window is suspended and presents
-/// nothing; occluded or timed-out frames are skipped by the backend and report
-/// `None` from [`Self::present`].
-pub struct BackendWindow {
-    pub window: Arc<Window>,
-    pub renderer: SpriteRenderer<Box<dyn RenderBackend>>,
-    suspended: bool,
-}
-
-impl BackendWindow {
-    /// Open `window` with the backend of `kind` (see [`create_backend`]).
-    pub fn new(kind: BackendKind, window: Arc<Window>, limits: RenderLimits) -> Result<Self> {
-        let size = window.inner_size();
-        let backend = create_backend(
-            kind,
-            Some((window.clone(), (size.width, size.height))),
-            &limits,
-        )?;
-        Self::with_backend(window, backend, limits)
-    }
-
-    /// Open `window` with a backend created for it (for example by
-    /// [`create_backend`] or a custom implementation).
-    pub fn with_backend(
-        window: Arc<Window>,
-        backend: Box<dyn RenderBackend>,
-        limits: RenderLimits,
-    ) -> Result<Self> {
-        let size = window.inner_size();
-        let mut renderer = SpriteRenderer::new(backend, limits)
-            .context("initializing the render backend for the window")?;
-        renderer.set_surface_size((size.width, size.height));
-        Ok(Self {
-            window,
-            renderer,
-            suspended: size.width == 0 || size.height == 0,
-        })
-    }
-
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
-        self.suspended = width == 0 || height == 0;
-        if self.suspended {
-            return Ok(());
-        }
-        self.renderer.resize(width, height)
-    }
-
-    pub fn is_suspended(&self) -> bool {
-        self.suspended
-    }
-
-    /// Render and present one frame. `None` when suspended or when the backend
-    /// skipped the frame (occluded, timeout, swapchain recreated).
-    pub fn present(&mut self, frame: &RenderFrame) -> Result<Option<RenderStats>> {
-        if self.suspended {
-            return Ok(None);
-        }
-        self.window.pre_present_notify();
-        self.renderer.render(frame, RenderTarget::Surface)
-    }
-
-    /// Wait for the GPU to finish all submitted work.
-    pub fn wait_idle(&mut self) -> Result<()> {
-        Ok(self.renderer.device_mut().wait_idle()?)
-    }
-}
-
-/// Sprite rendering into an offscreen RGBA target on any backend, with readback.
-/// The same path a window uses, for tests and tools.
+/// Sprite rendering into an offscreen RGBA target, the same path a window uses,
+/// for tests and tools. Build it on a real GPU with [`Self::wgpu`], or on the
+/// deterministic recording backend with [`Self::headless`] (no GPU; inspect the
+/// command stream through the log of the backend passed to [`Self::new`]).
 pub struct OffscreenSprites {
     renderer: SpriteRenderer<Box<dyn RenderBackend>>,
     target: TargetHandle,
@@ -156,8 +17,13 @@ pub struct OffscreenSprites {
 }
 
 impl OffscreenSprites {
-    pub fn new(kind: BackendKind, width: u32, height: u32, limits: RenderLimits) -> Result<Self> {
-        let backend = create_backend(kind, None, &limits)?;
+    /// Use any backend (for example a [`RecordingBackend`] whose log you keep).
+    pub fn new(
+        backend: Box<dyn RenderBackend>,
+        width: u32,
+        height: u32,
+        limits: RenderLimits,
+    ) -> Result<Self> {
         let mut renderer = SpriteRenderer::new(backend, limits)?;
         let target = renderer.device_mut().create_target(width, height)?;
         Ok(Self {
@@ -165,6 +31,26 @@ impl OffscreenSprites {
             target,
             size: (width, height),
         })
+    }
+
+    /// Offscreen sprites on the wgpu backend, restricted to the `backends` APIs.
+    pub fn wgpu(
+        backends: WgpuBackends,
+        width: u32,
+        height: u32,
+        limits: RenderLimits,
+    ) -> Result<Self> {
+        let backend = WgpuBackend::offscreen(WgpuOptions {
+            backends,
+            frames_in_flight: limits.max_frames_in_flight as u32,
+            ..Default::default()
+        });
+        Self::new(Box::new(backend), width, height, limits)
+    }
+
+    /// Offscreen sprites on the deterministic recording backend.
+    pub fn headless(width: u32, height: u32, limits: RenderLimits) -> Result<Self> {
+        Self::new(Box::new(RecordingBackend::new()), width, height, limits)
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -206,10 +92,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn headless_has_no_window_surface_but_records_offscreen() {
-        let limits = RenderLimits::default();
-        assert!(create_backend(BackendKind::Headless, None, &limits).is_ok());
-        let mut sprites = OffscreenSprites::new(BackendKind::Headless, 64, 64, limits).unwrap();
+    fn headless_records_offscreen_without_a_gpu() {
+        let mut sprites = OffscreenSprites::headless(64, 64, RenderLimits::default()).unwrap();
         assert_eq!(sprites.size(), (64, 64));
         assert!(!sprites.backend_description().is_empty());
         let frame = RenderFrame {
@@ -226,25 +110,11 @@ mod tests {
 
     #[test]
     fn invalid_offscreen_sizes_and_limits_are_rejected() {
-        assert!(
-            OffscreenSprites::new(BackendKind::Headless, 0, 8, RenderLimits::default()).is_err()
-        );
+        assert!(OffscreenSprites::headless(0, 8, RenderLimits::default()).is_err());
         let limits = RenderLimits {
             max_frames_in_flight: 0,
             ..Default::default()
         };
-        assert!(OffscreenSprites::new(BackendKind::Headless, 8, 8, limits).is_err());
-    }
-
-    #[cfg(not(feature = "vulkan"))]
-    #[test]
-    fn selecting_vulkan_without_the_feature_names_the_feature() {
-        let error = create_backend(BackendKind::Vulkan, None, &RenderLimits::default())
-            .err()
-            .unwrap();
-        assert!(
-            error.to_string().contains("`vulkan` cargo feature"),
-            "{error}"
-        );
+        assert!(OffscreenSprites::headless(8, 8, limits).is_err());
     }
 }

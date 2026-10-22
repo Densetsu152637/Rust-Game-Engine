@@ -195,8 +195,7 @@ impl VertexLayout {
 // ----------------------------------------------------------------- shaders
 
 /// Source language of a shader. WGSL is the engine's authoring language; each
-/// backend translates it (wgpu consumes it directly, Vulkan goes through naga
-/// to SPIR-V).
+/// backend consumes it (wgpu takes WGSL directly).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ShaderLanguage {

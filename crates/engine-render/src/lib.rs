@@ -4,7 +4,7 @@
 //! no GPU dependency:
 //!
 //! * [`RenderBackend`] is the trait a graphics implementation provides
-//!   (`engine-render-wgpu`, `engine-vulkan`, or the in-crate
+//!   (`engine-render-wgpu`, or the in-crate
 //!   [`headless::RecordingBackend`]).
 //! * [`RenderDevice`] owns a backend, hands out typed resource handles
 //!   ([`ShaderHandle`], [`MeshHandle`], [`TextureHandle`], [`TargetHandle`]),
@@ -35,8 +35,7 @@ pub mod shader;
 pub mod state;
 
 pub use backend::{
-    BACKEND_ENV_VAR, BackendKind, RenderBackend, RenderCapabilities, RenderFeature,
-    RenderFeatureStatus,
+    BackendKind, RenderBackend, RenderCapabilities, RenderFeature, RenderFeatureStatus,
 };
 pub use command::{
     DrawCommand, DrawOrderKey, DrawUniform, RenderCommandBuffer, SAMPLER_SLOT, TEXTURE_SLOT,
