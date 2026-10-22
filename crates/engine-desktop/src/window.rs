@@ -1,5 +1,6 @@
 use crate::{
     GpuContext, GpuRenderer, GpuRequirements, RenderLimits, RenderStats, RenderTargetInfo,
+    WgpuOptions,
 };
 use anyhow::{Context, Result, bail};
 use engine_core::bevy_ecs::world::World;
@@ -28,12 +29,27 @@ impl WindowSurface {
         limits: RenderLimits,
         requirements: GpuRequirements,
     ) -> Result<Self> {
-        let instance = GpuContext::instance();
+        let options = WgpuOptions {
+            requirements,
+            ..Default::default()
+        };
+        Self::with_options(window, limits, options).await
+    }
+
+    /// Like [`Self::with_requirements`] with an explicit wgpu graphics API
+    /// selection (`options.backends`), power preference and requirements.
+    /// `options.frames_in_flight` is replaced by `limits.max_frames_in_flight`.
+    pub async fn with_options(
+        window: Arc<Window>,
+        limits: RenderLimits,
+        mut options: WgpuOptions,
+    ) -> Result<Self> {
+        options.frames_in_flight = limits.max_frames_in_flight as u32;
+        let instance = GpuContext::instance_with(options.backends);
         let surface = instance
             .create_surface(window.clone())
             .context("creating window surface")?;
-        let gpu =
-            GpuContext::request_with_requirements(instance, Some(&surface), requirements).await?;
+        let gpu = GpuContext::request_with_options(instance, Some(&surface), &options).await?;
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))

@@ -2,11 +2,32 @@
 
 Rendering is split in two. `engine-project` produces a backend-neutral CPU frame
 (`runtime::RenderFrame`) from the simulation, and `engine-desktop` draws that frame
-with wgpu (Vulkan, DX12 or Metal backends as enabled in its `Cargo.toml`). This
-replaces the earlier Vulkan-only renderer; no SPIR-V or external shader compiler is
-involved, because shaders are WGSL validated with Naga. The crate README
+through the thin `engine-render` adapter onto wgpu (which selects Vulkan, DX12, Metal
+or GL). Shaders are authored in WGSL and validated with Naga
+(`engine_render::validate_wgsl`); wgpu consumes WGSL directly. The crate README
 (`crates/engine-desktop/README.md`) is the detailed contract; this page summarizes
 the 2D content pipeline.
+
+## Crates and graphics API selection
+
+| Crate | Role |
+| --- | --- |
+| `engine-render` | `RenderBackend` trait, `RenderDevice` (handles, deferred destruction), command buffer, WGSL reflection, deterministic recording backend. |
+| `engine-render-wgpu` | `WgpuBackend`, `GpuContext`/`GpuRequirements`, `OffscreenTarget`, `WgpuBackends`. |
+| `engine-desktop` | `SpriteRenderer<B>`, wgpu-native `GpuRenderer`, `WindowSurface`, runner. |
+
+The adapter exists to keep the renderer independent of wgpu types and to make
+headless tests deterministic (the recording backend), not to host several GPU
+implementations. Choose the wgpu graphics API with
+`ENGINE_RENDER_BACKEND=primary|vulkan|dx12|metal|gl|all` (default primary; `wgpu`
+and `auto` are aliases of primary; an invalid value fails startup, even for
+headless runs) or `engine_desktop::run_with_wgpu_backends`. Conventions are the
+same on every API: sRGB RGBA8 targets and textures, y-up clip space, top-left
+scissor and viewport, straight alpha, depth `LessEqual`/`Always` with a write
+flag, a backend-owned depth attachment, and nearest/clamp sampling. The
+`backend_parity` tests render the sprite scenes on each API available on the
+machine and assert exact, byte-identical pixels. Native render passes and
+`GpuRequirements` work on every API.
 
 ## CPU content (`engine_project::content`)
 
@@ -40,7 +61,7 @@ the 2D content pipeline.
   out Unicode text with word wrapping (oversized words break by glyph), newlines
   and the fallback glyph. This is atlas coverage, not complex-script shaping.
 
-## Render contract (`RenderFrame` to wgpu)
+## Render contract (`RenderFrame` to the adapter)
 
 Draws hold immutable `Arc<Mesh>` and optional `Arc<Texture>` assets, vertex colours,
 a layer, a stable ID, world or UI space, an optional logical clip, and blend and
@@ -90,7 +111,14 @@ Pixel tests need a real adapter and are `#[ignore]`d:
 
 ```text
 cargo test -p engine-desktop --test gpu_pixels -- --ignored --nocapture
+cargo test -p engine-desktop --test backend_parity -- --ignored --nocapture
+cargo test -p engine-render-wgpu -- --ignored --nocapture
 ```
+
+`backend_parity` has deterministic tests that assert the recorded command stream
+without a GPU, and ignored tests that render the same scenes on each wgpu API
+(primary, Vulkan, DX12, GL), skipping an API with no adapter and comparing the
+readbacks of those that ran.
 
 They cover atlas orientation, sprite and UTF-8 font geometry, clipping, stable
 ordering, dirty uploads, cache eviction, resizing, bounded input, an external custom

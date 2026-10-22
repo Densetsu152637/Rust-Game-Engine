@@ -1,7 +1,7 @@
 # Desktop host and native rendering
 
 `engine-desktop` hosts an `engine_project::Runtime` on the process main thread
-using winit 0.30 and wgpu 30. It does not enable winit's platform `any_thread`
+using winit 0.30 and wgpu 30 (see [Render backends](#render-backends)). It does not enable winit's platform `any_thread`
 escape hatch. `run(runtime, RunOptions)` returns errors from window creation,
 surface acquisition, device validation/loss, custom passes, gameplay, input
 initialization and audio. The host runs runtime cleanup before dropping devices.
@@ -20,6 +20,35 @@ Pointer coordinates use the current letterboxed logical viewport. Resize creates
 a matching depth target; zero extent suspends presentation. Surface timeout skips
 a frame, lost/outdated surfaces reconfigure, and other device failures terminate
 with an error. Native runs respect the same tick bound as headless runs.
+
+## Render backends
+
+Graphics are split across two crates plus this host:
+
+| Crate | Role |
+| --- | --- |
+| `engine-render` | Thin backend-neutral adapter: the `RenderBackend` trait, `RenderDevice` (typed handles, validation, deferred destruction across frames in flight), `RenderCommandBuffer` ordering, WGSL reflection and `validate_wgsl`, and a deterministic recording `headless` backend for GPU-free tests. It exists to decouple the renderer from wgpu types and to make headless tests deterministic. |
+| `engine-render-wgpu` | The only GPU backend: `WgpuBackend` on wgpu 30, `WgpuBackends`/`WgpuOptions` graphics API selection, and the native `GpuContext`, `GpuRequirements`, `OffscreenTarget`, `RenderTargetInfo` (re-exported by this crate). |
+| `engine-desktop` | `SpriteRenderer<B: RenderBackend>` (converts a `RenderFrame` to adapter commands), `GpuRenderer` (a `SpriteRenderer<WgpuBackend>` sharing the caller's `GpuContext`, plus `NativeRenderPass`es), `WindowSurface`, `OffscreenSprites`, and the runner. |
+
+wgpu itself chooses between Vulkan, DX12, Metal and GL. The runner reads
+`ENGINE_RENDER_BACKEND` (`primary|vulkan|dx12|metal|gl|all`, case-insensitive;
+`wgpu` and `auto` mean primary; unset or blank means primary). An unknown value
+fails `run()` with an error listing the accepted values, including for headless
+runs, so a typo surfaces even though a headless run never creates a device. Pass
+an explicit choice with `run_with_wgpu_backends(runtime, options, Some(backends))`,
+which ignores the environment; `run(runtime, options)` is the same call with
+`None`. `resolve_wgpu_backends(option, env_value)` is the pure resolution rule and
+`WindowSurface::with_options` takes a `WgpuOptions` (API, power preference,
+`GpuRequirements`). Native render passes and `GpuRequirements` always apply, on
+every graphics API.
+
+Use `OffscreenSprites` for tests and tools: `OffscreenSprites::wgpu(backends,
+width, height, limits)` renders on a real device, `OffscreenSprites::headless(..)`
+on the recording backend, and `OffscreenSprites::new(Box<dyn RenderBackend>, ..)`
+on any backend you hold a log for. Then `render(&RenderFrame)` and `read_rgba()`.
+The same scenes produce byte-identical pixels on every wgpu API of the test
+machine (`tests/backend_parity.rs`).
 
 ## Render contract
 
@@ -83,9 +112,12 @@ remain part of pipeline creation.
 ```text
 cargo test -p engine-desktop
 cargo test -p engine-desktop --test gpu_pixels -- --ignored --nocapture
+cargo test -p engine-desktop --test backend_parity -- --ignored --nocapture
+cargo test -p engine-render-wgpu -- --ignored --nocapture
 cargo clippy -p engine-desktop --all-targets -- -D warnings
 cargo run -p engine-desktop --example desktop_smoke -- --headless
 cargo run -p engine-desktop --example desktop_smoke
+ENGINE_RENDER_BACKEND=dx12 cargo run -p engine-desktop --example desktop_smoke
 ```
 
 The GPU tests are explicitly ignored in ordinary headless test runs. The explicit

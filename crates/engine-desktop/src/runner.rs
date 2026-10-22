@@ -1,5 +1,6 @@
 use crate::{
-    CameraView, GpuRequirements, NativeRenderPasses, RenderLimits, WindowSurface,
+    BACKEND_ENV_VAR, CameraView, GpuRequirements, NativeRenderPasses, RenderLimits, WgpuBackends,
+    WgpuOptions, WindowSurface,
     input::{Gamepads, window_input},
 };
 use anyhow::{Context, Result, ensure};
@@ -61,9 +62,53 @@ pub struct RunReport {
     pub presented_frames: u64,
 }
 
+/// Pick the wgpu graphics API for a run. An explicit `option` wins and the
+/// environment is ignored; otherwise `env_value` (the content of
+/// `ENGINE_RENDER_BACKEND`) selects it, and unset or blank means
+/// [`WgpuBackends::Primary`]. Unknown values are an error listing the accepted ones.
+pub fn resolve_wgpu_backends(
+    option: Option<WgpuBackends>,
+    env_value: Option<&str>,
+) -> Result<WgpuBackends> {
+    if let Some(backends) = option {
+        return Ok(backends);
+    }
+    Ok(WgpuBackends::from_env_value(env_value)?.unwrap_or_default())
+}
+
+fn resolve_from_environment(option: Option<WgpuBackends>) -> Result<WgpuBackends> {
+    match std::env::var(BACKEND_ENV_VAR) {
+        Ok(value) => resolve_wgpu_backends(option, Some(&value)),
+        Err(std::env::VarError::NotPresent) => resolve_wgpu_backends(option, None),
+        Err(std::env::VarError::NotUnicode(_)) if option.is_some() => {
+            resolve_wgpu_backends(option, None)
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("{BACKEND_ENV_VAR} is not valid unicode")
+        }
+    }
+}
+
 /// Run a native generation. Headless mode never initializes winit, GPU, gamepad
 /// or audio devices. Native mode must be called from the process main thread.
-pub fn run(mut runtime: Runtime, options: RunOptions) -> Result<RunReport> {
+///
+/// The wgpu graphics API comes from `ENGINE_RENDER_BACKEND`
+/// (`primary|vulkan|dx12|metal|gl|all`, default primary); see
+/// [`run_with_wgpu_backends`] to choose it explicitly.
+pub fn run(runtime: Runtime, options: RunOptions) -> Result<RunReport> {
+    run_with_wgpu_backends(runtime, options, None)
+}
+
+/// [`run`] with an explicit wgpu graphics API. `None` resolves the
+/// `ENGINE_RENDER_BACKEND` environment variable (invalid values are an error,
+/// even for headless runs, so typos surface). `Some(backends)` ignores the
+/// environment. Headless runs never create a device.
+pub fn run_with_wgpu_backends(
+    mut runtime: Runtime,
+    options: RunOptions,
+    backends: Option<WgpuBackends>,
+) -> Result<RunReport> {
+    let backends = resolve_from_environment(backends)?;
     ensure!(
         (1..=1_000_000).contains(&options.ticks),
         "ticks must be 1..=1000000"
@@ -111,6 +156,7 @@ pub fn run(mut runtime: Runtime, options: RunOptions) -> Result<RunReport> {
         runtime,
         audio,
         options,
+        backends,
         surface: None,
         mapper,
         raw: RawInput::default(),
@@ -208,6 +254,7 @@ struct DesktopRunner {
     runtime: Runtime,
     audio: AudioEngine,
     options: RunOptions,
+    backends: WgpuBackends,
     surface: Option<WindowSurface>,
     mapper: ActionMapper,
     raw: RawInput,
@@ -326,10 +373,14 @@ impl ApplicationHandler for DesktopRunner {
                 .world_mut()
                 .remove_resource::<GpuRequirements>()
                 .unwrap_or_default();
-            let mut host = pollster::block_on(WindowSurface::with_requirements(
+            let mut host = pollster::block_on(WindowSurface::with_options(
                 window,
                 RenderLimits::default(),
-                requirements,
+                WgpuOptions {
+                    backends: self.backends,
+                    requirements,
+                    ..Default::default()
+                },
             ))?;
             let passes = self
                 .runtime
@@ -467,5 +518,60 @@ mod run_tests {
         assert!(options.inputs.is_empty());
         assert!(options.user_data.is_none());
         assert!(options.shutdown.is_none());
+    }
+
+    #[test]
+    fn explicit_backends_win_over_the_environment() {
+        assert_eq!(
+            resolve_wgpu_backends(Some(WgpuBackends::Dx12), Some("vulkan")).unwrap(),
+            WgpuBackends::Dx12
+        );
+        assert_eq!(
+            resolve_wgpu_backends(Some(WgpuBackends::Gl), Some("garbage")).unwrap(),
+            WgpuBackends::Gl
+        );
+    }
+
+    #[test]
+    fn environment_selects_the_graphics_api_case_insensitively() {
+        for (value, expected) in [
+            ("vulkan", WgpuBackends::Vulkan),
+            (" DX12 ", WgpuBackends::Dx12),
+            ("Metal", WgpuBackends::Metal),
+            ("gl", WgpuBackends::Gl),
+            ("all", WgpuBackends::All),
+            ("wgpu", WgpuBackends::Primary),
+            ("auto", WgpuBackends::Primary),
+        ] {
+            assert_eq!(
+                resolve_wgpu_backends(None, Some(value)).unwrap(),
+                expected,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn unset_or_blank_environment_defaults_to_primary() {
+        assert_eq!(
+            resolve_wgpu_backends(None, None).unwrap(),
+            WgpuBackends::Primary
+        );
+        assert_eq!(
+            resolve_wgpu_backends(None, Some("  ")).unwrap(),
+            WgpuBackends::Primary
+        );
+    }
+
+    #[test]
+    fn unknown_values_name_the_variable_and_the_accepted_apis() {
+        let error = resolve_wgpu_backends(None, Some("glide"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ENGINE_RENDER_BACKEND"), "{error}");
+        assert!(
+            error.contains("primary, vulkan, dx12, metal, gl or all"),
+            "{error}"
+        );
     }
 }
