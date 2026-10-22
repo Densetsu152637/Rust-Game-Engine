@@ -12,6 +12,8 @@ anyhow = "=1.0.104"
 bevy_ecs = { version = "=0.20.0", default-features = false, features = ["std", "async_executor", "multi_threaded", "backtrace"] }
 glam = "=0.34.1"
 engine-core = { path = "crates/engine-core" }
+base64 = "0.22"
+regex = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

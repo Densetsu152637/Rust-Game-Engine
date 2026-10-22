@@ -3,8 +3,8 @@
 //! in-memory readers/writers and temporary directories.
 
 use engine_mcp::{
-    Error, LEGACY_PROTOCOL_VERSION, MAX_MESSAGE_BYTES, MODERN_PROTOCOL_VERSION, serve,
-    serve_with_limit,
+    Error, LEGACY_PROTOCOL_VERSION, MAX_MESSAGE_BYTES, MODERN_PROTOCOL_VERSION,
+    OLDER_CLIENT_VERSIONS, serve, serve_with_limit,
 };
 use serde_json::{Value, json};
 use std::{
@@ -133,7 +133,7 @@ fn code(response: &Value) -> i64 {
 }
 fn tool_error_text(response: &Value) -> String {
     assert_eq!(response["result"]["isError"], true, "{response}");
-    response["result"]["structuredContent"]["error"]
+    response["result"]["structuredContent"]["error"]["message"]
         .as_str()
         .unwrap_or_default()
         .to_string()
@@ -487,10 +487,60 @@ fn initialize_reports_the_legacy_version_name_and_capabilities() {
         response["result"]["serverInfo"],
         json!({"name":"cpp-game-engine","version":"0.1.0"})
     );
-    assert_eq!(
-        response["result"]["capabilities"],
-        json!({"tools":{"listChanged":false}})
+    assert_eq!(response["result"]["capabilities"], capabilities());
+    assert!(
+        response["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("project_info")
     );
+}
+
+fn capabilities() -> Value {
+    json!({"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false}})
+}
+
+macro_rules! older_client_versions {
+    ($($name:ident: $version:expr;)*) => {$(
+        #[test]
+        fn $name() {
+            let response = one(&[legacy_with(1, "initialize", json!({"protocolVersion": $version}))]);
+            assert_eq!(response["result"]["protocolVersion"], LEGACY_PROTOCOL_VERSION);
+            assert_eq!(response["result"]["capabilities"], capabilities());
+        }
+    )*};
+}
+
+older_client_versions! {
+    client_2025_06_18_negotiates_to_the_legacy_version: "2025-06-18";
+    client_2025_03_26_negotiates_to_the_legacy_version: "2025-03-26";
+    client_2024_11_05_negotiates_to_the_legacy_version: "2024-11-05";
+    client_proposing_the_modern_version_via_initialize_gets_the_legacy_one: MODERN_PROTOCOL_VERSION;
+}
+
+#[test]
+fn documented_older_versions_are_listed() {
+    assert_eq!(OLDER_CLIENT_VERSIONS, ["2025-06-18", "2025-03-26"]);
+}
+
+#[test]
+fn legacy_requests_may_carry_unrelated_meta_after_the_handshake() {
+    let dir = fixture();
+    let mut requests = handshake();
+    requests.push(legacy_with(
+        1,
+        "tools/call",
+        json!({"name":"project_info","arguments":{},"_meta":{"progressToken":"p1"}}),
+    ));
+    requests.push(legacy_with(
+        2,
+        "tools/list",
+        json!({"_meta":{"progressToken":7}}),
+    ));
+    let responses = run(dir.path(), &requests);
+    assert_eq!(responses[1]["result"]["isError"], false, "{}", responses[1]);
+    assert!(responses[1]["result"].get("resultType").is_none());
+    assert!(responses[2]["result"]["tools"].is_array());
 }
 
 #[test]
@@ -625,12 +675,12 @@ fn ping_after_the_handshake_returns_an_empty_object() {
 fn unknown_legacy_method_names_itself_in_the_error() {
     let dir = empty_root();
     let mut requests = handshake();
-    requests.push(legacy(1, "resources/list"));
+    requests.push(legacy(1, "prompts/get"));
     let responses = run(dir.path(), &requests);
     assert_eq!(code(&responses[1]), -32601);
     assert_eq!(
         responses[1]["error"]["message"],
-        "method not found: resources/list"
+        "method not found: prompts/get"
     );
 }
 
@@ -649,7 +699,7 @@ macro_rules! unsupported_methods {
 
 unsupported_methods! {
     prompts_list_is_not_implemented: "prompts/list";
-    resources_read_is_not_implemented: "resources/read";
+    resources_subscribe_is_not_implemented: "resources/subscribe";
     completion_is_not_implemented: "completion/complete";
     logging_set_level_is_not_implemented: "logging/setLevel";
     empty_method_name_is_not_implemented: "";
@@ -667,12 +717,15 @@ fn legacy_server_discover_without_metadata_is_a_metadata_error() {
 }
 
 #[test]
-fn legacy_tools_list_enumerates_two_tools() {
+fn legacy_tools_list_enumerates_the_read_only_tools() {
     let dir = empty_root();
     let mut requests = handshake();
     requests.push(legacy(1, "tools/list"));
     let responses = run(dir.path(), &requests);
-    assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        responses[1]["result"]["tools"].as_array().unwrap().len(),
+        READ_TOOLS.len()
+    );
 }
 
 // ---- modern negotiation ----------------------------------------------------------------
@@ -685,10 +738,7 @@ fn server_discover_lists_the_single_supported_version() {
         result["supportedVersions"],
         json!([MODERN_PROTOCOL_VERSION])
     );
-    assert_eq!(
-        result["capabilities"],
-        json!({"tools":{"listChanged":false}})
-    );
+    assert_eq!(result["capabilities"], capabilities());
     assert_eq!(result["resultType"], "complete");
     assert_eq!(
         result["_meta"]["io.modelcontextprotocol/serverInfo"],
@@ -700,7 +750,10 @@ fn server_discover_lists_the_single_supported_version() {
 fn modern_requests_work_without_any_handshake() {
     let response = one(&[modern(json!(1), "tools/list", json!({}))]);
     assert_eq!(response["result"]["resultType"], "complete");
-    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        response["result"]["tools"].as_array().unwrap().len(),
+        READ_TOOLS.len()
+    );
 }
 
 #[test]
@@ -795,11 +848,11 @@ fn metadata_errors_for_notifications_are_silent() {
 
 #[test]
 fn modern_unknown_method_is_not_found() {
-    let response = one(&[modern(json!(1), "resources/list", json!({}))]);
+    let response = one(&[modern(json!(1), "prompts/list", json!({}))]);
     assert_eq!(code(&response), -32601);
     assert_eq!(
         response["error"]["message"],
-        "method not found: resources/list"
+        "method not found: prompts/list"
     );
 }
 
@@ -825,17 +878,33 @@ fn tools() -> Vec<Value> {
         .clone()
 }
 
+/// The always-available tools, in listing order.
+const READ_TOOLS: [&str; 12] = [
+    "project_info",
+    "project_validate",
+    "input_actions",
+    "scene_list",
+    "scene_inspect",
+    "entity_get",
+    "component_schema",
+    "asset_list",
+    "asset_info",
+    "file_list",
+    "file_read",
+    "search_text",
+];
+
 #[test]
-fn tool_names_are_project_validate_then_scene_inspect() {
+fn read_only_servers_list_exactly_the_read_tools_in_order() {
     let names: Vec<_> = tools()
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(names, ["project_validate", "scene_inspect"]);
+    assert_eq!(names, READ_TOOLS);
 }
 
 #[test]
-fn every_tool_is_declared_read_only_and_closed_world() {
+fn every_listed_tool_is_declared_read_only_and_closed_world() {
     for tool in tools() {
         let a = &tool["annotations"];
         assert_eq!(a["readOnlyHint"], true, "{tool}");
@@ -846,24 +915,85 @@ fn every_tool_is_declared_read_only_and_closed_world() {
 }
 
 #[test]
-fn every_tool_schema_is_a_closed_single_string_object() {
-    for (tool, field) in tools().iter().zip(["manifest", "scene"]) {
+fn every_tool_schema_is_a_closed_object_with_described_properties() {
+    for tool in tools() {
         let schema = &tool["inputSchema"];
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["required"], json!([field]));
-        assert_eq!(schema["properties"][field]["type"], "string");
-        assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
+        assert_eq!(schema["type"], "object", "{tool}");
+        assert_eq!(schema["additionalProperties"], false, "{tool}");
+        let properties = schema["properties"].as_object().unwrap();
+        for (name, property) in properties {
+            assert!(
+                property["description"]
+                    .as_str()
+                    .is_some_and(|d| d.len() > 8),
+                "{} property {name} needs a description",
+                tool["name"]
+            );
+            assert!(property["type"].is_string(), "{} {name}", tool["name"]);
+        }
+        for required in schema["required"].as_array().unwrap() {
+            assert!(properties.contains_key(required.as_str().unwrap()));
+        }
     }
 }
 
 #[test]
-fn every_tool_has_a_non_empty_description() {
-    assert!(
-        tools()
-            .iter()
-            .all(|t| t["description"].as_str().is_some_and(|d| d.len() > 20))
+fn path_tools_require_a_string_path() {
+    let by_name = |name: &str| tools().into_iter().find(|t| t["name"] == name).unwrap();
+    assert_eq!(
+        by_name("scene_inspect")["inputSchema"]["required"],
+        json!(["scene"])
     );
+    assert_eq!(
+        by_name("scene_inspect")["inputSchema"]["properties"]["scene"]["type"],
+        "string"
+    );
+    assert_eq!(
+        by_name("project_validate")["inputSchema"]["required"],
+        json!([])
+    );
+    assert_eq!(
+        by_name("file_read")["inputSchema"]["required"],
+        json!(["path"])
+    );
+    assert_eq!(
+        by_name("search_text")["inputSchema"]["required"],
+        json!(["query"])
+    );
+}
+
+#[test]
+fn every_tool_has_a_title_description_and_output_schema() {
+    for tool in tools() {
+        assert!(
+            tool["title"].as_str().is_some_and(|t| t.len() > 3),
+            "{tool}"
+        );
+        assert!(
+            tool["description"].as_str().is_some_and(|d| d.len() > 60),
+            "{tool}"
+        );
+        let output = &tool["outputSchema"];
+        assert_eq!(output["type"], "object", "{tool}");
+        assert_eq!(output["required"], json!(["ok"]));
+        assert!(output["properties"]["error"]["properties"]["hint"].is_object());
+    }
+}
+
+#[test]
+fn enumerated_arguments_declare_their_values() {
+    let tool = tools()
+        .into_iter()
+        .find(|t| t["name"] == "asset_list")
+        .unwrap();
+    let kinds = &tool["inputSchema"]["properties"]["kind"]["enum"];
+    assert!(kinds.as_array().unwrap().contains(&json!("texture")));
+    let tool = tools()
+        .into_iter()
+        .find(|t| t["name"] == "file_list")
+        .unwrap();
+    assert_eq!(tool["inputSchema"]["properties"]["path"]["default"], ".");
+    assert_eq!(tool["inputSchema"]["properties"]["limit"]["maximum"], 1000);
 }
 
 #[test]
@@ -901,7 +1031,7 @@ bad_calls! {
     call_arguments_must_be_an_object_not_a_string: json!({"name": "project_validate", "arguments": "project.json"});
     call_arguments_must_be_an_object_not_null: json!({"name": "project_validate", "arguments": null});
     call_rejects_unknown_top_level_members: json!({"name": "project_validate", "arguments": {"manifest": "project.json"}, "extra": 1});
-    call_rejects_missing_required_argument: json!({"name": "project_validate", "arguments": {}});
+    call_rejects_missing_required_argument: json!({"name": "scene_inspect", "arguments": {}});
     call_rejects_unknown_argument: json!({"name": "project_validate", "arguments": {"manifest": "project.json", "output": "x"}});
     call_rejects_wrong_argument_name_for_the_tool: json!({"name": "project_validate", "arguments": {"scene": "scenes/start.json"}});
     scene_call_rejects_manifest_argument: json!({"name": "scene_inspect", "arguments": {"manifest": "project.json"}});
@@ -1080,9 +1210,57 @@ fn project_validate_accepts_a_good_manifest() {
             json!({"manifest":"project.json"}),
         )],
     );
-    assert_eq!(
-        responses[0]["result"]["structuredContent"],
-        json!({"ok":true,"command":"project validate","diagnostics":[]})
+    let result = &responses[0]["result"]["structuredContent"];
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["command"], "project validate");
+    assert_eq!(result["diagnostics"], json!([]));
+    assert_eq!(result["project"], "Fixture");
+    assert_eq!(result["assets"], 2);
+}
+
+#[test]
+fn project_validate_defaults_to_the_root_manifest() {
+    let dir = fixture();
+    let responses = run(dir.path(), &[modern_call(1, "project_validate", json!({}))]);
+    assert_eq!(responses[0]["result"]["isError"], false, "{}", responses[0]);
+}
+
+#[test]
+fn tool_failures_are_structured_with_code_message_and_hint() {
+    let dir = fixture();
+    let responses = run(
+        dir.path(),
+        &[modern_call(1, "scene_inspect", json!({"scene":"../x"}))],
+    );
+    let error = &responses[0]["result"]["structuredContent"]["error"];
+    assert_eq!(error["code"], "path_invalid");
+    assert!(error["message"].as_str().unwrap().contains("scene path"));
+    assert!(error["hint"].as_str().unwrap().contains("project-relative"));
+}
+
+#[test]
+fn diagnostics_failures_carry_the_error_object_and_the_diagnostics() {
+    let dir = fixture();
+    fs::remove_file(dir.path().join("assets/white.ppm")).unwrap();
+    let responses = run(dir.path(), &[modern_call(1, "project_validate", json!({}))]);
+    let result = &responses[0]["result"]["structuredContent"];
+    assert_eq!(result["ok"], false);
+    let diagnostic = &result["diagnostics"][0];
+    for key in ["code", "severity", "file", "path", "message"] {
+        assert!(diagnostic.get(key).is_some(), "{key} missing: {result}");
+    }
+    assert_eq!(result["error"]["code"], diagnostic["code"]);
+    assert!(result["error"]["hint"].is_string());
+    let text = result.to_string();
+    let folder = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        !text.contains(&folder),
+        "diagnostics must not reveal the host path: {text}"
     );
 }
 
@@ -1436,8 +1614,15 @@ fn reader_failure_is_returned_as_an_io_error() {
 #[test]
 fn oversized_legacy_tool_results_are_replaced_without_modern_metadata() {
     let dir = fixture();
-    let entities: Vec<Value> = (0..5_000)
-        .map(|i| json!({"id": format!("entity:{i}"), "name": "x".repeat(150), "components": {}}))
+    // Each sprite carries 4096 animation frames (~40 KiB); a default page of
+    // 200 such entities is far beyond 1 MiB.
+    let frames: Vec<Value> = (0..4096).map(|_| json!([0, 0, 1, 1])).collect();
+    let entities: Vec<Value> = (0..200)
+        .map(|i| {
+            json!({"id": format!("entity:{i}"), "name": "x", "components": {
+                "Transform": {"position": [0, 0, 0]},
+                "SpriteRenderer": {"texture": "asset:texture", "frames": frames}}})
+        })
         .collect();
     fs::write(
         dir.path().join("scenes/huge.json"),
@@ -1455,12 +1640,10 @@ fn oversized_legacy_tool_results_are_replaced_without_modern_metadata() {
     assert_eq!(responses[1]["id"], 9);
     assert_eq!(responses[1]["result"]["isError"], true);
     assert!(responses[1]["result"].get("resultType").is_none());
-    assert!(
-        responses[1]["result"]["structuredContent"]["error"]
-            .as_str()
-            .unwrap()
-            .contains("1 MiB")
-    );
+    let error = &responses[1]["result"]["structuredContent"]["error"];
+    assert!(error["message"].as_str().unwrap().contains("1 MiB"));
+    assert_eq!(error["code"], "output_too_large");
+    assert!(error["hint"].is_string());
     assert_eq!(
         responses[2]["result"],
         json!({}),
