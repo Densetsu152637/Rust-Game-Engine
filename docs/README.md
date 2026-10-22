@@ -38,6 +38,7 @@
 - [Desktop packages](desktop-packaging.md): relocatable packages and dependency
   notices.
 - [Editor](editor.md): the native Windows editor and its play host.
-- [MCP adapter](mcp.md): the read-only stdio protocol, tools and limits.
+- [MCP server](mcp.md): the stdio protocol, read/write/exec tools, resources,
+  access levels and limits.
 
 Per-crate details are in `crates/*/README.md`.

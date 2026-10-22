@@ -15,12 +15,16 @@ Lua scripting and mobile (Android/iOS) support were removed by design. See
 
 | Path | Purpose |
 | --- | --- |
-| `crates/engine-core` | `EngineApp`: simulation and render worlds, lifecycle, fixed ticks, graph scheduling, buffered values and change-driven render extraction |
+| `crates/engine-ecs` | ECS layer: Bevy ECS and glam re-exports, `Current`/`Next`/`Buffered` values, change-driven render-world extraction |
+| `crates/engine-log` | `tracing`-based logging: stderr-only subscriber, `ENGINE_LOG` filtering, bounded queryable `LogHistory` |
+| `crates/engine-core` | `EngineApp`: simulation and render worlds, lifecycle, fixed ticks, graph scheduling (re-exports `engine-ecs`) |
+| `crates/engine-render` | GPU-free graphics adapter interface: `RenderBackend`, `RenderDevice`, `RenderCommandBuffer`, WGSL validation, recording test backend |
+| `crates/engine-render-wgpu` | The wgpu backend: `GpuContext`, offscreen targets, Vulkan/DX12/Metal/GL selection |
 | `crates/engine-project` | Authored project and scene schema, stable IDs, `Runtime`, `NativeScript`, 2D collision, input mapping, modal UI, audio attachment, persistence, CPU render extraction, revisioned scene editing |
-| `crates/engine-desktop` | Main-thread winit window loop, wgpu renderer, offscreen readback, gamepad input, headless runner, extensible `NativeRenderPass` |
+| `crates/engine-desktop` | Main-thread winit window loop, sprite renderer over the render adapter, gamepad input, headless runner, extensible `NativeRenderPass` |
 | `crates/engine-audio` | PCM clips, deterministic stereo mixer, spatial sources, CPAL device output |
 | `crates/engine-editor` | Native Windows authoring editor plus a platform-independent `EditorController` |
-| `crates/engine-mcp` | Read-only MCP stdio adapter (project validation and scene inspection) |
+| `crates/engine-mcp` | MCP stdio server for agents: project/scene/asset/file read tools, `--allow-write` scene and file edits, `project://` resources, and a `ToolProvider` for the CLI's `--allow-exec` build/run/screenshot tools |
 | `crates/engine-tooling` | Native Rust compiler/launcher, generation management, asset index, shader import, packaging and the `engine` command-line tool |
 | `examples/first-project` | Minimal authored project with a game crate and lifecycle fixtures |
 | `examples/desktop-2d` | 2D desktop synthetic lab: sprites, text, collision, rooms, audio, saves |

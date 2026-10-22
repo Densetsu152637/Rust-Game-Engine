@@ -15,11 +15,16 @@ engine-core      EngineApp, stages, Time, run control (re-exports engine-ecs)
    ^
 engine-audio     clips, mixer, sources, CPAL output   (no ECS dependency)
    ^
+engine-render    GPU-free graphics adapter: RenderBackend, RenderDevice,
+                 RenderCommandBuffer, WGSL reflection, recording test backend
+   ^
+engine-render-wgpu  the GPU backend on wgpu (Vulkan/DX12/Metal/GL selection)
+   ^
 engine-project   authored schema + Runtime on top of engine-core
    ^
-engine-desktop   winit window loop, wgpu renderer, input devices, headless runner
+engine-desktop   winit window loop, sprite renderer over the adapter, input, headless runner
 engine-editor    native authoring editor (Windows) + EditorController
-engine-mcp       read-only MCP adapter over engine-project
+engine-mcp       MCP server: read tools, gated write tools, resources, ToolProvider
    ^
 engine-tooling   compiler/launcher, generations, assets, packaging, `engine` CLI
 ```
@@ -146,11 +151,27 @@ through `engine-audio`, and present real frames. See
 [Desktop rendering](desktop-2d-rendering.md) for the render contract and the
 native extension points.
 
+## Rendering
+
+`engine-render` is a thin adapter that keeps the renderer independent of wgpu types
+and makes rendering testable without a GPU. A `RenderDevice` owns typed shader,
+mesh and texture handles, validates draws against reflected WGSL and defers
+destruction across frames in flight; `RenderCommandBuffer` orders draws serially or
+by stable `(producer, draw)` keys. `RecordingBackend` is the deterministic headless
+backend used by tests. `engine-render-wgpu` is the only GPU backend: wgpu already
+abstracts Vulkan, DX12, Metal and GL, selected with `WgpuBackends` or
+`ENGINE_RENDER_BACKEND`, so there is no separate native-API backend.
+`NativeRenderPass` remains wgpu-specific by design. See
+[Desktop rendering](desktop-2d-rendering.md).
+
 ## Tooling
 
 `engine-tooling` compiles the game crate with Cargo, fingerprints generations,
 keeps the last good generation when a candidate fails, builds asset indexes,
-validates WGSL and creates relocatable packages. See [Project commands](commands.md),
+validates WGSL and creates relocatable packages. The `engine` binary installs the
+`engine-log` subscriber at startup (stderr only) and registers the execution MCP
+tools (`project_build`, `project_run_headless`, `render_screenshot`) through
+`engine_mcp::ToolProvider` when `engine mcp` runs with `--allow-exec`. See [Project commands](commands.md),
 [Desktop packages](desktop-packaging.md), [Editor](editor.md) and [MCP](mcp.md).
 
 ## Design decisions
