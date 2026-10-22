@@ -1,0 +1,222 @@
+name: CI
+
+# Required jobs run for every pull request and for pushes to main. They are not
+# path filtered, so required checks cannot be left Pending.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit bash enables pipefail, so a failing cargo test cannot be hidden
+    # by the tee pipeline. Windows runners use Git for Windows bash.
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: "1"
+  # Aggregate number of passed tests required across the workspace and the
+  # standalone example crates. Ignored tests (real GPU, audio device and
+  # interactive native UI) never count as passed.
+  MINIMUM_PASSED_TESTS: "1000"
+
+jobs:
+  lint:
+    name: Format and Clippy (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            .
+            examples/desktop-2d
+            examples/first-project
+            examples/native-extension
+            assets/scripts/moving_entity
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: cargo fmt (workspace)
+        run: cargo fmt --all --check
+      - name: cargo fmt (standalone example crates)
+        run: |
+          for crate in examples/desktop-2d examples/first-project examples/native-extension assets/scripts/moving_entity; do
+            cargo fmt --check --manifest-path "$crate/Cargo.toml"
+          done
+      - name: cargo clippy (workspace)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: cargo clippy (standalone example crates)
+        run: |
+          for crate in examples/desktop-2d examples/first-project examples/native-extension assets/scripts/moving_entity; do
+            cargo clippy --manifest-path "$crate/Cargo.toml" --all-targets -- -D warnings
+          done
+
+  workspace-tests:
+    name: Workspace tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Tests marked #[ignore] (real GPU, audio device, interactive native UI)
+      # are deliberately not run: hosted runners have no such devices.
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+      - name: Count passed tests
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir counts
+          bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log" > counts/workspace.count
+          {
+            echo "### Workspace tests"
+            echo
+            echo "Passed: $(cat counts/workspace.count)"
+            echo
+            echo '```text'
+            bash scripts/ci/test-count.sh breakdown "$RUNNER_TEMP/workspace.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: test-count-workspace
+          path: counts/workspace.count
+          if-no-files-found: error
+
+  # Each example is its own Cargo workspace root with a local, uncommitted
+  # Cargo.lock, so these jobs resolve dependencies without --locked.
+  example-tests:
+    name: Example tests (${{ matrix.name }})
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: desktop-2d
+            path: examples/desktop-2d
+          - name: first-project
+            path: examples/first-project
+          - name: native-extension
+            path: examples/native-extension
+          - name: moving-entity
+            path: assets/scripts/moving_entity
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ${{ matrix.path }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Validate desktop-2d fixture assets
+        if: ${{ matrix.name == 'desktop-2d' }}
+        run: python examples/desktop-2d/tools/validate_fixture.py
+      - name: cargo test (${{ matrix.path }})
+        env:
+          MANIFEST: ${{ matrix.path }}/Cargo.toml
+        run: cargo test --manifest-path "$MANIFEST" 2>&1 | tee "$RUNNER_TEMP/example.log"
+      - name: Count passed tests
+        if: ${{ !cancelled() }}
+        env:
+          COUNT_FILE: counts/example-${{ matrix.name }}.count
+        run: |
+          mkdir counts
+          bash scripts/ci/test-count.sh count "$RUNNER_TEMP/example.log" > "$COUNT_FILE"
+          {
+            echo "### Example tests: ${{ matrix.name }}"
+            echo
+            echo "Passed: $(cat "$COUNT_FILE")"
+            echo
+            echo '```text'
+            bash scripts/ci/test-count.sh breakdown "$RUNNER_TEMP/example.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: test-count-example-${{ matrix.name }}
+          path: counts/example-${{ matrix.name }}.count
+          if-no-files-found: error
+
+  test-count-gate:
+    name: Test count gate
+    needs: [workspace-tests, example-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: test-count-*
+          merge-multiple: true
+          path: counts
+      - name: Require the minimum number of passed tests
+        run: |
+          ls -l counts
+          bash scripts/ci/test-count.sh gate "$MINIMUM_PASSED_TESTS" counts/*.count | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Portable crates on Linux. engine-editor builds here through its explicit
+  # unsupported-platform fallback; the Win32 controls and their tests are
+  # cfg(windows). The apt packages provide the native audio (ALSA), gamepad
+  # (udev) and window-system development libraries the desktop crates link.
+  linux-tests:
+    name: Workspace tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+      - name: Report passed tests
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "### Workspace tests (Linux)"
+            echo
+            echo "Passed: $(bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log")"
+          } >> "$GITHUB_STEP_SUMMARY"
