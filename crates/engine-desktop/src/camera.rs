@@ -34,8 +34,11 @@ impl CameraView {
         );
         let fit = (width as f64 / lw as f64).min(height as f64 / lh as f64);
         let scale = if fit >= 1.0 { fit.floor() } else { fit };
-        let vw = ((lw as f64 * scale).floor() as u32).max(1).min(width);
-        let vh = ((lh as f64 * scale).floor() as u32).max(1).min(height);
+        // A fractional scale is a quotient (e.g. 98 / 180), so the product can land
+        // just below the integer window size; the epsilon keeps the fit exact.
+        let extent = |logical: u32| (logical as f64 * scale + 1e-9).floor() as u32;
+        let vw = extent(lw).max(1).min(width);
+        let vh = extent(lh).max(1).min(height);
         let viewport = PixelRect {
             x: (width - vw) / 2,
             y: (height - vh) / 2,
