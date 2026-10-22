@@ -177,6 +177,28 @@ pub(super) fn scene_paths(project: &Project) -> Vec<(String, Option<String>, boo
     result
 }
 
+/// The canonical file behind a project-relative path, or `None` when it does
+/// not exist (or leaves the root).
+fn canonical_in(root: &Path, relative: &str) -> Option<std::path::PathBuf> {
+    std::fs::canonicalize(root.join(relative))
+        .ok()
+        .filter(|c| c.starts_with(root))
+}
+
+/// True when the canonical `file` is the project's startup scene or one of its
+/// scene assets. Comparing canonical paths (not strings) means case variants and
+/// 8.3 short names of a catalog scene still count as that scene.
+pub(super) fn is_catalog_scene(root: &Path, project: &Project, file: &Path) -> bool {
+    scene_paths(project)
+        .iter()
+        .any(|(path, _, _)| canonical_in(root, path).is_some_and(|c| c == file))
+}
+
+/// True when the canonical `file` is the project manifest `project.json`.
+pub(super) fn is_manifest(root: &Path, file: &Path) -> bool {
+    canonical_in(root, "project.json").is_some_and(|c| c == file)
+}
+
 fn scene_list(cx: &ToolContext<'_>, _args: &Map<String, Value>) -> ToolOutcome {
     let project = cx.project()?;
     let scenes: Vec<Value> = scene_paths(&project)
@@ -251,7 +273,7 @@ fn scene_inspect(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome
     if !missing.is_empty() {
         result["missing_entities"] = json!(missing);
     }
-    Ok(ToolResult::new(result))
+    Ok(ToolResult::new(result).verbatim())
 }
 
 /// Catalog entries referenced by an entity's components.
@@ -311,5 +333,6 @@ fn entity_get(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
         "revision": loaded.revision,
         "entity": clean(entity),
         "assets": referenced_assets(&loaded.project, entity),
-    })))
+    }))
+    .verbatim())
 }

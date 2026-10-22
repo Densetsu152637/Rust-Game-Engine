@@ -6,13 +6,16 @@ use crate::{
     config::{Access, AccessLevel, Limits, ServerConfig},
     error::{Error, Result},
     paths,
+    scrub::Scrubber,
 };
 use engine_project::Project;
 use serde_json::{Map, Value, json};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 /// MCP tool annotations. All hints are advisory for clients.
@@ -117,6 +120,11 @@ impl Content {
 pub struct ToolResult {
     pub data: Value,
     pub extra_content: Vec<Content>,
+    /// The result carries project file text or authored data that must reach the
+    /// client unchanged. The registry scrubs host paths from every other result
+    /// (see [`crate::scrub`]); rewriting file content would corrupt what an agent
+    /// reads, edits and writes back.
+    pub verbatim: bool,
 }
 
 impl ToolResult {
@@ -127,7 +135,13 @@ impl ToolResult {
         Self {
             data,
             extra_content: Vec::new(),
+            verbatim: false,
         }
+    }
+    /// Marks the payload as project content that must not be path-scrubbed.
+    pub fn verbatim(mut self) -> Self {
+        self.verbatim = true;
+        self
     }
     pub fn with_content(mut self, content: Content) -> Self {
         self.extra_content.push(content);
@@ -201,74 +215,6 @@ impl ToolFailure {
         }
         value
     }
-
-    /// Removes the host's project root from messages and diagnostics so results
-    /// never reveal where the project lives on disk.
-    pub(crate) fn sanitize(&mut self, root: &Path) {
-        // Paths may appear with doubled backslashes (Rust `Debug` output quotes
-        // them) or mixed separators, so compare with every run of separators
-        // collapsed to one `/`.
-        let collapse = |text: &str| -> String {
-            let mut out = String::with_capacity(text.len());
-            let mut previous_separator = false;
-            for c in text.chars() {
-                let separator = c == '\\' || c == '/';
-                if !(separator && previous_separator) {
-                    out.push(if separator { '/' } else { c });
-                }
-                previous_separator = separator;
-            }
-            out
-        };
-        let verbatim = collapse(&root.to_string_lossy());
-        let plain = verbatim.strip_prefix("/?/").unwrap_or(&verbatim).to_owned();
-        let scrub = |text: &str| -> String {
-            let collapsed = collapse(text);
-            if ![verbatim.as_str(), plain.as_str()]
-                .iter()
-                .any(|needle| !needle.is_empty() && collapsed.contains(needle))
-            {
-                return text.to_owned();
-            }
-            let mut text = collapsed;
-            for needle in [verbatim.as_str(), plain.as_str()] {
-                if !needle.is_empty() {
-                    text = text.replace(&format!("{needle}/"), "").replace(needle, ".");
-                }
-            }
-            text
-        };
-        self.message = scrub(&self.message);
-        if let Some(hint) = &self.hint {
-            self.hint = Some(scrub(hint));
-        }
-        if let Some(details) = &mut self.details {
-            scrub_strings(details, &scrub);
-        }
-        for diagnostic in &mut self.diagnostics {
-            scrub_strings(diagnostic, &scrub);
-            // A file that is still absolute cannot be shown relative to the
-            // project: keep only its final component.
-            if let Some(file) = diagnostic["file"].as_str()
-                && looks_absolute(file)
-            {
-                diagnostic["file"] = json!(file.rsplit(['/', '\\']).next().unwrap_or(""));
-            }
-        }
-    }
-}
-
-fn scrub_strings(value: &mut Value, scrub: &dyn Fn(&str) -> String) {
-    match value {
-        Value::String(text) => *text = scrub(text),
-        Value::Array(items) => items.iter_mut().for_each(|item| scrub_strings(item, scrub)),
-        Value::Object(map) => map.values_mut().for_each(|item| scrub_strings(item, scrub)),
-        _ => {}
-    }
-}
-
-fn looks_absolute(path: &str) -> bool {
-    path.starts_with('/') || path.as_bytes().get(1) == Some(&b':')
 }
 
 impl From<engine_project::Error> for ToolFailure {
@@ -394,6 +340,8 @@ struct Entry {
 pub struct Registry {
     entries: Vec<Entry>,
     gated: BTreeMap<String, AccessLevel>,
+    /// Host-path scrubber for tool results, built on the first call.
+    scrubber: OnceLock<Scrubber>,
 }
 
 impl Registry {
@@ -404,6 +352,7 @@ impl Registry {
                 .iter()
                 .map(|name| ((*name).to_owned(), AccessLevel::Exec))
                 .collect(),
+            scrubber: OnceLock::new(),
         };
         let mut candidates = crate::tools::builtin();
         for provider in &config.providers {
@@ -472,13 +421,38 @@ impl Registry {
                     format!("tool {name} failed unexpectedly"),
                 ))
             });
+        let scrubber = self.scrubber_for(cx.root);
         Ok(match outcome {
-            Ok(result) => tool_result_json(&result.data, &result.extra_content, false),
-            Err(mut failure) => {
-                failure.sanitize(cx.root);
-                tool_result_json(&failure.to_json(), &[], true)
+            Ok(mut result) => {
+                if !result.verbatim {
+                    scrubber.scrub_value(&mut result.data);
+                    for content in &mut result.extra_content {
+                        if let Content::Text(text) = content {
+                            *text = scrubber.scrub_str(text);
+                        }
+                    }
+                }
+                tool_result_json(&result.data, &result.extra_content, false)
+            }
+            Err(failure) => {
+                // Failures are always scrubbed: messages, hints, details and
+                // diagnostics (compiler output carries cargo and temp paths).
+                let mut data = failure.to_json();
+                scrubber.scrub_value(&mut data);
+                tool_result_json(&data, &[], true)
             }
         })
+    }
+
+    /// The scrubber for `root`, built once per registry (a registry serves one
+    /// root; a different root gets a throw-away scrubber).
+    fn scrubber_for(&self, root: &Path) -> Cow<'_, Scrubber> {
+        let cached = self.scrubber.get_or_init(|| Scrubber::new(root));
+        if cached.root() == root {
+            Cow::Borrowed(cached)
+        } else {
+            Cow::Owned(Scrubber::new(root))
+        }
     }
 }
 
@@ -515,50 +489,4 @@ pub(crate) fn tool_result_json(data: &Value, extra: &[Content], failed: bool) ->
     let mut content = vec![json!({"type": "text", "text": data.to_string()})];
     content.extend(extra.iter().map(Content::to_json));
     json!({"content": content, "structuredContent": data, "isError": failed})
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn failure_with(text: &str) -> ToolFailure {
-        ToolFailure::new("x", text).with_diagnostics(vec![
-            json!({"code": "c", "severity": "error", "file": text, "path": "", "message": text}),
-        ])
-    }
-
-    #[test]
-    fn sanitize_removes_the_root_in_every_spelling() {
-        let root = Path::new(r"\\?\D:\Work Space\proj");
-        for text in [
-            r"\\?\D:\Work Space\proj\src\lib.rs",
-            r"D:\Work Space\proj\src\lib.rs",
-            // Rust `Debug` output doubles the backslashes.
-            r"\\\\?\\D:\\Work Space\\proj\\src\\lib.rs",
-            "D:/Work Space/proj/src/lib.rs",
-        ] {
-            let mut failure = failure_with(text);
-            failure.sanitize(root);
-            assert_eq!(failure.message, "src/lib.rs", "{text}");
-            assert_eq!(failure.diagnostics[0]["file"], "src/lib.rs", "{text}");
-            assert_eq!(failure.diagnostics[0]["message"], "src/lib.rs", "{text}");
-        }
-    }
-
-    #[test]
-    fn sanitize_leaves_unrelated_text_and_backslashes_alone() {
-        let mut failure = failure_with(r"regex \d+ is invalid");
-        failure.sanitize(Path::new("/home/user/project"));
-        assert_eq!(failure.message, r"regex \d+ is invalid");
-    }
-
-    #[test]
-    fn sanitize_reduces_foreign_absolute_files_to_their_name() {
-        let mut failure = failure_with("/etc/passwd");
-        failure.sanitize(Path::new("/home/user/project"));
-        assert_eq!(failure.diagnostics[0]["file"], "passwd");
-        let mut failure = failure_with(r"C:\Windows\win.ini");
-        failure.sanitize(Path::new("/home/user/project"));
-        assert_eq!(failure.diagnostics[0]["file"], "win.ini");
-    }
 }

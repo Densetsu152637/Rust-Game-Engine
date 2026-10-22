@@ -2,7 +2,7 @@
 //! `file_write` (write access only). Everything is confined to the project root
 //! and bounded in size; see [`crate::paths`].
 
-use super::{Spec, scene::scene_paths, tool};
+use super::{Spec, scene, tool};
 use crate::{
     config::AccessLevel,
     paths::{self, ReadError},
@@ -50,7 +50,7 @@ pub(super) fn read_tools() -> Vec<Box<dyn Tool>> {
                         (
                             "glob",
                             schema::string(
-                                "Only files whose project-relative path matches, for example `scenes/**/*.json`.",
+                                "Only files whose project-relative path matches, for example `scenes/**/*.json` (at most 512 bytes).",
                             ),
                         ),
                         (
@@ -181,7 +181,7 @@ pub(super) fn read_tools() -> Vec<Box<dyn Tool>> {
                         (
                             "glob",
                             schema::string(
-                                "Only files whose project-relative path matches this glob.",
+                                "Only files whose project-relative path matches this glob (at most 512 bytes).",
                             ),
                         ),
                         (
@@ -288,6 +288,19 @@ fn has_extension(path: &str, wanted: &str) -> bool {
         .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(wanted))
 }
 
+/// The optional `glob` argument, capped like `query`: matching costs
+/// O(pattern x path) per entry, so an unbounded pattern is a CPU lever.
+fn glob_argument<'a>(a: &Args<'a>) -> Result<Option<&'a str>, ToolFailure> {
+    let glob = a.optional_string("glob")?;
+    if glob.is_some_and(|g| g.len() > paths::MAX_GLOB_BYTES) {
+        return Err(schema::invalid(
+            "glob",
+            &format!("at most {} bytes", paths::MAX_GLOB_BYTES),
+        ));
+    }
+    Ok(glob)
+}
+
 fn directory_argument(cx: &ToolContext<'_>, a: &Args<'_>) -> Result<PathBuf, ToolFailure> {
     let text = a.optional_string("path")?.unwrap_or(".");
     paths::resolve_existing_dir(cx.root, text).ok_or_else(|| paths::invalid_path("path"))
@@ -297,7 +310,7 @@ fn file_list(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     let a = Args(args);
     let directory = directory_argument(cx, &a)?;
     let extension = extension_filter(a.optional_string("extension")?);
-    let glob = a.optional_string("glob")?;
+    let glob = glob_argument(&a)?;
     let recursive = a.boolean("recursive", false)? || extension.is_some() || glob.is_some();
     let offset = a.integer("offset", 0, 10_000_000, 0)? as usize;
     let limit = a.integer("limit", 1, cx.limits.max_page_size as u64, 200)? as usize;
@@ -417,7 +430,7 @@ fn file_read(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     if truncated {
         result["next_start_line"] = json!(last + 1);
     }
-    Ok(ToolResult::new(result))
+    Ok(ToolResult::new(result).verbatim())
 }
 
 fn clip(line: &str) -> String {
@@ -437,7 +450,7 @@ fn search_text(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     let as_regex = a.boolean("regex", false)?;
     let case_sensitive = a.boolean("case_sensitive", false)?;
     let extension = extension_filter(a.optional_string("extension")?);
-    let glob = a.optional_string("glob")?;
+    let glob = glob_argument(&a)?;
     let max_results =
         a.integer("max_results", 1, cx.limits.max_search_results as u64, 50)? as usize;
     let context = a.integer("context_lines", 0, 3, 0)? as usize;
@@ -518,7 +531,7 @@ fn search_text(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     if let Some(reason) = reason {
         result["truncation_reason"] = json!(reason);
     }
-    Ok(ToolResult::new(result))
+    Ok(ToolResult::new(result).verbatim())
 }
 
 /// What a write was checked against, reported to the client.
@@ -548,7 +561,9 @@ fn file_write(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
         return Err(not_text().with_hint("Content must not contain NUL bytes."));
     }
     let target = paths::resolve_write_target(cx.root, path, "path")?;
-    let relative = super::slash(&paths::parse_relative(path).unwrap_or_default());
+    // The destination is canonical (real on-disk spelling), so the reported path
+    // and every decision below are immune to case variants and 8.3 aliases.
+    let relative = paths::display_relative(cx.root, &target.path);
 
     let mut previous: Option<(Vec<u8>, String)> = None;
     if target.exists {
@@ -583,13 +598,18 @@ fn file_write(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     // Validate before committing wherever the content can be checked in memory.
     let project = cx.project().ok();
     let mut validation = Validation::None;
+    // Decide by comparing canonical files, never strings: `PROJECT.JSON` and
+    // 8.3 aliases are the same file as `project.json` on Windows. A file that
+    // does not exist yet cannot be the manifest or a catalog scene.
+    let is_manifest = target.exists && scene::is_manifest(cx.root, &target.path);
     if let Some(project) = &project
-        && relative != "project.json"
-        && scene_paths(project).iter().any(|(p, _, _)| *p == relative)
+        && !is_manifest
+        && target.exists
+        && scene::is_catalog_scene(cx.root, project, &target.path)
     {
         let revision = validate_scene_text(project, &relative, content)?;
         validation = Validation::Scene(revision);
-    } else if project.is_some() && relative == "project.json" {
+    } else if project.is_some() && is_manifest {
         validation = Validation::Manifest;
     }
 

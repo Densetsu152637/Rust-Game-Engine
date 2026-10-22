@@ -173,7 +173,18 @@ impl SceneDocument {
         self.project.validate_scene(&self.scene)?;
         let destination = confined_file(&self.project.root, &self.scene.source)?;
         let bytes = serde_json::to_vec_pretty(&self.scene)?;
+        // The replacement goes through a temporary file, which Unix creates with
+        // mode 0600; remember the scene's own mode and put it back afterwards.
+        #[cfg(unix)]
+        let original_permissions = std::fs::metadata(&destination)
+            .ok()
+            .map(|m| m.permissions());
         crate::persistence::atomic_replace(&destination, &bytes, None)?;
+        #[cfg(unix)]
+        if let Some(permissions) = original_permissions {
+            // Best effort: the scene is already saved atomically.
+            let _ = std::fs::set_permissions(&destination, permissions);
+        }
         self.saved_revision = self.revision.clone();
         self.project.scene = self.scene.clone();
         Ok(self.revision.clone())

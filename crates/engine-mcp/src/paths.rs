@@ -10,11 +10,13 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-/// Directories that are never listed, searched or served as resources.
+/// Names that are never listed, searched, served, read or written, at any depth.
+/// They are matched case-insensitively against the *canonical on-disk* path, so
+/// case variants and Windows 8.3 short names (`GIT~1`) cannot reach them.
 const HIDDEN_DIRS: [&str; 3] = [".git", ".derived", "target"];
-/// Top-level directories the server refuses to write to.
-const PROTECTED_WRITE_DIRS: [&str; 2] = [".derived", "target"];
 const MAX_PATH_BYTES: usize = 1024;
+/// Longest glob accepted by `file_list` and `search_text` (same as `query`).
+pub const MAX_GLOB_BYTES: usize = 512;
 const MAX_DEPTH: usize = 32;
 
 /// "path" for the `path` argument, "<field> path" for others (`scene path`).
@@ -61,6 +63,7 @@ pub fn parse_relative(input: &str) -> Option<PathBuf> {
                     || name.ends_with('.')
                     || name.ends_with(' ')
                     || name.eq_ignore_ascii_case(".git")
+                    || is_reserved_device_name(name)
                 {
                     return None;
                 }
@@ -71,17 +74,70 @@ pub fn parse_relative(input: &str) -> Option<PathBuf> {
     Some(result)
 }
 
-/// An existing regular file inside the root (canonical), or `None`.
-pub fn resolve_existing_file(root: &Path, input: &str) -> Option<PathBuf> {
-    let relative = parse_relative(input).filter(|p| !p.as_os_str().is_empty())?;
-    engine_project::confined_file(root, &relative).ok()
+/// Windows device names (`NUL`, `con.txt`, `COM1`, `LPT3.log`, ...). Windows
+/// resolves them in any directory, with or without an extension, so a "file"
+/// with such a name is really a device. They are refused on every platform so a
+/// project stays portable and the behaviour never depends on the host.
+fn is_reserved_device_name(name: &str) -> bool {
+    // The device name is the part before the first dot; trailing spaces in that
+    // part are ignored by Windows too (`NUL .txt`).
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    let numbered = upper
+        .strip_prefix("COM")
+        .or_else(|| upper.strip_prefix("LPT"));
+    numbered.is_some_and(|digit| {
+        let mut chars = digit.chars();
+        matches!(
+            (chars.next(), chars.next()),
+            (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+        )
+    })
 }
 
-/// An existing directory inside the root (canonical); `""` and `"."` are the root.
+/// True when any component of `relative` is a hidden or protected name.
+fn has_hidden_component(relative: &Path) -> bool {
+    relative.components().any(|component| match component {
+        Component::Normal(name) => is_hidden_name(&name.to_string_lossy()),
+        _ => false,
+    })
+}
+
+/// `canonical` lies inside `root` and no component below the root is hidden.
+/// This is the check that matters: it looks at the real on-disk names, so an
+/// alias that parsed as a harmless name (`GIT~1`, `Target`) is still caught.
+fn is_visible(root: &Path, canonical: &Path) -> bool {
+    canonical
+        .strip_prefix(root)
+        .is_ok_and(|relative| !has_hidden_component(relative))
+}
+
+/// An existing regular file inside the root (canonical), or `None`. Files in
+/// hidden or protected directories (`.git`, `.derived`, `target`) are `None`.
+pub fn resolve_existing_file(root: &Path, input: &str) -> Option<PathBuf> {
+    let relative = parse_relative(input).filter(|p| !p.as_os_str().is_empty())?;
+    if has_hidden_component(&relative) {
+        return None;
+    }
+    let file = engine_project::confined_file(root, &relative).ok()?;
+    is_visible(root, &file).then_some(file)
+}
+
+/// An existing directory inside the root (canonical); `""` and `"."` are the
+/// root. Hidden or protected directories are `None`.
 pub fn resolve_existing_dir(root: &Path, input: &str) -> Option<PathBuf> {
     let relative = parse_relative(input)?;
+    if has_hidden_component(&relative) {
+        return None;
+    }
     let canonical = fs::canonicalize(root.join(relative)).ok()?;
-    (canonical.starts_with(root) && canonical.is_dir()).then_some(canonical)
+    (canonical.is_dir() && is_visible(root, &canonical)).then_some(canonical)
 }
 
 /// Forward-slash path of `canonical` relative to `root`.
@@ -98,16 +154,30 @@ pub fn display_relative(root: &Path, canonical: &Path) -> String {
 }
 
 pub struct WriteTarget {
-    /// Absolute destination (not canonical when it does not exist yet).
+    /// Absolute canonical destination: the canonical form of the deepest
+    /// existing ancestor plus the components that do not exist yet. It carries
+    /// the real on-disk spelling, never a case variant or an 8.3 alias.
     pub path: PathBuf,
     pub exists: bool,
     /// The parent directories must be created before writing.
     pub needs_directories: bool,
 }
 
+fn protected_failure(field: &str) -> ToolFailure {
+    ToolFailure::new(
+        "path_protected",
+        format!(
+            "{} is in a generated or version-control directory",
+            subject(field)
+        ),
+    )
+    .with_hint("Writes to .git, .derived and target are never allowed.")
+}
+
 /// Resolves a destination for a write without following any link: every
 /// existing component must be a real directory (or, for the last one, a real
-/// file) inside the root.
+/// file) inside the root. Hidden and protected names (`.git`, `.derived`,
+/// `target`) are refused at any depth, judged on the canonical on-disk path.
 pub fn resolve_write_target(
     root: &Path,
     input: &str,
@@ -116,20 +186,10 @@ pub fn resolve_write_target(
     let relative = parse_relative(input)
         .filter(|p| !p.as_os_str().is_empty())
         .ok_or_else(|| invalid_path(field))?;
-    let names: Vec<_> = relative.components().collect();
-    if names.first().is_some_and(|first| {
-        let first = first.as_os_str().to_string_lossy().to_ascii_lowercase();
-        PROTECTED_WRITE_DIRS.contains(&first.as_str())
-    }) {
-        return Err(ToolFailure::new(
-            "path_protected",
-            format!(
-                "{} is in a generated or version-control directory",
-                subject(field)
-            ),
-        )
-        .with_hint("Writes to .git, .derived and target are never allowed."));
+    if has_hidden_component(&relative) {
+        return Err(protected_failure(field));
     }
+    let names: Vec<_> = relative.components().collect();
     let mut current = root.to_path_buf();
     let mut exists = false;
     let mut needs_directories = false;
@@ -165,7 +225,10 @@ pub fn resolve_write_target(
             Err(_) => return Err(invalid_path(field)),
         }
     }
-    // Backstop: the deepest existing ancestor must canonicalise inside the root.
+    // Backstop: the deepest existing ancestor must canonicalise inside the root,
+    // and the destination spelled with its real on-disk names must not pass
+    // through a hidden or protected directory (this catches 8.3 short names and
+    // case variants that the literal check above cannot see).
     let mut ancestor = current.as_path();
     while !ancestor.exists() {
         ancestor = ancestor.parent().ok_or_else(|| invalid_path(field))?;
@@ -174,8 +237,20 @@ pub fn resolve_write_target(
     if !canonical.starts_with(root) {
         return Err(invalid_path(field));
     }
+    let remainder = current
+        .strip_prefix(ancestor)
+        .map_err(|_| invalid_path(field))?;
+    // `join("")` would append a separator, so only join a real remainder.
+    let destination = if remainder.as_os_str().is_empty() {
+        canonical
+    } else {
+        canonical.join(remainder)
+    };
+    if !is_visible(root, &destination) {
+        return Err(protected_failure(field));
+    }
     Ok(WriteTarget {
-        path: current,
+        path: destination,
         exists,
         needs_directories,
     })
@@ -183,12 +258,20 @@ pub fn resolve_write_target(
 
 /// Atomically replaces (or creates) `path`: the bytes go to a temporary file in
 /// the same directory, are flushed to disk and then renamed over the target, so
-/// readers see either the old or the new content, never a partial write.
+/// readers see either the old or the new content, never a partial write. An
+/// existing file keeps its permissions (on Unix the temporary file would
+/// otherwise replace it with mode 0600).
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("destination has no parent directory"))?;
+    let original = fs::metadata(path).ok().filter(|m| m.is_file());
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    if let Some(original) = original {
+        temporary
+            .as_file()
+            .set_permissions(original.permissions())?;
+    }
     temporary.write_all(bytes)?;
     temporary.as_file().sync_all()?;
     // Windows briefly refuses to rename over a file another handle just closed.
@@ -492,8 +575,62 @@ mod tests {
             "a.",
             "a*",
             "a\0b",
+            "NUL",
+            "dir/aux.txt",
+            "Com1.log",
+            "lpt9",
+            "a/CON/b",
         ] {
             assert_eq!(parse_relative(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn device_names_are_matched_by_stem_only() {
+        for reserved in [
+            "CON",
+            "con",
+            "Prn",
+            "AUX",
+            "NUL",
+            "COM1",
+            "com9",
+            "LPT1",
+            "lpt9",
+            "nul.txt",
+            "COM3.tar.gz",
+            "nul .txt",
+            "COM\u{b9}",
+            "LPT\u{b3}.log",
+            "CONIN$",
+            "conout$",
+        ] {
+            assert!(is_reserved_device_name(reserved), "{reserved}");
+        }
+        for ordinary in [
+            "console",
+            "com",
+            "COM0",
+            "COM10",
+            "com1x",
+            "lpt",
+            "nullable.rs",
+            "aux_data",
+            "xnul",
+            ".nul",
+            "a.nul",
+        ] {
+            assert!(!is_reserved_device_name(ordinary), "{ordinary}");
+        }
+    }
+
+    #[test]
+    fn hidden_names_are_matched_case_insensitively_at_any_depth() {
+        for hidden in ["target/x", "Target", "a/.DERIVED/b", "x/y/.Git"] {
+            assert!(has_hidden_component(Path::new(hidden)), "{hidden}");
+        }
+        for visible in ["targets/x", "src/target.rs", "a/derived/b", "gitignore"] {
+            assert!(!has_hidden_component(Path::new(visible)), "{visible}");
         }
     }
 
