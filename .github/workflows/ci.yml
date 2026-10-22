@@ -34,7 +34,8 @@ jobs:
   lint:
     name: Format and Clippy (Windows)
     runs-on: windows-latest
-    timeout-minutes: 45
+    # Each standalone example crate compiles its own dependency graph.
+    timeout-minutes: 60
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -67,12 +68,14 @@ jobs:
             cargo clippy --manifest-path "$crate/Cargo.toml" --all-targets -- -D warnings
           done
 
+  # This job deliberately does not set RUSTFLAGS: engine-tooling tests spawn real
+  # Cargo builds that inherit the environment (RUSTFLAGS is part of a generation's
+  # build configuration), and their fixtures intentionally compile code with
+  # warnings. The lint job already denies warnings for every workspace target.
   workspace-tests:
     name: Workspace tests (Windows)
     runs-on: windows-latest
     timeout-minutes: 90
-    env:
-      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
