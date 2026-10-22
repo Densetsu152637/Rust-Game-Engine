@@ -4,12 +4,15 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail, ensure};
-use bevy_ecs::{
-    prelude::*,
-    schedule::{LogLevel, ScheduleBuildSettings, ScheduleLabel},
+use engine_ecs::{
+    ExtractionSet, RenderWorld,
+    bevy_ecs::{
+        prelude::*,
+        schedule::{LogLevel, ScheduleBuildSettings, ScheduleLabel},
+    },
+    cleanup_extracted_entities, extract_component,
 };
-
-use crate::{ExtractionSet, RenderWorld, extract_component, snapshot::cleanup_extracted_entities};
+use tracing::{debug, error, info};
 
 /// Startup/update/extract/shutdown use the simulation world; render uses its snapshot.
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -152,6 +155,7 @@ impl EngineApp {
     }
 
     pub fn request_stop(&mut self) {
+        info!("stop requested by host");
         self.world.resource_mut::<RuntimeControl>().request_stop();
     }
 
@@ -166,8 +170,13 @@ impl EngineApp {
             AppState::Configuring => {}
             other => bail!("cannot start app in state {other:?}; create a new generation"),
         }
+        info!("engine app starting");
         self.state = AppState::Running;
-        self.run_stage(Stage::Startup)
+        let result = self.run_stage(Stage::Startup);
+        if result.is_ok() {
+            debug!("engine app started");
+        }
+        result
     }
 
     /// Advances one fixed update, extraction, and render. A stop request ends
@@ -241,14 +250,20 @@ impl EngineApp {
             self.state = AppState::Stopped;
             return Ok(());
         }
+        info!(ticks = self.time().tick, "engine app shutting down");
         let result = self.run_stage(Stage::Shutdown);
         self.state = AppState::Stopped;
+        match &result {
+            Ok(()) => info!("engine app stopped"),
+            Err(error) => error!(%error, "engine app shutdown failed"),
+        }
         result
     }
 
     fn run_stage(&mut self, stage: Stage) -> Result<()> {
-        let result = self.execute_stage(stage);
-        if result.is_err() {
+        let result = tracing::trace_span!("stage", ?stage).in_scope(|| self.execute_stage(stage));
+        if let Err(error) = &result {
+            error!(?stage, %error, "stage failed; app marked failed");
             self.state = AppState::Failed;
         }
         result
@@ -293,6 +308,7 @@ impl EngineApp {
                 .get_resource::<RuntimeControl>()
                 .is_some_and(RuntimeControl::stop_requested)
         {
+            info!("stop requested by render systems");
             self.request_stop();
         }
         result

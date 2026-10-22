@@ -3,12 +3,16 @@ name = "engine-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Native ECS, scheduling and lifecycle foundation for the engine"
+description = "Native app lifecycle, stages, time and run control for the engine"
 
 [dependencies]
 anyhow.workspace = true
 bevy_ecs.workspace = true
-glam.workspace = true
+engine-ecs.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+engine-log.workspace = true
 
 [lints]
 workspace = true

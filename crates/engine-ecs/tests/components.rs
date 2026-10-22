@@ -8,7 +8,7 @@ use std::sync::{
 };
 
 use common::*;
-use engine_core::prelude::*;
+use engine_ecs::prelude::*;
 
 #[derive(Component, Debug, Clone, PartialEq)]
 struct A(i32);
@@ -497,22 +497,22 @@ struct HookLog(Vec<String>);
 struct Hooked(i32);
 
 fn hook_add(
-    mut world: engine_core::bevy_ecs::world::DeferredWorld,
-    ctx: engine_core::bevy_ecs::lifecycle::HookContext,
+    mut world: engine_ecs::bevy_ecs::world::DeferredWorld,
+    ctx: engine_ecs::bevy_ecs::lifecycle::HookContext,
 ) {
     let v = world.get::<Hooked>(ctx.entity).unwrap().0;
     world.resource_mut::<HookLog>().0.push(format!("add{v}"));
 }
 fn hook_insert(
-    mut world: engine_core::bevy_ecs::world::DeferredWorld,
-    ctx: engine_core::bevy_ecs::lifecycle::HookContext,
+    mut world: engine_ecs::bevy_ecs::world::DeferredWorld,
+    ctx: engine_ecs::bevy_ecs::lifecycle::HookContext,
 ) {
     let v = world.get::<Hooked>(ctx.entity).unwrap().0;
     world.resource_mut::<HookLog>().0.push(format!("insert{v}"));
 }
 fn hook_discard(
-    mut world: engine_core::bevy_ecs::world::DeferredWorld,
-    ctx: engine_core::bevy_ecs::lifecycle::HookContext,
+    mut world: engine_ecs::bevy_ecs::world::DeferredWorld,
+    ctx: engine_ecs::bevy_ecs::lifecycle::HookContext,
 ) {
     let v = world.get::<Hooked>(ctx.entity).unwrap().0;
     world
@@ -521,8 +521,8 @@ fn hook_discard(
         .push(format!("discard{v}"));
 }
 fn hook_remove(
-    mut world: engine_core::bevy_ecs::world::DeferredWorld,
-    ctx: engine_core::bevy_ecs::lifecycle::HookContext,
+    mut world: engine_ecs::bevy_ecs::world::DeferredWorld,
+    ctx: engine_ecs::bevy_ecs::lifecycle::HookContext,
 ) {
     let v = world.get::<Hooked>(ctx.entity).unwrap().0;
     world.resource_mut::<HookLog>().0.push(format!("remove{v}"));

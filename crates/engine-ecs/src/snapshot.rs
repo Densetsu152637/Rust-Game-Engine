@@ -51,7 +51,9 @@ impl RenderWorld {
     }
 }
 
-pub(crate) fn cleanup_extracted_entities(live: Query<Entity>, mut render: ResMut<RenderWorld>) {
+/// Despawns render entities whose simulation source no longer exists.
+/// `EngineApp` installs this in `ExtractionSet::Cleanup`.
+pub fn cleanup_extracted_entities(live: Query<Entity>, mut render: ResMut<RenderWorld>) {
     let stale: Vec<_> = render
         .entities
         .keys()

@@ -21,3 +21,26 @@ pub fn publish_buffered<T: Clone + PartialEq + Send + Sync + 'static>(
         }
     }
 }
+
+/// Bundle that spawns a buffered value with `Current` and `Next` already equal,
+/// so a freshly spawned entity never exposes an unpublished default.
+#[derive(Bundle, Clone, Debug, PartialEq)]
+pub struct Buffered<T: Clone + Send + Sync + 'static> {
+    pub current: Current<T>,
+    pub next: Next<T>,
+}
+
+impl<T: Clone + Send + Sync + 'static> Buffered<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            current: Current(value.clone()),
+            next: Next(value),
+        }
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> From<T> for Buffered<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}

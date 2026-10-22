@@ -1,25 +1,22 @@
 //! Native engine foundation. Project code shares these Rust types in one executable.
 //!
-//! Bevy owns entities, components, queries, resources, deferred commands, and
-//! scheduling. This crate adds lifecycle and simulation-to-render ownership only.
+//! The ECS layer lives in `engine-ecs` and is re-exported here, so
+//! `engine_core::bevy_ecs`, `engine_core::Current` and friends keep resolving.
+//! This crate owns app lifecycle, stages, simulation time and run control, and
+//! emits `tracing` events for lifecycle transitions (it never installs a
+//! subscriber; see `engine-log`).
 
 mod app;
-mod buffered;
-mod snapshot;
 
 pub use anyhow::{self, Result};
-pub use bevy_ecs;
-pub use glam;
+pub use engine_ecs::{
+    self, Buffered, Current, ExtractedFrom, ExtractionSet, Next, RenderWorld, bevy_ecs,
+    cleanup_extracted_entities, extract_component, glam, publish_buffered,
+};
 
 pub use app::{AppState, EngineApp, RuntimeControl, Stage, Time};
-pub use buffered::{Current, Next, publish_buffered};
-pub use snapshot::{ExtractedFrom, ExtractionSet, RenderWorld, extract_component};
 
 pub mod prelude {
-    pub use crate::{
-        AppState, Current, EngineApp, ExtractedFrom, ExtractionSet, Next, RenderWorld, Result,
-        RuntimeControl, Stage, Time, extract_component, publish_buffered,
-    };
-    pub use bevy_ecs::prelude::*;
-    pub use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+    pub use crate::{AppState, EngineApp, Result, RuntimeControl, Stage, Time};
+    pub use engine_ecs::prelude::*;
 }

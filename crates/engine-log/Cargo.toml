@@ -1,0 +1,13 @@
+[package]
+name = "engine-log"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "tracing-based logging for the engine: stderr output, env filtering and queryable in-memory history"
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -4,6 +4,14 @@ This crate is the Rust engine foundation, not the completed desktop engine.
 It contains no project schema, window, renderer, audio device, compiler or editor.
 Those layers depend on this crate, never the reverse.
 
+The ECS layer (Bevy ECS re-export, `Current`/`Next` buffered values and
+render-world extraction) lives in `engine-ecs`. This crate re-exports all of it,
+so `engine_core::bevy_ecs`, `engine_core::Current` and `engine_core::prelude::*`
+keep resolving, and owns only app lifecycle, stages, `Time` and `RuntimeControl`.
+Lifecycle transitions (start, stop requests, shutdown, stage failures) are
+emitted as `tracing` events; this crate never installs a subscriber, see
+`engine-log`.
+
 `EngineApp::new()` owns a simulation world and a separate render world. Native
 project code uses `world_mut()`, `schedule_mut(Stage)` and public Bevy ECS APIs
 directly. Components, resources, bundles and system sets can be defined by the
@@ -56,6 +64,9 @@ every absent label or cross-schedule ordering reference. Test the desired order.
 
 ## Buffered values and extraction
 
+The types below are defined in `engine-ecs`; `EngineApp` wires extraction into
+its stages.
+
 `Current<T>` and `Next<T>` are ordinary distinct components. Systems can read
 Current while other systems write Next. Add `publish_buffered::<T>` after the
 required readers/writers using graph edges; it copies changed values into Current.
@@ -86,8 +97,8 @@ From the workspace root with Rust 1.99.1:
 
 ```text
 cargo fmt --all --check
-cargo test -p engine-core
-cargo clippy -p engine-core --all-targets -- -D warnings
+cargo test -p engine-ecs -p engine-core
+cargo clippy -p engine-ecs -p engine-core --all-targets -- -D warnings
 ```
 
 On this Windows host the verified 1.99.1 installation is named `stable` locally.
