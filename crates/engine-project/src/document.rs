@@ -14,6 +14,22 @@ pub enum EditOperation {
         entity_id: String,
         value: Option<MeshRenderer>,
     },
+    /// Append a new entity. Its ID must not already exist in the scene.
+    CreateEntity { entity: SceneEntity },
+    /// Replace the entity whose ID equals `entity.id` wholesale.
+    ReplaceEntity { entity: SceneEntity },
+    /// Remove an entity. Scene validation rejects dangling references to it.
+    DeleteEntity { entity_id: String },
+}
+fn unknown_entity(id: &str) -> Error {
+    Error::new("scene.entity.unknown", format!("Unknown entity {id}"))
+}
+fn entity_mut<'a>(scene: &'a mut Scene, id: &str) -> Result<&'a mut SceneEntity> {
+    scene
+        .entities
+        .iter_mut()
+        .find(|e| e.id == id)
+        .ok_or_else(|| unknown_entity(id))
 }
 /// Authoring history is separate from live ECS state. Revision checks reject stale edits.
 pub struct SceneDocument {
@@ -41,6 +57,13 @@ impl SceneDocument {
             redo: vec![],
             playing: false,
         }
+    }
+    /// A document over an arbitrary scene of `project`, not only its startup
+    /// scene. The scene's `source` decides where [`Self::save`] writes.
+    pub fn for_scene(project: &Project, scene: Scene) -> Self {
+        let mut project = project.clone();
+        project.scene = scene;
+        Self::new(project)
     }
     pub fn project(&self) -> &Project {
         &self.project
@@ -70,28 +93,49 @@ impl SceneDocument {
     pub fn apply(&mut self, operation: EditOperation, expected: &str) -> Result<String> {
         self.check(expected)?;
         let mut candidate = self.scene.clone();
-        let id = match &operation {
-            EditOperation::SetPosition { entity_id, .. }
-            | EditOperation::SetScript { entity_id, .. }
-            | EditOperation::SetMeshRenderer { entity_id, .. } => entity_id,
-        };
-        let entity = candidate
-            .entities
-            .iter_mut()
-            .find(|e| &e.id == id)
-            .ok_or_else(|| Error::new("scene.entity.unknown", format!("Unknown entity {id}")))?;
         match operation {
-            EditOperation::SetPosition { position, .. } => {
-                let transform = entity.components.transform.as_mut().ok_or_else(|| {
-                    Error::new("scene.transform.missing", "Entity has no Transform")
-                })?;
+            EditOperation::SetPosition {
+                entity_id,
+                position,
+            } => {
+                let transform = entity_mut(&mut candidate, &entity_id)?
+                    .components
+                    .transform
+                    .as_mut()
+                    .ok_or_else(|| {
+                        Error::new("scene.transform.missing", "Entity has no Transform")
+                    })?;
                 transform.position = position;
             }
-            EditOperation::SetScript { asset, .. } => {
-                entity.components.script = asset.map(|asset| Script { version: 1, asset });
+            EditOperation::SetScript { entity_id, asset } => {
+                entity_mut(&mut candidate, &entity_id)?.components.script =
+                    asset.map(|asset| Script { version: 1, asset });
             }
-            EditOperation::SetMeshRenderer { value, .. } => {
-                entity.components.mesh_renderer = value;
+            EditOperation::SetMeshRenderer { entity_id, value } => {
+                entity_mut(&mut candidate, &entity_id)?
+                    .components
+                    .mesh_renderer = value;
+            }
+            EditOperation::CreateEntity { entity } => {
+                if candidate.entities.iter().any(|e| e.id == entity.id) {
+                    return Err(Error::new(
+                        "scene.entity.id.duplicate",
+                        format!("Entity {} already exists", entity.id),
+                    ));
+                }
+                candidate.entities.push(entity);
+            }
+            EditOperation::ReplaceEntity { entity } => {
+                let id = entity.id.clone();
+                *entity_mut(&mut candidate, &id)? = entity;
+            }
+            EditOperation::DeleteEntity { entity_id } => {
+                let index = candidate
+                    .entities
+                    .iter()
+                    .position(|e| e.id == entity_id)
+                    .ok_or_else(|| unknown_entity(&entity_id))?;
+                candidate.entities.remove(index);
             }
         }
         self.project.validate_scene(&candidate)?;
