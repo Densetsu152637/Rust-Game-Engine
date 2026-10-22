@@ -1,0 +1,12 @@
+[package]
+name = "engine-render"
+version = "0.1.0"
+edition = "2024"
+description = "Backend-neutral graphics adapter interface: render device, command buffer, resources, WGSL reflection and a recording backend."
+
+[dependencies]
+bytemuck = { workspace = true }
+naga = { workspace = true, features = ["wgsl-in"] }
+
+[lints]
+workspace = true
