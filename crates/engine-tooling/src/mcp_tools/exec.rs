@@ -134,18 +134,12 @@ pub(super) fn execute(
     let stdout = child
         .take_stdout()
         .ok_or_else(|| ToolFailure::new("tooling_error", "generation stdout was not captured"))?;
-    let reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout
-            .take(MAX_STDOUT_BYTES)
-            .read_to_end(&mut bytes)
-            .map(|_| bytes)
-    });
+    let reader = thread::spawn(move || read_capped(stdout, MAX_STDOUT_BYTES));
     child.start().map_err(spawn_error)?;
     let (exit, timed_out) = with_deadline(timeout, |cancel| child.wait(cancel));
     // Dropping the generation ends any descendant still holding the pipe.
     drop(child);
-    let output = reader.join().ok().and_then(Result::ok).unwrap_or_default();
+    let (output, truncated) = reader.join().ok().and_then(Result::ok).unwrap_or_default();
     if timed_out {
         return Err(ToolFailure::new(
             "run_timeout",
@@ -160,7 +154,42 @@ pub(super) fn execute(
         ));
     }
     let exit_code = exit.ok().and_then(|e| e.code);
-    let text = String::from_utf8_lossy(&output);
+    parse_run_output(&output, truncated, exit_code)
+}
+
+/// Reads at most `cap` bytes from `source` and keeps draining (discarding) the
+/// rest, so a chatty child never blocks on a full pipe. The flag reports whether
+/// anything beyond `cap` was produced.
+pub(super) fn read_capped(mut source: impl Read, cap: u64) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    (&mut source).take(cap).read_to_end(&mut bytes)?;
+    let truncated = std::io::copy(&mut source, &mut std::io::sink())? > 0;
+    Ok((bytes, truncated))
+}
+
+/// Finds the final `run` envelope in a generation's captured stdout. Output
+/// that exceeded the capture cap lost its tail, where the envelope lives, so it
+/// is reported as such instead of as a missing result.
+pub(super) fn parse_run_output(
+    output: &[u8],
+    truncated: bool,
+    exit_code: Option<i32>,
+) -> Result<Value, ToolFailure> {
+    if truncated {
+        return Err(ToolFailure::new(
+            "output_too_large",
+            format!(
+                "the generation wrote more than {MAX_STDOUT_BYTES} bytes to stdout, so the run \
+                 result was lost"
+            ),
+        )
+        .with_hint(
+            "Reduce what the game prints (println!, dbg!) and run again; use the engine log \
+             instead of stdout for diagnostics.",
+        )
+        .with_details(json!({"limit_bytes": MAX_STDOUT_BYTES, "exit_code": exit_code})));
+    }
+    let text = String::from_utf8_lossy(output);
     let envelope = text
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())

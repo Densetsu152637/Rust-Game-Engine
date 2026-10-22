@@ -736,6 +736,105 @@ fn render_screenshot_validates_its_arguments_before_building_anything() {
     assert!(!root.join(".derived").exists(), "nothing was compiled");
 }
 
+/// Every spelling of the project root (verbatim, plain, forward slashes and the
+/// JSON-escaped forms) that must never appear in a result.
+fn root_spellings(root: &Path) -> Vec<String> {
+    let canonical = root.canonicalize().unwrap().to_string_lossy().into_owned();
+    let plain = canonical.trim_start_matches(r"\\?\").to_owned();
+    let mut all = vec![
+        canonical.clone(),
+        plain.clone(),
+        plain.replace('\\', "/"),
+        plain.replace('\\', r"\\"),
+        canonical.replace('\\', r"\\"),
+    ];
+    all.retain(|s| !s.is_empty());
+    all
+}
+
+fn assert_no_host_paths(text: &str, root: &Path) {
+    for spelling in root_spellings(root) {
+        assert!(!text.contains(&spelling), "{spelling} leaked:\n{text}");
+    }
+}
+
+/// `project_build` reported warning files and rendered `-->` paths as absolute
+/// host paths on success, and failures carried cargo and temp paths in
+/// `stderr_tail`. Results must be project-relative everywhere.
+#[test]
+fn build_results_never_carry_host_paths() {
+    let (_temp, root) = game("mcp-scrub-");
+    let exec = [root.as_os_str(), os("--allow-exec")];
+    let good = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+
+    // Success with a warning.
+    fs::write(
+        root.join("src/lib.rs"),
+        format!("{good}\n#[allow(dead_code)]\nfn unused_helper() {{ let unused_variable = 1; }}\n"),
+    )
+    .unwrap();
+    let built = mcp(&exec, &[], &[call(1, "project_build", json!({}))]);
+    let build = result_of(&built, 0);
+    assert_eq!(build["ok"], true, "{build}\n{}", built.stderr);
+    assert!(build["warning_count"].as_u64().unwrap() >= 1, "{build}");
+    assert_no_host_paths(&built.responses[0].to_string(), &root);
+    for warning in build["warnings"].as_array().unwrap() {
+        let file = warning["file"].as_str().unwrap();
+        assert_eq!(file, "src/lib.rs", "{warning}");
+        let rendered = warning["rendered"].as_str().unwrap();
+        assert!(rendered.contains("--> src/lib.rs"), "{rendered}");
+    }
+
+    // Failure with a compiler error: diagnostics and stderr_tail.
+    fs::write(
+        root.join("src/lib.rs"),
+        format!("{good}\nfn broken() {{ let x: u32 = \"no\"; }}\n"),
+    )
+    .unwrap();
+    let failed = mcp(&exec, &[], &[call(1, "project_build", json!({}))]);
+    let failure = result_of(&failed, 0);
+    assert_eq!(failure["ok"], false, "{failure}");
+    assert_no_host_paths(&failed.responses[0].to_string(), &root);
+    let diagnostic = &failure["diagnostics"][0];
+    assert_eq!(diagnostic["file"], "src/lib.rs", "{failure}");
+    assert!(
+        diagnostic["rendered"]
+            .as_str()
+            .unwrap()
+            .contains("--> src/lib.rs:"),
+        "{failure}"
+    );
+}
+
+/// Output above the 8 MiB capture cap loses the run envelope. That must be
+/// reported as `output_too_large`, not as a missing result.
+#[test]
+fn a_run_that_prints_too_much_is_output_too_large() {
+    let (_temp, root) = game("mcp-flood-");
+    let source = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        source.replace(
+            "let x=world.get::<Transform>(owner).unwrap().position[0];",
+            "let x=world.get::<Transform>(owner).unwrap().position[0];\n            println!(\"{}\", \"x\".repeat(9 * 1024 * 1024));",
+        ),
+    )
+    .unwrap();
+    let session = mcp(
+        &[root.as_os_str(), os("--allow-exec")],
+        &[],
+        &[call(1, "project_run_headless", json!({"ticks": 1}))],
+    );
+    let result = result_of(&session, 0);
+    assert_eq!(result["ok"], false, "{result}\n{}", session.stderr);
+    assert_eq!(result["error"]["code"], "output_too_large", "{result}");
+    assert_eq!(
+        result["error"]["details"]["limit_bytes"],
+        8 * 1024 * 1024,
+        "{result}"
+    );
+}
+
 fn base64_decode(text: &str) -> Vec<u8> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     STANDARD.decode(text).unwrap()

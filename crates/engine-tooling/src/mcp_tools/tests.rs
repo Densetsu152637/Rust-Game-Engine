@@ -144,3 +144,38 @@ fn clip_and_tail_respect_char_boundaries() {
     assert_eq!(tail("héllo", 3), "llo");
     assert_eq!(tail("ab", 10), "ab");
 }
+
+fn run_envelope() -> Vec<u8> {
+    format!(
+        "{}\n",
+        json!({"schema":1,"ok":true,"command":"run","result":{"ticks":1}})
+    )
+    .into_bytes()
+}
+
+#[test]
+fn output_beyond_the_capture_cap_is_reported_not_silently_cut() {
+    // Within the cap nothing is truncated.
+    let (bytes, truncated) = read_capped(std::io::Cursor::new(vec![b'x'; 10]), 10).unwrap();
+    assert_eq!((bytes.len(), truncated), (10, false));
+    // One byte more is detected; the reader still drains the rest.
+    let (bytes, truncated) = read_capped(std::io::Cursor::new(vec![b'x'; 11]), 10).unwrap();
+    assert_eq!((bytes.len(), truncated), (10, true));
+}
+
+#[test]
+fn a_truncated_run_output_is_output_too_large_not_run_no_result() {
+    // A valid envelope exists, but output that overflowed the cap lost its tail.
+    let ok = parse_run_output(&run_envelope(), false, Some(0)).unwrap();
+    assert_eq!(ok["ticks"], 1);
+    let failure = parse_run_output(&run_envelope(), true, Some(0)).unwrap_err();
+    assert_eq!(failure.code, "output_too_large");
+    assert!(
+        failure.message.contains(&MAX_STDOUT_BYTES.to_string()),
+        "{}",
+        failure.message
+    );
+    // Without truncation a missing envelope is still run_no_result.
+    let failure = parse_run_output(b"noise only\n", false, Some(1)).unwrap_err();
+    assert_eq!(failure.code, "run_no_result");
+}
