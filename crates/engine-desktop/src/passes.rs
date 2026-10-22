@@ -48,3 +48,110 @@ impl NativeRenderPasses {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    /// Registration never touches the device, so a stub with no GPU is enough.
+    struct Stub;
+    impl NativeRenderPass for Stub {
+        fn prepare(&mut self, _: &GpuContext, _: RenderTargetInfo) -> Result<()> {
+            Ok(())
+        }
+        fn encode(
+            &mut self,
+            _: &GpuContext,
+            _: &mut wgpu::CommandEncoder,
+            _: &wgpu::TextureView,
+            _: RenderTargetInfo,
+            _: Option<&World>,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn names(passes: &NativeRenderPasses) -> Vec<&str> {
+        passes
+            .passes
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn new_registry_is_empty() {
+        assert!(NativeRenderPasses::default().passes.is_empty());
+    }
+
+    #[test]
+    fn registration_preserves_insertion_order() {
+        let mut passes = NativeRenderPasses::default();
+        for name in ["shadow", "bloom", "ui-overlay"] {
+            passes.register(name, Stub).unwrap();
+        }
+        assert_eq!(names(&passes), ["shadow", "bloom", "ui-overlay"]);
+    }
+
+    #[test]
+    fn empty_name_is_rejected_and_does_not_register() {
+        let mut passes = NativeRenderPasses::default();
+        let error = passes.register("", Stub).unwrap_err();
+        assert!(error.to_string().contains("name is empty"), "{error}");
+        assert!(passes.passes.is_empty());
+    }
+
+    #[test]
+    fn duplicate_name_is_rejected_with_the_name_in_the_message() {
+        let mut passes = NativeRenderPasses::default();
+        passes.register("bloom", Stub).unwrap();
+        let error = passes.register("bloom", Stub).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate render pass bloom"),
+            "{error}"
+        );
+        assert_eq!(names(&passes), ["bloom"]);
+    }
+
+    #[test]
+    fn names_are_case_sensitive() {
+        let mut passes = NativeRenderPasses::default();
+        passes.register("Bloom", Stub).unwrap();
+        passes.register("bloom", Stub).unwrap();
+        assert_eq!(passes.passes.len(), 2);
+    }
+
+    #[test]
+    fn rejected_duplicate_leaves_later_registration_order_intact() {
+        let mut passes = NativeRenderPasses::default();
+        passes.register("a", Stub).unwrap();
+        assert!(passes.register("a", Stub).is_err());
+        passes.register("b", Stub).unwrap();
+        assert_eq!(names(&passes), ["a", "b"]);
+    }
+
+    #[test]
+    fn registry_accepts_exactly_256_passes() {
+        let mut passes = NativeRenderPasses::default();
+        for index in 0..256 {
+            passes.register(format!("pass-{index}"), Stub).unwrap();
+        }
+        let error = passes.register("one-too-many", Stub).unwrap_err();
+        assert!(error.to_string().contains("limit exceeded"), "{error}");
+        assert_eq!(passes.passes.len(), 256);
+    }
+
+    #[test]
+    fn render_target_info_is_copy_and_keeps_its_fields() {
+        let info = RenderTargetInfo {
+            width: 64,
+            height: 32,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        };
+        let copy = info;
+        assert_eq!(
+            (copy.width, copy.height, copy.format),
+            (64, 32, info.format)
+        );
+    }
+}

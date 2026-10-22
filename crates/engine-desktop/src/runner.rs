@@ -418,3 +418,54 @@ impl ApplicationHandler for DesktopRunner {
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
     }
 }
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+    use anyhow::anyhow;
+
+    #[test]
+    fn combine_passes_through_two_successes() {
+        assert!(combine(Ok(()), Ok(())).is_ok());
+    }
+
+    #[test]
+    fn combine_surfaces_a_cleanup_failure_after_success() {
+        let error = combine(Ok(()), Err(anyhow!("cleanup broke"))).unwrap_err();
+        assert_eq!(error.to_string(), "cleanup broke");
+    }
+
+    #[test]
+    fn combine_keeps_the_primary_error_when_cleanup_succeeds() {
+        let error = combine(Err(anyhow!("tick failed")), Ok(())).unwrap_err();
+        assert_eq!(error.to_string(), "tick failed");
+    }
+
+    #[test]
+    fn combine_reports_both_failures_with_the_primary_first() {
+        let error =
+            combine(Err(anyhow!("tick failed")), Err(anyhow!("gpu idle failed"))).unwrap_err();
+        let text = format!("{error:#}");
+        assert!(
+            text.starts_with("cleanup also failed: gpu idle failed"),
+            "{text}"
+        );
+        assert!(text.ends_with("tick failed"), "{text}");
+    }
+
+    #[test]
+    fn fixed_delta_is_one_sixtieth_of_a_second() {
+        assert_eq!(FIXED_DELTA, 1.0 / 60.0);
+        assert!((FIXED_DELTA * 60.0 - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn default_options_describe_a_native_open_ended_run() {
+        let options = RunOptions::default();
+        assert!(!options.headless);
+        assert_eq!(options.ticks, 1_000_000);
+        assert!(options.inputs.is_empty());
+        assert!(options.user_data.is_none());
+        assert!(options.shutdown.is_none());
+    }
+}

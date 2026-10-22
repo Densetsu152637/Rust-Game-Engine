@@ -862,3 +862,52 @@ pub(crate) fn run(
         Ok(report)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wide_strings_are_nul_terminated_utf16() {
+        assert_eq!(wide("Ab"), [0x41, 0x62, 0]);
+        assert_eq!(wide(""), [0]);
+    }
+
+    #[test]
+    fn wide_encodes_astral_characters_as_surrogate_pairs() {
+        assert_eq!(wide("\u{1f600}"), [0xd83d, 0xde00, 0]);
+    }
+
+    #[test]
+    fn wide_strips_embedded_nuls_so_win32_never_sees_a_short_string() {
+        let value = wide("a\0b");
+        assert_eq!(value, [0x61, 0x62, 0]);
+        assert_eq!(value.iter().filter(|c| **c == 0).count(), 1);
+    }
+
+    #[test]
+    fn control_identifiers_are_unique() {
+        let ids = [
+            MANIFEST,
+            OPEN,
+            SAVE,
+            RELOAD,
+            UNDO,
+            REDO,
+            PLAY,
+            STOP,
+            ENTITIES,
+            POS_X,
+            POS_Y,
+            POS_Z,
+            APPLY_POSITION,
+            SCRIPT,
+            MESH,
+            TEXTURE,
+            LOG,
+            STATUS,
+        ];
+        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len());
+    }
+}

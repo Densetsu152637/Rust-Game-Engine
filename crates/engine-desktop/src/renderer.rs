@@ -656,3 +656,141 @@ fn upload_texture(
         bind,
     }
 }
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn gpu_vertex_is_a_tightly_packed_36_byte_record() {
+        assert_eq!(size_of::<GpuVertex>(), 36);
+        assert_eq!(align_of::<GpuVertex>(), 4);
+    }
+
+    #[test]
+    fn gpu_vertex_fields_sit_at_the_offsets_the_pipeline_assumes() {
+        // vertex_attr_array![0=>Float32x3, 1=>Float32x2, 2=>Float32x4] packs 12, 8, 16 bytes.
+        assert_eq!(offset_of!(GpuVertex, position), 0);
+        assert_eq!(offset_of!(GpuVertex, uv), 12);
+        assert_eq!(offset_of!(GpuVertex, color), 20);
+        assert_eq!(20 + size_of::<[f32; 4]>(), size_of::<GpuVertex>());
+    }
+
+    #[test]
+    fn gpu_vertex_bytes_are_little_endian_floats_in_declaration_order() {
+        let vertex = GpuVertex {
+            position: [1.0, 2.0, 3.0],
+            uv: [0.5, 0.25],
+            color: [0.0, 1.0, -1.0, 8.0],
+        };
+        let bytes = bytemuck::bytes_of(&vertex);
+        let floats: Vec<f32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect();
+        assert_eq!(floats, [1.0, 2.0, 3.0, 0.5, 0.25, 0.0, 1.0, -1.0, 8.0]);
+    }
+
+    #[test]
+    fn vertex_slices_cast_without_padding_between_elements() {
+        let vertices = [GpuVertex::zeroed(); 5];
+        assert_eq!(bytemuck::cast_slice::<_, u8>(&vertices).len(), 5 * 36);
+        assert!(
+            bytemuck::cast_slice::<_, u8>(&vertices)
+                .iter()
+                .all(|b| *b == 0)
+        );
+    }
+
+    #[test]
+    fn project_vertex_layout_matches_the_gpu_vertex_field_for_field() {
+        let source = engine_project::content::Vertex {
+            position: [1.0, 2.0, 3.0],
+            uv: [4.0, 5.0],
+            color: [6.0, 7.0, 8.0, 9.0],
+        };
+        let gpu = GpuVertex {
+            position: source.position,
+            uv: source.uv,
+            color: source.color,
+        };
+        let floats: &[f32] = bytemuck::cast_slice(bytemuck::bytes_of(&gpu));
+        assert_eq!(floats, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn shader_vertex_inputs_match_the_gpu_vertex_attributes() {
+        let module = naga::front::wgsl::parse_str(include_str!("textured.wgsl")).unwrap();
+        let vertex = module
+            .entry_points
+            .iter()
+            .find(|e| e.name == "vs_main")
+            .unwrap();
+        let inputs: Vec<(u32, u32, naga::ScalarKind)> = vertex
+            .function
+            .arguments
+            .iter()
+            .map(|argument| {
+                let Some(naga::Binding::Location { location, .. }) = argument.binding else {
+                    panic!("vertex input without a location");
+                };
+                let naga::TypeInner::Vector { size, scalar } = module.types[argument.ty].inner
+                else {
+                    panic!("vertex input must be a vector");
+                };
+                assert_eq!(scalar.width, 4, "attributes are 32-bit");
+                (location, size as u32, scalar.kind)
+            })
+            .collect();
+        assert_eq!(
+            inputs,
+            [
+                (0, 3, naga::ScalarKind::Float),
+                (1, 2, naga::ScalarKind::Float),
+                (2, 4, naga::ScalarKind::Float),
+            ]
+        );
+        let stride: u32 = inputs.iter().map(|(_, components, _)| components * 4).sum();
+        assert_eq!(stride as usize, size_of::<GpuVertex>());
+    }
+
+    #[test]
+    fn camera_buffer_size_matches_a_column_major_4x4() {
+        // The pipeline layout declares min_binding_size 64 and each camera buffer is 64 bytes.
+        assert_eq!(size_of::<[f32; 16]>(), 64);
+        let camera =
+            crate::CameraView::new(&engine_project::Camera2D::default(), 320, 180).unwrap();
+        assert_eq!(bytemuck::cast_slice::<f32, u8>(&camera.world).len(), 64);
+        assert_eq!(bytemuck::cast_slice::<f32, u8>(&camera.ui).len(), 64);
+    }
+
+    #[test]
+    fn render_limits_default_to_documented_bounds() {
+        let limits = RenderLimits::default();
+        assert_eq!(limits.max_draws, 65_536);
+        assert_eq!(limits.max_mesh_bytes, 256 * 1024 * 1024);
+        assert_eq!(limits.max_texture_bytes, 512 * 1024 * 1024);
+        assert_eq!(limits.max_frames_in_flight, 2);
+        assert!((1..=8).contains(&limits.max_frames_in_flight));
+    }
+
+    #[test]
+    fn render_stats_default_to_zero_and_compare_by_value() {
+        let zero = RenderStats::default();
+        assert_eq!(
+            zero,
+            RenderStats {
+                draws: 0,
+                batches: 0,
+                mesh_uploads: 0,
+                texture_uploads: 0,
+                cached_meshes: 0,
+                cached_textures: 0
+            }
+        );
+        assert_ne!(zero, RenderStats { batches: 1, ..zero });
+    }
+}
