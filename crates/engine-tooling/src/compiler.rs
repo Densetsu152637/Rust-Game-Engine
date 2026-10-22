@@ -256,7 +256,14 @@ impl NativeCompiler {
         fs::create_dir(&directory).map_err(io_error)?;
         let prepared = (|| {
             fs::create_dir(directory.join("src")).map_err(io_error)?;
-            let binary_name = format!("runtime-{generation}");
+            // Unique per generation so builds sharing a target directory never
+            // race on one uplifted executable. rustc repeats the crate name in
+            // every object file name (`<name>.<name>.<hash>-cgu.N.rcgu.o` when
+            // incremental compilation is off, as in release builds), so the full
+            // generation ID would push deep project paths past MAX_PATH, which
+            // the MSVC linker reports as LNK1181. A short digest keeps it unique.
+            let digest = format!("{:x}", Sha256::digest(generation.as_bytes()));
+            let binary_name = format!("runtime-{}", &digest[..12]);
             fs::write(
                 directory.join("Cargo.toml"),
                 generated_manifest(
