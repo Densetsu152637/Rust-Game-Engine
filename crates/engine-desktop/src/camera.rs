@@ -100,6 +100,23 @@ impl CameraView {
         })
     }
 
+    /// The world matrix with a world-space translation of `offset` applied to
+    /// the geometry before the camera (`world * translate(offset)`), so a draw
+    /// can be shifted without touching its mesh. A zero offset returns
+    /// [`Self::world`] unchanged, bit for bit.
+    pub fn world_with_offset(&self, offset: [f32; 3]) -> [f32; 16] {
+        let mut matrix = self.world;
+        if offset == [0.0; 3] {
+            return matrix;
+        }
+        for row in 0..4 {
+            matrix[12 + row] += offset[0] * self.world[row]
+                + offset[1] * self.world[4 + row]
+                + offset[2] * self.world[8 + row];
+        }
+        matrix
+    }
+
     /// Convert a logical UI clip to an intersected physical scissor. An empty
     /// intersection returns `None` and must skip the draw, not disable clipping.
     pub fn scissor(&self, clip: Option<[f32; 4]>) -> Result<Option<PixelRect>> {
@@ -150,6 +167,44 @@ impl CameraView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Clip-space X/Y of a world point under a column-major matrix.
+    fn project(matrix: &[f32; 16], point: [f32; 3]) -> [f32; 2] {
+        let at = |row: usize| {
+            matrix[row] * point[0]
+                + matrix[4 + row] * point[1]
+                + matrix[8 + row] * point[2]
+                + matrix[12 + row]
+        };
+        [at(0), at(1)]
+    }
+
+    #[test]
+    fn a_zero_offset_returns_the_world_matrix_bit_for_bit() {
+        let view = CameraView::new(&Camera2D::default(), 640, 360).unwrap();
+        assert_eq!(view.world_with_offset([0.0; 3]), view.world);
+    }
+
+    #[test]
+    fn an_offset_moves_world_points_like_translating_them_first() {
+        let camera = Camera2D {
+            center: [3.0, -2.0],
+            ..Default::default()
+        };
+        let view = CameraView::new(&camera, 640, 360).unwrap();
+        let moved = view.world_with_offset([1.5, -0.25, 0.0]);
+        for point in [[0.0, 0.0, 0.0], [4.0, 1.0, 2.0], [-3.0, 7.0, 0.5]] {
+            let translated = [point[0] + 1.5, point[1] - 0.25, point[2]];
+            let want = project(&view.world, translated);
+            let got = project(&moved, point);
+            assert!((want[0] - got[0]).abs() < 1e-5 && (want[1] - got[1]).abs() < 1e-5);
+        }
+        assert_eq!(
+            moved[..12],
+            view.world[..12],
+            "only the translation changes"
+        );
+    }
+
     #[test]
     fn fit_snap_clip_and_minimize() {
         let camera = Camera2D {

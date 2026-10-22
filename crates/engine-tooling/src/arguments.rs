@@ -1,3 +1,4 @@
+use engine_desktop::WgpuBackends;
 use engine_project::{Error, Project, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -15,6 +16,10 @@ pub struct RunArguments {
     pub screenshot: Option<PathBuf>,
     /// Screenshot size in pixels; `[640, 360]` unless `--screenshot-size` is given.
     pub screenshot_size: [u32; 2],
+    /// wgpu graphics API from `--render-backend`; `None` leaves the choice to
+    /// `ENGINE_RENDER_BACKEND` and then to the platform default. Headless runs
+    /// never create a device and ignore it.
+    pub render_backend: Option<WgpuBackends>,
 }
 
 /// Default offscreen screenshot size.
@@ -44,6 +49,7 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
         scene_override: None,
         screenshot: None,
         screenshot_size: DEFAULT_SCREENSHOT_SIZE,
+        render_backend: None,
     };
     let mut size_given = false;
     let mut events = Vec::new();
@@ -95,6 +101,15 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
             "--user-data" => result.user_data = Some(value.into()),
             "--scene-override" => result.scene_override = Some(value.into()),
             "--screenshot" => result.screenshot = Some(value.into()),
+            "--render-backend" => {
+                result.render_backend =
+                    Some(value.to_str().and_then(|v| v.parse().ok()).ok_or_else(|| {
+                        Error::new(
+                            "command.arguments",
+                            "Render backend must be primary, vulkan, dx12, metal, gl or all",
+                        )
+                    })?);
+            }
             "--screenshot-size" => {
                 result.screenshot_size = value.to_str().and_then(parse_size).ok_or_else(|| {
                     Error::new(

@@ -1555,6 +1555,18 @@ fn new_room_entities_exist_after_a_transition() {
 }
 
 #[test]
+fn the_cheap_scene_revision_accessor_tracks_transitions() {
+    let p = rooms();
+    let mut rt = p.runtime();
+    assert_eq!(rt.scene_revision(), 0);
+    rt.request_scene("scene:b", "door_b", "player").unwrap();
+    assert_eq!(rt.scene_revision(), 0, "requested, not yet performed");
+    tick(&mut rt);
+    assert_eq!(rt.scene_revision(), 1);
+    assert_eq!(rt.scene_revision(), rt.snapshot().scene_revision);
+}
+
+#[test]
 fn transition_without_a_traveller_replaces_everything() {
     let p = rooms();
     let mut rt = p.runtime();

@@ -66,6 +66,8 @@ fn sprite_frame(atlas: &Arc<Texture>) -> RenderFrame {
             space: DrawSpace::World,
             clip: None,
             state: DrawState::default(),
+            motion: None,
+            offset: [0.0; 3],
         }],
     }
 }
@@ -102,6 +104,8 @@ fn text_draw(atlas: &Arc<Texture>) -> Draw {
         space: DrawSpace::Ui,
         clip: Some([4.0, 4.0, 10.0, 8.0]),
         state: DrawState::default(),
+        motion: None,
+        offset: [0.0; 3],
     }
 }
 
@@ -129,6 +133,8 @@ fn white_quad(id: &str, layer: i32, z: f32, color: [f32; 4], state: DrawState) -
         space: DrawSpace::World,
         clip: None,
         state,
+        motion: None,
+        offset: [0.0; 3],
     }
 }
 

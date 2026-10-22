@@ -1,5 +1,7 @@
 //! Main-thread visible smoke. Arrow keys move the atlas sprite; exits after two
-//! seconds (120 fixed ticks). `--headless` exercises identical game stepping.
+//! seconds (120 fixed ticks, or `--ticks N`) and prints the tick and presented
+//! frame rates. `--headless` exercises identical game stepping.
+//! `ENGINE_PRESENT_MODE=immediate` presents faster than the display refresh.
 use engine_core::{Stage, Time, bevy_ecs::prelude::*};
 use engine_desktop::{RunOptions, run};
 use engine_project::{ActionFrame, Project, Runtime, SpriteRenderer, Transform};
@@ -26,17 +28,29 @@ fn main() -> anyhow::Result<()> {
         .app_mut()
         .schedule_mut(Stage::Update)
         .add_systems(movement);
+    let arguments: Vec<String> = std::env::args().collect();
+    let ticks = arguments
+        .iter()
+        .position(|arg| arg == "--ticks")
+        .and_then(|at| arguments.get(at + 1))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(120);
+    let started = std::time::Instant::now();
     let report = run(
         runtime,
         RunOptions {
-            headless: std::env::args().any(|arg| arg == "--headless"),
-            ticks: 120,
+            headless: arguments.iter().any(|arg| arg == "--headless"),
+            ticks,
             ..Default::default()
         },
     )?;
+    let seconds = started.elapsed().as_secs_f64();
     println!(
-        "desktop smoke complete: {} fixed ticks, {} presented frames",
-        report.ticks, report.presented_frames
+        "desktop smoke complete: {} fixed ticks ({:.1}/s), {} presented frames ({:.1} fps) in {seconds:.2} s",
+        report.ticks,
+        report.ticks as f64 / seconds,
+        report.presented_frames,
+        report.presented_frames as f64 / seconds,
     );
     Ok(())
 }

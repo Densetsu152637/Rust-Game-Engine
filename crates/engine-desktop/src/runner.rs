@@ -1,7 +1,7 @@
 use crate::{
-    BACKEND_ENV_VAR, CameraView, GpuRequirements, NativeRenderPasses, RenderLimits, WgpuBackends,
-    WgpuOptions, WindowSurface,
-    input::{Gamepads, window_input},
+    BACKEND_ENV_VAR, CameraView, FrameHistory, FramePacer, GpuRequirements, NativeRenderPasses,
+    RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
+    input::{Gamepads, PressLatch, sample_tick, window_input},
 };
 use anyhow::{Context, Result, ensure};
 use engine_audio::{AudioConfig, AudioEngine};
@@ -23,12 +23,15 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::WindowEvent,
+    event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowId},
 };
 
 pub const FIXED_DELTA: f64 = 1.0 / 60.0;
+
+/// Shortest wait, in seconds, between simulation steps while nothing is shown.
+const MIN_IDLE_WAIT: f64 = 0.001;
 
 pub struct RunOptions {
     pub headless: bool,
@@ -76,7 +79,10 @@ pub fn resolve_wgpu_backends(
     Ok(WgpuBackends::from_env_value(env_value)?.unwrap_or_default())
 }
 
-fn resolve_from_environment(option: Option<WgpuBackends>) -> Result<WgpuBackends> {
+/// [`resolve_wgpu_backends`] reading `ENGINE_RENDER_BACKEND` from the process
+/// environment. Every consumer of the selection (visible runs, headless runs,
+/// offscreen screenshots) goes through this so a typo fails the same way.
+pub fn resolve_backends_from_environment(option: Option<WgpuBackends>) -> Result<WgpuBackends> {
     match std::env::var(BACKEND_ENV_VAR) {
         Ok(value) => resolve_wgpu_backends(option, Some(&value)),
         Err(std::env::VarError::NotPresent) => resolve_wgpu_backends(option, None),
@@ -108,7 +114,7 @@ pub fn run_with_wgpu_backends(
     options: RunOptions,
     backends: Option<WgpuBackends>,
 ) -> Result<RunReport> {
-    let backends = resolve_from_environment(backends)?;
+    let backends = resolve_backends_from_environment(backends)?;
     ensure!(
         (1..=1_000_000).contains(&options.ticks),
         "ticks must be 1..=1000000"
@@ -163,10 +169,14 @@ pub fn run_with_wgpu_backends(
         pointer: [0.0; 2],
         gamepads: None,
         occluded: false,
+        present_skipped: false,
         previous: BTreeSet::new(),
+        latch: PressLatch::default(),
+        pacer: FramePacer::new(FIXED_DELTA),
+        history: FrameHistory::default(),
+        last_frame: Instant::now(),
         ticks: 0,
         presented_frames: 0,
-        next_tick: Instant::now(),
         error: None,
     };
     let event_result = event_loop.run_app(&mut app).context("desktop event loop");
@@ -261,10 +271,17 @@ struct DesktopRunner {
     pointer: [f32; 2],
     gamepads: Option<Gamepads>,
     occluded: bool,
+    /// The last present produced no image (surface occluded, lost, timed out
+    /// or zero-sized), so redraws must not be requested back to back.
+    present_skipped: bool,
     previous: BTreeSet<String>,
+    latch: PressLatch,
+    pacer: FramePacer,
+    /// The last two simulation frames, for presenting between them.
+    history: FrameHistory,
+    last_frame: Instant,
     ticks: u64,
     presented_frames: u64,
-    next_tick: Instant,
     error: Option<anyhow::Error>,
 }
 impl DesktopRunner {
@@ -280,25 +297,66 @@ impl DesktopRunner {
             event_loop.exit();
             return Ok(());
         }
-        let Some(host) = self.surface.as_mut() else {
+        let Some(size) = self.surface.as_ref().map(|host| host.window.inner_size()) else {
             return Ok(());
         };
+        // Bank the real time since the last redraw and run the fixed ticks it
+        // buys: none on a fast display, several after a slow frame, never more
+        // than the pacer's cap (a stall does not fast-forward the game).
         let now = Instant::now();
-        if now < self.next_tick {
-            return Ok(());
+        let step = self
+            .pacer
+            .advance(now.duration_since(self.last_frame).as_secs_f64());
+        self.last_frame = now;
+        let run = u64::from(step.ticks).min(self.options.ticks - self.ticks);
+        for index in 0..run {
+            if stop_requested(&self.runtime, &self.options) {
+                event_loop.exit();
+                return Ok(());
+            }
+            self.tick(size.width, size.height)?;
+            // Only the last two ticks of a frame can be presented, so only
+            // they are extracted.
+            if index + 2 == run {
+                self.record_frame()?;
+            }
         }
-        // One update per redraw, with bounded catch-up. No giant wall-time delta
-        // enters gameplay after dragging/minimizing/debugger pauses.
-        if now.duration_since(self.next_tick) > Duration::from_millis(250) {
-            self.next_tick = now;
+        if run > 0 {
+            self.record_frame()?;
         }
-        self.next_tick += Duration::from_secs_f64(FIXED_DELTA);
+        let finished = self.ticks >= self.options.ticks;
+        // The final frame shows the final tick, not a blend toward it.
+        let alpha = if finished { 1.0 } else { step.alpha };
+        if !self.occluded
+            && let (Some(host), Some(frame)) = (self.surface.as_mut(), self.history.frame_at(alpha))
+        {
+            let shown = host
+                .present(&frame, Some(self.runtime.app().render_world()))?
+                .is_some();
+            self.present_skipped = !shown;
+            if shown {
+                self.presented_frames += 1;
+            }
+        }
+        if finished {
+            event_loop.exit();
+        }
+        Ok(())
+    }
+
+    /// Extract the frame for the tick just run into the presentation history.
+    fn record_frame(&mut self) -> Result<()> {
+        let frame = self.runtime.extract_frame()?;
+        self.history.push(frame, self.runtime.scene_revision());
+        Ok(())
+    }
+
+    /// Sample input and run one fixed simulation tick.
+    fn tick(&mut self, width: u32, height: u32) -> Result<()> {
         if let Some(gamepads) = &mut self.gamepads {
             gamepads.sample(&mut self.raw);
         }
-        let frame = self.runtime.extract_frame()?;
-        let size = host.window.inner_size();
-        let camera = CameraView::new(&frame.camera, size.width, size.height)?;
+        let camera = CameraView::new(&self.runtime.extract_camera(), width, height)?;
         self.raw.pointer = camera.logical_pointer(self.pointer);
         if self.mapper.bindings() != self.runtime.bindings() {
             let validation = self.mapper.rebind(self.runtime.bindings().clone(), false);
@@ -315,28 +373,17 @@ impl DesktopRunner {
                 .resource::<InputSettings>()
                 .deadzone,
         )?;
-        let physical = self.mapper.sample(&self.raw);
-        self.raw.wheel = [0.0; 2];
-        let injected = self
-            .options
-            .inputs
-            .get(&self.ticks)
-            .cloned()
-            .unwrap_or_default();
-        let input = merge_input(&physical, &injected, &mut self.previous);
+        let no_input = BTreeSet::new();
+        let injected = self.options.inputs.get(&self.ticks).unwrap_or(&no_input);
+        let input = sample_tick(
+            &mut self.mapper,
+            &mut self.raw,
+            &mut self.latch,
+            injected,
+            &mut self.previous,
+        );
         self.runtime.tick(FIXED_DELTA as f32, input)?;
         self.ticks += 1;
-        let frame = self.runtime.extract_frame()?;
-        if !self.occluded
-            && host
-                .present(&frame, Some(self.runtime.app().render_world()))?
-                .is_some()
-        {
-            self.presented_frames += 1;
-        }
-        if self.ticks >= self.options.ticks {
-            event_loop.exit();
-        }
         Ok(())
     }
 }
@@ -349,6 +396,10 @@ impl ApplicationHandler for DesktopRunner {
             if let Err(error) = host.resize(size.width, size.height) {
                 self.fail(event_loop, error);
             }
+            // Time spent suspended is not simulated.
+            self.present_skipped = false;
+            self.pacer.reset();
+            self.last_frame = Instant::now();
             return;
         }
         let result = (|| -> Result<()> {
@@ -396,6 +447,11 @@ impl ApplicationHandler for DesktopRunner {
             host.window.set_visible(true);
             host.window.request_redraw();
             self.surface = Some(host);
+            // Tick zero is the first frame to blend from. Startup time (device
+            // creation, shader compilation) is not simulated.
+            self.history.push(frame, self.runtime.scene_revision());
+            self.pacer.reset();
+            self.last_frame = Instant::now();
             Ok(())
         })();
         if let Err(error) = result {
@@ -405,6 +461,7 @@ impl ApplicationHandler for DesktopRunner {
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         self.raw.focused = false;
         self.raw.down.clear();
+        self.latch.clear();
         self.mapper.sample(&self.raw);
         if let Some(host) = &mut self.surface
             && let Err(error) = host.resize(0, 0)
@@ -416,10 +473,29 @@ impl ApplicationHandler for DesktopRunner {
         if self.surface.as_ref().is_none_or(|s| s.window.id() != id) {
             return;
         }
+        // A press that ends before the next tick must still reach it.
+        let before = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            } | WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        )
+        .then(|| self.raw.down.clone());
         window_input(&mut self.raw, &event, &mut self.pointer);
+        if let Some(before) = before {
+            self.latch.note_presses(&before, &self.raw.down);
+        }
         if matches!(event, WindowEvent::Focused(false)) {
             // Preserve focus loss even if focus returns before a fixed tick.
             // The mapper then suppresses keys held during reactivation.
+            self.latch.clear();
             self.mapper.sample(&self.raw);
         }
         let result = match event {
@@ -431,11 +507,13 @@ impl ApplicationHandler for DesktopRunner {
                 event_loop.exit();
                 Ok(())
             }
-            WindowEvent::Resized(size) => self
-                .surface
-                .as_mut()
-                .unwrap()
-                .resize(size.width, size.height),
+            WindowEvent::Resized(size) => {
+                self.present_skipped = false;
+                self.surface
+                    .as_mut()
+                    .unwrap()
+                    .resize(size.width, size.height)
+            }
             WindowEvent::ScaleFactorChanged { .. } => {
                 let host = self.surface.as_mut().unwrap();
                 let size = host.window.inner_size();
@@ -453,20 +531,32 @@ impl ApplicationHandler for DesktopRunner {
             event_loop.exit();
             return;
         }
-        if Instant::now() >= self.next_tick {
-            if self
-                .surface
-                .as_ref()
-                .is_some_and(|host| host.is_suspended() || self.occluded)
-            {
-                if let Err(error) = self.redraw(event_loop) {
-                    self.fail(event_loop, error);
-                }
-            } else if let Some(host) = &self.surface {
-                host.window.request_redraw();
-            }
+        let Some(host) = &self.surface else {
+            return;
+        };
+        if !host.is_suspended() && !self.occluded && !self.present_skipped {
+            // Present as fast as the display takes frames: every redraw
+            // acquires a swapchain image, which blocks on the present mode
+            // (vsync by default), so this follows the refresh rate rather than
+            // spinning.
+            host.window.request_redraw();
+            event_loop.set_control_flow(ControlFlow::Poll);
+            return;
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
+        // Nothing can be shown (minimized, occluded, no image to acquire):
+        // keep the simulation ticking in real time without redraws and wait for
+        // the next tick instead of spinning.
+        let due = self.last_frame
+            + Duration::from_secs_f64(self.pacer.until_next_tick().max(MIN_IDLE_WAIT));
+        if Instant::now() >= due
+            && let Err(error) = self.redraw(event_loop)
+        {
+            self.fail(event_loop, error);
+            return;
+        }
+        let due = self.last_frame
+            + Duration::from_secs_f64(self.pacer.until_next_tick().max(MIN_IDLE_WAIT));
+        event_loop.set_control_flow(ControlFlow::WaitUntil(due));
     }
 }
 
