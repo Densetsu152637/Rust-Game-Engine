@@ -17,10 +17,22 @@ const PROTECTED_WRITE_DIRS: [&str; 2] = [".derived", "target"];
 const MAX_PATH_BYTES: usize = 1024;
 const MAX_DEPTH: usize = 32;
 
+/// "path" for the `path` argument, "<field> path" for others (`scene path`).
+fn subject(field: &str) -> String {
+    if field == "path" {
+        "path".to_owned()
+    } else {
+        format!("{field} path")
+    }
+}
+
 pub fn invalid_path(field: &str) -> ToolFailure {
     ToolFailure::new(
         "path_invalid",
-        format!("{field} path is invalid, missing, or outside the opened project"),
+        format!(
+            "{} is invalid, missing, or outside the opened project",
+            subject(field)
+        ),
     )
     .with_hint(
         "Use an existing project-relative path with forward slashes and no '..' segments; \
@@ -111,7 +123,10 @@ pub fn resolve_write_target(
     }) {
         return Err(ToolFailure::new(
             "path_protected",
-            format!("{field} path is in a generated or version-control directory"),
+            format!(
+                "{} is in a generated or version-control directory",
+                subject(field)
+            ),
         )
         .with_hint("Writes to .git, .derived and target are never allowed."));
     }
@@ -127,7 +142,7 @@ pub fn resolve_write_target(
                 if kind.is_symlink() {
                     return Err(ToolFailure::new(
                         "path_link",
-                        format!("{field} path crosses a symbolic link or junction"),
+                        format!("{} crosses a symbolic link or junction", subject(field)),
                     )
                     .with_hint(
                         "Writes never follow links; write to a real file inside the project.",

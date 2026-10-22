@@ -205,20 +205,32 @@ impl ToolFailure {
     /// Removes the host's project root from messages and diagnostics so results
     /// never reveal where the project lives on disk.
     pub(crate) fn sanitize(&mut self, root: &Path) {
-        let verbatim = root.to_string_lossy().replace('\\', "/");
-        let plain = verbatim
-            .strip_prefix("//?/")
-            .unwrap_or(&verbatim)
-            .to_owned();
+        // Paths may appear with doubled backslashes (Rust `Debug` output quotes
+        // them) or mixed separators, so compare with every run of separators
+        // collapsed to one `/`.
+        let collapse = |text: &str| -> String {
+            let mut out = String::with_capacity(text.len());
+            let mut previous_separator = false;
+            for c in text.chars() {
+                let separator = c == '\\' || c == '/';
+                if !(separator && previous_separator) {
+                    out.push(if separator { '/' } else { c });
+                }
+                previous_separator = separator;
+            }
+            out
+        };
+        let verbatim = collapse(&root.to_string_lossy());
+        let plain = verbatim.strip_prefix("/?/").unwrap_or(&verbatim).to_owned();
         let scrub = |text: &str| -> String {
-            let slashed = text.replace('\\', "/");
+            let collapsed = collapse(text);
             if ![verbatim.as_str(), plain.as_str()]
                 .iter()
-                .any(|needle| !needle.is_empty() && slashed.contains(needle))
+                .any(|needle| !needle.is_empty() && collapsed.contains(needle))
             {
                 return text.to_owned();
             }
-            let mut text = slashed;
+            let mut text = collapsed;
             for needle in [verbatim.as_str(), plain.as_str()] {
                 if !needle.is_empty() {
                     text = text.replace(&format!("{needle}/"), "").replace(needle, ".");
@@ -227,21 +239,31 @@ impl ToolFailure {
             text
         };
         self.message = scrub(&self.message);
+        if let Some(hint) = &self.hint {
+            self.hint = Some(scrub(hint));
+        }
+        if let Some(details) = &mut self.details {
+            scrub_strings(details, &scrub);
+        }
         for diagnostic in &mut self.diagnostics {
-            for key in ["file", "path", "message"] {
-                if let Some(text) = diagnostic[key].as_str() {
-                    let cleaned = scrub(text);
-                    // Anything still absolute cannot be shown relative to the
-                    // project: keep only its final component.
-                    let cleaned = if key == "file" && looks_absolute(&cleaned) {
-                        cleaned.rsplit('/').next().unwrap_or("").to_owned()
-                    } else {
-                        cleaned
-                    };
-                    diagnostic[key] = json!(cleaned);
-                }
+            scrub_strings(diagnostic, &scrub);
+            // A file that is still absolute cannot be shown relative to the
+            // project: keep only its final component.
+            if let Some(file) = diagnostic["file"].as_str()
+                && looks_absolute(file)
+            {
+                diagnostic["file"] = json!(file.rsplit(['/', '\\']).next().unwrap_or(""));
             }
         }
+    }
+}
+
+fn scrub_strings(value: &mut Value, scrub: &dyn Fn(&str) -> String) {
+    match value {
+        Value::String(text) => *text = scrub(text),
+        Value::Array(items) => items.iter_mut().for_each(|item| scrub_strings(item, scrub)),
+        Value::Object(map) => map.values_mut().for_each(|item| scrub_strings(item, scrub)),
+        _ => {}
     }
 }
 
@@ -493,4 +515,50 @@ pub(crate) fn tool_result_json(data: &Value, extra: &[Content], failed: bool) ->
     let mut content = vec![json!({"type": "text", "text": data.to_string()})];
     content.extend(extra.iter().map(Content::to_json));
     json!({"content": content, "structuredContent": data, "isError": failed})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failure_with(text: &str) -> ToolFailure {
+        ToolFailure::new("x", text).with_diagnostics(vec![
+            json!({"code": "c", "severity": "error", "file": text, "path": "", "message": text}),
+        ])
+    }
+
+    #[test]
+    fn sanitize_removes_the_root_in_every_spelling() {
+        let root = Path::new(r"\\?\D:\Work Space\proj");
+        for text in [
+            r"\\?\D:\Work Space\proj\src\lib.rs",
+            r"D:\Work Space\proj\src\lib.rs",
+            // Rust `Debug` output doubles the backslashes.
+            r"\\\\?\\D:\\Work Space\\proj\\src\\lib.rs",
+            "D:/Work Space/proj/src/lib.rs",
+        ] {
+            let mut failure = failure_with(text);
+            failure.sanitize(root);
+            assert_eq!(failure.message, "src/lib.rs", "{text}");
+            assert_eq!(failure.diagnostics[0]["file"], "src/lib.rs", "{text}");
+            assert_eq!(failure.diagnostics[0]["message"], "src/lib.rs", "{text}");
+        }
+    }
+
+    #[test]
+    fn sanitize_leaves_unrelated_text_and_backslashes_alone() {
+        let mut failure = failure_with(r"regex \d+ is invalid");
+        failure.sanitize(Path::new("/home/user/project"));
+        assert_eq!(failure.message, r"regex \d+ is invalid");
+    }
+
+    #[test]
+    fn sanitize_reduces_foreign_absolute_files_to_their_name() {
+        let mut failure = failure_with("/etc/passwd");
+        failure.sanitize(Path::new("/home/user/project"));
+        assert_eq!(failure.diagnostics[0]["file"], "passwd");
+        let mut failure = failure_with(r"C:\Windows\win.ini");
+        failure.sanitize(Path::new("/home/user/project"));
+        assert_eq!(failure.diagnostics[0]["file"], "win.ini");
+    }
 }
