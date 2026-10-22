@@ -5,9 +5,10 @@
 > `validate` with and without `--no-rust`, `assets`, `shaders` including an invalid
 > WGSL file, `scene inspect`, headless `run` with `--input`, `package` and its
 > `run.cmd` launcher from another directory) together with the exit codes for
-> success, validation failure and invalid arguments. `editor` (interactive) and
-> `mcp` (covered by the `engine-mcp` transcript tests) were not run by hand, and
-> Unix packaging has not been exercised.
+> success, validation failure and invalid arguments. `editor` (interactive) was not
+> run by hand, and Unix packaging has not been exercised. `mcp` is covered by the
+> `engine-mcp` transcript tests and, for the flags and execution tools, by
+> `crates/engine-tooling/tests/mcp_exec.rs` (see [MCP](mcp.md)).
 
 ## Running the tool
 
@@ -29,9 +30,9 @@ engine project assets <manifest>
 engine project shaders <manifest>
 engine project package <manifest> <new-directory> [--profile release|dev]
 engine scene inspect <scene> --project-root <project-directory>
-engine run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file]
+engine run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--screenshot file.png [--screenshot-size WxH]]
 engine editor <manifest>
-engine mcp <project-root>
+engine mcp <project-root> [--allow-write] [--allow-exec]
 ```
 
 Examples (from the repository root, with `engine` standing for the command above):
@@ -79,9 +80,21 @@ directory.
   absent action releases on the following tick. Actions must be declared by the
   manifest's `inputActions` or `inputBindings`. `--user-data` selects the root for
   saves and settings. `--scene-override` runs a validated scene snapshot while
-  keeping the original asset root (used by editor play).
+  keeping the original asset root (used by editor play). `--screenshot file.png`
+  simulates the ticks headlessly and then renders the final frame to a PNG through
+  an offscreen GPU target (`--screenshot-size WIDTHxHEIGHT`, each 1 to 4096,
+  default 640x360); the run result gains a `screenshot` object (`path`, `width`,
+  `height`, `bytes`, `adapter`). A host without a usable GPU adapter fails with the
+  diagnostic `render.gpu.unavailable`.
 - **`editor`** opens the native Windows editor; see [Editor](editor.md).
-- **`mcp`** serves the read-only MCP adapter on stdin/stdout; see [MCP](mcp.md).
+- **`mcp`** serves an MCP server for one project root on stdin/stdout; see
+  [MCP](mcp.md). It is read-only by default. `--allow-write` additionally lists the
+  scene and file editing tools; `--allow-exec` additionally lists the tools that
+  build and run the game (`project_build`, `project_run_headless`,
+  `render_screenshot`; these execute project code with your privileges). The flags
+  are independent, may appear in any order, and may not repeat. Stdout carries
+  JSON-RPC messages only; usage errors (exit 2) and transport errors (exit 1) go to
+  stderr.
 
 ## Output and exit status
 

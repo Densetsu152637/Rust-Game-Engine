@@ -1,76 +1,338 @@
-# MCP stdio adapter
+# MCP server
 
-The engine's MCP adapter (`engine-mcp`) is a read-only transport over the shared
-project service. Start it through the tooling CLI with `engine mcp <project-root>`
-(see [Project commands](commands.md)) and connect an MCP client over standard
-input/output, or embed it with
-`engine_mcp::serve(project_root, reader, writer)` over any `BufRead` and `Write`.
-The project root is fixed for the life of the session and tool paths are relative to
-it. The crate README (`crates/engine-mcp/README.md`) is the detailed contract.
+The engine ships a Model Context Protocol server (`engine-mcp`) so coding agents can
+understand, edit, build and run an authored project. Start it through the tooling CLI
+with `engine mcp <project-root> [--allow-write] [--allow-exec]` (see
+[Project commands](commands.md)) and connect an MCP client over standard
+input/output, or embed it with `engine_mcp::serve_with_config` over any `BufRead` and
+`Write`. The project root is fixed for the life of the session and every tool path is
+relative to it. The crate README (`crates/engine-mcp/README.md`) repeats the contract
+for embedders.
 
-The adapter is a port of the earlier engine adapter's implemented wire contract, not
-an independent claim of compliance with a newer MCP specification. It supports two
-protocol modes:
+The server is **read-only by default**. Editing and execution are opt-in, per server,
+by command-line flag; a tool that the flags do not allow is neither listed nor
+callable.
 
-- **`2026-07-28`** is stateless: `server/discover`, `tools/list` and `tools/call`.
-  Every request carries `params._meta` with the string key
-  `io.modelcontextprotocol/protocolVersion` and the object key
-  `io.modelcontextprotocol/clientCapabilities`. Results carry
+## Connecting an agent
+
+Claude Code reads MCP servers from a `.mcp.json` file in the project (or from
+`claude mcp add`). With `engine` on `PATH` (or a full path to the binary), a server
+that can read the project and edit its scenes:
+
+```json
+{
+  "mcpServers": {
+    "engine": {
+      "command": "engine",
+      "args": ["mcp", "/absolute/path/to/project", "--allow-write"]
+    }
+  }
+}
+```
+
+The project root is the directory that contains `project.json`; use an absolute path
+because the client's working directory is not guaranteed. From a checkout of the
+engine, use `"command": "cargo"` with
+`"args": ["run", "-q", "-p", "engine-tooling", "--bin", "engine", "--", "mcp", "/absolute/path/to/project", "--allow-write"]`
+(Cargo writes its progress to stderr only, so stdout stays pure JSON-RPC). Add
+`"--allow-exec"` to let the agent build and run the game; the first build compiles
+the engine and can take minutes, so give the client a long tool timeout for those
+tools. Set `ENGINE_NATIVE_TARGET_DIR` in the server's `env` to share Cargo dependency
+output between projects (it also keeps generated paths short on Windows). Other MCP
+clients take the same `command` and `args`.
+
+## Access levels
+
+| Level | Flag | Tools | What it can do |
+| --- | --- | --- | --- |
+| Read | always on | 12 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
+| Write | `--allow-write` | `entity_create`, `entity_update`, `entity_delete`, `component_set`, `component_remove`, `file_write` | Change scenes and text files inside the project root. |
+| Exec | `--allow-exec` | `project_build`, `project_run_headless`, `render_screenshot` | Compile and run the project's native game code. |
+
+The three levels are independent: `--allow-exec` does not enable writing. Calling a
+gated tool returns a JSON-RPC `-32602` error that names the missing flag.
+`project_info` reports the access the server was started with. **Write access lets an
+agent author native Rust code (`src/lib.rs`, `Cargo.toml`) that runs with your
+privileges the next time anything builds or runs the game; exec access runs it
+immediately.** Compilation is not a sandbox. Grant only what the task needs and
+review agent-written code.
+
+## Protocol modes
+
+The server is a port of the earlier engine adapter's wire contract, not an
+independent claim of compliance with a newer MCP specification. Both modes carry the
+same tools, resources and results, and the server name is `cpp-game-engine` (version
+`0.1.0`).
+
+- **`2026-07-28`** is stateless: `server/discover`, `tools/list`, `tools/call`,
+  `resources/list`, `resources/read` and `resources/templates/list`. Every request
+  carries `params._meta` with the string key `io.modelcontextprotocol/protocolVersion`
+  and the object key `io.modelcontextprotocol/clientCapabilities`. Results carry
   `resultType: "complete"` and `_meta.io.modelcontextprotocol/serverInfo`; an
   unsupported version returns error `-32022` with supported and requested versions.
-- **`2025-11-25`** uses `initialize`, `notifications/initialized`, then `ping`,
-  `tools/list` and `tools/call`. Initialize negotiates that version even when the
-  client proposes another date; a repeated initialize is rejected.
+- **`2025-11-25`** uses `initialize`, `notifications/initialized`, then `ping` and
+  the same list/read/call methods. `initialize` always negotiates `2025-11-25`, even
+  when the client proposes another version; this includes the common older client
+  versions `2025-06-18` and `2025-03-26`. That is the conservative choice: the server
+  does not echo versions it has not been verified against, so a client that cannot
+  speak `2025-11-25` will see the mismatch and disconnect. A repeated `initialize` is
+  rejected. The result carries `instructions`, a short orientation for the agent. In a
+  completed legacy session, requests may carry unrelated `_meta` members such as a
+  `progressToken`; they are ignored and the request stays legacy.
 
-The server name is `cpp-game-engine` (version `0.1.0`) in both modes. Stdout carries
-only compact JSON-RPC messages, flushed after each response; the adapter never logs
-to stdout.
+Capabilities in both modes: `{"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false}}`.
+Prompts, completion, logging, subscriptions and server-initiated notifications are
+not implemented; valid notifications produce no response. Stdout carries only
+compact JSON-RPC messages, flushed after each response; the server never logs to
+stdout.
+
+## Tool results and errors
+
+Every tool returns `structuredContent` with a boolean `ok`, mirrored as the first
+text content block. Failures set `isError: true` and have this shape:
+
+```json
+{"ok": false,
+ "error": {"code": "revision_conflict", "message": "…", "hint": "what to do next", "details": {}},
+ "diagnostics": [{"code": "…", "severity": "error", "file": "scenes/main.json", "path": "player", "message": "…"}]}
+```
+
+`error.code` is a stable machine-readable code, `hint` says how to recover, and
+`diagnostics` (when present) are the engine's validation or compiler diagnostics.
+Messages may change; codes and paths are the contract. Results never contain the
+host path of the project root. JSON-RPC protocol errors are reserved for malformed
+requests, unknown or gated tools, and arguments that are not part of a tool's
+`inputSchema` or that omit a required one (`-32602`). A wrong-typed value is a tool
+error with code `invalid_argument`.
+
+Common error codes: `path_invalid`, `path_protected`, `path_link`,
+`invalid_argument`, `project_missing`, `entity_not_found`, `asset_not_found`,
+`revision_conflict`, `hash_required`, `file_not_found`, `file_too_large`,
+`content_too_large`, `not_text`, `line_out_of_range`, `scene_invalid`,
+`component_invalid`, `output_too_large`, `internal_error`, and the engine's dotted
+diagnostic codes such as `project.asset.unknown`, `scene.camera.follow` or
+`scene.entity.id.duplicate`. Exec tools add `compiler.build`, `build_timeout`,
+`run_timeout`, `unknown_action`, `rust_crate_missing`, `gpu_unavailable`,
+`image_too_large` and `runtime.*` codes.
 
 ## Tools
 
-Both tools are read-only and idempotent.
+Each tool has a description, a closed `inputSchema` (every property is described,
+with enums, bounds and defaults) and, because the result shape is stable, an
+`outputSchema` that covers both outcomes (only `ok` is required). Annotations are
+advisory.
 
-| Tool | Required argument | Result |
+### Read-only tools (always listed)
+
+All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
+
+| Tool | Arguments | Result |
 | --- | --- | --- |
-| `project_validate` | `manifest`: project-relative manifest path | Validation status or structured diagnostics |
-| `scene_inspect` | `scene`: project-relative scene path | The authored scene entities and components, checked against the project's asset catalog |
+| `project_info` | none | Name, schema, manifest, startup scene, all scenes, asset counts by kind, script assets, the Rust crate (manifest, package name), input actions, startup camera settings and the server's access levels. |
+| `project_validate` | `manifest` (default `project.json`) | `ok:true` with project name and scene/asset counts, or `ok:false` with diagnostics. Static validation only; it never compiles or runs code. |
+| `input_actions` | `include_binding_tokens` | Actions with bindings (and the legacy key), optionally every valid binding token. These are the names scripted input uses. |
+| `scene_list` | none | Every scene (startup plus scene assets): path, asset ID, scene ID, entity count, `revision`, validity. |
+| `scene_inspect` | `scene` (required), `entities` (ID filter), `offset`, `limit` | The scene's `schema`, `scene_id`, `revision`, `entity_count` and the requested `entities` page, checked against the asset catalog. |
+| `entity_get` | `scene`, `id` (both required) | One entity by stable authored ID, the catalog assets it references (id, kind, path) and the scene `revision`. Unknown IDs return suggestions. |
+| `component_schema` | `component` (optional enum) | The authored components (`Transform`, `Script`, `MeshRenderer`, `SpriteRenderer`, `Camera2D`, `Collider2D`) as JSON Schema with defaults and a valid example each, an entity schema and the rules the engine enforces. |
+| `asset_list` | `kind` (enum), `offset`, `limit` | Catalog entries: ID, kind, path, size. |
+| `asset_info` | `asset` (ID) | Kind, path, size, kind-specific details (texture size and format, mesh vertex/triangle count and bounds, font glyphs, script line count, scene entity count) and where the asset is used (scene, entity, component, field). |
+| `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` supports `*`, `**` and `?`; a pattern without `/` matches file names. |
+| `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
+| `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob`, `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
 
-Validation uses `engine_project::Project::load`, including static content
-validation, and reads native Rust script sources. It never invokes Cargo, build
-scripts, a compiler, game systems or a remote service; compiler and runtime
-validation remain separate tooling operations (`engine project validate`).
-Diagnostics keep `code`, `severity`, `file`, `path` and `message`. A tool failure
-returns `isError: true` with mirrored JSON text content and `structuredContent`;
-protocol failures (malformed requests, unknown methods) use JSON-RPC error envelopes
-instead.
+Scene results use the project's serialization schema, keep stable authored IDs and
+print numbers as their shortest decimal.
 
-Only existing project-relative files are accepted. Absolute paths, parent
-traversal, directories and symlink or junction escapes are rejected, and the project
-catalog and every referenced authored file are confined the same way. Scene results
-use the project's serialization schema and keep stable authored asset IDs. No
-prompts, resources, editing tools or server notifications are exposed, and valid
-notifications produce no response.
+### Write tools (`--allow-write`)
+
+Scene tools take `scene` (path), `expected_revision` (the `revision` returned by a
+read tool or the previous edit) and optional `dry_run` (validate and report, save
+nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
+`revision`, the edited `entity` (null after a delete) and `entity_count`.
+
+| Tool | Extra arguments | Annotations (destructive / idempotent) | Effect |
+| --- | --- | --- | --- |
+| `entity_create` | `id`, `name`, `components` | no / no | Adds an entity. The ID must be unique in the scene. |
+| `entity_update` | `id`, `name`, `components` | yes / yes | Renames the entity and/or replaces its whole component set. |
+| `entity_delete` | `id` | yes / yes | Removes the entity; rejected if the scene would become invalid. |
+| `component_set` | `entity`, `component`, `value`, `merge` | yes / yes | Replaces one component (omitted fields take defaults) or, with `merge`, overlays fields on the existing one. |
+| `component_remove` | `entity`, `component` | yes / yes | Removes one component; removing an absent one is a no-op. |
+| `file_write` | `path`, `content`, `expected_hash` | yes / yes | Creates or overwrites a UTF-8 text file. |
+
+All write tools carry `readOnlyHint: false` and `openWorldHint: false`.
+
+**Scene edits** go through engine-project's revisioned `SceneDocument`. The scene is
+loaded fresh from disk for every call; its revision (a hash of the normalised scene)
+must equal `expected_revision` or the call fails with `revision_conflict` and changes
+nothing; the error deliberately does not return the current revision, so the agent
+must re-read the scene before retrying. The edited scene is validated against the
+whole project (unknown or wrongly typed assets, duplicate IDs, a second camera,
+dangling camera follow, sprites without a transform, non-finite numbers, schema
+violations) *before* anything is written, and then saved atomically (temporary file
+in the same directory, flushed, renamed over the target). A rejected edit returns
+diagnostics and leaves the file byte-for-byte unchanged. The scene file is rewritten
+in the engine's normalised pretty-printed form.
+
+**`file_write`** is for scripts, `Cargo.toml`, notes and also scenes and
+`project.json`. Overwriting needs `expected_hash` (the `hash` from `file_read`); a
+missing hash is `hash_required`, a stale one `revision_conflict`; omit it only to
+create a new file. Parent directories are created inside the root. Writes never
+follow a link (a symlink or junction anywhere on the path is refused), never leave the
+root, never touch `.git`, `.derived` or `target`, are limited to 512 KiB of UTF-8
+without NUL bytes, and are atomic. Scene files known to the project are parsed and
+validated against the project before they are written (`validated: "scene"`, plus the
+resulting `revision`). `project.json` is validated after the write
+(`validated: "manifest"`); if that breaks a project that was valid, the previous
+bytes are restored and the call fails with the project's diagnostics and
+`details.rolled_back: true`.
+
+### Execution tools (`--allow-exec`)
+
+These are provided by `engine-tooling` (the crate that owns the native compiler)
+through `engine_mcp::ToolProvider`. They run project code with the host user's
+privileges. All carry `readOnlyHint: false`, `openWorldHint: true` (cargo may
+download crates; games can do anything).
+
+| Tool | Arguments | Annotations (destructive / idempotent) | Result |
+| --- | --- | --- | --- |
+| `project_build` | `release`, `timeout_seconds` (10–1800, default 600) | no / yes | A new generation: `generation`, `fingerprint`, `executable`, `profile`, `build_millis`, bounded `warnings`. On failure: compiler diagnostics (`rust.*` code, severity, file, `line:column`, message, rendered text) and `details.last_good_generation`. |
+| `project_run_headless` | `ticks` (1–100000, default 60), `inputs`, `scene`, `entities`, `max_entities`, `rebuild`, `build_timeout_seconds`, `timeout_seconds` (5–600, default 120) | yes / no | Bounded final state: `ticks`, `scene_id`, `live_entities`, `active_scripts`, the final entities (component values after scripts ran), the last 200 log lines, trigger events and which generation ran. |
+| `render_screenshot` | `scene`, `ticks` (1–10000, default 1), `inputs`, `width`/`height` (16–2048, default 640×360), `rebuild`, the two timeouts | yes / no | An MCP `image` block (`image/png`, base64) plus metadata: size, ticks, GPU adapter, scene ID. |
+
+`project_build` reuses the engine's compiler: each build produces a unique
+generation under `.derived/native`; a failed or cancelled build removes only its own
+half-built directory, never an earlier generation, and a successful build prunes to
+the three newest. Runs execute the generation as a child process exactly like
+`engine run --headless`: fixed 1/60 s ticks, no window or audio device, a throw-away
+`--user-data` directory (saves and settings are not touched), the project's
+declared input actions only. `inputs` is a list of `{action, tick, duration}`
+entries (at most 400 ticks of input in total). `scene` runs a different scene than
+the startup scene. With `rebuild: false` the generation built earlier in the same
+server session is reused when one exists (faster when only scene data changed).
+Runs are stopped when `timeout_seconds` elapses (`run_timeout`) and builds are
+cancelled when their limit elapses (`build_timeout`). Calls are served one at a time;
+a long build blocks other requests on that connection.
+
+`render_screenshot` uses the engine's real renderer on an offscreen target (the same
+path as a window), so sprites, meshes and script-created UI panels appear as in the
+game; native render passes registered by the game run too. It needs a GPU adapter. A
+host without one gets the structured error `gpu_unavailable` (use
+`project_run_headless` instead). Images are returned inline, so the PNG must fit the
+1 MiB response limit after base64 encoding; otherwise the error `image_too_large`
+asks for a smaller size.
+
+## Resources
+
+`resources/list`, `resources/read` and `resources/templates/list` expose the project
+files read-only under `project://<relative path>` (forward slashes, percent-encoded).
+Listing is sorted and paginated (100 per page, opaque `cursor`/`nextCursor`) and
+skips `.git`, `.derived`, `target` and links. Each entry has `uri`, `name` (the
+relative path), `mimeType` (by extension: `application/json`, `text/x-rust`,
+`application/toml`, `text/markdown`, `image/x-portable-pixmap`, `image/png`,
+`audio/wav`, `text/plain`, otherwise `application/octet-stream`) and `size`. Reading
+returns UTF-8 text as `text` and anything else as a base64 `blob`, up to 512 KiB.
+A path outside the root, through a link, in a hidden directory, missing or not a
+regular file is `-32002` "resource not found"; a non-`project://` scheme, a query or
+fragment, or an oversized file is `-32602`. The single template is
+`project://{+path}`. Subscriptions and change notifications are not supported.
+
+## Security model
+
+- **Root confinement.** The root is canonicalised once. Client paths must be
+  project-relative with forward slashes: absolute paths, drive letters, UNC paths,
+  `..`, backslashes, `:` and `.git` components are rejected before the filesystem is
+  touched, and existing files are canonicalised and must still start with the root,
+  so symlink and junction escapes fail for reads, listings, searches, resources and
+  edits alike. Listings and walks skip links entirely. Writes check every existing
+  component with `symlink_metadata` and refuse links even when they point inside the
+  root, then check the canonical ancestor again. Rejection messages never echo the
+  requested path or the host's root path; diagnostics are rewritten relative to the
+  root.
+- **Gating.** Write and exec tools are absent from `tools/list` and rejected by
+  `tools/call` unless the server was started with the flag; each tool also re-checks
+  the access it needs when it runs.
+- **Untrusted input.** Tool arguments, file contents and resources are data. The
+  server never evaluates them; the only code it executes is the project's own crate,
+  and only through the exec tools.
+- **Bounded work.** Requests, responses, file sizes, directory walks, search scans,
+  result pages, run time and build time are all limited (next section). Exceeding a
+  limit truncates with an explicit flag or fails with a structured error; it never
+  produces unbounded output.
+- **Clean stdout.** Only JSON-RPC messages are written to stdout. Child processes
+  (cargo, the game) never inherit the server's stdout; their diagnostics reach the
+  client in tool results and the server's stderr.
+- **Accepted risk.** An agent with write access can edit native game code and an
+  agent with exec access can run it. This is the same trust decision as letting the
+  agent run `cargo run` yourself.
 
 ## Limits and framing
 
-Input lines and output messages are limited to 1 MiB (LF excluded), and input
-storage is bounded even without a newline. `serve_with_limit` allows a smaller input
-limit. String request IDs are limited to 1024 UTF-8 bytes; larger IDs get a bounded
-error with a null ID. An oversized tool result becomes a bounded tool error. Framing
-is newline-delimited; `Content-Length` framing is not supported. Clean EOF is
-success; a partial final line or an oversized request emits a parse error and
-returns `Error::InvalidFraming`, while a malformed complete line reports a parse
-error and the session continues.
+Input lines and output messages are limited to 1 MiB (LF excluded), and input storage
+is bounded even without a newline. String request IDs are limited to 1024 UTF-8
+bytes; larger IDs get a bounded error with a null ID. A tool result above the output
+limit becomes the bounded tool error `output_too_large` (a non-tool response becomes
+a `-32603` error), and the session continues. Framing is newline-delimited;
+`Content-Length` framing is not supported. Clean EOF is success; a partial final line
+or an oversized request emits a parse error and returns `Error::InvalidFraming`,
+while a malformed complete line reports a parse error and the session continues.
+
+| Limit | Default |
+| --- | --- |
+| Input message / output message | 1 MiB / 1 MiB |
+| `file_read` content per call | 256 KiB (line-boundary cut, `next_start_line`) |
+| File scanned by `file_read`, `file_write`, `search_text` (largest file; search also caps a file at 2 MiB and a search at 64 MiB total) | 8 MiB |
+| `file_write` content | 512 KiB |
+| `resources/read` file | 512 KiB |
+| Directory entries visited per listing, search or resource walk | 20,000 |
+| Page size (`limit`) | 1000 (default 200); resources 100 |
+| `search_text` results | 500 (default 50); a line is clipped at 300 characters |
+| Build / run time | 600 s default, 1800 s / 600 s maximum |
+| Run output | 8 MiB read, summary of at most 200 entities (300 KB), 200 log lines |
+| Scripted input | 400 ticks of input |
+
+Embedders can change the limits with `ServerConfig::with_limits`.
+
+## Embedding
+
+```rust
+use engine_mcp::{ServerConfig, serve_with_config};
+
+// Read-only server over stdio.
+serve_with_config(root, std::io::stdin().lock(), std::io::stdout().lock(), ServerConfig::new())?;
+
+// Write access plus extra tools from a provider (as engine-tooling does for exec).
+let config = ServerConfig::new().allow_write(true).allow_exec(true).with_provider(MyTools);
+```
+
+`engine_mcp::serve(root, reader, writer)` and `serve_with_limit` keep working and are
+read-only. `Server::new(root, config)` builds the registry once and can serve many
+connections. A provider implements `ToolProvider::tools() -> Vec<Box<dyn Tool>>`;
+a `Tool` supplies a `ToolDefinition` (name, title, description, `input_schema`,
+`output_schema`, `Annotations`, `AccessLevel`) and a `call(&ToolContext, &args)`
+returning `ToolResult` or a structured `ToolFailure`. The registry enforces the
+schema's `properties` and `required` members, hides tools above the configured
+access, converts panics into `internal_error` and scrubs the root path from
+failures. Providers live in the crate that owns the capability, so `engine-tooling`
+depends on `engine-mcp` and not the other way round.
 
 References: the MCP [stdio transport](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio),
 [versioning](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning),
-[discovery](https://modelcontextprotocol.io/specification/2026-07-28/server/discover)
-and [tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
+[discovery](https://modelcontextprotocol.io/specification/2026-07-28/server/discover),
+[tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools) and
+[resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources)
 specifications, and the legacy [2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle).
 
 ## Tests
 
 `cargo test -p engine-mcp` uses in-memory stdio transcripts and temporary authored
-projects, covering native-build tripwires, malformed and oversized input, EOF and
-I/O errors, discovery schemas, handshake order, diagnostics, output limits and real
-symlink or junction confinement.
+projects: framing, malformed and oversized input, EOF and I/O errors, negotiation
+(including older client versions), discovery schemas, every tool's success and
+failure paths, gating, revision conflicts and atomicity, confinement through real
+symlinks and junctions for reads and writes, oversized results, resources, and a
+drift guard that pins `component_schema` to engine-project's serde types.
+`cargo test -p engine-tooling --test mcp_exec` runs the real `engine mcp` binary:
+flag parsing, gating, stdout cleanliness, and the execution tools against real native
+generations (build, failed build keeping the last good generation, scripted-input
+runs, timeouts). The screenshot test needs a GPU and is `#[ignore]`d; run it with
+`cargo test -p engine-tooling --test mcp_exec -- --ignored`.
