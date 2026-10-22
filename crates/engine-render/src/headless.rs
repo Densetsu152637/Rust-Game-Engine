@@ -9,7 +9,7 @@
 //! Offscreen targets "render" by filling with the sRGB-encoded clear color, which
 //! gives readback a deterministic, checkable value without rasterizing.
 
-use crate::backend::{BackendKind, RenderBackend, RenderCapabilities};
+use crate::backend::{BackendKind, DeviceLimits, RenderBackend, RenderCapabilities};
 use crate::command::{DrawCommand, UniformSlot};
 use crate::error::{RenderError, Result};
 use crate::frame::{
@@ -96,6 +96,8 @@ pub enum FailPoint {
 pub struct RecordingConfig {
     pub max_frames_in_flight: u32,
     pub max_texture_dimension: u32,
+    /// Limits reported in the capabilities (wgpu downlevel defaults by default).
+    pub limits: DeviceLimits,
     /// Initial surface size; `None` means the backend has no presentation surface.
     pub surface: Option<(u32, u32)>,
 }
@@ -105,6 +107,7 @@ impl Default for RecordingConfig {
         Self {
             max_frames_in_flight: 2,
             max_texture_dimension: 4096,
+            limits: DeviceLimits::default(),
             surface: Some((64, 64)),
         }
     }
@@ -248,6 +251,7 @@ impl RenderBackend for RecordingBackend {
         caps.device_name = Some("in-memory recorder".into());
         caps.max_frames_in_flight = self.config.max_frames_in_flight;
         caps.max_texture_dimension = self.config.max_texture_dimension;
+        caps.limits = self.config.limits;
         caps.backend_ready = self.log.lock().initialized;
         if self.config.surface.is_none() {
             caps.surface_presentation = false;

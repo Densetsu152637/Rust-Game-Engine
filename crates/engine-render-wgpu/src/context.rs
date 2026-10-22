@@ -124,13 +124,23 @@ impl GpuContext {
             .context("GPU device creation failed")?;
         let errors = Arc::new(Mutex::new(Vec::new()));
         let sink = errors.clone();
+        // Validation errors of engine calls are caught per call by
+        // `GpuContext::validated`, so they never reach this handler. What arrives
+        // here is out-of-memory, internal errors, and validation errors of the
+        // host's own direct use of the public `device` outside any scope (custom
+        // native passes); those stay sticky, as `check_errors` documents.
         device.on_uncaptured_error(Arc::new(move |error| {
             if let Ok(mut errors) = sink.lock()
                 && errors.len() < MAX_RECORDED_FAILURES
             {
+                let kind = match error {
+                    wgpu::Error::Validation { .. } => "validation",
+                    wgpu::Error::OutOfMemory { .. } => "out of memory",
+                    _ => "fault",
+                };
                 errors.push(GpuFailure {
                     lost: false,
-                    message: format!("GPU validation: {error}"),
+                    message: format!("GPU {kind}: {error}"),
                 });
             }
         }));
@@ -168,6 +178,31 @@ impl GpuContext {
         ))
     }
 
+    /// Run `body` inside a validation error scope. A validation error raised
+    /// by the GPU calls inside is returned from this call as
+    /// [`RenderError::Backend`] and never written to the sticky log, so one
+    /// rejected resource cannot poison later calls. A failure returned by `body`
+    /// itself wins over a captured one. The scope is a guard, so it is popped on
+    /// every return path, including `?`.
+    ///
+    /// Out-of-memory and device loss are not captured here; they stay sticky and
+    /// are reported by [`crate::error::check_gpu`].
+    pub(crate) fn validated<T>(
+        &self,
+        body: impl FnOnce() -> engine_render::Result<T>,
+    ) -> engine_render::Result<T> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let result = body();
+        let captured = pollster::block_on(scope.pop());
+        let value = result?;
+        match captured {
+            Some(error) => Err(engine_render::RenderError::Backend(format!(
+                "GPU validation: {error}"
+            ))),
+            None => Ok(value),
+        }
+    }
+
     /// The first recorded failure and whether it was a device loss.
     pub(crate) fn failure(&self) -> Option<(bool, String)> {
         let errors = self.errors.lock().ok()?;
@@ -183,8 +218,10 @@ impl GpuContext {
         Some((lost, message))
     }
 
-    /// GPU failures remain sticky: subsequent frames cannot report success after
-    /// validation or device loss. The caller can tear down and recreate the host.
+    /// Sticky device errors: device loss, out-of-memory, and validation errors of
+    /// calls made directly on the public `device` outside a scope. Validation
+    /// errors of the backend's own calls are scoped (see [`Self::validated`]) and
+    /// never appear here. The caller can tear down and recreate the host.
     pub fn check_errors(&self) -> Result<()> {
         let errors = self
             .errors

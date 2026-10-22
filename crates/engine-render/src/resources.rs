@@ -4,6 +4,7 @@
 //! never reused, so a stale handle can always be detected. Backends receive the
 //! typed handle and key their own storage by [`ShaderHandle::id`] and friends.
 
+use crate::backend::DeviceLimits;
 use crate::error::{RenderError, Result};
 use std::fmt;
 
@@ -183,6 +184,25 @@ impl VertexLayout {
             {
                 return invalid(format!("duplicate vertex location {}", attribute.location));
             }
+        }
+        Ok(())
+    }
+
+    /// Check the layout against device limits (stride, attribute count).
+    pub fn check_limits(&self, limits: &DeviceLimits) -> Result<()> {
+        if self.stride > limits.max_vertex_buffer_array_stride {
+            return Err(RenderError::LimitExceeded {
+                limit: "max_vertex_buffer_array_stride",
+                requested: u64::from(self.stride),
+                max: u64::from(limits.max_vertex_buffer_array_stride),
+            });
+        }
+        if self.attributes.len() as u64 > u64::from(limits.max_vertex_attributes) {
+            return Err(RenderError::LimitExceeded {
+                limit: "max_vertex_attributes",
+                requested: self.attributes.len() as u64,
+                max: u64::from(limits.max_vertex_attributes),
+            });
         }
         Ok(())
     }

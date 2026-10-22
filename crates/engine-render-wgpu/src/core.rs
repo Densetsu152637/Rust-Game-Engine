@@ -7,9 +7,9 @@ use crate::surface::SurfaceState;
 use crate::target::read_texture_rgba;
 use crate::translate::{COLOR_FORMAT, DEPTH_FORMAT, backend_label, target_format};
 use engine_render::{
-    BackendKind, MeshHandle, MeshResource, OffscreenDesc, ReadbackImage, RenderCapabilities,
-    RenderError, RenderFeature, ResourceId, Result, ShaderHandle, ShaderResource, TargetHandle,
-    Texture2D, TextureHandle, VertexLayout,
+    BackendKind, DeviceLimits, MeshHandle, MeshResource, OffscreenDesc, ReadbackImage,
+    RenderCapabilities, RenderError, RenderFeature, ResourceId, Result, ShaderHandle,
+    ShaderResource, TargetHandle, Texture2D, TextureHandle, VertexLayout,
 };
 use std::collections::{HashMap, VecDeque};
 use wgpu::util::DeviceExt;
@@ -75,6 +75,14 @@ impl Core {
         caps.device_name = Some(info.name.clone());
         caps.max_frames_in_flight = frames_in_flight;
         caps.max_texture_dimension = limits.max_texture_dimension_2d;
+        caps.limits = DeviceLimits {
+            max_bind_groups: limits.max_bind_groups,
+            max_bindings_per_bind_group: limits.max_bindings_per_bind_group,
+            max_vertex_buffer_array_stride: limits.max_vertex_buffer_array_stride,
+            max_vertex_attributes: limits.max_vertex_attributes,
+            max_uniform_buffer_binding_size: u32::try_from(limits.max_uniform_buffer_binding_size)
+                .unwrap_or(u32::MAX),
+        };
         caps.surface_presentation = surface.is_some() || external_surface;
         if !caps.surface_presentation {
             caps.unsupported_reasons.insert(
@@ -88,7 +96,7 @@ impl Core {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let white = upload_texture(&gpu, &Texture2D::white());
+        let white = gpu.validated(|| Ok(upload_texture(&gpu, &Texture2D::white())))?;
         check_gpu(&gpu)?;
         Ok(Self {
             gpu,
@@ -110,7 +118,9 @@ impl Core {
     }
 
     pub fn create_shader(&mut self, handle: ShaderHandle, resource: &ShaderResource) -> Result<()> {
-        let entry = ShaderEntry::new(&self.gpu, resource)?;
+        let entry = self
+            .gpu
+            .validated(|| ShaderEntry::new(&self.gpu, resource))?;
         check_gpu(&self.gpu)?;
         self.shaders.insert(handle.id(), entry);
         Ok(())
@@ -132,7 +142,9 @@ impl Core {
 
     pub fn create_mesh(&mut self, handle: MeshHandle, resource: &MeshResource) -> Result<()> {
         self.check_mesh_size(resource)?;
-        let entry = upload_mesh(&self.gpu, resource);
+        let entry = self
+            .gpu
+            .validated(|| Ok(upload_mesh(&self.gpu, resource)))?;
         check_gpu(&self.gpu)?;
         self.meshes.insert(handle.id(), entry);
         Ok(())
@@ -147,7 +159,9 @@ impl Core {
     }
 
     pub fn create_texture(&mut self, handle: TextureHandle, texture: &Texture2D) -> Result<()> {
-        let entry = upload_texture(&self.gpu, texture);
+        let entry = self
+            .gpu
+            .validated(|| Ok(upload_texture(&self.gpu, texture)))?;
         check_gpu(&self.gpu)?;
         self.textures.insert(handle.id(), entry);
         Ok(())
@@ -159,7 +173,10 @@ impl Core {
         };
         if existing.width == texture.width && existing.height == texture.height {
             // Queue order: frames submitted earlier still see the old texels.
-            write_texture(&self.gpu, &existing.texture, texture);
+            self.gpu.validated(|| {
+                write_texture(&self.gpu, &existing.texture, texture);
+                Ok(())
+            })?;
             return check_gpu(&self.gpu);
         }
         self.drop_texture_bind_groups(handle.id());
@@ -173,18 +190,21 @@ impl Core {
             height: desc.height,
             depth_or_array_layers: 1,
         };
-        let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("offscreen target"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
-        let depth = create_depth(&self.gpu.device, desc.width, desc.height);
+        let (texture, view, depth) = self.gpu.validated(|| {
+            let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("offscreen target"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let depth = create_depth(&self.gpu.device, desc.width, desc.height);
+            Ok((texture, view, depth))
+        })?;
         check_gpu(&self.gpu)?;
         self.targets.insert(
             handle.id(),
@@ -230,8 +250,10 @@ impl Core {
             .targets
             .get(&handle.id())
             .ok_or(RenderError::StaleHandle(handle.into()))?;
-        let rgba8 = read_texture_rgba(&self.gpu, &target.texture, target.width, target.height)
-            .map_err(|error| wgpu_error(&self.gpu, &error))?;
+        let rgba8 = self.gpu.validated(|| {
+            read_texture_rgba(&self.gpu, &target.texture, target.width, target.height)
+                .map_err(|error| wgpu_error(&self.gpu, &error))
+        })?;
         Ok(ReadbackImage {
             width: target.width,
             height: target.height,

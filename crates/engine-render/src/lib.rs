@@ -35,7 +35,8 @@ pub mod shader;
 pub mod state;
 
 pub use backend::{
-    BackendKind, RenderBackend, RenderCapabilities, RenderFeature, RenderFeatureStatus,
+    BackendKind, DeviceLimits, RenderBackend, RenderCapabilities, RenderFeature,
+    RenderFeatureStatus,
 };
 pub use command::{
     DrawCommand, DrawOrderKey, DrawUniform, RenderCommandBuffer, SAMPLER_SLOT, TEXTURE_SLOT,
