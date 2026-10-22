@@ -28,6 +28,7 @@ serve_with_config(root, reader, writer, config)?;
 | `tools/` | Built-in tools by family: `project`, `scene`, `components`, `assets`, `files` (read and `file_write`), `edit` (scene edits). |
 | `resources` | `project://` resources. |
 | `paths` | Confinement, bounded reads, atomic writes, globbing, percent coding. |
+| `scrub` | Host-path scrubbing applied to every tool result (project root to relative paths, other host paths to `<host>`). |
 | `schema` | JSON Schema builders and typed argument readers. |
 | `error` | Transport errors (`Error::Io`, `InvalidRoot`, `InvalidFraming`, `InvalidConfig`). |
 
@@ -84,7 +85,11 @@ revision (from `scene_inspect`/`entity_get`/the previous edit), the edited scene
 validated against the whole project through engine-project's `SceneDocument` before
 an atomic save, and a rejected edit leaves the file untouched. `file_write` needs the
 `hash` from `file_read` to overwrite, never follows links, refuses `.git`, `.derived`
-and `target`, and validates scenes (before) and `project.json` (after, with rollback).
+and `target` (judged on the canonical on-disk path, case-insensitively and at any
+depth, so case variants and Windows 8.3 short names such as `GIT~1` cannot reach
+them; the same names are not readable, listable or served either), refuses Windows
+device names (`NUL`, `COM1`, `aux.txt`, ...), and validates scenes (before) and
+`project.json` (after, with rollback) by comparing canonical files.
 
 ## Adding tools
 
@@ -99,7 +104,10 @@ A `Tool` returns a `ToolDefinition` (name, title, description, closed `input_sch
 optional `output_schema`, `Annotations`, `AccessLevel`) and implements
 `call(&ToolContext, &Map<String, Value>) -> Result<ToolResult, ToolFailure>`. The
 registry rejects arguments outside `properties` and missing `required` ones before
-the call, scrubs the host's root path from failures, converts panics into
+the call, scrubs host paths from every result (the project root becomes a
+project-relative path, other absolute host paths such as the cargo home become
+`<host>`; mark a result `ToolResult::verbatim()` when its payload is project file
+text that must not be rewritten), converts panics into
 `internal_error`, drops tools above the configured access and rejects duplicate
 names. Use `cx.existing_file` for client paths and `cx.require(level)` as a second
 gate. `engine-tooling` registers its execution tools this way, so the dependency
@@ -129,6 +137,9 @@ suites use in-memory stdio transcripts and temporary authored projects:
 - `tests/resources.rs`: list, pagination, read, templates, escapes, plus the drift
   guard that pins `component_schema` to engine-project's serde types.
 - `tests/server.rs`: configuration, duplicate tools, panics, output and input limits.
+- `tests/security.rs`: hidden and protected directories through case variants and
+  Windows 8.3 short names (skipped with a printed note on volumes without short
+  names), device names, host-path scrubbing, glob length and file modes.
 
 The execution tools are tested in `crates/engine-tooling/tests/mcp_exec.rs` against
 real native generations.

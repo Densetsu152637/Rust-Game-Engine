@@ -99,8 +99,16 @@ text content block. Failures set `isError: true` and have this shape:
 
 `error.code` is a stable machine-readable code, `hint` says how to recover, and
 `diagnostics` (when present) are the engine's validation or compiler diagnostics.
-Messages may change; codes and paths are the contract. Results never contain the
-host path of the project root. JSON-RPC protocol errors are reserved for malformed
+Messages may change; codes and paths are the contract. **Results never contain host
+paths.** The registry scrubs every result, successes and failures, structured
+fields and text content alike: the project root (as `\\?\` verbatim or plain path,
+single or doubled backslashes, `/` separators, any case on Windows) becomes a
+project-relative path (`C:\proj\src\lib.rs` is reported as `src/lib.rs`, the bare
+root as `.`), and every other absolute host path (the cargo home, temp and cache
+directories, the user's home) becomes `<host>`. The one exception is payloads that
+are project content: `file_read`, `search_text`, `scene_inspect` and `entity_get`
+return file text and authored data exactly as stored, because rewriting them would
+corrupt what an agent edits and writes back. JSON-RPC protocol errors are reserved for malformed
 requests, unknown or gated tools, and arguments that are not part of a tool's
 `inputSchema` or that omit a required one (`-32602`). A wrong-typed value is a tool
 error with code `invalid_argument`.
@@ -137,9 +145,9 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `component_schema` | `component` (optional enum) | The authored components (`Transform`, `Script`, `MeshRenderer`, `SpriteRenderer`, `Camera2D`, `Collider2D`) as JSON Schema with defaults and a valid example each, an entity schema and the rules the engine enforces. |
 | `asset_list` | `kind` (enum), `offset`, `limit` | Catalog entries: ID, kind, path, size. |
 | `asset_info` | `asset` (ID) | Kind, path, size, kind-specific details (texture size and format, mesh vertex/triangle count and bounds, font glyphs, script line count, scene entity count) and where the asset is used (scene, entity, component, field). |
-| `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` supports `*`, `**` and `?`; a pattern without `/` matches file names. |
+| `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |
 | `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
-| `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob`, `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
+| `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob` (at most 512 bytes), `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
 
 Scene results use the project's serialization schema, keep stable authored IDs and
 print numbers as their shortest decimal.
@@ -172,20 +180,34 @@ dangling camera follow, sprites without a transform, non-finite numbers, schema
 violations) *before* anything is written, and then saved atomically (temporary file
 in the same directory, flushed, renamed over the target). A rejected edit returns
 diagnostics and leaves the file byte-for-byte unchanged. The scene file is rewritten
-in the engine's normalised pretty-printed form.
+in the engine's normalised pretty-printed form. The `scene` argument follows the same
+hidden and protected rules as every other path: a scene-shaped file in `.git`,
+`.derived` or `target` is `path_invalid` for the scene tools, however it is spelled. A
+scene does not have to be listed in the project catalog to be edited (a scene
+just created with `file_write` can be edited before it is registered as an asset;
+saving still validates it against the catalog's assets), so the catalog is not a
+confinement mechanism: the path rules are.
 
 **`file_write`** is for scripts, `Cargo.toml`, notes and also scenes and
 `project.json`. Overwriting needs `expected_hash` (the `hash` from `file_read`); a
 missing hash is `hash_required`, a stale one `revision_conflict`; omit it only to
 create a new file. Parent directories are created inside the root. Writes never
 follow a link (a symlink or junction anywhere on the path is refused), never leave the
-root, never touch `.git`, `.derived` or `target`, are limited to 512 KiB of UTF-8
-without NUL bytes, and are atomic. Scene files known to the project are parsed and
-validated against the project before they are written (`validated: "scene"`, plus the
-resulting `revision`). `project.json` is validated after the write
-(`validated: "manifest"`); if that breaks a project that was valid, the previous
-bytes are restored and the call fails with the project's diagnostics and
-`details.rolled_back: true`.
+root, never touch `.git`, `.derived` or `target` (see Security model), never create
+Windows device names (`NUL`, `CON`, `PRN`, `AUX`, `COM1`-`COM9`, `LPT1`-`LPT9`, the
+superscript-digit forms, `CONIN$`, `CONOUT$`, with or without an extension and in any
+case; such paths are `path_invalid` on every platform), are limited to 512 KiB of
+UTF-8 without NUL bytes, and are atomic. Whether a write is validated is decided by
+comparing the canonical destination with the canonical manifest and catalog scene
+files, not by spelling, so `PROJECT.JSON`, `Scenes/Start.json` and 8.3 short names get
+the same checks as the exact names. The `path` in the result is the real on-disk
+spelling. Scene files known to the project are parsed and validated against the
+project before they are written (`validated: "scene"`, plus the resulting
+`revision`). `project.json` is validated after the write (`validated: "manifest"`);
+if that breaks a project that was valid, the previous bytes are restored and the call
+fails with the project's diagnostics and `details.rolled_back: true`. An overwritten
+file keeps its permissions (on Unix the temporary file would otherwise reset them to
+0600); a newly created file gets the temporary file's default mode (0600 on Unix).
 
 ### Execution tools (`--allow-exec`)
 
@@ -211,7 +233,9 @@ entries (at most 400 ticks of input in total). `scene` runs a different scene th
 the startup scene. With `rebuild: false` the generation built earlier in the same
 server session is reused when one exists (faster when only scene data changed).
 Runs are stopped when `timeout_seconds` elapses (`run_timeout`) and builds are
-cancelled when their limit elapses (`build_timeout`). Calls are served one at a time;
+cancelled when their limit elapses (`build_timeout`). The server reads at most 8 MiB
+of the game's stdout; a game that prints more loses the run result that ends the
+stream, and the call fails with `output_too_large` (not a misleading `run_no_result`). Calls are served one at a time;
 a long build blocks other requests on that connection.
 
 `render_screenshot` uses the engine's real renderer on an offscreen target (the same
@@ -232,7 +256,8 @@ relative path), `mimeType` (by extension: `application/json`, `text/x-rust`,
 `application/toml`, `text/markdown`, `image/x-portable-pixmap`, `image/png`,
 `audio/wav`, `text/plain`, otherwise `application/octet-stream`) and `size`. Reading
 returns UTF-8 text as `text` and anything else as a base64 `blob`, up to 512 KiB.
-A path outside the root, through a link, in a hidden directory, missing or not a
+A path outside the root, through a link, in a hidden directory (`.git`, `.derived`,
+`target`, in any case and spelled through 8.3 short names too), missing or not a
 regular file is `-32002` "resource not found"; a non-`project://` scheme, a query or
 fragment, or an oversized file is `-32602`. The single template is
 `project://{+path}`. Subscriptions and change notifications are not supported.
@@ -241,14 +266,32 @@ fragment, or an oversized file is `-32602`. The single template is
 
 - **Root confinement.** The root is canonicalised once. Client paths must be
   project-relative with forward slashes: absolute paths, drive letters, UNC paths,
-  `..`, backslashes, `:` and `.git` components are rejected before the filesystem is
-  touched, and existing files are canonicalised and must still start with the root,
-  so symlink and junction escapes fail for reads, listings, searches, resources and
-  edits alike. Listings and walks skip links entirely. Writes check every existing
-  component with `symlink_metadata` and refuse links even when they point inside the
-  root, then check the canonical ancestor again. Rejection messages never echo the
-  requested path or the host's root path; diagnostics are rewritten relative to the
-  root.
+  `..`, backslashes, `:`, `.git` components and Windows device names are rejected
+  before the filesystem is touched, and existing files are canonicalised and must
+  still start with the root, so symlink and junction escapes fail for reads,
+  listings, searches, resources and edits alike. Listings and walks skip links
+  entirely. Writes check every existing component with `symlink_metadata` and refuse
+  links even when they point inside the root, then check the canonical ancestor again.
+  Rejection messages never echo the requested path or the host's root path;
+  diagnostics are rewritten relative to the root.
+- **Hidden and protected directories.** `.git`, `.derived` and `target` are never
+  listed, searched, read, served as resources or written, at any depth. The rule is
+  applied to the *canonical on-disk path*: the deepest existing ancestor of the
+  target is canonicalised, taken relative to the canonical root, and every component
+  is compared case-insensitively. A case variant (`Target/x`, `.GIT/config`) or an
+  8.3 short name (`GIT~1/hooks/pre-commit`, `DERIVE~1/x.txt`) therefore resolves to
+  the real directory and is refused like its long name: reads, listings and searches
+  report `path_invalid` (resources `-32002`), writes report `path_protected`. The
+  same check backs `file_read`, `file_list`, `search_text`, `resources/*`,
+  `file_write`, every scene tool and the `scene` argument of the execution tools.
+- **Host paths.** Results are scrubbed of host paths centrally (see Tool results and
+  errors), so the project root, cargo home and temp directories never reach the agent.
+- **Known race.** Path checks and the final rename are separate steps. A process on the
+  host that can already write into the project can swap a directory for a link between
+  the check and the rename of an atomic write. The server cannot close this without
+  platform-specific handle-relative file APIs; it only matters when something other
+  than the server is modifying the project concurrently, and the canonical-path checks
+  above still apply to what exists at the time of each check.
 - **Gating.** Write and exec tools are absent from `tools/list` and rejected by
   `tools/call` unless the server was started with the flag; each tool also re-checks
   the access it needs when it runs.
@@ -288,7 +331,8 @@ while a malformed complete line reports a parse error and the session continues.
 | Page size (`limit`) | 1000 (default 200); resources 100 |
 | `search_text` results | 500 (default 50); a line is clipped at 300 characters |
 | Build / run time | 600 s default, 1800 s / 600 s maximum |
-| Run output | 8 MiB read, summary of at most 200 entities (300 KB), 200 log lines |
+| Run output | 8 MiB read (more is `output_too_large`), summary of at most 200 entities (300 KB), 200 log lines |
+| `glob` argument | 512 bytes (`invalid_argument` above) |
 | Scripted input | 400 ticks of input |
 
 Embedders can change the limits with `ServerConfig::with_limits`.
@@ -312,8 +356,8 @@ a `Tool` supplies a `ToolDefinition` (name, title, description, `input_schema`,
 `output_schema`, `Annotations`, `AccessLevel`) and a `call(&ToolContext, &args)`
 returning `ToolResult` or a structured `ToolFailure`. The registry enforces the
 schema's `properties` and `required` members, hides tools above the configured
-access, converts panics into `internal_error` and scrubs the root path from
-failures. Providers live in the crate that owns the capability, so `engine-tooling`
+access, converts panics into `internal_error` and scrubs host paths from every result
+(a `ToolResult` that carries project file text can opt out with `.verbatim()`). Providers live in the crate that owns the capability, so `engine-tooling`
 depends on `engine-mcp` and not the other way round.
 
 References: the MCP [stdio transport](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio),
@@ -331,6 +375,11 @@ projects: framing, malformed and oversized input, EOF and I/O errors, negotiatio
 failure paths, gating, revision conflicts and atomicity, confinement through real
 symlinks and junctions for reads and writes, oversized results, resources, and a
 drift guard that pins `component_schema` to engine-project's serde types.
+`tests/security.rs` pins the review regressions: hidden directories through case
+variants and Windows 8.3 short names (probed at runtime; the 8.3 tests print
+`SKIPPED` and pass on volumes without short names, so run them on a volume that has
+them, for example `C:` on a default Windows install), device names, host-path
+scrubbing and glob length.
 `cargo test -p engine-tooling --test mcp_exec` runs the real `engine mcp` binary:
 flag parsing, gating, stdout cleanliness, and the execution tools against real native
 generations (build, failed build keeping the last good generation, scripted-input

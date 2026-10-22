@@ -19,6 +19,7 @@ mod protocol;
 mod registry;
 mod resources;
 pub mod schema;
+mod scrub;
 mod server;
 mod tools;
 
