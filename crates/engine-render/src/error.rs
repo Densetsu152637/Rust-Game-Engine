@@ -21,6 +21,14 @@ pub enum RenderError {
     DuplicateDrawKey { producer: u64, draw: u64 },
     /// Serial and keyed recording were mixed inside one command buffer.
     MixedDrawOrdering,
+    /// A resource exceeds a device limit (bind group index, vertex stride,
+    /// uniform size, ...). Detected before the GPU is involved; the device stays
+    /// usable.
+    LimitExceeded {
+        limit: &'static str,
+        requested: u64,
+        max: u64,
+    },
     /// WGSL parse/validation/translation diagnostics.
     Shader(String),
     /// The backend or device is unavailable (no loader, no adapter, no device).
@@ -51,6 +59,14 @@ impl fmt::Display for RenderError {
             Self::MixedDrawOrdering => {
                 f.write_str("serial and keyed draw ordering cannot be mixed in one frame")
             }
+            Self::LimitExceeded {
+                limit,
+                requested,
+                max,
+            } => write!(
+                f,
+                "device limit {limit} exceeded: {requested} requested, maximum {max}"
+            ),
             // Diagnostics are shown verbatim so tooling output stays stable.
             Self::Shader(message) => f.write_str(message),
             Self::Unavailable(message) => write!(f, "graphics backend unavailable: {message}"),

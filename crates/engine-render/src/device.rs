@@ -66,7 +66,10 @@ struct Retiring {
 ///   `frames_in_flight` further frames were submitted, so frames that may still
 ///   be executing on the GPU never see a freed object. `wait_idle` and
 ///   `shutdown` flush the queue immediately.
-/// * A [`RenderError::DeviceLost`] from the backend poisons the device.
+/// * A [`RenderError::DeviceLost`] from the backend poisons the device. Every
+///   other error (including [`RenderError::Backend`] from a rejected resource
+///   and [`RenderError::LimitExceeded`] from pre-validation against
+///   [`crate::DeviceLimits`]) fails only its own call.
 pub struct RenderDevice<B: RenderBackend = Box<dyn RenderBackend>> {
     backend: B,
     caps: RenderCapabilities,
@@ -183,6 +186,7 @@ impl<B: RenderBackend> RenderDevice<B> {
     pub fn create_shader(&mut self, resource: ShaderResource) -> Result<ShaderHandle> {
         self.guard()?;
         let interface = ShaderInterface::reflect(&resource)?;
+        interface.check_limits(&self.caps.limits)?;
         let handle = self.mint(ShaderHandle::from_raw);
         let result = self.backend.create_shader(handle, &resource);
         self.note(result)?;
@@ -194,6 +198,7 @@ impl<B: RenderBackend> RenderDevice<B> {
     pub fn create_mesh(&mut self, resource: &MeshResource) -> Result<MeshHandle> {
         self.guard()?;
         resource.validate()?;
+        resource.layout.check_limits(&self.caps.limits)?;
         let handle = self.mint(MeshHandle::from_raw);
         let result = self.backend.create_mesh(handle, resource);
         self.note(result)?;
@@ -264,6 +269,7 @@ impl<B: RenderBackend> RenderDevice<B> {
         self.guard()?;
         self.require(handle.into())?;
         resource.validate()?;
+        resource.layout.check_limits(&self.caps.limits)?;
         let result = self.backend.update_mesh(handle, resource);
         self.note(result)?;
         self.live.insert(

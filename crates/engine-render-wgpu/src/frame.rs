@@ -130,8 +130,19 @@ impl Core {
         surface.resize(&self.gpu, width, height)
     }
 
-    /// Record and submit one frame into `destination`.
+    /// Record and submit one frame into `destination`. A validation error of
+    /// the frame fails this call only.
     pub fn draw_frame(
+        &mut self,
+        destination: &Destination,
+        frame: &FrameDesc,
+        draws: &[DrawCommand],
+    ) -> Result<FrameStats> {
+        let gpu = self.gpu.clone();
+        gpu.validated(|| self.record_frame(destination, frame, draws))
+    }
+
+    fn record_frame(
         &mut self,
         destination: &Destination,
         frame: &FrameDesc,
@@ -305,12 +316,14 @@ impl Core {
                     "frame uniform data of {needed} bytes exceeds the device buffer limit"
                 )));
             }
-            let buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("uniform arena"),
-                size: capacity,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            let buffer = self.gpu.validated(|| {
+                Ok(self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("uniform arena"),
+                    size: capacity,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }))
+            })?;
             self.arena = Some(Arena { buffer, capacity });
             // Bind groups referenced the previous buffer.
             self.bind_groups.clear();
@@ -358,12 +371,9 @@ impl Core {
         let pipeline = match self.pipelines.get(&key) {
             Some(pipeline) => pipeline.clone(),
             None => {
-                let pipeline = shader.create_pipeline(
-                    &self.gpu.device,
-                    &key.layout,
-                    &key.state,
-                    key.format,
-                )?;
+                let pipeline = self.gpu.validated(|| {
+                    shader.create_pipeline(&self.gpu.device, &key.layout, &key.state, key.format)
+                })?;
                 check_gpu(&self.gpu)?;
                 self.pipelines.insert(key, pipeline.clone());
                 pipeline
@@ -412,14 +422,16 @@ impl Core {
                             resource,
                         });
                     }
-                    let created = self
-                        .gpu
-                        .device
-                        .create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("engine bindings"),
-                            layout: &group.layout,
-                            entries: &entries,
-                        });
+                    let created = self.gpu.validated(|| {
+                        Ok(self
+                            .gpu
+                            .device
+                            .create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("engine bindings"),
+                                layout: &group.layout,
+                                entries: &entries,
+                            }))
+                    })?;
                     self.bind_groups.insert(bind_key, created.clone());
                     created
                 }

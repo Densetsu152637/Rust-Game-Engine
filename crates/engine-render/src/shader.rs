@@ -4,6 +4,7 @@
 //! once, and reflects the interface the device checks draws against: vertex
 //! inputs, resource bindings and uniform sizes. Backends then only translate.
 
+use crate::backend::DeviceLimits;
 use crate::command::{DrawUniform, SAMPLER_SLOT, TEXTURE_SLOT, UniformSlot};
 use crate::error::{RenderError, Result};
 use crate::resources::{ShaderLanguage, ShaderResource, VertexLayout};
@@ -234,6 +235,45 @@ impl ShaderInterface {
                      texture (1,0) / sampler (1,1) bindings",
                     binding.slot.group,
                     binding.slot.binding
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Check the reflected bindings against device limits: bind group indices,
+    /// binding numbers, bindings per group and uniform sizes.
+    pub fn check_limits(&self, limits: &DeviceLimits) -> Result<()> {
+        let exceeded = |limit: &'static str, requested: u64, max: u32| {
+            Err(RenderError::LimitExceeded {
+                limit,
+                requested,
+                max: u64::from(max),
+            })
+        };
+        for binding in &self.bindings {
+            let slot = binding.slot;
+            if slot.group >= limits.max_bind_groups {
+                return exceeded(
+                    "max_bind_groups (group index + 1)",
+                    u64::from(slot.group) + 1,
+                    limits.max_bind_groups,
+                );
+            }
+            if slot.binding >= limits.max_bindings_per_bind_group {
+                return exceeded(
+                    "max_bindings_per_bind_group (binding index + 1)",
+                    u64::from(slot.binding) + 1,
+                    limits.max_bindings_per_bind_group,
+                );
+            }
+            if let BindingKind::UniformBuffer { size } = binding.kind
+                && size > limits.max_uniform_buffer_binding_size
+            {
+                return exceeded(
+                    "max_uniform_buffer_binding_size",
+                    u64::from(size),
+                    limits.max_uniform_buffer_binding_size,
                 );
             }
         }

@@ -88,6 +88,39 @@ pub struct RenderFeatureStatus {
     pub reason: String,
 }
 
+/// Device limits the adapter layer pre-validates against, so an oversized
+/// authored asset is rejected with a typed error before it reaches the GPU.
+///
+/// Backends report the real device values; the [`Default`] matches wgpu's
+/// downlevel defaults, which the in-memory recording backend reports so
+/// headless tests exercise the same checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceLimits {
+    /// Bind group indices must be below this.
+    pub max_bind_groups: u32,
+    /// `@binding` numbers must be below this, and so must the number of
+    /// bindings a group uses.
+    pub max_bindings_per_bind_group: u32,
+    /// Largest vertex stride in bytes.
+    pub max_vertex_buffer_array_stride: u32,
+    /// Most attributes in one vertex layout.
+    pub max_vertex_attributes: u32,
+    /// Largest uniform binding in bytes.
+    pub max_uniform_buffer_binding_size: u32,
+}
+
+impl Default for DeviceLimits {
+    fn default() -> Self {
+        Self {
+            max_bind_groups: 4,
+            max_bindings_per_bind_group: 1000,
+            max_vertex_buffer_array_stride: 255,
+            max_vertex_attributes: 16,
+            max_uniform_buffer_binding_size: 16 << 10,
+        }
+    }
+}
+
 /// What a backend can do, reported after `initialize`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderCapabilities {
@@ -97,6 +130,8 @@ pub struct RenderCapabilities {
     pub device_name: Option<String>,
     pub max_frames_in_flight: u32,
     pub max_texture_dimension: u32,
+    /// Limits checked before resources reach the backend.
+    pub limits: DeviceLimits,
     pub backend_ready: bool,
     pub parallel_recording: bool,
     pub portability_subset: bool,
@@ -118,6 +153,7 @@ impl RenderCapabilities {
             device_name: None,
             max_frames_in_flight: 2,
             max_texture_dimension: 8192,
+            limits: DeviceLimits::default(),
             backend_ready: true,
             parallel_recording: false,
             portability_subset: false,

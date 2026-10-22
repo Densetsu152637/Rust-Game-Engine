@@ -24,8 +24,32 @@ let mut device = RenderDevice::new(backend, DeviceConfig::default())?;
   a host-owned view, and `render_to_view` submits one frame into any view.
 
 `initialize` blocks on the adapter and device request; a missing adapter or device
-is `RenderError::Unavailable`. wgpu validation errors and device loss are recorded
-in a sticky log and surface as `RenderError::Backend` / `RenderError::DeviceLost`.
+is `RenderError::Unavailable`.
+
+## Error model
+
+* **Validation errors are per call.** Resource creation (shader modules, bind group
+  layouts and pipeline layouts, buffers, textures, targets, pipelines, bind groups,
+  the uniform arena), readback and the whole per-frame record and submit run inside
+  a wgpu `Validation` error scope (`GpuContext::validated`). The scope is a guard,
+  popped on every return path including `?`. A rejected resource returns
+  `RenderError::Backend` from that call only and is never written to the sticky
+  log, so a following valid shader, mesh or frame succeeds. Scopes are
+  thread-local and nest LIFO, which is what the inner and outer scopes of a frame
+  rely on.
+* **Limits are checked first.** `RenderCapabilities::limits` is filled from
+  `wgpu::Device::limits()`, and `RenderDevice` rejects a shader with a bind group
+  index at or above `max_bind_groups`, a mesh with a stride above
+  `max_vertex_buffer_array_stride` and a uniform above
+  `max_uniform_buffer_binding_size` with `RenderError::LimitExceeded` before
+  anything reaches wgpu.
+* **Device loss, out-of-memory and unscoped errors are sticky.** The device-lost
+  callback and the uncaptured-error handler fill a sticky log read by
+  `GpuContext::check_errors`. Device loss surfaces as `RenderError::DeviceLost`,
+  which `RenderDevice` latches. The handler also records validation errors of a
+  host's own direct use of the public `GpuContext::device` outside any scope
+  (custom native passes), which `engine-desktop` relies on; the backend's own
+  calls never reach it with validation errors.
 
 ## Selection
 
@@ -56,4 +80,5 @@ cargo test -p engine-render-wgpu -- --ignored --nocapture   # real adapter
 ```
 
 The ignored tests in `tests/gpu_offscreen.rs` cover the contract on a real device;
-they fail (not skip) without an adapter.
+`tests/gpu_limits.rs` covers the error model (each bad input fails its own call and
+the device then still renders). They fail (not skip) without an adapter.
