@@ -117,9 +117,20 @@ pub(crate) fn atomic_replace(path: &Path, bytes: &[u8], fail: FailureInjection) 
             "Injected replacement failure",
         ));
     }
-    temporary
-        .persist(path)
-        .map_err(|e| Error::new("persistence.replace.failed", e.to_string()))?;
+    // Windows refuses to rename over a file while another thread briefly holds a
+    // handle (for example a concurrent link check); retry before reporting failure.
+    let mut attempt = 0_u64;
+    loop {
+        match temporary.persist(path) {
+            Ok(_) => break,
+            Err(e) if attempt < 8 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5 * attempt));
+                temporary = e.file;
+            }
+            Err(e) => return Err(Error::new("persistence.replace.failed", e.to_string())),
+        }
+    }
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
     Ok(())
@@ -436,5 +447,126 @@ impl PersistenceStore {
         let path = self.path("settings", "preferences")?;
         let _lock = Self::lock(&path)?;
         self.write(&path, data, migration)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_files(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn atomic_replace_creates_a_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        atomic_replace(&path, b"one", None).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"one");
+        assert_eq!(temp_files(dir.path()), vec!["a.json"]);
+    }
+
+    #[test]
+    fn atomic_replace_overwrites_an_existing_file_completely() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        atomic_replace(&path, b"a much longer first body", None).unwrap();
+        atomic_replace(&path, b"short", None).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"short");
+    }
+
+    #[test]
+    fn atomic_replace_accepts_empty_and_large_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        atomic_replace(&path, b"", None).unwrap();
+        assert!(fs::read(&path).unwrap().is_empty());
+        let big = vec![7u8; 3 * 1024 * 1024];
+        atomic_replace(&path, &big, None).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), big);
+    }
+
+    fn interrupted(stage: PersistenceStage, code: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        atomic_replace(&path, b"previous", None).unwrap();
+        let fail: FailureInjection = Some(match stage {
+            PersistenceStage::Write => |s| s == PersistenceStage::Write,
+            PersistenceStage::Flush => |s| s == PersistenceStage::Flush,
+            PersistenceStage::Replace => |s| s == PersistenceStage::Replace,
+        });
+        let error = atomic_replace(&path, b"next", fail).unwrap_err();
+        assert_eq!(error.diagnostics[0].code, code);
+        assert_eq!(fs::read(&path).unwrap(), b"previous");
+        assert_eq!(temp_files(dir.path()), vec!["a.json"]);
+    }
+
+    #[test]
+    fn interrupted_write_keeps_the_target_and_removes_the_temporary() {
+        interrupted(PersistenceStage::Write, "persistence.write.failed");
+    }
+
+    #[test]
+    fn interrupted_flush_keeps_the_target_and_removes_the_temporary() {
+        interrupted(PersistenceStage::Flush, "persistence.flush.failed");
+    }
+
+    #[test]
+    fn interrupted_replace_keeps_the_target_and_removes_the_temporary() {
+        interrupted(PersistenceStage::Replace, "persistence.replace.failed");
+    }
+
+    #[test]
+    fn atomic_replace_fails_when_the_directory_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(atomic_replace(&dir.path().join("none/a.json"), b"x", None).is_err());
+    }
+
+    #[test]
+    fn atomic_replace_refuses_to_replace_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a.json");
+        fs::create_dir(&target).unwrap();
+        assert!(atomic_replace(&target, b"x", None).is_err());
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn safe_names_are_ascii_identifiers_up_to_64_bytes() {
+        assert!(safe_name("Slot_1-b"));
+        assert!(safe_name(&"a".repeat(64)));
+        assert!(!safe_name(&"a".repeat(65)));
+        assert!(!safe_name(""));
+        assert!(!safe_name("a.b"));
+        assert!(!safe_name("\u{e9}"));
+    }
+
+    #[test]
+    fn depth_counts_arrays_and_objects_and_checks_scalars_too() {
+        let v = serde_json::json!({"a": [1, {"b": 2}]});
+        assert!(depth(&v, 0, 3));
+        assert!(!depth(&v, 0, 2));
+        assert!(depth(&serde_json::json!(1), 0, 0));
+        assert!(!depth(&serde_json::json!(1), 1, 0));
+    }
+
+    #[test]
+    fn parser_nesting_guard_allows_96_levels_and_refuses_97() {
+        let nested = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+        assert!(parser_nesting_within(nested(96).as_bytes()));
+        assert!(!parser_nesting_within(nested(97).as_bytes()));
+    }
+
+    #[test]
+    fn parser_nesting_guard_ignores_brackets_inside_strings_and_escapes() {
+        assert!(parser_nesting_within(
+            format!("\"{}\"", "[".repeat(500)).as_bytes()
+        ));
+        assert!(parser_nesting_within(br#"{"s":"\"[[[[[[[[[[[[["}"#));
+        assert!(parser_nesting_within(b"]]]]]]"));
     }
 }
