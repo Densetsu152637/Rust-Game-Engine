@@ -149,6 +149,73 @@ fn invalid_screenshot_sizes_and_orphan_sizes_are_argument_errors() {
 }
 
 #[test]
+fn render_backend_defaults_to_unset_and_parses_every_api_and_alias() {
+    use engine_desktop::WgpuBackends;
+    assert_eq!(parse(&["p.json"]).unwrap().render_backend, None);
+    for (text, expected) in [
+        ("primary", WgpuBackends::Primary),
+        ("vulkan", WgpuBackends::Vulkan),
+        ("DX12", WgpuBackends::Dx12),
+        ("d3d12", WgpuBackends::Dx12),
+        ("metal", WgpuBackends::Metal),
+        ("gl", WgpuBackends::Gl),
+        ("all", WgpuBackends::All),
+        ("auto", WgpuBackends::Primary),
+    ] {
+        assert_eq!(
+            parse(&["p.json", "--render-backend", text])
+                .unwrap()
+                .render_backend,
+            Some(expected),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn render_backend_combines_with_headless_runs_and_screenshots() {
+    use engine_desktop::WgpuBackends;
+    let args = parse(&[
+        "p.json",
+        "--headless",
+        "--render-backend",
+        "dx12",
+        "--screenshot",
+        "a.png",
+    ])
+    .unwrap();
+    assert!(args.headless);
+    assert_eq!(args.render_backend, Some(WgpuBackends::Dx12));
+}
+
+#[test]
+fn invalid_missing_or_repeated_render_backends_are_argument_errors() {
+    for value in ["directdraw", "", "vulkan,gl", "-1"] {
+        assert_eq!(
+            error_code(&["p.json", "--render-backend", value]),
+            "command.arguments",
+            "{value:?}"
+        );
+    }
+    assert!(parse(&["p.json", "--render-backend"]).is_err());
+    assert!(
+        parse(&[
+            "p.json",
+            "--render-backend",
+            "gl",
+            "--render-backend",
+            "vulkan"
+        ])
+        .is_err()
+    );
+    let message = &parse(&["p.json", "--render-backend", "glide"])
+        .unwrap_err()
+        .diagnostics[0]
+        .message;
+    assert!(message.contains("primary, vulkan, dx12, metal, gl or all"));
+}
+
+#[test]
 fn injected_actions_must_be_declared_by_the_project() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(

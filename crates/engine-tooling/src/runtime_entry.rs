@@ -74,7 +74,7 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Va
     if let Some(path) = arguments.screenshot.clone() {
         return screenshot(runtime, &arguments, &path, &monitor.shutdown);
     }
-    let report = engine_desktop::run(
+    let report = engine_desktop::run_with_wgpu_backends(
         runtime,
         RunOptions {
             headless: arguments.headless,
@@ -83,6 +83,7 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Va
             user_data: arguments.user_data,
             shutdown: Some(monitor.shutdown.clone()),
         },
+        arguments.render_backend,
     )?;
     Ok(serde_json::to_value(report)?)
 }
@@ -136,7 +137,7 @@ fn screenshot(
             .remove_resource::<NativeRenderPasses>()
             .unwrap_or_default();
         let gpu = pollster::block_on(GpuContext::request_with_requirements(
-            GpuContext::instance(),
+            GpuContext::instance_with(arguments.render_backend.unwrap_or_default()),
             None,
             requirements,
         ))

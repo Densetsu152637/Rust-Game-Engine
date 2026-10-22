@@ -30,7 +30,7 @@ engine project assets <manifest>
 engine project shaders <manifest>
 engine project package <manifest> <new-directory> [--profile release|dev]
 engine scene inspect <scene> --project-root <project-directory>
-engine run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--screenshot file.png [--screenshot-size WxH]]
+engine run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--render-backend api] [--screenshot file.png [--screenshot-size WxH]]
 engine editor <manifest>
 engine mcp <project-root> [--allow-write] [--allow-exec]
 ```
@@ -75,7 +75,15 @@ directory.
   catalog and returns its revision, entity count and contents.
 - **`run`** compiles and launches the native generation. `--headless` runs fixed
   1/60-second ticks without a window, GPU, gamepad or audio device. Without it the
-  game opens a window. `--ticks` accepts 1 to 1,000,000 (default 120).
+  game opens a window; the simulation still advances in fixed 1/60-second ticks
+  but the window presents every display refresh, blending the last two ticks (see
+  [Desktop rendering](desktop-2d-rendering.md#frame-pacing-and-interpolation)).
+  `--ticks` accepts 1 to 1,000,000 (default 120).
+  `--render-backend primary|vulkan|dx12|metal|gl|all` selects the wgpu graphics
+  API for the window (and for `--screenshot`'s offscreen device). It overrides the
+  `ENGINE_RENDER_BACKEND` environment variable, `wgpu`, `auto` and `default` are
+  aliases of `primary`, and an unknown value is a usage error (exit 2). A
+  `--headless` run creates no device and ignores it.
   `--input action:tick` (repeatable) injects an action at a zero-based tick; an
   absent action releases on the following tick. Actions must be declared by the
   manifest's `inputActions` or `inputBindings`. `--user-data` selects the root for

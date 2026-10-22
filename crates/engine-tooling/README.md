@@ -77,7 +77,7 @@ A logging initialisation failure prints a warning and the command continues.
 | `project shaders <manifest>` | Validates every WGSL shader without a GPU, then publishes content-hashed sources and `index.json` under `.derived/shaders` |
 | `project package <manifest> <new-dir> [--profile release\|dev]` | Builds a generation (release by default) and exports `runtime(.exe)`, `game/`, `licenses/`, `generation.json` and `run.cmd`/`run.sh` launchers that work from any working directory |
 | `scene inspect <scene> --project-root <dir>` | Validated scene document, entity count and revision |
-| `run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file]` | Compiles and runs the generation; forwards its `run` result |
+| `run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--render-backend api]` | Compiles and runs the generation; forwards its `run` result. `--render-backend primary\|vulkan\|dx12\|metal\|gl\|all` picks the wgpu graphics API (overrides `ENGINE_RENDER_BACKEND`; headless runs ignore it) |
 | `editor <manifest>` | Opens the native editor with the compiler-backed play host (Windows) |
 | `mcp <project-root>` | Read-only MCP over stdio (JSON-RPC, not the envelope above) |
 
