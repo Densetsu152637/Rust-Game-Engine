@@ -1,43 +1,72 @@
 # Deterministic 2D gameplay mechanics
 
-`project/gameplay2d.h` supplies value-based mechanics to the authored runtime.
-Bodies use center positions plus collider offset, with full positive width/height.
-Coordinates, sizes, offsets and displacement are finite and bounded to one million
-units per axis. IDs are nonempty and at most 256 bytes; a world holds 1024 bodies.
-Layer and mask are nonzero bitfields. Two bodies interact only when each body's
-layer intersects the other's mask. Box contact alone does not count as overlap.
+`engine_project::gameplay2d` supplies value-based mechanics that the authored
+runtime and native game code share. `gameplay2d::World` is a plain struct (also a
+Bevy `Resource`), so it can be unit-tested without a window or an ECS schedule. The
+runtime keeps it synchronized with authoritative ECS transforms through
+`runtime::move_entity`, `safe_position` and the sync step in `services`.
 
-`World::move` sweeps the requested displacement against solid boxes, stopping
-blocked axes and sliding on the remaining axis. It tests the full distance rather
-than choosing a number of simulation substeps, so high speed does not tunnel.
-Simultaneous corner hits block both axes. Starting overlaps use deterministic
-minimum translations with a 32-iteration bound; unresolved starts fail without
-mutating the body. Unrepresentable contact or out-of-range movement also fails
-transactionally. Movement returns the resolved position and sorted contact IDs.
-Other bodies are stationary during one move; callers define their fixed update
-order. This is exploration movement, not a rigid-body impulse solver.
+## Bodies and queries
 
-Trigger bodies are nonblocking, including when moved. A follower can use a trigger
-body to avoid blocking the protagonist, and `isSafe`/`findSafe` to choose positions
-that avoid solid walls. `query` and `overlaps` return sorted IDs after mutual mask
-filtering. `findSafe` checks the preferred point, then eight fixed directions per
-ring up to 64 rings. It returns no point when none of its samples are safe; it is
-a bounded placement query, not an exhaustive navigation search.
+A `Body` has a centre `position`, full positive `size`, an `offset` for the collider
+relative to the position, a `trigger` flag and nonzero `layer` and `mask` bitfields
+(defaults: unit size, layer 1, mask all bits). These correspond to the authored
+`Collider2D` component. Coordinates, sizes and offsets are finite and bounded to
+1,000,000 units per axis. IDs are non-empty, at most 256 bytes, and a world holds at
+most `World::MAXIMUM_BODIES` (1024) bodies. Two bodies interact only when each
+body's layer intersects the other's mask. Touching boxes do not overlap; overlap
+needs positive area.
 
-Call `advanceTriggers` once after all final movement for a tick. It emits sorted
-unordered ID pairs with Enter, Stay or Exit. Trigger crossings that begin and end
-outside during one tick do not create overlap events. Removing a body causes
-exits at the next call; reinsertion after that permits fresh enters. `clear`
-for room replacement silently discards pairs and bodies so old-room exits cannot
-leak into a new room. A runtime should use fresh identity/lifetime validation for
-entity handles separately from these stable authored IDs.
+`upsert`, `remove`, `clear`, `body`, `ids`, `query(area, ignore)`, `overlaps(id)` and
+`is_safe(body, ignore)` return deterministic, sorted results after mutual-mask
+filtering.
 
-`followVelocity` produces a capped velocity towards a target and stops inside the
-requested separation radius. `flockTarget` produces stable circular slots; callers
-choose a safe slot with `findSafe` and apply movement themselves. These helpers do
-not choose narrative state, save success, healing, acquisition or flock size.
+## Movement
 
-Behavior tests are exported by `runGameplay2dTests()` in
-`src/test/project/gameplay2d_tests.cpp`. A standalone focused driver lives in
-`src/test/desktop2d/mechanics_test_main.cpp`; the integrated project runner should
-also call the exported suite.
+`move_body(id, delta)` sweeps the requested displacement against solid (non-trigger)
+bodies. It tests the whole distance instead of choosing substeps, so high speed does
+not tunnel; blocked axes stop and the remaining axis slides, and simultaneous corner
+hits block both axes. A starting overlap is resolved by deterministic minimum
+translation with a 32-iteration bound; if it cannot be resolved the call fails without
+mutating the body. Unrepresentable contacts or out-of-range movement also fail
+transactionally. The result (`MoveResult`) holds the resolved position and sorted
+contact IDs. Other bodies are stationary during a single move, so callers define a
+fixed update order. This is exploration movement, not a rigid-body impulse solver.
+
+## Triggers
+
+Trigger bodies never block, including while moved. Call `advance_triggers()` once
+per tick after all final movement. It returns sorted `TriggerEvent { first, second,
+phase }` values with `TriggerPhase::Enter`, `Stay` or `Exit`. A crossing that begins
+and ends outside within one tick creates no overlap event. Removing a body produces
+exits on the next call, and re-inserting it afterwards permits a fresh enter.
+`clear()` (room replacement) silently discards pairs and bodies so old-room exits
+cannot leak into the new room. Stable authored IDs identify bodies; runtime `Entity`
+handles are validated separately.
+
+Collision trigger events also notify attached audio sources with
+`trigger:<entityId>:enter`, `:stay` and `:exit` (see
+[Audio and persistence](desktop-services.md)). A play observer on `:stay` restarts
+each tick, so use `:enter` for one-shot cues.
+
+## Placement, following and flocking
+
+- `find_safe(body, radius, step, ignore)` checks the preferred point, then eight
+  fixed directions per ring up to 64 rings, and returns `None` if no sample is safe.
+  It is a bounded placement query, not a navigation search.
+- `follow_velocity(from, target, speed, separation)` returns a capped velocity toward
+  the target and zero inside the separation radius.
+- `flock_target(centre, index, count, radius)` returns stable circular slots; callers
+  choose a safe slot with `find_safe` and apply movement themselves.
+
+These helpers make no narrative decisions (save success, healing, acquisition, flock
+size); that is game-owned logic, as `examples/desktop-2d` demonstrates in its
+controller and progression modules.
+
+## Tests
+
+`crates/engine-project/tests/parity.rs` covers swept collision without tunneling,
+touching and corner grazing, ordered triggers with removal exits and bounded safe
+search, follow and flock. `examples/desktop-2d/tests/gameplay.rs` drives the real
+`Runtime` with injected input for movement speed, normalized diagonals, solid sweeps,
+followers and room transitions.

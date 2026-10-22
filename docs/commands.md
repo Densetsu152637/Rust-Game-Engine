@@ -1,126 +1,126 @@
 # Project commands
 
-Build with `make VULKAN=0 all test`. On Windows the executable is
-`build/debug-vk0/bin/CPPGameEngine.exe`. Replace `engine` below with that path.
-All authored paths resolve relative to the project manifest, independent of the
-working directory.
+> Status note: the `engine` command-line tool belongs to the `engine-tooling` crate,
+> which is being completed in a parallel stream (its `cli.rs`, `arguments.rs`,
+> `artifacts.rs`, `runtime_entry.rs` and `play_host.rs` were uncommitted when this
+> page was written). The command surface below was read from that source and the
+> crate README, not from a released binary. Treat details marked *(unverified)* as
+> subject to change and check `engine` usage output and the merged source before
+> relying on them.
+
+## Running the tool
+
+`engine` is the binary target of `engine-tooling`. From a checkout:
 
 ```text
-engine project init examples/first-project build/my-project
-engine project validate build/my-project/project.json --format json
-engine scene inspect build/my-project/scenes/main.scene.json --project-root build/my-project --format json
-engine run build/my-project/project.json --headless --ticks 120 --input move_right:0 --format json
-engine project assets build/my-project/project.json
-engine project shaders build/my-project/project.json --compiler <path-to-glslc>
-engine project package build/my-project/project.json build/my-package --runtime <engine-executable> --shaders <compiled-shader-directory> --license-root <actual-engine-checkout>
-engine editor build/my-project/project.json
-engine mcp build/my-project
-engine platform check android --format json
-engine platform check ios --format json
+cargo run -p engine-tooling --bin engine -- <command> [options]
 ```
 
-`project init` copies a validated template into a new destination. Asset indexing
-writes derived data below `.derived`; `project assets --rebuild --compiler <path>`
-also imports shaders. Packaging copies project content and the selected runtime
-into a new directory with a launcher; run `run.cmd --headless --ticks 120` on
-Windows. Windows is the tested packaging platform. Linux remains unvalidated;
-macOS and Wayland are not configured.
+All authored paths resolve relative to the project manifest, independent of the
+working directory. Commands that compile a game invoke Cargo and rustc, so a first
+build (which compiles the engine crates) can take minutes; later builds reuse the
+project's cache under `.derived/native`.
 
-Every ordinary project/scene/run command emits exactly one JSON document to
-stdout, including on failure. `--format json` is optional and is the only format.
-Human diagnostics and script logs go to stderr. MCP instead uses its documented
-[stdio protocol](mcp.md); the native editor has its own window.
+```text
+engine project init <template-manifest> <new-directory>
+engine project validate <manifest> [--no-rust]
+engine project assets <manifest>
+engine project shaders <manifest>
+engine project package <manifest> <new-directory> [--profile release|dev]
+engine scene inspect <scene> --project-root <project-directory>
+engine run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file]
+engine editor <manifest>
+engine mcp <project-root>
+```
 
-`platform check` reports whether this checkout and host have the build tools and
-files for Android or iOS. The JSON result includes `readyToBuild`, backend,
-platform requirements, and coded diagnostics. It exits 1 when a prerequisite is
-missing or the host is unsupported. A successful check does not establish that
-the app launches or presents frames on a device; see the [mobile build guide](../mobile/README.md)
-for the separate runtime gates.
+Examples (from the repository root, with `engine` standing for the command above):
+
+```text
+engine project init examples/first-project/project.json build/my-project
+engine project validate build/my-project/project.json
+engine scene inspect scenes/main.scene.json --project-root build/my-project
+engine run build/my-project/project.json --headless --ticks 120 --input move_right:0
+engine project package build/my-project/project.json build/my-package
+```
+
+`project init` takes a template's manifest and a new, nonexistent destination
+directory.
+
+## Commands
+
+- **`project init`** copies a validated template project into a new directory. The
+  destination must not exist and must not overlap authored source; a staging
+  directory is renamed into place so no partial result is published. Skips `.git`,
+  `target`, `build`, `dist`, `release`, `.derived`, `saves` and `logs`.
+- **`project validate`** loads and validates the project (schema, assets, scenes,
+  meshes, textures, fonts) and, unless `--no-rust` is given, runs a compile-only
+  check of the gameplay crate, returning the compiler diagnostics and generation
+  fingerprint. It does not run game code.
+- **`project assets`** writes a stable asset index to `.derived/assets.json`: each
+  asset's ID, path, kind and content hash. Output is confined to the project root
+  and replaced atomically; a symlinked cache location is rejected.
+- **`project shaders`** validates every `shader` asset (WGSL, at most 8 MiB) with
+  Naga, without a GPU, and publishes a content-hashed copy plus `index.json` under
+  `.derived/shaders`.
+- **`project package`** compiles the game (release by default, `--profile dev` for a
+  debug build) and exports a relocatable directory: `runtime` (`runtime.exe` on
+  Windows), `game/` (the project content with `project.json`), `licenses/` (the
+  engine `LICENSE`, the generation's `Cargo.lock` and per-dependency notices with
+  `dependencies.json`), `generation.json`, `PACKAGE.txt`, and the launchers
+  `run.cmd` and `run.sh`. The destination must be new. See
+  [Desktop packages](desktop-packaging.md).
+- **`scene inspect`** loads a scene, validates it against the project's asset
+  catalog and returns its revision, entity count and contents.
+- **`run`** compiles and launches the native generation. `--headless` runs fixed
+  1/60-second ticks without a window, GPU, gamepad or audio device. Without it the
+  game opens a window. `--ticks` accepts 1 to 1,000,000 (default 120).
+  `--input action:tick` (repeatable) injects an action at a zero-based tick; an
+  absent action releases on the following tick. Actions must be declared by the
+  manifest's `inputActions` or `inputBindings`. `--user-data` selects the root for
+  saves and settings. `--scene-override` runs a validated scene snapshot while
+  keeping the original asset root (used by editor play).
+- **`editor`** opens the native Windows editor; see [Editor](editor.md).
+- **`mcp`** serves the read-only MCP adapter on stdin/stdout; see [MCP](mcp.md).
+
+## Output and exit status
+
+Every command except `mcp` prints exactly one JSON document to stdout, including on
+failure (the editor prints `{"closed":true}` after its window closes):
 
 ```json
-{"schema":1,"ok":false,"command":"project validate","result":{"diagnostics":[{"code":"project.read","severity":"error","file":"project.json","path":"","message":"..."}]}}
+{"schema":1,"ok":false,"command":"project validate","result":{"diagnostics":[{"code":"project.asset.missing","severity":"error","file":"assets/x.png","path":"","message":"..."}]}}
 ```
 
-Exit status 0 means success, 1 means validation or content failure, 2 means invalid
-command arguments, and 3 means runtime/operational failure. Diagnostic codes and
-field paths are the machine contract; messages may change. Result schema 1 has
-`schema`, `ok`, `command`, and command-specific `result` fields. Inspect returns
-the authored scene plus its revision. Run returns `ticks`, `fixed_delta`, and
-the final scene with runtime positions and persistent entity IDs in sorted order.
+Result fields are `schema`, `ok`, `command` and a command-specific `result`.
+Diagnostics have `code`, `severity`, `file`, `path` and `message`; compiler
+diagnostics use `rust.<code>` codes and also carry the rendered compiler text.
+Codes and paths are the machine contract; messages may change. `--format json` is
+accepted and is the only format. Human-readable diagnostics and game logs go to
+stderr. For `run`, the compiled game prints the run result (`ticks`, `fixed_delta`,
+the final scene snapshot and `presented_frames`) and the launcher forwards it.
 
-Bounded runs accept 1–1,000,000 ticks, defaulting to 120, at a fixed 60 Hz step.
-Repeated `--input action:tick` options inject a pressed/held action at the
-zero-based tick and a release on the following tick. Unknown actions fail.
-The manifest's `inputActions` object declares action names and keyboard bindings
-(`Right`, `Left`, `Up`, `Down`, or `Space`). With a Vulkan build, omit `--headless`
-and pass `--shaders build/debug-vk1/shaders` to display the authored
-`MeshRenderer` components. The window samples key state once per tick: a down
-transition emits pressed, down state emits held, and an up transition emits
-released. Key repeat adds no pressed events. Focus loss clears held state and
-emits releases on the next sampled tick. The renderer uses a fixed orthographic
-camera, authored entity world positions, the declared mesh/texture, and an
-opaque white texture when the optional texture reference is omitted.
+Exit status: `0` success, `1` project, validation or build failure, `2` invalid
+command arguments, `3` runtime or internal failure.
 
-For the supplied sample, equal ticks and input produce equal normalized state
-on the same platform. The fixture uses no random values. This is not a guarantee
-for arbitrary Lua programs, external effects, other architectures, logs, or GPU
-pixels. Static validation compiles referenced Lua and checks top-level component
-and system declarations in a separate restricted, budgeted Lua state. It does
-not call lifecycle or system callbacks. Both validation and `run` use the same
-restricted project-script globals: safe logging and project-local `require` are
-available, while direct file, OS, network, package, debug, and dynamic loading
-APIs are unavailable. Native host callbacks and logs can still have effects.
-Each Lua source file, including project-local modules, has a 1 MiB size limit;
-oversized project scripts report `project.script.too_large` during validation.
+For the shipped sample projects, equal ticks and input produce equal normalized
+state on the same platform; the fixtures use no random values. This is not a
+guarantee for arbitrary native code, external effects, other architectures or GPU
+pixels.
 
-The legacy no-subcommand demo flags remain available for renderer smoke/manual
-comparison. They print human text and are not part of the JSON command contract.
+## Environment
 
-Run `powershell -File tools/test-cli.ps1` after a headless build to exercise the
-command/exit contract, deterministic fixture, initialization, and a packaged
-runtime launched from a different working directory.
+- `ENGINE_CARGO`, `ENGINE_RUSTC`: select the Cargo and rustc executables used to
+  compile games (default: the Cargo that built the tool, and its sibling rustc).
+- `ENGINE_SOURCE_ROOT`: engine checkout containing `crates/engine-core`, used when
+  the tool cannot find the sources next to itself *(unverified for relocated
+  binaries)*.
+- `ENGINE_NATIVE_TARGET_DIR`: shared Cargo target directory for generation builds.
 
-Desktop 2D projects additionally accept `inputBindings`, PNG sprites, bitmap font
-atlases, WAV audio and scene assets. A visible run uses the live runtime scene,
-animated atlas frames, authored pixel camera and gameplay text panels. Physical
-keyboard, mouse buttons/wheel and the first GLFW-recognized gamepad feed the shared
-action mapper. Pointer coordinates account for framebuffer scaling and letterbox
-offsets. Resize/minimize and focus loss retain the existing frame/input lifecycle.
+## Compilation model
 
-`run ... --user-data <directory>` selects a host data root for saves and separate
-settings. The default is the platform user-data directory with a deterministic
-profile ID derived from the project name; changing the name selects a different
-profile. Player data never belongs in the packaged project. `--input action:tick`
-also accepts actions declared only through `inputBindings` and combines injection
-with physical input in visible runs. Headless runs advance the same PCM mixer
-offline; visible runs with audio assets initialize native desktop playback and
-report device errors explicitly. Native audio is not opened for projects without
-audio assets.
-
-For a longer interactive inspection, use a larger bounded tick count, for example:
-
-```text
-engine run examples/desktop-2d/project.json --ticks 36000 --shaders build/debug-vk1/shaders
-make VULKAN=1 desktop2d-smoke
-```
-
-The GPU target verifies transparent sprite/background preservation, translucent
-overlap, glyph clipping, painter order and camera resize/letterboxing with Vulkan
-validation. Mobile source lists include the shared new modules for compile
-compatibility; desktop input, UI and audio authoring do not establish new mobile
-runtime support.
-
-Standalone desktop packages include compiled shaders and pinned engine/dependency
-notices. Pass `--license-root` with the actual engine source checkout; the CLI can
-also find a checkout among at most eight ancestors of its own executable. It never
-uses an authored game project as the notice source. `--shaders` selects a compiled
-directory explicitly; otherwise packaging discovers the runtime build sibling
-shader directory. The launcher resolves packaged paths independently of the
-working directory. User saves/settings stay in the selected user data profile.
-
-Below the logical camera size, rendering uses a fractional viewport fallback.
-Pointer coordinates map through the actual rounded viewport width and height,
-including framebuffer DPI and letterbox offsets, so all rendered logical rows
-remain interactive. Physical and injected action sources share effective edges:
-an action releases only after its final held source releases.
+Games compile into a fresh generation directory with `--locked` against a resolved
+lockfile; the generation fingerprint covers the resolved lock, dirty local
+packages, compiler identity, features and relevant environment. A failed or
+cancelled build keeps the previous good artifact. Native code runs with the user's
+normal privileges; compilation is not a sandbox. See `crates/engine-tooling/README.md`
+and [Native game crates](scripting.md).

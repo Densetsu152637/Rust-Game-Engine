@@ -1,158 +1,118 @@
 # Desktop audio and player persistence
 
-These services are engine APIs. The host owns their lifetime, resource paths,
-project identifier and user-data root; Lua integration exposes only declared
-asset IDs and safe slot identifiers.
+Audio lives in `engine-audio`; entity attachment, saves and settings live in
+`engine-project`. The host owns lifetime, resource paths, the project identifier and
+the user-data root; games reach these services through declared asset IDs and safe
+slot names. Crate READMEs (`crates/engine-audio/README.md`,
+`crates/engine-project/README.md`) hold the detailed contracts.
 
-## PCM audio
+## Audio (`engine-audio`)
 
-`audio::loadWav` and `decodeWav` accept bounded RIFF WAVE resources containing
-16-bit PCM mono or stereo, 8-192 kHz. Compressed, float and extensible WAV codecs
-return an explicit unsupported error. Files are limited to 64 MiB. The stereo
-mixer linearly resamples, sums active voices and clips its output to [-1,1].
+`engine-audio` has no ECS dependency. It owns immutable PCM clips, deterministic
+stereo mixing, real device output through CPAL, reusable source handles and ordered
+event subscriptions. WAV decoding uses Hound.
 
-Initialize `AudioSystem` before playing. Offline mode (`enablePlayback=false`)
-has deterministic `mix` output without opening hardware. Playback mode uses
-Windows WinMM `waveOut`, three 512-frame stereo PCM buffers and an owned worker
-thread. Link `winmm.lib`. Other platforms return `audio.device.unavailable`
-when hardware playback is requested; they still support offline decoding/mixing.
-An accepted voice proves submission to the mixer, not physical audibility.
-`deviceError()` reports an observed asynchronous backend failure.
+- **Clips.** WAV files are bounded to 64 MiB with strict RIFF framing (truncation,
+  duplicates and inconsistent PCM rates are rejected). 16-bit integer mono or stereo
+  at 8-192 kHz is accepted; `Clip::new` also accepts validated finite PCM in
+  `[-1,1]`. Clips are validated once, not on every play.
+- **Engines.** `AudioEngine::offline(config)` mixes deterministically without
+  hardware; `AudioEngine::device(...)` opens the default CPAL device at the requested
+  stereo rate (F32, I16 or U16 output). Live engines reject offline mixing so two
+  consumers cannot advance one cursor. `AudioEngine::control()` returns a cloneable
+  `AudioControl`.
+- **Mixing.** Linear sample interpolation, pitch `1/8` to `8`, continuous loop wrap,
+  pause that retains the cursor, and one-shot retirement. Voice, source and observer
+  caps bound cue spam. Master, Music, Effects and Dialogue gains multiply the voice
+  gain; gains clamp to `[0,1]`, non-finite gain is silence, and output clamps to
+  `[-1,1]`.
+- **Spatial audio.** Right-handed coordinates with +X right, +Y up and forward -Z.
+  Listener forward/up define the right vector. Spatial stereo clips downmix to mono,
+  then equal-power panning combines with `None`, `Linear` or `Inverse` distance
+  attenuation (silent at and beyond max distance). There is no HRTF, Doppler,
+  obstruction or reverb.
+- **Sources and events.** `AudioSources` creates reusable sources (`create`),
+  controls them (`SourceAction::Play`, pause, resume, stop), reconfigures them while
+  keeping the cursor, and subscribes sources to named events with `observe` and
+  `notify`. Notification order is registration order; an error stops processing with
+  earlier effects retained. Handles are typed and never reused, and dropping a
+  controller stops its own voices.
+- **Failure policy.** Device failure is sticky, keeps the first diagnostic, clears
+  voices and rejects new playback. `device_frames` records actual callback
+  submission, which shows output activity but cannot show audibility. The mixer
+  uses a mutex and makes no hard-realtime claim.
 
-Voice handles are monotonically increasing and expire when stopped/completed.
-Pause holds sample position. Loops wrap interpolation to the first sample.
-Voice, music/effects/dialogue, and master gains multiply; gains clamp to [0,1]
-and nonfinite gains become zero. The default cap is 64 simultaneous voices;
-excess cues fail explicitly. Voices own immutable shared clip references; callers
-must not mutate clip storage through another alias. `stopOwner` clears a scene's
-voices. `stopAll` clears every voice. Queued hardware buffers impose up to roughly
-32 ms latency at 48 kHz; shutdown joins the worker, resets/unprepares/closes the
-device and drops all voices. Initialize/shutdown belong to the lifecycle thread;
-voice controls and mixing are synchronized. Use external `mix` only in offline
-mode so it cannot consume samples intended for hardware playback.
+### Runtime attachment
 
-## Configurable sources and 3D mixing
+The desktop host supplies `Runtime::set_audio(AudioControl)` before startup. The
+`engine_project::audio` module then offers entity-scoped `source`, `configure`,
+`control`, `observe`, `notify` and `listener`. Attachment transforms are resolved
+after the native tick; deleting an attached entity removes its sources and
+subscriptions, entity teardown drops scoped voices, and stopping the runtime resets
+the listener. Audio assets resolve through the confined asset catalog. Collision
+trigger events notify `trigger:<entityId>:enter`, `:stay` and `:exit` for both bodies
+of each pair. Headless runs advance an offline mixer (800 stereo frames per 1/60 s
+tick) and never open a device.
 
-`PlayOptions` adds pitch (playback-rate multiplier in `[0.125,8]`) and
-`SpatialOptions`. `AudioSystem::configure` replaces a voice's options atomically
-without changing its cursor or pause state. Invalid options leave it unchanged.
-`voiceState` reports playing, paused or stopped, including completed one-shots.
-Existing nonspatial playback preserves stereo channels and its previous gains.
+## Player persistence (`engine_project::persistence`)
 
-Enable `spatial.enabled` for a point emitter at `position`. Positions and
-distances use the host's world units. The listener defaults to the origin,
-forward `(0,0,-1)`, up `(0,1,0)` in a right-handed world. `setListener` accepts
-finite positions and nonzero, nonparallel forward/up vectors; their magnitudes
-do not change panning. Constant-power stereo panning uses the listener's right
-axis. A centered emitter feeds each channel at `sqrt(0.5)`; spatial stereo clips
-are averaged to mono before panning. This is stereo positional mixing without
-HRTF, Doppler, obstruction, reverb or distance-dependent delay.
+`PersistenceStore::new(PersistenceOptions)` takes a host-selected root and project
+ID. `default_user_data_root(project_id)` returns `%LOCALAPPDATA%\CPPGameEngine` on
+Windows, or `$XDG_DATA_HOME/CPPGameEngine` (falling back to
+`~/.local/share/CPPGameEngine`) elsewhere, and fails with
+`persistence.root.unavailable` when unavailable. The `CPPGameEngine` directory name,
+the `content_version` envelope key, the `saves/` and `settings/preferences.json`
+layout and the FNV-derived `project-<decimal>` profile ID from `project_id(name)` are
+kept from the earlier C++ engine, so existing player data stays in place. Under the
+root, each project ID has separate `saves/<slot>.json` and
+`settings/preferences.json` files, so settings corruption does not affect
+progression and vice versa. `--user-data <directory>` on `engine run` overrides the
+root; player data never belongs inside a packaged project.
 
-Attenuation is `Inverse` by default. `minDistance` defaults to 1, `maxDistance`
-to 100, and `rolloff` to 1. Min distance must be positive, max must exceed min,
-and rolloff must be nonnegative. With `d=max(distance,minDistance)`, inverse
-gain is `minDistance/(minDistance+rolloff*(d-minDistance))`; linear gain is
-`clamp(1-rolloff*(d-minDistance)/(maxDistance-minDistance),0,1)`. Both are silent
-at and beyond max distance. `None` disables distance attenuation while retaining
-panning. Spatial gain multiplies voice, bus and master gains. Nonfinite spatial
-values, invalid enums and out-of-range pitch fail explicitly.
+- **Names.** Slot and project identifiers contain only ASCII letters, digits,
+  underscore and hyphen, at most 64 bytes. Paths, traversal, links and junctions
+  (including temporary, backup and lock files) are rejected. This confines authored
+  content in a trusted user-data directory; it is not a defense against another
+  process swapping directory entries.
+- **Envelope.** Each document is `{ "schema": N, "content_version": M, "data": {...} }`
+  with defaults of schema 1, content version 1, 1 MiB and nesting depth 32 (options
+  allow up to 64 MiB and depth 64). Depth is checked before recursive parsing.
+  Missing, corrupt, oversized and newer snapshots are distinct coded errors
+  (`persistence.missing`, `.corrupt`, `.size.exceeded`, `.depth.exceeded`,
+  `.version.newer`).
+- **Migration.** A `Migration` callback (`fn(from_schema, from_content, data)`)
+  transforms old data; its result is revalidated. A migrated load never rewrites
+  disk; pass the callback to `save` to commit it. Newer primary or backup versions
+  are never migrated or overwritten.
+- **Writes.** A per-slot exclusive file lock serializes writers. The new bytes go to
+  a same-directory temporary file, are flushed with `sync_all`, then atomically
+  replace the primary (plus a directory sync on Unix). The previous valid primary is
+  first committed to `<slot>.json.bak`. A failed replacement leaves a usable old
+  primary or backup. Physical power-loss survival still depends on the file system
+  and hardware.
+- **Recovery.** A corrupt primary is never silently overwritten. `load_backup` is a
+  deliberate read-only choice, and `recover_backup` validates the backup, restores
+  the primary and keeps the known-good backup; it cannot replace a newer primary.
+- **Settings.** `load_settings` and `save_settings` use the same envelope and write
+  policy for generic data such as remaps, volume and display preferences.
 
-`AudioSources` is a lifecycle-thread controller over an initialized mixer.
-`create(clip,options)` configures a reusable source without playing it;
-`control(source,SourceAction::Play)` starts or restarts its single voice. Pause
-and resume retain the cursor; stop leaves the source reusable. Restart first
-stops the old voice, so it works at the voice cap; playback failure leaves the
-source stopped. `configure` replaces all options, preserving active playback.
-`remove` stops the source and removes its observers. Destruction/`clear` stop
-all source voices and release subscriptions. Source and observer handles are
-positive integers, never reused across controllers; source handles are distinct
-from the legacy voice handles. The controller owns immutable shared clip
-references and overrides the playback owner with its constructor's owner.
-
-`observe(event,source,action)` subscribes source control to a named notification.
-`notify(event)` executes matching observers in registration order and returns
-the count. `unobserve(handle)` cancels a subscription. Unknown notifications are
-successful no-ops. Event names are nonempty, at most 512 bytes, without NUL;
-controllers permit at most 1024 sources and 1024 observers. A failed notification
-returns the first playback error; earlier controls may already have run.
-
-Project Runtime owns a controller per scene. Lua sources/listeners may attach to
-a live positioned entity with an offset; positions are resolved at the completed
-tick boundary and before explicit source control/notifications. Destroying an
-attached entity removes its sources and subscriptions; a destroyed listener
-attachment resets the default listener. Runtime retires voices/subscriptions on
-stop, scene replacement and faults, resetting a listener it applied. The host
-should let one Runtime drive a shared mixer's listener at a time.
-
-Scene preparation can configure silent sources, listeners and subscriptions;
-it cannot play, control or emit audio. A candidate's listener is applied only
-after the scene commits. Failed preparation and candidate teardown preserve the
-active scene's listener and sources. Collision trigger events automatically
-notify `trigger:<persistentEntityId>:enter`, `:stay`, and `:exit` for both members
-of each pair after simulation. Pair order follows the existing sorted trigger
-stream. Stay notifications occur each tick and a play observer therefore restarts
-each tick; use enter for a one-shot or loop start. NUL-containing persistent IDs
-have no named audio notifications. Other full-size collider IDs are supported.
-
-## Versioned player data
-
-`PersistenceStore` takes host-selected `PersistenceOptions`. The conventional
-root is `%LOCALAPPDATA%/CPPGameEngine` on Windows, or XDG data/home fallback on
-POSIX. `defaultUserDataRoot` reports absence explicitly. Under that root each
-safe project ID has separate `saves/<slot>.json` and
-`settings/preferences.json` files. Settings are generic data: remaps, volume,
-reduced motion and display preferences do not imply runtime changes by themselves.
-Identifiers contain only ASCII letters, digits, underscore and hyphen, at most
-64 bytes. Paths, traversal, links/junctions and linked temporary/backup/lock files
-are rejected. This is an authored-content confinement boundary in a trusted
-host user-data directory, not a security sandbox against another process
-maliciously replacing directory entries during operations.
-
-Each document is an envelope with positive integer `schema`, `content_version`,
-and object `data`. Defaults are version 1, 1 MiB and depth 32. Data is generic;
-the game's host decoder must validate content references and domain fields.
-Nonfinite numbers and invalid/bounded JSON fail. Depth is checked before parser
-recursion. Missing, malformed, oversized, inaccessible and newer saves are distinct
-coded failures. A migration callback is an explicit old-to-current transform;
-its returned object is revalidated. A migrated load never rewrites disk. To commit
-that migration, pass the callback to `save` with the validated transformed data.
-Valid version headers identify future snapshots before interpreting current payload
-shape. Newer schema/content snapshots and encountered future backups are not overwritten.
-Unrecognized, corrupt or unreadable backups also block replacement; a parser safety
-refusal cannot cause destructive recovery of a possibly newer snapshot.
-
-Writing takes a per-slot OS lock, writes a same-directory temporary, flushes it,
-then atomically renames/replaces it. Windows uses `FlushFileBuffers` followed by
-`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`; POSIX uses file
-`fsync`, rename, and directory `fsync`. A previous validated primary is separately
-committed to `.bak` before primary replacement. Failed replacement retains a
-usable old primary or backup; success is reported only after the durability calls
-succeed. Filesystem/hardware guarantees still determine survival of physical power
-loss. Stale regular temporary files are discarded on a later write.
-
-Corrupt primaries cannot be silently overwritten. `loadBackup` is a deliberate
-read-only recovery choice. `recoverBackup` validates it, durably restores primary,
-and retains the known-good backup; it cannot replace a newer primary. Settings
-corruption does not affect progression and vice versa. Settings' own `.bak` is
-preserved with the same write policy, though the slot recovery API addresses saves.
-No unrestricted authored filesystem access is required.
+Named failure stages (`PersistenceStage::Write`, `Flush`, `Replace`) can be injected
+through `PersistenceOptions::fail` to test durability paths deterministically.
 
 ## Validation
 
-`runAudioTests()` in `src/test/desktop2d/audio_tests.cpp` covers bounded WAV decoding,
-unsupported/truncated resources, mixer interpolation, one-shot/loop ownership,
-pause, multiplied/muted/clamped gains, caps and shutdown. It also opens the actual
-platform device, queues a generated low-gain PCM tone for 100 ms, stops/reset/closes,
-and reports device unavailability distinctly. This does not verify audibility.
-Additional checks cover listener translation/rotation, spatial stereo downmix,
-attenuation curves/cutoff, pitch, invalid configurations, source reuse/completion,
-observer cancellation, ownership and teardown. Runtime tests exercise the actual
-Lua API, entity following, enter/exit control, full-size trigger IDs, candidate
-isolation, listener commit/reset, and cleanup on destruction and faults.
+`cargo test -p engine-audio` covers decoding, mixing, state, spatial output,
+source/event handling, concurrent control and fault injection. The real-device check
+is explicit and requires an output device:
 
-`runPersistenceTests()` in `src/test/project/persistence_tests.cpp` covers missing
-saves, restart, backup/corruption/recovery, independent settings, injected write,
-flush and replacement failures, retry, explicit migration retaining stable IDs,
-newer versions, byte/depth bounds, traversal and a real linked-directory escape.
-Defining `CPP_GAME_ENGINE_SERVICE_TEST_MAIN` builds either file as a standalone
-test executable; otherwise the engine's test runners call the named function.
+```text
+cargo test -p engine-audio native_device_opens_submits_pcm_and_closes -- --ignored --nocapture
+```
+
+It requires callback progress, consumed voice PCM, no device diagnostic and clean
+shutdown. Audibility, loop seams and physical disconnect behavior need manual
+checks. Persistence behavior (envelope and path identity, newer-version protection,
+migration, backup recovery, failed replacement, slot locking) is covered by
+`crates/engine-project/tests/parity.rs`; audio attachment by
+`native_audio_tracks_entity_attachment_and_resets_listener_on_teardown` in the same
+file and by the `examples/desktop-2d` tests. See [Testing and CI](testing.md).

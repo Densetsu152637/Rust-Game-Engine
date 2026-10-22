@@ -2,39 +2,47 @@
 
 ## Getting started
 
-- [Desktop 2D synthetic lab](../examples/desktop-2d/README.md): Windows desktop
-  fixture, shared Lua walkthrough, both variants and save/restore acceptance.
-- [Desktop packages](desktop-packaging.md): shaders, pinned dependency notices,
-  and launchers independent of the working directory.
-- [First project](../examples/first-project/README.md): authored sample project,
-  its assets, and deterministic headless run.
-- [Project commands](commands.md): build targets, CLI commands, JSON results,
-  and packaging.
-- [Project and scene format](project-format.md): version 1 manifest, scene,
-  asset, and validation contract.
-- [Mobile builds](../mobile/README.md): Android and iOS prerequisites, build
-  steps, and verified runtime scope.
+- [Repository README](../README.md): workspace layout, prerequisites, build and test.
+- [Architecture](architecture.md): crate layering, one Rust type universe, the ECS
+  graph scheduling model, render extraction and the desktop host.
+- [Native game crates](scripting.md): how external Rust crates register components,
+  systems and entity scripts, and how they are compiled into generations.
+- [Project commands](commands.md): the `engine` command-line tool, JSON results and
+  exit codes.
+- [Project and scene format](project-format.md): version 1 manifest, scene, asset and
+  validation contract.
+- [Testing and CI](testing.md): test commands, hardware-gated tests and the GitHub
+  Actions workflow.
+
+## Examples
+
+- [First project](../examples/first-project/README.md): authored sample project with a
+  game crate, lifecycle fixtures and an intentionally invalid crate.
+- [Desktop 2D synthetic lab](../examples/desktop-2d/README.md): sprites, text,
+  collision, rooms, audio, saves and a scripted walkthrough.
+- [Native extension](../examples/native-extension/README.md): custom components,
+  systems and a custom wgpu render pass from an external crate.
+- [Moving entity](../assets/scripts/moving_entity/src/lib.rs): the smallest script
+  crate.
 
 ## Engine interfaces
 
-- [ECS design](../src/ecs/README.md): EnTT backend, entity/component storage,
-  views, and job behavior.
-- [ECS and legacy utility cleanup](ecs-modernization.md): removed unused APIs,
-  preserved features, current ECS usage, and validation checks.
-- [Lua scripting](scripting.md): script lifecycle, host API, and project-script
-  restrictions.
-- [Vulkan rendering](vulkan.md): desktop rendering backend, frame submission,
-  and Vulkan build/smoke requirements.
-- [Desktop 2D rendering](desktop-2d-rendering.md): RGBA sprites, camera scaling,
-  UTF-8 font atlases and Vulkan readback checks.
-- [2D gameplay](gameplay2d.md): deterministic sweeps, triggers, placement and flock helpers.
-- [Desktop input/UI](desktop-input-ui.md): action mapping, device/focus transitions,
-  modal capture, scrolling and pointer selection.
-- [Desktop audio and persistence](desktop-services.md): PCM playback/mixing,
-  durable versioned saves, recovery and separate settings.
-- [MCP adapter](mcp.md): read-only stdio protocol, supported tools, and limits.
+- [Desktop rendering](desktop-2d-rendering.md): CPU content, the render contract,
+  wgpu host and native render-pass extensions.
+- [Gameplay mechanics](gameplay2d.md): swept collision, triggers, placement, follow
+  and flock helpers.
+- [Input and UI](desktop-input-ui.md): action mapping, rebinding, focus handling and
+  the modal UI model.
+- [Audio and persistence](desktop-services.md): the mixer, spatial sources, CPAL
+  playback, durable saves and separate settings.
+- [Desktop packages](desktop-packaging.md): relocatable packages and dependency
+  notices.
+- [Editor](editor.md): the native Windows editor and its play host.
+- [MCP adapter](mcp.md): the read-only stdio protocol, tools and limits.
 
 ## Project direction
 
-- [Human and AI tooling roadmap](human-ai-tooling-roadmap.md): implementation
-  phases, current capabilities, and remaining scope.
+- [Rust migration](rust-migration.md): decisions, acceptance gates, parity inventory
+  and the evidence recorded so far.
+
+Per-crate details are in `crates/*/README.md`.

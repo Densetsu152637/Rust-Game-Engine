@@ -1,61 +1,55 @@
 # Desktop runtime packages
 
-`tooling::packageProject(project, destination, runtime, shaders, licenseRoot)`
-keeps the original first three arguments and adds optional shader and license
-roots. Existing headless packages still work when no shader directory is found.
-The CLI forwards `--runtime`, `--shaders` and `--license-root`; its integration
-must supply the actual engine source root when producing redistributable builds.
-A caller that omits the license root gets an explicit omission marker rather
-than silently treating authored project licenses as engine notices.
+> Packaging is implemented by `engine-tooling` (`artifacts::package_project`), which
+> was still uncommitted in a parallel worktree when this page was written. Behavior
+> below is read from that source; confirm against the merged crate and its tests
+> (`tests/artifacts.rs`, `tests/runtime_pipeline.rs`).
 
-When `shaders` is omitted, the helper checks the runtime executable's build
-parent (`bin/../shaders`). If present, that directory must contain
-`mesh_textured.vert.spv` and `mesh_textured.frag.spv`, which the authored desktop
-runtime needs. An explicit shader directory always must exist. The known mesh
-and triangle SPIR-V variants are also copied when present. Each copied shader
-must remain within the canonical source directory, be a regular file, be
-20 bytes to 16 MiB with four-byte alignment and the SPIR-V magic. This checks
-transport structure, not shader compilation or GPU behavior. Unrelated SDK,
-compiler, source and developer files are not included.
+`engine project package <manifest> <new-directory> [--profile release|dev]`
+compiles the project's Rust gameplay crate with the engine into a native generation
+and exports a self-contained directory that needs neither Cargo nor the source
+checkout to run.
 
-The explicit `licenseRoot` identifies the engine source checkout. The package
-copies its exact engine `LICENSE` and pinned EnTT, GLFW, picojson and stb notices
-to `licenses/<dependency>/`. Lua's complete embedded copyright, permission and
-disclaimer block is extracted from the pinned `third_party/lua/lua.h` into
-`licenses/lua/LICENSE.txt`; its source code is not redistributed by this helper.
-Missing notices, escaping source links/junctions or copy failures prevent
-publication. The engine root is never guessed from the authored project root.
-Projects remain responsible for their own content/asset licenses.
+```text
+my-package/
+  runtime[.exe]           compiled engine + game executable
+  game/                   project content copied from the project root (project.json at top)
+  licenses/               engine LICENSE, runtime-Cargo.lock, per-dependency notices,
+                          dependencies.json inventory
+  generation.json         generation number, fingerprint and build metadata
+  run.cmd, run.sh         launchers
+  PACKAGE.txt             generation, fingerprint and launch notes
+```
 
-Lua dependency indexing uses the restricted runtime's canonical candidate order:
-script-directory `module.lua`, script-directory `module/init.lua`, project-root
-`module.lua`, then project-root `module/init.lua`. Root-qualified names such as
-`require('scripts.progression')` therefore package exactly the files used by
-runtime playback, including nested `init.lua` modules. Dependency records retain
-the declared stable asset IDs. Missing, unindexed or escaping modules fail.
-The package still includes the manifest, startup scene, all indexed declared
-assets and declared Lua module assets. `PACKAGE.txt` records runtime, shader and
-notice status. `run.cmd` and `run.sh` derive an absolute directory from their own
-location and pass absolute package-relative runtime, manifest and shader paths.
-They forward caller arguments, permitting bounded `--headless --ticks N` checks
-and preserving the runtime exit status. Windows disables inherited delayed
-expansion and escapes percent signs in authored relative paths.
+- **Launchers.** `run.cmd` and `run.sh` derive the package directory from their own
+  location and pass `game/project.json` to the runtime, forwarding caller
+  arguments, so `run.cmd --headless --ticks 120` works from any working directory
+  and preserves the runtime's exit status.
+- **Shaders.** Shaders are WGSL assets validated during `project shaders` and
+  compiled by the GPU driver at run time; there are no precompiled shader binaries to
+  package. Built-in engine shaders are compiled into the executable.
+- **Licenses.** The engine `LICENSE` must exist in the engine checkout or packaging
+  fails. The resolved `Cargo.lock` of the generation is included, and for every
+  dependency in the build's Cargo metadata the license and notice files found at its
+  package root are copied under `licenses/<name>-<version>/` and listed (with the
+  declared license expression and whether the package is local) in
+  `licenses/dependencies.json`. Projects remain responsible for their own content
+  and asset licenses.
+- **Player data.** Saves and settings live in the user-data profile, never in the
+  package; `--user-data <dir>` selects another root. See
+  [Audio and persistence](desktop-services.md).
+- **Safety.** The destination must not exist and must not overlap authored source
+  (generated `build`, `dist`, `release` or `.derived` directories under the project
+  are allowed). Content is copied into a staging directory in the destination's
+  parent and renamed into place, so a failed export publishes nothing. Source
+  symlinks are not followed and cause the export to fail. The export boundary is for
+  trusted host directories, not a sandbox against another process racing file system
+  entries.
 
-Destination/source overlap and existing destination are refused. The helper
-creates an exclusive sibling staging directory, copies required files, closes
-metadata/launcher streams, and renames the complete staging directory into place.
-Supplemental failure removes only task-owned staging; no partial destination is
-published. Supplemental output collisions with authored assets fail. This is an
-export boundary for trusted host directories, not a sandbox against another
-process racing filesystem entries.
+## Verification status
 
-The existing tooling test's package case covers compatible headless output,
-shader autodiscovery/explicit sources, SPIR-V byte preservation, the shader
-allowlist, notice contents and Lua extraction, absolute launcher arguments,
-missing/invalid shaders, missing notices, real source junction escapes, and
-absence of published partial directories or leftover staging. Build/run with
-`make BUILD=build/packaging-check build/packaging-check/bin/WorkflowTests.exe`
-on Windows (substitute installed `mingw32-make`), then run that executable.
-A synthetic runtime and structurally valid SPIR-V fixtures establish packaging
-behavior only. Launching the integrated real binary from a different working
-directory and its real Vulkan playback are separate integration checks.
+Package tests build and run real external fixture crates. Launching the packaged
+binary from an unrelated working directory with a real window, GPU playback and
+audio are separate integration checks; headless package launches do not establish
+them. Windows is the validated packaging platform; `run.sh` and Unix packaging are
+unverified.

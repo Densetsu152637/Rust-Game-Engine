@@ -1,114 +1,122 @@
-# CPP-Game-Engine
+# Rust Game Engine
 
-C++23 engine with the official EnTT ECS, embedded Lua 5.4 scripting, and a Vulkan
-graphics pipeline. Dependencies are pinned Git submodules under `third_party/`:
+A 2D-first game engine written in Rust. Simulation runs on a standalone
+[Bevy ECS](https://docs.rs/bevy_ecs/) world with explicit, graph-scheduled systems,
+the desktop host uses [winit](https://docs.rs/winit/) and [wgpu](https://docs.rs/wgpu/),
+and audio uses [CPAL](https://docs.rs/cpal/) with [Hound](https://docs.rs/hound/).
+Games are ordinary external Rust crates that the engine compiles on demand, together
+with the engine itself, into a native executable generation.
 
-```sh
-git submodule update --init --recursive
+This repository replaces the earlier C++ implementation (EnTT, GLFW, Lua, Vulkan).
+Lua scripting and mobile (Android/iOS) support were removed by design. See
+[Rust migration](docs/rust-migration.md) for the decisions, acceptance gates and the
+current migration status; that file is the authoritative record of what is and is
+not finished.
+
+## Workspace layout
+
+| Path | Purpose |
+| --- | --- |
+| `crates/engine-core` | `EngineApp`: simulation and render worlds, lifecycle, fixed ticks, graph scheduling, buffered values and change-driven render extraction |
+| `crates/engine-project` | Authored project and scene schema, stable IDs, `Runtime`, `NativeScript`, 2D collision, input mapping, modal UI, audio attachment, persistence, CPU render extraction, revisioned scene editing |
+| `crates/engine-desktop` | Main-thread winit window loop, wgpu renderer, offscreen readback, gamepad input, headless runner, extensible `NativeRenderPass` |
+| `crates/engine-audio` | PCM clips, deterministic stereo mixer, spatial sources, CPAL device output |
+| `crates/engine-editor` | Native Windows authoring editor plus a platform-independent `EditorController` |
+| `crates/engine-mcp` | Read-only MCP stdio adapter (project validation and scene inspection) |
+| `crates/engine-tooling` | Native Rust compiler/launcher, generation management, asset index, shader import, packaging and the `engine` command-line tool |
+| `examples/first-project` | Minimal authored project with a game crate and lifecycle fixtures |
+| `examples/desktop-2d` | 2D desktop synthetic lab: sprites, text, collision, rooms, audio, saves |
+| `examples/native-extension` | Custom components, systems and a custom wgpu render pass |
+| `assets/scripts/moving_entity` | Smallest script crate: one entity advanced along +X |
+| `docs/` | Documentation, starting at [docs/README.md](docs/README.md) |
+| `scripts/ci/` | Helper scripts used by the CI workflow |
+
+The `crates/*` directories form the root Cargo workspace. Each directory under
+`examples/` and `assets/scripts/moving_entity` is its own workspace root (an empty
+`[workspace]` table), so the engine workspace never builds them and their
+`Cargo.lock` and `target` directories are local and ignored.
+
+## Prerequisites
+
+- Rust 1.99.1, pinned in `rust-toolchain.toml` (components `rustfmt` and `clippy`).
+  Install it with [rustup](https://rustup.rs/); the toolchain file selects it
+  automatically in this checkout.
+- Windows is the primary validated platform. The editor is Windows-only; other
+  crates are intended to be portable, and Linux builds need the ALSA, udev and
+  window-system development packages (see `.github/workflows/ci.yml` for the list
+  used by CI). Linux and macOS execution of the desktop host has not been verified
+  by the project authors.
+- A GPU adapter is needed only for the explicitly ignored rendering tests and for
+  visible runs. An audio output device is needed only for native playback.
+
+## Build and test
+
+```text
+cargo build --workspace
+cargo test --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The root build uses **GNU Make 4.x**, compiling GLFW and Lua directly; CMake is not
-needed. Run commands from the repository root so sample asset paths resolve.
+Tests that need real hardware are `#[ignore]` and are run explicitly; see
+[Testing and CI](docs/testing.md). The standalone example crates are tested with
+`--manifest-path`:
 
-On Windows, install Visual Studio C++ tools, GNU Make (for example
-`mingw32-make`), and optionally the Vulkan SDK. Open an **x64 Native Tools Command
-Prompt** and substitute `mingw32-make` for `make` below if needed. The build uses
-MSVC `/std:c++latest`; a compiler supporting C++23 `std::expected` is required.
-
-```sh
-make -j8
-make test
-make run
+```text
+cargo test --manifest-path examples/first-project/Cargo.toml
+cargo test --manifest-path examples/desktop-2d/Cargo.toml
+cargo test --manifest-path examples/native-extension/Cargo.toml
+cargo test --manifest-path assets/scripts/moving_entity/Cargo.toml
 ```
 
-The default build runs without Vulkan. `make run` loads the authored
-[first project](examples/first-project/README.md) for 120 fixed simulation ticks.
-Its persistent Player entity is owned by the scene and controlled through an
-entity-owned Lua script. Test targets cover ECS, Lua, engine integration,
-project validation/editing, isolated runtime, editor, asset tooling, and MCP.
+## Using the engine
 
-Project commands return a versioned JSON result on stdout and readable logs on
-stderr. For example (append `.exe` on Windows):
+A game is a Cargo crate with an authored `project.json` next to it. The crate
+exposes `configure(&mut EngineApp)`, which registers components, resources, systems
+and script factories. The tooling compiler links that function with the engine into
+one executable, so game code and engine code share one Rust type universe; Rust
+objects never cross independently compiled library boundaries.
 
-```sh
-build/debug-vk0/bin/CPPGameEngine project validate examples/first-project/project.json
-build/debug-vk0/bin/CPPGameEngine run examples/first-project/project.json --headless --ticks 120 --input move_right:0
-build/debug-vk0/bin/CPPGameEngine editor examples/first-project/project.json
+```rust
+use engine_core::{anyhow, prelude::*};
+use engine_project::{NativeScript, Transform, register_script};
+
+pub fn configure(app: &mut EngineApp) -> anyhow::Result<()> {
+    register_script(app, "asset:player-script", |_, _| Ok(Box::new(Player)))?;
+    Ok(())
+}
+
+pub struct Player;
+impl NativeScript for Player {
+    fn on_update(&mut self, world: &mut World, owner: Entity, dt: f32) -> engine_project::Result<()> {
+        if let Some(mut transform) = world.get_mut::<Transform>(owner) {
+            transform.position[0] += dt;
+        }
+        Ok(())
+    }
+}
 ```
 
-The [desktop 2D synthetic lab](examples/desktop-2d/README.md) demonstrates the
-implemented Windows desktop runtime: RGBA sprites and atlas text, pixel-snapped
-cameras, deterministic collision and animation, modal input/UI, transactional
-rooms, PCM audio, and separate durable progression/settings. Its shared Lua
-walkthrough exercises both placeholder variants and cross-process restoration.
-See [desktop rendering](docs/desktop-2d-rendering.md),
-[gameplay mechanics](docs/gameplay2d.md), [input/UI](docs/desktop-input-ui.md),
-[audio and persistence](docs/desktop-services.md), and
-[desktop packaging](docs/desktop-packaging.md) for contracts and validation limits.
-This desktop scope does not select game canon or add Steam SDK integration.
-Windows playback is verified; physical audio audibility, subjective visual
-quality and physical gamepad interaction remain manual checks. Desktop extensions
-are not a claim of equivalent mobile or other-platform runtime support.
+See [Native game crates](docs/scripting.md) for the full contract, and
+[examples/first-project](examples/first-project/README.md),
+[examples/desktop-2d](examples/desktop-2d/README.md),
+[examples/native-extension](examples/native-extension/README.md) and
+[assets/scripts/moving_entity](assets/scripts/moving_entity/src/lib.rs) for real usage.
 
-See the [documentation index](docs/README.md) for project guides and API
-references, [command and packaging usage](docs/commands.md), the
-[project/scene contract](docs/project-format.md), and the [read-only MCP adapter](docs/mcp.md).
-Android and iOS builds use the same authored project runtime through SDL3; see
-the [mobile build guide](mobile/README.md) and run `CPPGameEngine platform check android`
-or `CPPGameEngine platform check ios` to inspect host prerequisites.
-The native authoring editor is Windows-only and provides hierarchy, selection,
-typed position/script edits, asset selection, validation, save/reload, undo/redo,
-and isolated play/stop. The editor has no embedded viewport; the visible `run`
-command displays authored mesh/texture assets with Vulkan.
+### Command line
 
-For graphics, set `VULKAN_SDK` to the SDK directory and make its `Bin` directory
-available on `PATH`. The SDK supplies headers, the loader library, and `glslc`.
+The `engine` binary comes from the `engine-tooling` crate and provides
+`project init|validate|assets|shaders|package`, `scene inspect`, `run`, `editor`
+and `mcp`. Run it with `cargo run -p engine-tooling --bin engine -- <command>`.
+The command surface and its JSON results are documented in
+[Project commands](docs/commands.md). Compiling a game generation invokes Cargo,
+so a first run can take minutes.
 
-```sh
-make -j8 VULKAN=1
-make VULKAN=1 run
-make VULKAN=1 smoke
-make VULKAN=1 smoke-validation
-```
+## Documentation
 
-`run` opens the authored textured sample; its declared Right-arrow action moves
-the Player. `smoke-validation` requires the installed
-Khronos validation layer; for a portable SDK on Windows, set `VK_LAYER_PATH` to
-`%VULKAN_SDK%\Bin`. The smoke test exercises multiple draws, resize/minimize,
-cancellation, invalid inputs, and renderer reinitialization on a real Vulkan GPU.
+Start at the [documentation index](docs/README.md). Architecture and the ECS
+scheduling model are in [Architecture](docs/architecture.md).
 
-Output lives in `build/debug-vk0` or `build/debug-vk1`. `CONFIG=release` selects
-separate optimized output directories. `BUILD=path` can isolate custom compiler
-flags/toolchains. Effective compiler/link options are recorded; changed options
-invalidate existing objects. Use a fresh directory after replacing an SDK or
-compiler in place. Project and vendor header changes trigger rebuilding (conservative dependencies
-on MSVC, plus generated `.d` dependencies on GCC). To remove output, delete the
-repository's `build` directory; `make clean` prints this instruction.
+## License
 
-The legacy demonstration (without a subcommand) still accepts `--headless`,
-`--ticks N`, `--script file.lua`, and `--shaders directory`. For example:
-
-```sh
-build/debug-vk1/bin/CPPGameEngine --headless --ticks 60
-build/debug-vk1/bin/CPPGameEngine --ticks 180 --shaders build/debug-vk1/shaders
-```
-
-On Windows append `.exe`. Headless execution advances fixed timesteps without
-sleeping; the graphical loop polls GLFW and submits rendering on the main thread.
-`Engine::run()` likewise executes polling, Lua updates, simulation, and frame
-coordination sequentially on its caller thread, waiting for scheduled ECS jobs
-between phases. Call it on the window-owning thread. `setLogicTickLimit(N)` gives
-a bounded run; `finishExecution()` requests stopping after the current phase,
-and `awaitTermination()` waits until idle, script teardown, and shutdown listeners
-have finished. External callers should not mutate the ECS while a run is active.
-
-The Makefile also includes a Linux/X11 branch requiring a C++23 GCC/libstdc++, X11
-development headers (Xrandr, Xinerama, Xcursor, and Xi), and `libX11`, `dl`, pthread,
-and math libraries. Vulkan builds additionally require Vulkan headers/loader and
-`glslc` on `PATH`. Linux is not validated in the current Windows environment;
-macOS and Wayland builds are not configured.
-
-See [ECS design](src/ecs/README.md), [Lua scripting](docs/scripting.md), and
-[Vulkan rendering](docs/vulkan.md) for API details and current rendering limits.
-For implementation scope and phase evidence, see the
-[human and AI tooling roadmap](docs/human-ai-tooling-roadmap.md).
+MIT; see [LICENSE](LICENSE).

@@ -1,78 +1,100 @@
-# Desktop 2D rendering
+# Desktop rendering
 
-`rendering/sprite2d.h` and `text2d.h` supply backend-neutral geometry. The desktop
-Vulkan frame backend consumes the same explicit mesh/texture draw handles as the
-opaque 3D path. Existing draws default to opaque blending with depth test/write.
-Set `DrawCommand::state` to `painter2DState(view)` for sprite and UI draws: straight
-alpha blending (`src.rgb * src.a + dst.rgb * (1-src.a)`), alpha accumulation,
-depth disabled, nearest sampling, and the authored camera viewport. The pipeline
-cache keys include blend/depth state; viewport/scissor are dynamic and reset for
-every draw. Submit serial draws in painter order or use unique `DrawOrderKey`
-values after sorting by authored layer and stable entity ID. Sorting must not use
-resource handle creation order or unordered-map iteration.
+Rendering is split in two. `engine-project` produces a backend-neutral CPU frame
+(`runtime::RenderFrame`) from the simulation, and `engine-desktop` draws that frame
+with wgpu (Vulkan, DX12 or Metal backends as enabled in its `Cargo.toml`). This
+replaces the earlier Vulkan-only renderer; no SPIR-V or external shader compiler is
+involved, because shaders are WGSL validated with Naga. The crate README
+(`crates/engine-desktop/README.md`) is the detailed contract; this page summarizes
+the 2D content pipeline.
 
-Textures are top-left, row-major RGBA8. `loadTexture` accepts PNG and the existing
-P3 PPM format. PNG preserves straight alpha, including zero-alpha RGB; neither
-loader premultiplies. Texture samples use the existing `R8G8B8A8_UNORM` format,
-so these numeric channels participate in blending as linear values; the SRGB
-swapchain encodes the final framebuffer for presentation. PNG decoding is capped
-at 8192 per axis, 16,777,216 texels, and 64 MiB encoded input. The PNG-only
-stb_image decoder is pinned and licensed in `third_party/stb/README.md`.
+## CPU content (`engine_project::content`)
 
-`makeSpriteQuad` accepts world position/size, normalized pivot measured from the
-left/bottom, and a top-left source pixel rectangle. Atlas bounds and all floating
-values are validated. Invisible sprites return no geometry. Upload the description's
-`tint` using `MaterialUniform::baseColor` with `mesh_textured` shaders. Geometry
-already contains world position, so use an identity transform uniform.
-`animationFrame(elapsedSeconds,fps,count,loop)` derives a frame from deterministic
-elapsed simulation time; looping wraps, one-shot animation clamps at its last
-frame, and invalid times/frame lists fail.
+- Textures load as top-left, row-major RGBA8 with straight (non-premultiplied)
+  alpha from PNG or ASCII P3 PPM. PNG decoding is bounded to 8192 per axis.
+- `sprite_quad` builds a quad from a world position, size, a normalized pivot
+  measured from the left/bottom, and a top-left source rectangle in texture pixels.
+  Atlas bounds and all floating values are validated; the tint becomes vertex
+  colour.
+- `animation_frame(elapsed, fps, count, looping)` derives a frame from simulation
+  time: looping wraps and one-shot animation clamps on its last frame.
+- `camera_viewport` and `logical_pointer` (and `engine_desktop::CameraView`) map a
+  camera's authored logical size to the framebuffer. Above 1x the fit is the
+  largest whole-number scale and the viewport is centred with letterbox bars;
+  below 1x a uniform fractional fit is used and pixel-perfect output is not claimed.
+  A zero-sized framebuffer yields zero scale and the frame is skipped. Camera pixel
+  snapping rounds the camera centre to `1/pixelsPerUnit`; simulation positions are
+  unchanged. World +Y points up, UI +Y points down.
+- Fonts are bitmap-atlas JSON (`schema`, `texture`, `lineHeight`, `fallback`,
+  `glyphs[{codepoint, source, advance, bearing}]`). `bearing` is an offset from the
+  top of the line in logical pixels and `advance` is the cursor distance.
 
-A camera requires authored logical dimensions and pixels per world unit; no
-production resolution is inferred. `makeCamera2DView` computes the largest whole
-integer framebuffer scale that fits and centers the viewport, leaving letterbox
-bars clear. When a framebuffer is smaller than the authored logical viewport, a
-uniform fractional fit is used and pixel-perfect output is not claimed. Zero
-framebuffer dimensions return scale zero: callers skip submitting those frames.
-Use actual framebuffer dimensions, including DPI scaling, rather than window
-client dimensions. World positive Y is upward; projection flips it for Vulkan's
-positive-height viewport. Pixel snapping rounds the world sprite anchor and
-camera center to the nearest `1/pixelsPerUnit`; pivot/size remain authored. A
-resize rebuilds a stale swapchain before recording framebuffer-sized viewports.
+  ```json
+  {"schema":1,"texture":"asset:font-atlas","lineHeight":12,"fallback":63,
+   "glyphs":[{"codepoint":63,"source":[0,0,6,10],"advance":7,"bearing":[0,1]}]}
+  ```
 
-UI uses `makeLogicalUiCamera(logicalWidth,logicalHeight)`, with top-left coordinates
-and positive Y down. Font asset schema 1 uses a separately declared stable texture
-ID and explicit Unicode glyphs:
+  Font loading validates metrics, duplicate code points, the explicit fallback
+  glyph and atlas bounds; the JSON is capped at 4 MiB and 65,536 glyphs, and the
+  project requires the `texture` to be a declared texture asset. `text_mesh` lays
+  out Unicode text with word wrapping (oversized words break by glyph), newlines
+  and the fallback glyph. This is atlas coverage, not complex-script shaping.
 
-```json
-{"schema":1,"texture":"asset:font-atlas","lineHeight":12,"fallback":63,
- "glyphs":[{"codepoint":63,"source":[0,0,6,10],"advance":7,"bearing":[0,1]}]}
+## Render contract (`RenderFrame` to wgpu)
+
+Draws hold immutable `Arc<Mesh>` and optional `Arc<Texture>` assets, vertex colours,
+a layer, a stable ID, world or UI space, an optional logical clip, and blend and
+depth state. Mesh positions are already transformed. Texture data is sRGB; vertex
+colours are linear. Sampling is nearest with clamped edges.
+
+- Draws sort by `(layer, id)`, never by resource address or ECS iteration order;
+  duplicate IDs fail validation.
+- Consecutive compatible draws share pipeline, texture and camera bindings without
+  changing painter order. Meshes remain separate GPU buffers, so batching reduces
+  binding changes rather than collapsing draw calls.
+- Opaque and straight-alpha blending and independent depth test and write select
+  cached pipelines. Clip rectangles become bounded framebuffer scissors.
+- Reusing the same asset `Arc` between frames avoids uploads; replace it after an
+  edit. Shared textures upload once and unreferenced resources are evicted after a
+  frame. Validation bounds draw count, total unique mesh and texture bytes, device
+  texture dimensions, indices and finite vertex data before upload.
+- At most two frame submissions are in flight by default (configurable 1-8, with
+  backpressure on the oldest submission) and GPU waits time out after 30 seconds.
+  Validation and device-loss errors are sticky.
+- Resize creates a matching depth target and a zero extent suspends presentation.
+  A surface timeout skips the frame, lost or outdated surfaces reconfigure, and
+  other device failures end the run with an error.
+
+## Native extensions
+
+Games compile into the host executable and use `engine_desktop::wgpu`, so there is
+no cross-compiler Rust ABI. Implement `NativeRenderPass` and register it with
+`NativeRenderPasses::register(name, pass)`, then insert the resource into
+`EngineApp::world_mut()` during configuration. Passes run after built-in draws in
+insertion order and receive the device, queue, command encoder, target view and the
+extracted world; they may create arbitrary wgpu render, compute and transfer work.
+Insert `GpuRequirements { features, limits }` before launch when a custom pipeline
+needs more than baseline wgpu. `examples/native-extension` is a complete example,
+including a custom WGSL pipeline.
+
+`WindowSurface` is the reusable window and surface owner (used by hosts such as the
+editor), `GpuRenderer` can draw into external views, and `OffscreenTarget` renders
+through the same renderer and reads back RGBA pixels. `validate_wgsl(source)` does
+bounded CPU-only Naga parsing and semantic validation with source diagnostics and no
+GPU.
+
+## Verification
+
+Headless tests cover the CPU content, camera maths, shader validation and runner.
+Pixel tests need a real adapter and are `#[ignore]`d:
+
+```text
+cargo test -p engine-desktop --test gpu_pixels -- --ignored --nocapture
 ```
 
-`loadFontAtlas(path,textureWidth,textureHeight)` validates metrics, duplicate
-codepoints, atlas bounds, the explicit fallback glyph, and unknown fields.
-`bearing` is an offset from the top of the line in logical pixels; `advance` is
-the horizontal cursor distance. Empty rectangles allow spacing glyphs. JSON is
-capped at 4 MiB and 65,536 glyphs. A quote/escape-aware preflight caps combined
-object/array nesting at 64 containers before recursive JSON parsing. The containing
-project must resolve `texture`
-to a declared texture asset and diagnose missing/wrong-kind references.
-
-`makeTextGeometry` decodes strict UTF-8, rejecting overlong encodings, surrogates,
-truncated sequences and values outside Unicode. It lays out the supplied glyphs,
-wraps at word boundaries (breaking oversized words by glyph), handles newlines,
-applies scroll offset and clips each glyph quad with corresponding UV adjustment.
-Unsupported supplied codepoints use the declared fallback and are returned in
-`missingCodepoints`. This is atlas coverage, not a claim of universal font support
-or complex-script shaping. Texture dimensions and glyph metrics must match the
-font asset used by panel layout, so UI measurement and rendering agree.
-
-CPU coverage is `src/test/rendering/desktop2d_tests.cpp` (`test_desktop2d_rendering`);
-`DESKTOP2D_TEST_MAIN` builds it standalone. It verifies real RGBA PNG decoding,
-failed imports, sprite pivots/atlas bounds/visibility, animation, camera fit/snap,
-Unicode/font loading, wrapping, fallback and clipped UVs. The standalone
-`desktop2d_gpu.cpp` uses the real Vulkan `RenderDevice` path and validation layer,
-reacquires tracked swapchain images with explicit barriers/fences, and asserts
-transparent-background preservation, translucent overlap, reversed insertion with
-keyed painter order, clipped font geometry, integer/fractional resize and
-letterbox pixels. GPU readback artifacts are written beneath `build/desktop2d`.
+They cover atlas orientation, sprite and UTF-8 font geometry, clipping, stable
+ordering, dirty uploads, cache eviction, resizing, bounded input, an external custom
+WGSL pipeline and propagation of a deliberately invalid GPU resource, and fail when
+no working adapter exists. An offscreen pixel pass proves drawing but not visible
+window or interactive input behavior; report those separately. See
+[Testing and CI](testing.md).
