@@ -1,15 +1,14 @@
-use crate::GpuContext;
+use crate::{GpuContext, RenderTargetInfo};
 use anyhow::{Result, ensure};
 use engine_core::bevy_ecs::{prelude::Resource, world::World};
 
-#[derive(Clone, Copy, Debug)]
-pub struct RenderTargetInfo {
-    pub width: u32,
-    pub height: u32,
-    pub format: wgpu::TextureFormat,
-}
-
 /// Native extension point with unrestricted device, queue and encoder access.
+///
+/// Native passes are **wgpu-specific by design**: they receive the raw
+/// `wgpu::Device`, queue, command encoder and texture view. They run only when
+/// the wgpu backend is selected; starting the runner with another backend while
+/// passes are registered is an error rather than silently skipping them.
+///
 /// `prepare` runs on registration and resize/format change. `encode` runs after
 /// engine draws in stable registration order, on the host thread. Implementations
 /// own their pipelines/buffers and may issue render, compute and transfer passes.

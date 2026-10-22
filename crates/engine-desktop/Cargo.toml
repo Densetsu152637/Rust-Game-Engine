@@ -3,6 +3,12 @@ name = "engine-desktop"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["vulkan"]
+# Native Vulkan backend (`engine-vulkan`). Without it, selecting the Vulkan
+# backend fails with a clear error and the crate does not build ash.
+vulkan = ["dep:engine-vulkan"]
+
 [dependencies]
 anyhow = "1"
 bevy_ecs.workspace = true
@@ -10,8 +16,10 @@ bytemuck = { version = "1", features = ["derive"] }
 engine-core = { path = "../engine-core" }
 engine-audio = { path = "../engine-audio" }
 engine-project = { path = "../engine-project" }
+engine-render = { path = "../engine-render" }
+engine-render-wgpu = { path = "../engine-render-wgpu" }
+engine-vulkan = { path = "../engine-vulkan", optional = true }
 gilrs = "=0.11.2"
-naga = { version = "=30.0.1", features = ["wgsl-in"] }
 pollster = "0.4"
 serde = { version = "1", features = ["derive"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
@@ -19,3 +27,4 @@ winit = "=0.30.13"
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
+naga = { version = "=30.0.1", features = ["wgsl-in"] }

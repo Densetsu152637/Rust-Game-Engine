@@ -1,6 +1,7 @@
 use crate::{
-    CameraView, GpuRequirements, NativeRenderPasses, RenderLimits, WindowSurface,
+    CameraView, RenderLimits,
     input::{Gamepads, window_input},
+    render_host::{RenderHost, ensure_wgpu_only_features_unused, resolve_from_environment},
 };
 use anyhow::{Context, Result, ensure};
 use engine_audio::{AudioConfig, AudioEngine};
@@ -9,6 +10,7 @@ use engine_project::{
     input::{ActionMapper, RawInput, merge_input},
     runtime::{InputSettings, RuntimeSnapshot},
 };
+use engine_render::BackendKind;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -63,7 +65,30 @@ pub struct RunReport {
 
 /// Run a native generation. Headless mode never initializes winit, GPU, gamepad
 /// or audio devices. Native mode must be called from the process main thread.
-pub fn run(mut runtime: Runtime, options: RunOptions) -> Result<RunReport> {
+///
+/// The render backend comes from `ENGINE_RENDER_BACKEND` (`wgpu` or `vulkan`,
+/// default `wgpu`); see [`run_with_render_backend`] to choose it explicitly.
+pub fn run(runtime: Runtime, options: RunOptions) -> Result<RunReport> {
+    run_with_render_backend(runtime, options, None)
+}
+
+/// [`run`] with an explicit render backend. `None` resolves the
+/// `ENGINE_RENDER_BACKEND` environment variable (invalid values are an error,
+/// even for headless runs, so typos surface). `Some(kind)` ignores the
+/// environment; `Headless` is not a presentable backend and is rejected for
+/// native runs (use [`RunOptions::headless`]). Headless runs never open a
+/// backend. Native render passes and `GpuRequirements` need the wgpu backend:
+/// with Vulkan selected, startup fails if either is configured.
+pub fn run_with_render_backend(
+    mut runtime: Runtime,
+    options: RunOptions,
+    render_backend: Option<BackendKind>,
+) -> Result<RunReport> {
+    let backend = resolve_from_environment(render_backend)?;
+    ensure!(
+        options.headless || backend != BackendKind::Headless,
+        "the headless render backend is not presentable; use RunOptions::headless for runs without a window"
+    );
     ensure!(
         (1..=1_000_000).contains(&options.ticks),
         "ticks must be 1..=1000000"
@@ -111,6 +136,7 @@ pub fn run(mut runtime: Runtime, options: RunOptions) -> Result<RunReport> {
         runtime,
         audio,
         options,
+        backend,
         surface: None,
         mapper,
         raw: RawInput::default(),
@@ -127,10 +153,7 @@ pub fn run(mut runtime: Runtime, options: RunOptions) -> Result<RunReport> {
     let cleanup = app.runtime.stop().map_err(anyhow::Error::from);
     let audio_error = app.audio.device_error();
     app.audio.shutdown();
-    let gpu_cleanup = app
-        .surface
-        .as_ref()
-        .map_or(Ok(()), |host| host.renderer.gpu.wait_idle());
+    let gpu_cleanup = app.surface.as_mut().map_or(Ok(()), RenderHost::wait_idle);
     combine(
         app.error.take().map_or(event_result, Err),
         combine(
@@ -208,7 +231,8 @@ struct DesktopRunner {
     runtime: Runtime,
     audio: AudioEngine,
     options: RunOptions,
-    surface: Option<WindowSurface>,
+    backend: BackendKind,
+    surface: Option<RenderHost>,
     mapper: ActionMapper,
     raw: RawInput,
     pointer: [f32; 2],
@@ -250,7 +274,7 @@ impl DesktopRunner {
             gamepads.sample(&mut self.raw);
         }
         let frame = self.runtime.extract_frame()?;
-        let size = host.window.inner_size();
+        let size = host.window().inner_size();
         let camera = CameraView::new(&frame.camera, size.width, size.height)?;
         self.raw.pointer = camera.logical_pointer(self.pointer);
         if self.mapper.bindings() != self.runtime.bindings() {
@@ -298,13 +322,14 @@ impl ApplicationHandler for DesktopRunner {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.surface.is_some() {
             let host = self.surface.as_mut().unwrap();
-            let size = host.window.inner_size();
+            let size = host.window().inner_size();
             if let Err(error) = host.resize(size.width, size.height) {
                 self.fail(event_loop, error);
             }
             return;
         }
         let result = (|| -> Result<()> {
+            ensure_wgpu_only_features_unused(self.backend, self.runtime.app().world())?;
             let frame = self.runtime.extract_frame()?;
             let [width, height] = frame.camera.logical_size;
             let window = Arc::new(
@@ -320,30 +345,18 @@ impl ApplicationHandler for DesktopRunner {
                     )
                     .context("creating desktop window")?,
             );
-            let requirements = self
-                .runtime
-                .app_mut()
-                .world_mut()
-                .remove_resource::<GpuRequirements>()
-                .unwrap_or_default();
-            let mut host = pollster::block_on(WindowSurface::with_requirements(
+            let mut host = RenderHost::open(
+                self.backend,
                 window,
+                self.runtime.app_mut().world_mut(),
                 RenderLimits::default(),
-                requirements,
-            ))?;
-            let passes = self
-                .runtime
-                .app_mut()
-                .world_mut()
-                .remove_resource::<NativeRenderPasses>()
-                .unwrap_or_default();
-            host.renderer.set_passes(passes)?;
+            )?;
             // Failure to initialize the controller service is propagated. A
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);
             host.present(&frame, Some(self.runtime.app().render_world()))?;
-            host.window.set_visible(true);
-            host.window.request_redraw();
+            host.window().set_visible(true);
+            host.window().request_redraw();
             self.surface = Some(host);
             Ok(())
         })();
@@ -362,7 +375,7 @@ impl ApplicationHandler for DesktopRunner {
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.surface.as_ref().is_none_or(|s| s.window.id() != id) {
+        if self.surface.as_ref().is_none_or(|s| s.window().id() != id) {
             return;
         }
         window_input(&mut self.raw, &event, &mut self.pointer);
@@ -387,7 +400,7 @@ impl ApplicationHandler for DesktopRunner {
                 .resize(size.width, size.height),
             WindowEvent::ScaleFactorChanged { .. } => {
                 let host = self.surface.as_mut().unwrap();
-                let size = host.window.inner_size();
+                let size = host.window().inner_size();
                 host.resize(size.width, size.height)
             }
             WindowEvent::RedrawRequested => self.redraw(event_loop),
@@ -412,7 +425,7 @@ impl ApplicationHandler for DesktopRunner {
                     self.fail(event_loop, error);
                 }
             } else if let Some(host) = &self.surface {
-                host.window.request_redraw();
+                host.window().request_redraw();
             }
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));

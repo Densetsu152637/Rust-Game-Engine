@@ -65,6 +65,7 @@ impl Core {
     pub fn new(
         gpu: GpuContext,
         surface: Option<SurfaceState>,
+        external_surface: bool,
         frames_in_flight: u32,
     ) -> Result<Self> {
         let info = gpu.adapter.get_info();
@@ -74,8 +75,8 @@ impl Core {
         caps.device_name = Some(info.name.clone());
         caps.max_frames_in_flight = frames_in_flight;
         caps.max_texture_dimension = limits.max_texture_dimension_2d;
-        caps.surface_presentation = surface.is_some();
-        if surface.is_none() {
+        caps.surface_presentation = surface.is_some() || external_surface;
+        if !caps.surface_presentation {
             caps.unsupported_reasons.insert(
                 RenderFeature::SurfacePresentation,
                 "the backend was created without a window (offscreen only)".into(),
@@ -115,7 +116,22 @@ impl Core {
         Ok(())
     }
 
+    /// Reject meshes whose buffers exceed the device limit instead of letting wgpu
+    /// raise a sticky validation error.
+    fn check_mesh_size(&self, resource: &MeshResource) -> Result<()> {
+        let limit = self.gpu.device.limits().max_buffer_size;
+        let vertex = resource.vertices.len() as u64;
+        let index = resource.indices.len() as u64 * 4;
+        if vertex > limit || index > limit {
+            return Err(RenderError::InvalidResource(format!(
+                "mesh buffers of {vertex} and {index} bytes exceed the device buffer limit {limit}"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn create_mesh(&mut self, handle: MeshHandle, resource: &MeshResource) -> Result<()> {
+        self.check_mesh_size(resource)?;
         let entry = upload_mesh(&self.gpu, resource);
         check_gpu(&self.gpu)?;
         self.meshes.insert(handle.id(), entry);

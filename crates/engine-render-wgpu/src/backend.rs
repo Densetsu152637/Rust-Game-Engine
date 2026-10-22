@@ -9,7 +9,8 @@ use crate::target::RenderTargetInfo;
 use engine_render::{
     BackendKind, DrawCommand, FrameDesc, FrameOutcome, FrameStats, MeshHandle, MeshResource,
     OffscreenDesc, ReadbackImage, RenderBackend, RenderCapabilities, RenderError, RenderFeature,
-    ResourceId, Result, ShaderHandle, ShaderResource, TargetHandle, Texture2D, TextureHandle,
+    RenderTarget, ResourceId, Result, ShaderHandle, ShaderResource, TargetHandle, Texture2D,
+    TextureHandle,
 };
 use std::sync::Arc;
 
@@ -38,6 +39,8 @@ pub struct WgpuBackend {
     options: WgpuOptions,
     source: Option<Source>,
     core: Option<Core>,
+    /// Host-supplied view that `RenderTarget::Surface` draws into.
+    external: Option<(wgpu::TextureView, RenderTargetInfo)>,
     shut_down: bool,
 }
 
@@ -75,8 +78,23 @@ impl WgpuBackend {
             options,
             source: Some(source),
             core: None,
+            external: None,
             shut_down: false,
         }
+    }
+
+    /// Make `RenderTarget::Surface` draw into a host-owned color `view` (no
+    /// presentation) until [`Self::clear_external_target`]. Lets a host that owns
+    /// its swapchain submit through a [`engine_render::RenderDevice`], keeping its
+    /// validation, frame accounting and deferred destruction. Backends created
+    /// by [`Self::from_context`] have no surface of their own and report
+    /// `surface_presentation` for this purpose.
+    pub fn set_external_target(&mut self, view: wgpu::TextureView, info: RenderTargetInfo) {
+        self.external = Some((view, info));
+    }
+
+    pub fn clear_external_target(&mut self) {
+        self.external = None;
     }
 
     fn ready(&mut self) -> Result<&mut Core> {
@@ -184,9 +202,9 @@ impl RenderBackend for WgpuBackend {
         let core = match self.source.as_ref() {
             Some(Source::Offscreen) => {
                 let gpu = GpuContext::headless_with_options(&self.options).map_err(unavailable)?;
-                Core::new(gpu, None, frames)?
+                Core::new(gpu, None, false, frames)?
             }
-            Some(Source::Context(gpu)) => Core::new(gpu.clone(), None, frames)?,
+            Some(Source::Context(gpu)) => Core::new(gpu.clone(), None, true, frames)?,
             Some(Source::Window { window, size }) => {
                 let instance = GpuContext::instance_with(self.options.backends);
                 let surface = instance
@@ -205,7 +223,7 @@ impl RenderBackend for WgpuBackend {
                     *size,
                     frames.clamp(1, 8),
                 )?;
-                Core::new(gpu, Some(state), frames)?
+                Core::new(gpu, Some(state), false, frames)?
             }
             None => {
                 return Err(RenderError::NotReady(
@@ -254,6 +272,13 @@ impl RenderBackend for WgpuBackend {
     }
 
     fn submit_frame(&mut self, frame: &FrameDesc, draws: &[DrawCommand]) -> Result<FrameOutcome> {
+        if matches!(frame.target, RenderTarget::Surface)
+            && let Some((view, info)) = self.external.clone()
+        {
+            return self
+                .render_to_view(&view, info, frame, draws)
+                .map(FrameOutcome::Rendered);
+        }
         self.ready()?.submit_frame(frame, draws)
     }
 
@@ -275,6 +300,7 @@ impl RenderBackend for WgpuBackend {
         };
         // Dropping the core releases every GPU object; the surface goes before
         // the window it was created from.
+        self.external = None;
         self.core = None;
         self.source = None;
         self.shut_down = true;
@@ -342,7 +368,7 @@ mod tests {
             Err(RenderError::NotReady(_))
         ));
         assert!(matches!(
-            backend.submit_frame(&FrameDesc::new(engine_render::RenderTarget::Surface), &[]),
+            backend.submit_frame(&FrameDesc::new(RenderTarget::Surface), &[]),
             Err(RenderError::NotReady(_))
         ));
         backend.wait_idle().unwrap();
