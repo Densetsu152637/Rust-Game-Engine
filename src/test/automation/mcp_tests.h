@@ -1,6 +1,0 @@
-#pragma once
-
-void test_mcp_stdio_initialization_and_tools_list();
-void test_mcp_stdio_confines_paths_and_bounds_messages();
-void test_mcp_protocol_errors_negotiation_notifications_and_diagnostics();
-void test_mcp_modern_protocol_discovery_tools_and_version_errors();

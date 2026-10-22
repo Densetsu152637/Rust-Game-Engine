@@ -1,1 +1,0 @@
-stb_image v2.30, upstream https://github.com/nothings/stb at commit 2c980bb59875b0d32144a71867fbdebb2f77cd20. PNG-only decoder, MIT license selected (see LICENSE). Local limits and dimension preflight are in src/rendering/content.cpp.
