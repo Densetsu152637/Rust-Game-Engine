@@ -12,6 +12,10 @@ gpu-allocator = { workspace = true }
 naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
 raw-window-handle = { workspace = true }
 
+[dev-dependencies]
+naga = { workspace = true, features = ["wgsl-in", "spv-out", "spv-in"] }
+winit = { workspace = true }
+
 # Unsafe is confined to the Vulkan FFI modules; every other crate keeps the
 # workspace `unsafe_code = "forbid"` policy.
 [lints.rust]
