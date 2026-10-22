@@ -191,6 +191,8 @@ mod tests {
             space: DrawSpace::World,
             clip: None,
             state: DrawState::default(),
+            motion: None,
+            offset: [0.0; 3],
         }
     }
 

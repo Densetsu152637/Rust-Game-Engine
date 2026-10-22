@@ -28,7 +28,7 @@ pub use crate::services::{
     safe_position,
 };
 use render::Content;
-pub use render::{BlendMode, Draw, DrawSpace, DrawState, RenderFrame};
+pub use render::{BlendMode, Draw, DrawMotion, DrawSpace, DrawState, RenderFrame, snap_to_pixels};
 pub use resources::*;
 pub use scene::RuntimeSnapshot;
 use scene::{collision_from_scene, spawn};

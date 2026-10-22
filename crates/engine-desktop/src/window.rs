@@ -8,6 +8,40 @@ use engine_project::runtime::RenderFrame;
 use std::sync::Arc;
 use winit::window::Window;
 
+/// Environment variable that selects the swapchain present mode of window
+/// surfaces: `fifo` (vsync, the default), `mailbox`, `immediate` or `auto`
+/// (the platform's lowest-latency mode, without vsync). Mailbox, immediate and
+/// auto let presentation run faster than the display, which is how to measure
+/// uncapped frame rates on a 60 Hz screen; a mode the surface does not support
+/// falls back to `fifo`.
+pub const PRESENT_MODE_ENV_VAR: &str = "ENGINE_PRESENT_MODE";
+
+/// Pick the present mode for `value` (the content of [`PRESENT_MODE_ENV_VAR`],
+/// unset or blank meaning vsync) among the modes the surface `supported`.
+/// Unknown values are an error listing the accepted ones.
+pub fn resolve_present_mode(
+    value: Option<&str>,
+    supported: &[wgpu::PresentMode],
+) -> Result<wgpu::PresentMode> {
+    let wanted = match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("" | "fifo" | "vsync") => return Ok(wgpu::PresentMode::Fifo),
+        Some("mailbox") => wgpu::PresentMode::Mailbox,
+        Some("immediate") => wgpu::PresentMode::Immediate,
+        Some("auto" | "novsync") => wgpu::PresentMode::AutoNoVsync,
+        Some(other) => bail!(
+            "{PRESENT_MODE_ENV_VAR}={other:?} is not a present mode; \
+             expected fifo, mailbox, immediate or auto"
+        ),
+    };
+    // The auto modes are always available and resolve inside wgpu.
+    let usable = wanted == wgpu::PresentMode::AutoNoVsync || supported.contains(&wanted);
+    Ok(if usable {
+        wanted
+    } else {
+        wgpu::PresentMode::Fifo
+    })
+}
+
 /// Reusable native surface host for games and the editor. Create on the winit
 /// event-loop thread after `resumed`; no platform `any_thread` override is used.
 /// The surface owns an Arc to its window, so handles outlive all GPU references.
@@ -58,7 +92,10 @@ impl WindowSurface {
         if let Some(format) = caps.formats.iter().find(|f| f.is_srgb()) {
             config.format = *format;
         }
-        config.present_mode = wgpu::PresentMode::Fifo;
+        config.present_mode = resolve_present_mode(
+            std::env::var(PRESENT_MODE_ENV_VAR).ok().as_deref(),
+            &caps.present_modes,
+        )?;
         config.desired_maximum_frame_latency = limits.max_frames_in_flight as u32;
         surface.configure(&gpu.device, &config);
         let renderer = GpuRenderer::new(
@@ -146,5 +183,59 @@ impl WindowSurface {
         }
         self.renderer.gpu.check_errors()?;
         Ok(Some(stats))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::PresentMode::*;
+
+    #[test]
+    fn unset_blank_and_vsync_values_use_fifo() {
+        for value in [None, Some(""), Some("  "), Some("fifo"), Some("VSync")] {
+            assert_eq!(resolve_present_mode(value, &[Fifo, Mailbox]).unwrap(), Fifo);
+        }
+    }
+
+    #[test]
+    fn named_modes_are_used_when_the_surface_supports_them() {
+        let supported = [Fifo, Mailbox, Immediate];
+        assert_eq!(
+            resolve_present_mode(Some("Mailbox"), &supported).unwrap(),
+            Mailbox
+        );
+        assert_eq!(
+            resolve_present_mode(Some(" immediate "), &supported).unwrap(),
+            Immediate
+        );
+        assert_eq!(
+            resolve_present_mode(Some("auto"), &[Fifo]).unwrap(),
+            AutoNoVsync
+        );
+    }
+
+    #[test]
+    fn an_unsupported_mode_falls_back_to_fifo() {
+        assert_eq!(
+            resolve_present_mode(Some("mailbox"), &[Fifo]).unwrap(),
+            Fifo
+        );
+        assert_eq!(
+            resolve_present_mode(Some("immediate"), &[Fifo, Mailbox]).unwrap(),
+            Fifo
+        );
+    }
+
+    #[test]
+    fn unknown_values_name_the_variable_and_the_accepted_modes() {
+        let error = resolve_present_mode(Some("turbo"), &[Fifo])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(PRESENT_MODE_ENV_VAR), "{error}");
+        assert!(
+            error.contains("fifo, mailbox, immediate or auto"),
+            "{error}"
+        );
     }
 }

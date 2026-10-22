@@ -25,6 +25,39 @@ impl Default for DrawState {
         }
     }
 }
+/// Round the X and Y of `position` to the pixel grid of `pixels_per_unit`; Z is
+/// untouched. This is the one definition of pixel snapping: extraction snaps a
+/// sprite's baked quad with it and a presenter snaps an interpolated position
+/// with it, so both land on the same grid.
+pub fn snap_to_pixels(mut position: [f32; 3], pixels_per_unit: f32) -> [f32; 3] {
+    for v in &mut position[..2] {
+        *v = (*v * pixels_per_unit).round() / pixels_per_unit;
+    }
+    position
+}
+
+/// Where a draw's entity stood at this tick, kept so a presenter can blend the
+/// last two ticks. Present only on draws whose geometry is the entity's own
+/// placement (sprites and meshes); UI draws never move.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawMotion {
+    /// Entity position this tick, before any pixel snapping.
+    pub position: [f32; 3],
+    /// The mesh was baked at the pixel-snapped X/Y of `position` (a sprite
+    /// under a pixel-snapping camera) rather than at `position` itself.
+    pub pixel_snap: bool,
+}
+impl DrawMotion {
+    /// The position the draw's mesh is baked at.
+    pub fn baked_position(&self, pixels_per_unit: f32) -> [f32; 3] {
+        if self.pixel_snap {
+            snap_to_pixels(self.position, pixels_per_unit)
+        } else {
+            self.position
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Draw {
     pub id: String,
@@ -34,6 +67,14 @@ pub struct Draw {
     pub space: DrawSpace,
     pub clip: Option<[f32; 4]>,
     pub state: DrawState,
+    /// Entity placement for presentation-time interpolation, if the draw moves
+    /// with an entity. Extraction fills it; renderers ignore it.
+    pub motion: Option<DrawMotion>,
+    /// Translation, in world units, applied to the mesh when it is drawn.
+    /// Extraction leaves it zero (the mesh is already in world space); a
+    /// presenter sets it to shift a draw without rebuilding or re-uploading its
+    /// mesh. World-space draws only.
+    pub offset: [f32; 3],
 }
 #[derive(Clone, Debug)]
 pub struct RenderFrame {
@@ -87,15 +128,27 @@ impl Runtime {
         cache.insert(id.into(), (hash, mesh.clone()));
         mesh
     }
-    pub fn extract_frame(&self) -> Result<RenderFrame> {
-        let world = self.app.world();
-        let mut camera = world
+    /// Number of scene transitions so far. A presenter blending two ticks must
+    /// not blend across a change of this value.
+    pub fn scene_revision(&self) -> u64 {
+        self.scene_revision
+    }
+    /// The camera [`Self::extract_frame`] would use, without building draws.
+    pub fn extract_camera(&self) -> Camera2D {
+        let mut camera = self
+            .app
+            .world()
             .iter_entities()
             .find_map(|e| e.get::<Camera2D>().cloned())
             .unwrap_or_default();
         if let Some(position) = camera.follow.as_ref().and_then(|id| self.position(id)) {
             camera.center = [position[0], position[1]];
         }
+        camera
+    }
+    pub fn extract_frame(&self) -> Result<RenderFrame> {
+        let world = self.app.world();
+        let camera = self.extract_camera();
         let mut draws = Vec::new();
         for entity in world.iter_entities() {
             let Some(transform) = entity.get::<Transform>() else {
@@ -127,14 +180,12 @@ impl Runtime {
                 } else {
                     renderer.frames[frame.min(renderer.frames.len() - 1)]
                 };
-                let mut position = transform.position;
-                if camera.pixel_snap {
-                    for v in &mut position[..2] {
-                        *v = (*v * camera.pixels_per_unit).round() / camera.pixels_per_unit;
-                    }
-                }
+                let motion = DrawMotion {
+                    position: transform.position,
+                    pixel_snap: camera.pixel_snap,
+                };
                 let mesh = content::sprite_quad(
-                    position,
+                    motion.baked_position(camera.pixels_per_unit),
                     renderer.size,
                     renderer.pivot,
                     source,
@@ -150,6 +201,8 @@ impl Runtime {
                     space: DrawSpace::World,
                     clip: None,
                     state: DrawState::default(),
+                    motion: Some(motion),
+                    offset: [0.0; 3],
                 });
             }
             if let Some(renderer) = entity.get::<MeshRenderer>() {
@@ -188,6 +241,11 @@ impl Runtime {
                         depth_test: true,
                         depth_write: true,
                     },
+                    motion: Some(DrawMotion {
+                        position: transform.position,
+                        pixel_snap: false,
+                    }),
+                    offset: [0.0; 3],
                 });
             }
         }
@@ -237,6 +295,8 @@ impl Runtime {
                     panel.clip.height,
                 ]),
                 state: DrawState::default(),
+                motion: None,
+                offset: [0.0; 3],
             });
         }
         draws.sort_by(|a, b| {

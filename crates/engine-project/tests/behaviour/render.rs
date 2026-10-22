@@ -389,6 +389,103 @@ fn snapping_applies_to_sprites_not_to_the_camera_center() {
     assert!(near(frame_of(&p.runtime()).camera.center[0], 0.04));
 }
 
+// ---- interpolation hints ------------------------------------------------------------------------------------------
+
+fn motion_of(frame: &RenderFrame, draw: &str) -> engine_project::runtime::DrawMotion {
+    frame
+        .draws
+        .iter()
+        .find(|d| d.id == draw)
+        .unwrap()
+        .motion
+        .unwrap()
+}
+
+#[test]
+fn sprite_draws_carry_the_unsnapped_position_and_bake_the_snapped_one() {
+    let mut p = Proj::new();
+    p.entity("player")["components"]["Transform"]["position"] = json!([0.06, -0.04, 2]);
+    p.entity("camera")["components"]["Camera2D"] = json!({"pixelsPerUnit": 10, "pixelSnap": true});
+    let frame = frame_of(&p.runtime());
+    let motion = motion_of(&frame, "sprite:player");
+    assert_eq!(motion.position, [0.06, -0.04, 2.0]);
+    assert!(motion.pixel_snap);
+    let baked = motion.baked_position(10.0);
+    assert!(near(baked[0], 0.1) && near(baked[1], 0.0) && baked[2] == 2.0);
+    // The mesh really is baked there (quad centred on the snapped position).
+    assert!(near(corner(&frame, "sprite:player", 0)[0], baked[0] - 0.5));
+}
+
+#[test]
+fn without_pixel_snap_the_baked_position_is_the_entity_position() {
+    let mut p = Proj::new();
+    p.entity("player")["components"]["Transform"]["position"] = json!([0.06, 0, 0]);
+    p.entity("camera")["components"]["Camera2D"] = json!({"pixelsPerUnit": 10, "pixelSnap": false});
+    let frame = frame_of(&p.runtime());
+    let motion = motion_of(&frame, "sprite:player");
+    assert!(!motion.pixel_snap);
+    assert_eq!(motion.baked_position(10.0), motion.position);
+}
+
+#[test]
+fn extraction_leaves_draw_offsets_zero_for_every_draw() {
+    let mut rt = meshed(None).runtime();
+    rt.app_mut()
+        .world_mut()
+        .resource_mut::<UiModel>()
+        .open(PanelOptions {
+            id: "hud".into(),
+            font_asset: "font".into(),
+            text: "a".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let frame = frame_of(&rt);
+    assert_eq!(frame.draws.len(), 3);
+    assert!(frame.draws.iter().all(|d| d.offset == [0.0; 3]));
+}
+
+#[test]
+fn mesh_draws_carry_their_position_without_snapping_and_ui_draws_carry_none() {
+    let mut rt = meshed(None).runtime();
+    rt.app_mut()
+        .world_mut()
+        .resource_mut::<UiModel>()
+        .open(PanelOptions {
+            id: "menu".into(),
+            font_asset: "font".into(),
+            text: "a".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let frame = frame_of(&rt);
+    let mesh = motion_of(&frame, "mesh:solid");
+    assert_eq!(mesh.position, [10.0, 20.0, 30.0]);
+    assert!(!mesh.pixel_snap);
+    assert!(ui_draw(&frame).motion.is_none());
+}
+
+#[test]
+fn snap_to_pixels_rounds_x_and_y_only() {
+    let snapped = engine_project::runtime::snap_to_pixels([0.06, -0.06, 0.04], 10.0);
+    assert!(near(snapped[0], 0.1) && near(snapped[1], -0.1));
+    assert_eq!(snapped[2], 0.04);
+}
+
+#[test]
+fn extract_camera_matches_the_frames_camera_including_follow() {
+    let mut p = Proj::new();
+    p.entity("player")["components"]["Transform"]["position"] = json!([3, 4, 0]);
+    p.entity("camera")["components"]["Camera2D"] = json!({"follow": "player"});
+    let rt = p.runtime();
+    let camera = rt.extract_camera();
+    assert_eq!(camera.center, [3.0, 4.0]);
+    let from_frame = frame_of(&rt).camera;
+    assert_eq!(camera.center, from_frame.center);
+    assert_eq!(camera.logical_size, from_frame.logical_size);
+    assert_eq!(camera.pixels_per_unit, from_frame.pixels_per_unit);
+}
+
 // ---- ordering ----------------------------------------------------------------------------------------------------
 
 #[test]

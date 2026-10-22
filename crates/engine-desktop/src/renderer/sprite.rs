@@ -195,9 +195,20 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 cull: engine_render::CullMode::None,
                 scissor: Some(neutral_rect(scissor)),
             };
+            // A presenter-supplied offset shifts the draw through its camera
+            // matrix; offset-free draws share the frame's two camera uniforms.
+            let uniform = if draw.offset == [0.0; 3] {
+                cameras[camera_index].clone()
+            } else {
+                DrawUniform::from_pod(
+                    "camera",
+                    CAMERA_SLOT,
+                    &camera.world_with_offset(draw.offset),
+                )
+            };
             let mut command = DrawCommand::new(self.shader, mesh)
                 .with_state(state)
-                .with_uniform(cameras[camera_index].clone());
+                .with_uniform(uniform);
             command.texture = texture;
             commands.record(command)?;
             // A batch is a run of draws sharing pipeline state, texture, camera
@@ -241,6 +252,12 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 draw.id
             );
             camera.scissor(draw.clip)?;
+            ensure!(
+                draw.offset.iter().all(|x| x.is_finite())
+                    && (draw.space == DrawSpace::World || draw.offset == [0.0; 3]),
+                "draw offset must be finite and only moves world-space draws: {}",
+                draw.id
+            );
             let mesh = &draw.mesh;
             if meshes.insert(address(mesh)) {
                 let bytes = mesh
@@ -392,6 +409,8 @@ mod tests {
             space: DrawSpace::World,
             clip: None,
             state: SpriteState::default(),
+            motion: None,
+            offset: [0.0; 3],
         }
     }
 
@@ -538,6 +557,51 @@ mod tests {
         assert_eq!(recorded[0].uniforms, [(CAMERA_SLOT, bytes(&camera.world))]);
         assert_eq!(recorded[1].uniforms, [(CAMERA_SLOT, bytes(&camera.ui))]);
         assert_eq!(recorded[0].uniforms[0].1.len(), 64);
+    }
+
+    #[test]
+    fn a_draw_offset_shifts_that_draw_through_its_camera_matrix_only() {
+        let (mut renderer, log) = renderer(RenderLimits::default());
+        let atlas = white();
+        let mesh = quad([1.0; 4], 0.5, &atlas);
+        let mut moved = draw("moved", 0, &mesh, None);
+        moved.offset = [2.0, -1.0, 0.0];
+        let still = draw("still", 1, &mesh, None);
+        let stats = renderer
+            .render(&frame(vec![moved, still]), RenderTarget::Surface)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.draws, 2);
+        let recorded = &frames(&log)[0].draws;
+        let camera = CameraView::new(&camera(), 64, 64).unwrap();
+        let bytes = |m: &[f32; 16]| bytemuck::cast_slice::<f32, u8>(m).to_vec();
+        assert_eq!(
+            recorded[0].uniforms,
+            [(
+                CAMERA_SLOT,
+                bytes(&camera.world_with_offset([2.0, -1.0, 0.0]))
+            )]
+        );
+        assert_eq!(recorded[1].uniforms, [(CAMERA_SLOT, bytes(&camera.world))]);
+        assert_eq!(
+            recorded[0].mesh, recorded[1].mesh,
+            "the shared mesh is not re-uploaded or rebuilt"
+        );
+    }
+
+    #[test]
+    fn invalid_draw_offsets_are_rejected_before_anything_is_submitted() {
+        let (mut renderer, log) = renderer(RenderLimits::default());
+        let atlas = white();
+        let mesh = quad([1.0; 4], 0.5, &atlas);
+        let mut infinite = draw("a", 0, &mesh, None);
+        infinite.offset = [f32::INFINITY, 0.0, 0.0];
+        assert!(error(&mut renderer, &frame(vec![infinite])).contains("offset"));
+        let mut ui = draw("b", 0, &mesh, None);
+        ui.space = DrawSpace::Ui;
+        ui.offset = [1.0, 0.0, 0.0];
+        assert!(error(&mut renderer, &frame(vec![ui])).contains("offset"));
+        assert!(frames(&log).is_empty());
     }
 
     #[test]

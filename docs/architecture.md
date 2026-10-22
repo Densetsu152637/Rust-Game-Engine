@@ -142,7 +142,11 @@ registered `NativeScript` callbacks. It also provides:
 `headless: true` runs fixed 1/60-second ticks without a window, GPU, gamepad or
 audio device, which is how tests and the CLI's `--headless` mode run. Visible runs
 create a window, sample keyboard, mouse and gilrs gamepad input, open CPAL audio
-through `engine-audio`, and present real frames. See
+through `engine-audio`, and present real frames. Simulation and presentation are
+decoupled: the runtime always advances in fixed 1/60-second ticks (a capped
+accumulator runs zero, one or a few per redraw), while every display redraw
+presents the last two ticks blended by how far the clock is between them. The
+blend is presentation only and never feeds back into the simulation. See
 [Desktop rendering](desktop-2d-rendering.md) for the render contract and the
 native extension points.
 

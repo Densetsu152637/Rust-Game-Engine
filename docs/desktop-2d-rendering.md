@@ -66,7 +66,12 @@ machine and assert exact, byte-identical pixels. Native render passes and
 Draws hold immutable `Arc<Mesh>` and optional `Arc<Texture>` assets, vertex colours,
 a layer, a stable ID, world or UI space, an optional logical clip, and blend and
 depth state. Mesh positions are already transformed. Texture data is sRGB; vertex
-colours are linear. Sampling is nearest with clamped edges.
+colours are linear. Sampling is nearest with clamped edges. Two fields serve
+presentation interpolation: `motion` (the entity position the mesh was baked
+from; extraction fills it, renderers ignore it) and `offset` (a world-space
+translation the renderer adds to that draw's camera matrix; extraction leaves it
+zero, and non-zero offsets are rejected on UI draws). See
+[Frame pacing and interpolation](#frame-pacing-and-interpolation).
 
 - Draws sort by `(layer, id)`, never by resource address or ECS iteration order;
   duplicate IDs fail validation.
@@ -85,6 +90,83 @@ colours are linear. Sampling is nearest with clamped edges.
 - Resize creates a matching depth target and a zero extent suspends presentation.
   A surface timeout skips the frame, lost or outdated surfaces reconfigure, and
   other device failures end the run with an error.
+
+## Frame pacing and interpolation
+
+The visible runner (`engine_desktop::run`) separates simulation from
+presentation. Headless and deterministic runs (`headless: true`, `--headless`, the
+MCP `project_run_headless` and `render_screenshot` tools) are unchanged: exactly
+`RunOptions::ticks` fixed 1/60-second ticks with the injected input of each tick,
+the same `RunReport`, and screenshots render the current tick with no blending.
+
+**Fixed-step simulation.** `Runtime::tick` always receives `FIXED_DELTA` (1/60 s).
+Each redraw `FramePacer::advance` banks the real time since the previous redraw
+and returns how many ticks to run and an `alpha` in `[0, 1]`:
+
+| Constant | Value | Meaning |
+| --- | --- | --- |
+| `FIXED_DELTA` | 1/60 s | One simulation tick. |
+| `MAX_FRAME_TIME` | 0.25 s | A redraw adds at most this much time (window drag, debugger pause). |
+| `MAX_TICKS_PER_FRAME` | 5 | At most this many ticks per redraw. |
+
+When the cap is hit the excess whole ticks are dropped, keeping only the sub-tick
+remainder, so a slow machine runs slower than real time instead of falling
+further behind (no death spiral), and a stall never fast-forwards the game. A
+display slower than 60 Hz runs several ticks per redraw; a faster one runs a tick
+on some redraws and none on the rest. Non-finite or negative frame times count as
+zero.
+
+**Presentation at the display rate.** Every redraw presents, including those that
+ran no tick, so frames follow the display (vsync, `Fifo`, by default; each
+redraw blocks acquiring the swapchain image, so the loop neither spins nor needs
+a timer). After a tick the runner extracts a `RenderFrame` and keeps the last two
+in `FrameHistory` (only the final two ticks of a multi-tick redraw are
+extracted). The drawn frame is `interpolate_frame(previous, current, alpha)`: the
+simulation clock is `alpha` of the way from the previous tick to the current one,
+so the picture lags the simulation by up to one tick and moves smoothly at any
+refresh rate. The final frame of a bounded run is drawn at `alpha = 1`.
+`ENGINE_PRESENT_MODE=fifo|mailbox|immediate|auto` selects the present mode
+(unsupported modes fall back to `fifo`; the non-vsync modes exist to measure
+frame rates above the display refresh).
+
+**What blends.** Extraction records, per sprite and mesh draw, the entity's
+unsnapped position (`Draw::motion`). Interpolation matches draws by stable ID and
+blends that position, applying the result as `Draw::offset`, a world-space
+translation added to the draw's camera matrix. The mesh is the current tick's
+mesh, never rebuilt, so the GPU copy is reused and blending costs no uploads.
+Consequently:
+
+- Sprite animation frames, UVs and tint are the current tick's. UI draws have no
+  motion and are not interpolated. Native render passes receive the current
+  tick's render world unblended.
+- Pixel snapping applies after the blend: a snapping sprite is drawn at the pixel
+  grid position of the blended position (`snap_to_pixels`, the function
+  extraction uses), so it steps from pixel to pixel. The camera centre blends
+  too, and `CameraView` snaps the blended centre.
+- A draw snaps to the current tick when it cannot be a smooth move: no previous
+  draw with that ID (spawn), a scene transition (`Runtime::scene_revision`
+  changed between the two ticks), a camera projection change, a non-finite
+  position, or a jump of more than one screen (camera logical size over pixels
+  per unit) in one tick, which is treated as a teleport.
+- `alpha = 1` returns the current frame itself, so output is bit-identical to an
+  uninterpolated frame.
+- Interpolation reads two finished frames and produces a third. It never touches
+  the runtime, so simulation, collision, scripts and saves never see a blended
+  value.
+
+**Input across uneven ticks.** Input is sampled by level once per tick and edges
+come from comparing consecutive ticks, so a key held across redraws with no tick,
+or across several ticks in one redraw, presses once (on the first tick) and
+releases once. A tap that begins and ends between two ticks would be invisible to
+level sampling; `PressLatch` remembers key and mouse-button presses until the
+next tick sees them, producing one press and one release. The mouse wheel delta
+goes to the first tick that samples it. Gamepad state is polled per tick (a
+gamepad tap shorter than a tick interval can still be missed).
+
+**While nothing can be shown** (minimized, occluded, or the swapchain yields no
+image), redraws are not requested back to back. The loop waits for the next tick
+deadline and keeps simulating at real-time speed, as before, without presenting;
+the first successful present resumes display-rate redraws.
 
 ## Native extensions
 
@@ -114,6 +196,15 @@ cargo test -p engine-desktop --test gpu_pixels -- --ignored --nocapture
 cargo test -p engine-desktop --test backend_parity -- --ignored --nocapture
 cargo test -p engine-render-wgpu -- --ignored --nocapture
 ```
+
+Frame pacing (`FramePacer`: exact multiples, fractional accumulation, the tick
+cap and debt dropping, huge stalls, zero-length frames), interpolation (blend,
+snap on a missing previous draw, scene change, teleport, pixel snap after the
+blend, `alpha = 1` equivalence), the input latch (edges across zero, one and many
+ticks per redraw) and the offset-through-matrix submission are pure and covered
+by headless unit and `interpolated_presentation` tests. `gpu_pixels` has an
+ignored test proving an interpolated sprite draws the same pixels as one baked
+at the blended position.
 
 `backend_parity` has deterministic tests that assert the recorded command stream
 without a GPU, and ignored tests that render the same scenes on each wgpu API

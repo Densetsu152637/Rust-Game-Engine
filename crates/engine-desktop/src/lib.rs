@@ -12,6 +12,10 @@
 //!   [`run`] loop. `ENGINE_RENDER_BACKEND=primary|vulkan|dx12|metal|gl|all`
 //!   picks the wgpu graphics API.
 //!
+//! The windowed [`run`] loop steps the simulation at a fixed rate and presents
+//! once per redraw at the display rate, blending the last two ticks
+//! ([`FramePacer`], [`FrameHistory`], [`interpolate_frame`]).
+//!
 //! Games compile into the host executable and use this exact `wgpu` type universe.
 //! Register [`NativeRenderPass`] implementations in [`NativeRenderPasses`] before
 //! launching the runner, or construct [`GpuRenderer`] directly for another host.
@@ -19,6 +23,8 @@
 mod backend;
 mod camera;
 mod input;
+mod interpolation;
+mod pacing;
 mod passes;
 mod renderer;
 mod runner;
@@ -33,6 +39,8 @@ pub use engine_render_wgpu::{
     WgpuBackends, WgpuOptions,
 };
 pub use input::key_token;
+pub use interpolation::*;
+pub use pacing::*;
 pub use passes::*;
 pub use renderer::*;
 pub use runner::*;

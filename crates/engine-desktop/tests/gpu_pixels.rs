@@ -5,7 +5,7 @@ use engine_desktop::*;
 use engine_project::{
     Camera2D,
     content::{FontAtlas, FontGlyph, Texture, sprite_quad, text_mesh},
-    runtime::{BlendMode, Draw, DrawSpace, DrawState, RenderFrame},
+    runtime::{BlendMode, Draw, DrawMotion, DrawSpace, DrawState, RenderFrame},
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -76,6 +76,8 @@ fn textured_sprite_font_cache_order_clip_resize_and_limits() -> anyhow::Result<(
             space: DrawSpace::World,
             clip: None,
             state: DrawState::default(),
+            motion: None,
+            offset: [0.0; 3],
         }],
     };
     let first = renderer.render(&frame, &target.view, None)?;
@@ -131,6 +133,8 @@ fn textured_sprite_font_cache_order_clip_resize_and_limits() -> anyhow::Result<(
         space: DrawSpace::Ui,
         clip: Some([4.0, 4.0, 10.0, 8.0]),
         state: DrawState::default(),
+        motion: None,
+        offset: [0.0; 3],
     });
     let updated = renderer.render(&frame, &target.view, None)?;
     let pixels = target.read_rgba(&renderer.gpu)?;
@@ -176,6 +180,74 @@ fn textured_sprite_font_cache_order_clip_resize_and_limits() -> anyhow::Result<(
     Ok(())
 }
 
+#[test]
+#[ignore = "requires a real native wgpu adapter"]
+fn an_interpolated_sprite_renders_the_same_pixels_as_one_baked_at_the_blended_position()
+-> anyhow::Result<()> {
+    let gpu = pollster::block_on(GpuContext::headless())?;
+    let target = OffscreenTarget::new(&gpu, 64, 64)?;
+    let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default())?;
+    let atlas = Arc::new(Texture {
+        width: 2,
+        height: 2,
+        pixels: vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ],
+    });
+    // ppu 1, pixel snap on: a sprite at x = 4.4 draws at the pixel grid's 4.0.
+    let sprite = |x: f32| -> anyhow::Result<Draw> {
+        let motion = DrawMotion {
+            position: [x, 0.0, 0.0],
+            pixel_snap: true,
+        };
+        Ok(Draw {
+            id: "sprite:a".into(),
+            mesh: Arc::new(sprite_quad(
+                motion.baked_position(1.0),
+                [16.0, 16.0],
+                [0.5, 0.5],
+                [0, 0, 2, 2],
+                &atlas,
+                [1.0; 4],
+            )?),
+            texture: Some(atlas.clone()),
+            layer: 0,
+            space: DrawSpace::World,
+            clip: None,
+            state: DrawState::default(),
+            motion: Some(motion),
+            offset: [0.0; 3],
+        })
+    };
+    let frame = |draw| RenderFrame {
+        camera: camera(),
+        draws: vec![draw],
+    };
+    let previous = frame(sprite(0.0)?);
+    let current = frame(sprite(8.8)?);
+    let blended = interpolate_frame(&previous, &current, 0.5);
+    renderer.render(&blended, &target.view, None)?;
+    let interpolated = target.read_rgba(&renderer.gpu)?;
+    // The reference sprite sits exactly where the blend snaps to, no offset.
+    let mut reference = frame(sprite(4.0)?);
+    reference.draws[0].motion = None;
+    renderer.render(&reference, &target.view, None)?;
+    let baked = target.read_rgba(&renderer.gpu)?;
+    assert_eq!(interpolated, baked);
+    // And it really moved: not where the current tick's mesh was baked (x = 9).
+    renderer.render(&current, &target.view, None)?;
+    assert_ne!(interpolated, target.read_rgba(&renderer.gpu)?);
+    save_evidence("interpolated-sprite.png", &interpolated, 64, 64)?;
+    // alpha = 1 is the current frame, pixel for pixel.
+    let at_one = interpolate_frame(&previous, &current, 1.0);
+    renderer.render(&at_one, &target.view, None)?;
+    let one = target.read_rgba(&renderer.gpu)?;
+    renderer.render(&current, &target.view, None)?;
+    assert_eq!(one, target.read_rgba(&renderer.gpu)?);
+    renderer.gpu.wait_idle()?;
+    Ok(())
+}
+
 struct CustomTriangle {
     pipeline: Option<wgpu::RenderPipeline>,
 }
@@ -212,6 +284,8 @@ fn depth_and_straight_alpha_are_distinct_draw_states() -> anyhow::Result<()> {
             space: DrawSpace::World,
             clip: None,
             state,
+            motion: None,
+            offset: [0.0; 3],
         })
     };
     let mut frame = RenderFrame {

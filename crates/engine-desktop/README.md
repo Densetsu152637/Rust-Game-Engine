@@ -21,6 +21,23 @@ a matching depth target; zero extent suspends presentation. Surface timeout skip
 a frame, lost/outdated surfaces reconfigure, and other device failures terminate
 with an error. Native runs respect the same tick bound as headless runs.
 
+## Frame pacing
+
+Native runs step the simulation and present the window independently. The
+runtime still receives fixed 1/60-second ticks (`FIXED_DELTA`); a `FramePacer`
+accumulator runs the ticks the elapsed real time buys (none, one or several per
+redraw, at most `MAX_TICKS_PER_FRAME` = 5, with a single redraw adding at most
+`MAX_FRAME_TIME` = 0.25 s and excess backlog dropped so there is no catch-up
+spiral). Every redraw presents, at the display rate, the blend of the last two
+ticks' `RenderFrame`s (`FrameHistory`, `interpolate_frame`): sprite and mesh
+positions and the camera centre are blended and pixel-snapped after the blend,
+while animation frames, UI and native render passes use the current tick.
+Spawns, scene changes, projection changes and teleports snap rather than smear.
+The blend never reaches the simulation, and headless runs, screenshots and
+`RunReport` are unchanged. A key tap shorter than the gap between two ticks still
+produces one press and one release (`PressLatch`). `ENGINE_PRESENT_MODE` selects
+the present mode (default vsync). Details: [Desktop rendering](../../docs/desktop-2d-rendering.md#frame-pacing-and-interpolation).
+
 ## Render backends
 
 Graphics are split across two crates plus this host:
@@ -118,7 +135,11 @@ cargo clippy -p engine-desktop --all-targets -- -D warnings
 cargo run -p engine-desktop --example desktop_smoke -- --headless
 cargo run -p engine-desktop --example desktop_smoke
 ENGINE_RENDER_BACKEND=dx12 cargo run -p engine-desktop --example desktop_smoke
+ENGINE_PRESENT_MODE=immediate cargo run -p engine-desktop --release --example desktop_smoke -- --ticks 300
 ```
+
+The smoke prints the fixed-tick rate (about 60 per second) and the presented
+frame rate (the display refresh with vsync; far higher with `immediate`).
 
 The GPU tests are explicitly ignored in ordinary headless test runs. The explicit
 GPU command fails if a working adapter is absent; it never substitutes a no-op
