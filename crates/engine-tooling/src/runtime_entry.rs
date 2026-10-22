@@ -1,9 +1,10 @@
 //! Entry point linked into a native gameplay generation. The callback is a real
 //! Rust function operating on the same public ECS/world types as the engine.
-use crate::arguments::{parse_run, validate_actions};
+use crate::arguments::{RunArguments, parse_run, validate_actions};
 use engine_core::{EngineApp, Result};
 use engine_desktop::RunOptions;
 use engine_project::{Project, Runtime, Scene};
+use image::ImageEncoder;
 use serde_json::json;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -60,7 +61,7 @@ pub fn run(configure: fn(&mut EngineApp) -> Result<()>) -> i32 {
     }
 }
 
-fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<engine_desktop::RunReport> {
+fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Value> {
     let arguments = parse_run(&std::env::args_os().skip(1).collect::<Vec<_>>())?;
     let mut project = Project::load(&arguments.manifest)?;
     validate_actions(&project, &arguments)?;
@@ -70,7 +71,10 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<engine_desktop
     let mut runtime = Runtime::new(project)?;
     configure(runtime.app_mut())?;
     let monitor = StopMonitor::new();
-    engine_desktop::run(
+    if let Some(path) = arguments.screenshot.clone() {
+        return screenshot(runtime, &arguments, &path, &monitor.shutdown);
+    }
+    let report = engine_desktop::run(
         runtime,
         RunOptions {
             headless: arguments.headless,
@@ -79,7 +83,102 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<engine_desktop
             user_data: arguments.user_data,
             shutdown: Some(monitor.shutdown.clone()),
         },
-    )
+    )?;
+    Ok(serde_json::to_value(report)?)
+}
+
+/// Runs the fixed-tick headless simulation (including scripted input, offline
+/// audio and the optional user-data root), then renders the final frame to a PNG
+/// through an offscreen GPU target. The report is the normal run report plus a
+/// `screenshot` object. No GPU adapter yields the diagnostic
+/// `render.gpu.unavailable`.
+fn screenshot(
+    mut runtime: Runtime,
+    arguments: &RunArguments,
+    path: &Path,
+    shutdown: &AtomicBool,
+) -> Result<serde_json::Value> {
+    use engine_desktop::{
+        FIXED_DELTA, GpuContext, GpuRenderer, GpuRequirements, NativeRenderPasses, OffscreenTarget,
+        RenderLimits,
+    };
+    use engine_project::input::merge_input;
+    let [width, height] = arguments.screenshot_size;
+    if let Some(root) = &arguments.user_data {
+        runtime.set_user_data_root(root.clone())?;
+    }
+    let mut audio = engine_audio::AudioEngine::offline(engine_audio::AudioConfig::default())?;
+    runtime.set_audio(audio.control())?;
+    runtime.start()?;
+    let result = (|| -> Result<serde_json::Value> {
+        let mut previous = std::collections::BTreeSet::new();
+        let mut ticks = 0_u64;
+        let mut mixed = [0.0_f32; 1600];
+        for tick in 0..arguments.ticks {
+            if shutdown.load(Ordering::Acquire) || runtime.app().stop_requested() {
+                break;
+            }
+            let actions = arguments.inputs.get(&tick).cloned().unwrap_or_default();
+            let input = merge_input(&Default::default(), &actions, &mut previous);
+            runtime.tick(FIXED_DELTA as f32, input)?;
+            audio.mix(&mut mixed)?;
+            ticks += 1;
+        }
+        let frame = runtime.extract_frame()?;
+        let requirements = runtime
+            .app_mut()
+            .world_mut()
+            .remove_resource::<GpuRequirements>()
+            .unwrap_or_default();
+        let passes = runtime
+            .app_mut()
+            .world_mut()
+            .remove_resource::<NativeRenderPasses>()
+            .unwrap_or_default();
+        let gpu = pollster::block_on(GpuContext::request_with_requirements(
+            GpuContext::instance(),
+            None,
+            requirements,
+        ))
+        .map_err(|error| {
+            engine_project::Error::new(
+                "render.gpu.unavailable",
+                format!("No usable GPU adapter for an offscreen render: {error:#}"),
+            )
+        })?;
+        let info = gpu.adapter.get_info();
+        let adapter = json!({
+            "name": info.name,
+            "backend": format!("{:?}", info.backend),
+            "device_type": format!("{:?}", info.device_type),
+        });
+        let target = OffscreenTarget::new(&gpu, width, height)?;
+        let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default())?;
+        renderer.set_passes(passes)?;
+        renderer.render(&frame, &target.view, Some(runtime.app().render_world()))?;
+        let pixels = target.read_rgba(&renderer.gpu)?;
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png).write_image(
+            &pixels,
+            width,
+            height,
+            image::ExtendedColorType::Rgba8,
+        )?;
+        std::fs::write(path, &png)?;
+        Ok(json!({"width": width, "height": height, "bytes": png.len(),
+            "path": path, "adapter": adapter, "ticks": ticks}))
+    })();
+    let cleanup = runtime.stop();
+    audio.shutdown();
+    let shot = result?;
+    cleanup?;
+    Ok(json!({
+        "ticks": shot["ticks"],
+        "fixed_delta": FIXED_DELTA,
+        "scene": runtime.snapshot(),
+        "presented_frames": 0,
+        "screenshot": shot,
+    }))
 }
 
 /// Editor play supplies a validated scene snapshot while retaining the original

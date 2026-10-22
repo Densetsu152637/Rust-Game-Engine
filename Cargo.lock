@@ -909,11 +909,15 @@ dependencies = [
 name = "engine-tooling"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "engine-audio",
  "engine-core",
  "engine-desktop",
  "engine-editor",
  "engine-mcp",
  "engine-project",
+ "image",
+ "pollster",
  "process-wrap",
  "serde",
  "serde_json",
