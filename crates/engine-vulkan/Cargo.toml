@@ -1,0 +1,21 @@
+[package]
+name = "engine-vulkan"
+version = "0.1.0"
+edition = "2024"
+description = "Native Vulkan implementation of the engine-render backend trait, built on ash."
+
+[dependencies]
+ash = { workspace = true }
+ash-window = { workspace = true }
+engine-render = { workspace = true }
+gpu-allocator = { workspace = true }
+naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
+raw-window-handle = { workspace = true }
+
+# Unsafe is confined to the Vulkan FFI modules; every other crate keeps the
+# workspace `unsafe_code = "forbid"` policy.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "warn"
