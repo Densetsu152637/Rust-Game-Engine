@@ -334,7 +334,7 @@ pub fn text_mesh(
             .take_while(|c| !c.is_whitespace())
             .map(|c| font.glyph(c).advance * scale)
             .sum();
-        if wrap_width > 0.0 && x > origin[0] && x + width > origin[0] + wrap_width {
+        if wrap_width > 0.0 && width > 0.0 && x > origin[0] && x + width > origin[0] + wrap_width {
             x = origin[0];
             y += font.line_height * scale;
         }
@@ -349,7 +349,12 @@ pub fn text_mesh(
             }
             let glyph = font.glyph(c);
             let advance = glyph.advance * scale;
-            if wrap_width > 0.0 && x > origin[0] && x + advance > origin[0] + wrap_width {
+            // Whitespace hangs past the wrap column; the following word wraps instead.
+            if wrap_width > 0.0
+                && !c.is_whitespace()
+                && x > origin[0]
+                && x + advance > origin[0] + wrap_width
+            {
                 x = origin[0];
                 y += font.line_height * scale;
             }
@@ -428,4 +433,61 @@ pub fn logical_pointer(
         (pointer[0] * framebuffer[0] as f32 / window[0] as f32 - viewport.x) / viewport.scale,
         (pointer[1] * framebuffer[1] as f32 / window[1] as f32 - viewport.y) / viewport.scale,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn font() -> FontAtlas {
+        let glyph = |source, advance| FontGlyph {
+            source,
+            advance,
+            bearing: [0.0; 2],
+        };
+        FontAtlas {
+            texture: "t".into(),
+            line_height: 5.0,
+            fallback: 97,
+            glyphs: BTreeMap::from([
+                (97, glyph([0, 0, 2, 2], 3.0)),
+                (32, glyph([0, 0, 0, 0], 2.0)),
+            ]),
+        }
+    }
+
+    fn texture() -> Texture {
+        Texture {
+            width: 4,
+            height: 4,
+            pixels: vec![255; 64],
+        }
+    }
+
+    /// Top edge of every glyph quad, in layout order.
+    fn tops(mesh: &Mesh) -> Vec<f32> {
+        mesh.vertices
+            .chunks(4)
+            .map(|quad| quad[3].position[1])
+            .collect()
+    }
+
+    #[test]
+    fn overflowing_trailing_space_hangs_instead_of_creating_a_blank_line() {
+        // "aa" is 6 wide; the space would end at 8 > 7 but must stay on the line.
+        let mesh = text_mesh(&font(), &texture(), "aa aa", [0.0; 2], 7.0, 1.0, [1.0; 4]).unwrap();
+        assert_eq!(tops(&mesh), vec![0.0, 0.0, 5.0, 5.0]);
+    }
+
+    #[test]
+    fn spaces_that_fit_do_not_change_wrapping() {
+        let mesh = text_mesh(&font(), &texture(), "aa aa", [0.0; 2], 9.0, 1.0, [1.0; 4]).unwrap();
+        assert_eq!(tops(&mesh), vec![0.0, 0.0, 5.0, 5.0]);
+    }
+
+    #[test]
+    fn explicit_newlines_still_start_a_new_line_after_an_overflowing_space() {
+        let mesh = text_mesh(&font(), &texture(), "aa \naa", [0.0; 2], 7.0, 1.0, [1.0; 4]).unwrap();
+        assert_eq!(tops(&mesh), vec![0.0, 0.0, 5.0, 5.0]);
+    }
 }
