@@ -1,26 +1,27 @@
 {
   "schema": 1,
+  "rust": { "manifest": "Cargo.toml" },
   "name": "Desktop 2D synthetic lab",
   "startup_scene": "scenes/test-new-female.scene.json",
   "assets": [
     {
       "id": "asset:player",
-      "path": "scripts/player.lua",
+      "path": "src/player.rs",
       "kind": "script"
     },
     {
       "id": "asset:controller",
-      "path": "scripts/controller.lua",
+      "path": "src/controller.rs",
       "kind": "script"
     },
     {
       "id": "asset:progression",
-      "path": "scripts/progression.lua",
+      "path": "src/progression.rs",
       "kind": "script"
     },
     {
       "id": "asset:bindings",
-      "path": "scripts/bindings.lua",
+      "path": "src/bindings.rs",
       "kind": "script"
     },
     {
@@ -60,22 +61,22 @@
     },
     {
       "id": "asset:test-new-male",
-      "path": "scripts/test-new-male.lua",
+      "path": "src/test-new-male.rs",
       "kind": "script"
     },
     {
       "id": "asset:test-new-female",
-      "path": "scripts/test-new-female.lua",
+      "path": "src/test-new-female.rs",
       "kind": "script"
     },
     {
       "id": "asset:test-restore-male",
-      "path": "scripts/test-restore-male.lua",
+      "path": "src/test-restore-male.rs",
       "kind": "script"
     },
     {
       "id": "asset:test-restore-female",
-      "path": "scripts/test-restore-female.lua",
+      "path": "src/test-restore-female.rs",
       "kind": "script"
     }
   ],

@@ -1,9 +1,10 @@
 {
   "schema": 1,
+  "rust": { "manifest": "Cargo.toml" },
   "name": "First Project",
   "inputActions": { "move_right": "Right" },
   "assets": [
-    { "id": "asset:player-script", "path": "scripts/player.lua", "kind": "script" },
+    { "id": "asset:player-script", "path": "src/lib.rs", "kind": "script" },
     { "id": "asset:player-mesh", "path": "assets/player.mesh", "kind": "mesh" },
     { "id": "asset:player-texture", "path": "assets/player.ppm", "kind": "texture" }
   ],

@@ -1,177 +1,119 @@
 # Desktop 2D synthetic lab
 
-This engine example demonstrates desktop host capabilities using original test
-art, glyphs and sine tones. It is not an authored Unsealed game, Bible edition,
-story scene, approved combat format or production resolution. Male and female
-are placeholder variant IDs with the same shared route. Developer passage A is
-original test text; no scripture is included.
+This native Rust example demonstrates engine desktop capabilities with original
+fixture artwork, glyphs and sine tones. It is not Unsealed narrative or production
+gameplay. Male/female are placeholder IDs sharing the same route. Developer passage
+A is original test text; no scripture is included. Existing scenes, input mappings,
+asset IDs, textures, font metrics and PCM16 tones are retained.
 
-The runtime needs the desktop extensions documented in
-[Lua scripting](../../docs/scripting.md),
-[desktop rendering](../../docs/desktop-2d-rendering.md),
-[input/UI](../../docs/desktop-input-ui.md), and
-[project format](../../docs/project-format.md). Older schema-1 engines lacking
-SpriteRenderer, Camera2D, Collider2D, font/audio/scene assets and inputBindings
-can run only the pure progression/declaration fixtures below.
+The adjacent standalone Cargo crate exports configure(&mut EngineApp). It registers
+native script factories by the same authored asset IDs used by the scenes.
+progression.rs is game-owned pure progression; controller.rs connects it to the
+engine's public collision, trigger, UI, persistence, audio and scene APIs. It does
+not reproduce engine service implementations. No Lua remains; active manifests
+reference Rust sources only.
 
-## Launch and controls
+The crate is its own Cargo workspace root (empty [workspace] table), so the engine
+workspace does not build it and its Cargo.lock/target are generated locally and
+ignored by examples/.gitignore. Engine crates are path dependencies; serde and
+tempfile are pinned exactly.
 
-From the engine repository, using a built Vulkan runtime and shader directory:
+## Run and verify
 
-```powershell
-& ./build/debug-vk1/bin/CPPGameEngine.exe run ./examples/desktop-2d/project.json --ticks 36000 --user-data ./build/desktop-example-user --shaders ./build/debug-vk1/shaders
-```
+From the repository root:
 
-The user-data directory contains player saves and settings separately from the
-read-only authored example. Reuse it to load a previous session; choose a fresh
-directory for a separate experiment. The runtime starts a new session; L loads
-the saved progression deliberately. Persisted bindings/audio apply at startup.
+    cargo test --manifest-path examples/desktop-2d/Cargo.toml
+    cargo fmt --check --manifest-path examples/desktop-2d/Cargo.toml
+    cargo clippy --manifest-path examples/desktop-2d/Cargo.toml --all-targets -- -D warnings
+    python examples/desktop-2d/tools/validate_fixture.py
+    cargo run -p engine-cli -- run examples/desktop-2d/project.json --ticks 36000 --user-data build/desktop-example-user
 
-| Action | Keyboard / pointer | Standard gamepad |
+The native compiler entry uses the manifest's rust.manifest Cargo.toml. First native
+compilation may take minutes. After the engine CLI is built, the end-to-end runner
+also verifies its compilation/launch/JSON contract and retains stdout/stderr:
+
+    python examples/desktop-2d/tools/run_walkthrough.py --engine PATH_TO_ENGINE --artifacts build/desktop-example-check --timeout 600
+
+Use a fresh artifacts directory for each independent new walkthrough. The Rust
+integration suite runs each male/female new session and restore session in separate
+processes with isolated repository-local temporary user-data directories. A negative
+fixture omits ui_confirm:6 and must fail, so reaching the tick limit is insufficient.
+The driver binary lab-walkthrough uses the same configure function and scripts as
+native visible play; it calls real Runtime services and mixes audio offline.
+
+The walkthrough checks locked text concealment, solid sweep contacts, stable trigger
+overlaps/events, modal input masking and release quarantine, selection/confirm/cancel,
+premature and duplicate quest awards, midquest durable save/read, reward provenance,
+scene cancellation without healing, ordinary defeat, three seconds of fixed update
+time before exactly one authored healing, complete rebindings/settings, room
+transitions with followers, missing-scene rejection, and teardown without audio
+voices. Both restore processes verify room B, exact position (3.25,-2.25), accepted
+choice 2, one healing completion, and both quest/story passage provenance before
+applying the saved position in the accepted destination room.
+
+Native traversal retains the player's Entity and script instance. The controller
+observes accepted room changes, reloads its display/music lifecycle from shared
+GameState and applies pending saved placement only in the target room. Saved data
+uses stable authored IDs, never transient ECS handles. Progress version 1 migrates
+to version 2, including legacy boolean-ID maps; unsupported versions, unknown passage
+IDs and malformed coordinates/choices reject. Mutation is game-owned typed state;
+progress publication validates its serializable snapshot through the engine store.
+
+## Automated coverage
+
+All tests are headless and need no window, GPU or audio device. src/progression.rs
+unit tests cover the quest/reward/story/defeat/healing state machine, idempotence,
+provenance, version-1 migration, legacy boolean-ID maps and rejection of unsupported
+versions, unknown IDs and malformed checkpoints. tests/gameplay.rs drives the real
+Runtime with injected actions: no-input, cardinal, opposite and normalized diagonal
+movement at 3 units/s, analog scaling, preserved Z, determinism, solid sweeps, modal
+and authored-scene input locks, followers, dialogue/quest/variant flows, the full
+cross-room quest route, ordinary defeat versus the three-second authored healing,
+new-game, save/restore (new then load in a second runtime lifetime), corrupt-save and
+unsafe-position refusal, rebinding persistence and offline audio ownership.
+tests/walkthrough.rs runs the lab-walkthrough driver in separate processes for
+new/restore of both variants plus negative fixtures.
+
+## Controls and manual walkthrough
+
+| Action | Keyboard / pointer | Gamepad |
 | --- | --- | --- |
-| Move | WASD or arrows | Left stick |
-| Inspect nearby marker | E; Q after F remap | A |
-| Open/reopen developer page | J | Y |
-| Rest/save at green marker | R or inspect | X or A |
-| Load last successful save | L | Back |
-| New session | N | — |
-| Choose placeholder variant | P | — |
-| Developer story reveal | T | — |
-| Authored injury/descent demo | H | — |
-| Ordinary defeat/retry demo | B | — |
-| Save complete action map with interact remapped to Q | F | — |
-| Mute/unmute mixer | M | — |
+| Move | WASD / arrows | Left stick |
+| Inspect marker | E; Q after F remap | A |
+| Open developer page | J | Y |
+| Rest/save at green marker | R / inspect | X / A |
+| Load save / new session | L / N | Back / none |
+| Choose placeholder variant | P | none |
+| Developer story reveal / injury / defeat | T / H / B | none |
+| Save remapping / mute | F / M | none |
 | Confirm / back | Enter / Escape | A / B |
-| Choice navigation / page scrolling | Up/Down; wheel over panel | Dpad Up/Down |
-| Choose focused UI row | Left click | — |
+| UI selection / scroll | Up/Down, wheel, click | Dpad |
 
-Key sharing between movement and UI is intentional: modal capture and release
-quarantine prevent movement or repeated interaction beneath an overlay. Return
-focus after releasing a held physical control. A disconnected/reconnected pad
-must likewise return to neutral before acting.
+Move against borders and the raised obstacle. Inspect the yellow marker for locked
+text, reveal it with T, then scroll the original long page including Ω and 十.
+Accept the orange marker quest, visit the lower objective in room B, return and
+record its reward. Rest at the green marker; success displays SAVE CONFIRMED and
+plays a cue only after durable write success. Failure displays SAVE FAILED.
+Restart and press L to restore room/position/choice/progression. H starts a
+cancellable three-second descent; Escape cancels without healing, B ordinary
+defeat never heals, and completing H again cannot duplicate its award/followers.
+F saves a complete map with inspect on Q, music .25 and reduced motion; M mutes.
 
-## Manual walkthrough
+Inspect UI glyphs, text focus, clipping and scaling at small windows. Resize,
+minimize/restore, release held controls before returning focus and neutralize a
+reconnected gamepad. These native-device/visual journeys and subjective audio
+remain manual acceptance work; headless tests do not establish them.
 
-1. The cyan player starts at the left. Move against room borders and the raised
-   obstacle: solid sweeps stop motion. Two white birds follow without blocking
-   the player. The camera follows on the 16-pixels-per-unit grid.
-2. Inspect the yellow page marker at (-2,0). It initially shows UNREVEALED and
-   a locked placeholder only. Dismiss and reopen it; confirm must not move the
-   player or activate the marker underneath. T reveals original test text.
-   Scroll the long page, including the explicit Ω and 十 glyphs.
-3. Inspect the orange quest marker at (2,0), accept, then inspect the right blue
-   exit at (6,0). In room B inspect the lower blue objective at (1,-2). Return
-   through the exit and inspect the quest marker again. Reward delivery is
-   repeatable safely: one passage ID retains both quest and developer story
-   provenance. Choosing either placeholder variant preserves this route.
-4. Reach the green rest marker at (-4,2). Rest gathers the birds, and a successful
-   durable write produces explicit SAVE CONFIRMED and a cue. A failure shows
-   SAVE FAILED and does not play the success cue. Quit/restart and press L:
-   the room, exact safe saved position, accepted choice, quest, reveal IDs and provenance return.
-5. H runs a cancellable developer injury/descent. Escape restores control with
-   no healing award; waiting three seconds completes the event once. B ordinary
-   defeat enters retry state and cannot grant authored healing. Replaying H
-   after completion cannot spawn extra followers or repeat completion.
-6. F saves a full binding map with E changed to Q plus separate mixer/comfort
-   settings. Restart with the same directory: Q remains inspect, music gain
-   remains .25, and reduced motion holds sprite/glow frames still. This setting
-   also makes authored descent stationary while preserving the completion
-   interval. M allows the entire walkthrough with sound muted.
-7. Resize and minimize/restore the window. At framebuffer sizes at least
-   320x180, use integer viewport scaling and centered letterboxes. Smaller
-   framebuffers use a fractional fit; pixel-perfect output is not claimed.
-   Text uses a separate logical UI camera; inspect long pages and visible focus
-   at the smallest target window.
+## Assets and evidence boundaries
 
-Rooms use stable object/entity IDs; opaque runtime handles are never serialized.
-Follower doves (actor:dove1/2) and the one hidden scene dove have separate owners.
-Scene controls are locked with an explicit key and released on completion,
-cancellation and teardown. Room loops stop in on_destroy and restart only in
-the accepted room's first update. All irreversible services are deferred until
-on_update so candidate on_create validation cannot play/save external effects.
+assets/provenance.json records original fixture files. tools/generate_assets.py
+reproduces sprite/font PNG and WAV content with Python's standard library. The
+font covers printable ASCII, Ω and 十; it is not a universal font. Static checks
+verify paths, stable references, atlas bounds, PNG CRC/alpha and PCM16 headers.
+All fixture assets and Rust game code use the engine's MIT license.
 
-## Automated acceptance
-
-Python 3 standard library is an authoring/test convenience, not a build or
-runtime dependency. Run static checks and the full engine integration runner:
-
-```powershell
-python ./examples/desktop-2d/tools/validate_fixture.py
-python ./examples/desktop-2d/tools/run_walkthrough.py --engine ./build/debug-vk0/bin/CPPGameEngine.exe --artifacts ./build/desktop-example-check-001
-```
-
-Choose a fresh artifacts directory per independent new walkthrough. The runner
-starts both male/female fixture variants and a separate restore process for each,
-reusing only that variant's user-data directory. It checks exit status, parsed
-JSON ok and assertion markers, retaining stdout JSON and stderr logs. Running
-from the executable directory also checks project paths independent of cwd.
-
-The exact new-game commands emitted by the runner are:
-
-```powershell
-& ./build/debug-vk0/bin/CPPGameEngine.exe run ./examples/desktop-2d/project-test-new-male.json --headless --ticks 360 --user-data ./build/check-male --input move_right:5 --input ui_confirm:6 --input interact:6 --input ui_down:8 --input ui_confirm:9 --input ui_back:16 --input ui_back:18
-& ./build/debug-vk0/bin/CPPGameEngine.exe run ./examples/desktop-2d/project-test-restore-male.json --headless --ticks 120 --user-data ./build/check-male
-```
-
-Repeat with female manifests and a separate check-female directory. Successful
-new/restore runs log DESKTOP2D_WALKTHROUGH_PASS:<variant> and
-DESKTOP2D_RESTART_PASS:<variant>. The restore script additionally reports
-DESKTOP2D_RESTART_RESTORE_PASS immediately after verifying on-disk data/settings.
-A missing injected UI action fails the corresponding assertion and faults the
-session; merely reaching the tick limit is insufficient.
-
-The final durable checkpoint deliberately uses nondefault room B, position
-(3.25,-2.25), and accepted choice 2. Restore asserts the on-disk values before
-changing state, queues B from the A startup room, then verifies the accepted
-room, exact applied position, and choice on subsequent ticks. Position application
-runs only in the accepted target scene; a blocked saved position is rejected
-with visible feedback rather than silently moving to a different checkpoint.
-
-The headless controller checks real movement through a solid sweep, stable
-trigger overlaps/events, modal masking of an injected move, confirm/selection/
-cancel UI events, early reward rejection, duplicate acceptance/rewards, midquest
-save/read, shared reward provenance, scene cancellation, ordinary defeat,
-three seconds of actual on_update timing with no early healing and exactly
-one completion, full settings/rebind persistence, two room transitions,
-missing scene rejection and progress preservation across separate processes.
-The new fixture does not overwrite an existing save automatically except during
-its deliberately isolated scripted walkthrough.
-
-The pure progression suite covers both variants, objectives observed before
-acceptance, idempotent rewards and provenance, locked text concealment, explicit
-v1-to-v2 snapshot migration, and rejection of newer schemas/unknown passage IDs.
-It can run on the older runtime:
-
-```powershell
-python ./examples/desktop-2d/tools/run_walkthrough.py --engine ./build/debug-vk0/bin/CPPGameEngine.exe --pure-only --artifacts ./build/desktop-example-pure-001
-```
-
-project-syntax.json compiles every Lua file and declaration without executing
-new host-service callbacks; project-pure.json executes reducer assertions only.
-Neither proves the desktop extensions. Static checks validate all manifest paths,
-stable references, sprite/font atlas bounds, RGBA transparency/translucency,
-ASCII/Ω/十 atlas coverage, PNG CRCs and PCM16 WAV headers. Pure/static passes do
-not establish GPU text legibility, actual audio output, durable platform behavior,
-focus/device sampling or failure recovery. Keep the engine's service failure,
-Vulkan validation/readback and input/UI suites plus a visible/audible walkthrough
-as independent integration gates.
-
-## Original assets and reusable logic
-
-[Asset provenance](assets/provenance.json) records the original fixture files.
-[The generator](tools/generate_assets.py) reproduces the PNG, font and WAV outputs
-with Python standard library only. The sprite atlas contains clear-alpha edges,
-partially transparent markers/glow, four player frames and four dove frames.
-The original 5x7 glyph grid covers printable ASCII scalars (lowercase intentionally
-shares uppercase shapes), Ω and 十. Unspecified punctuation uses the question
-shape; this is a developer font, not universal language/font support. The loop
-is a one-second 220 Hz sine with an integral number of cycles; cue gain is tapered.
-All fixture artwork, glyph definitions, tones and scripts use the engine's MIT
-license. No third-party or generated model media is used.
-
-[progression.lua](scripts/progression.lua) is a reusable pure reducer example.
-[controller.lua](scripts/controller.lua) connects it to confined state/save,
-settings, movement, UI, audio and scene services. Mutations publish a validated
-versioned snapshot; ordinary presentation does not award progression. Catalog
-content IDs, scene rules, exact controls, visual metrics and sound gains are
-fixture configuration, not mandatory engine or production game choices.
+The native audio backend is checked separately by engine-audio's explicit device
+test. This example's deterministic tests establish offline mixed output and voice
+ownership, not physical audibility. The separate examples/native-extension crate
+verifies arbitrary native components/resources/bundles/systems and a custom wgpu
+render pass through actual offscreen pixel readback.

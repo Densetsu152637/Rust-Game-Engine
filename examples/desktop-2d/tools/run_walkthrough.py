@@ -1,6 +1,6 @@
 """Run the fixture against an explicitly supplied built engine, preserving logs.
 Full mode verifies real project/runtime services across separate processes and
-same per-variant user-data root. Pure-only mode works on the older engine too.
+the same per-variant user-data root. Native generation compilation may be cold.
 """
 from pathlib import Path
 import argparse
@@ -15,12 +15,13 @@ def main():
     parser.add_argument("--engine",type=Path,required=True)
     parser.add_argument("--artifacts",type=Path)
     parser.add_argument("--pure-only",action="store_true")
+    parser.add_argument("--timeout",type=float,default=600,help="seconds per native compile/run (default 600)")
     args=parser.parse_args(); engine=args.engine.resolve(); assert engine.is_file()
     artifacts=(args.artifacts or Path(tempfile.mkdtemp(prefix="desktop2d-walkthrough-"))).resolve()
     artifacts.mkdir(parents=True,exist_ok=True)
     validate_static()
     def run(name, arguments, marker=None):
-        process=subprocess.run([str(engine),*map(str,arguments)],cwd=engine.parent,encoding="utf-8",capture_output=True,timeout=60)
+        process=subprocess.run([str(engine),*map(str,arguments)],cwd=engine.parent,encoding="utf-8",capture_output=True,timeout=args.timeout)
         (artifacts/(name+".stdout.json")).write_text(process.stdout,encoding="utf-8")
         (artifacts/(name+".stderr.log")).write_text(process.stderr,encoding="utf-8")
         assert process.returncode==0, name+" failed: "+process.stderr

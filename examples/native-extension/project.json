@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "name": "External native extension fixture",
+  "rust": { "manifest": "Cargo.toml" },
+  "startup_scene": "scenes/main.scene.json",
+  "assets": [{ "id": "asset:custom-native", "kind": "script", "path": "src/lib.rs" }]
+}

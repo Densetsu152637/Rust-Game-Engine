@@ -1,0 +1,12 @@
+[package]
+name = "moving-entity-gameplay"
+version = "0.1.0"
+edition = "2024"
+
+# Standalone game crate: it is its own workspace root, so the engine workspace
+# neither builds it nor owns its (uncommitted) lockfile.
+[workspace]
+
+[dependencies]
+engine-core = { path = "../../../crates/engine-core" }
+engine-project = { path = "../../../crates/engine-project" }

@@ -1,11 +1,12 @@
 {
   "schema": 1,
+  "rust": { "manifest": "Cargo.toml" },
   "name": "Desktop 2D pure progression checks",
   "startup_scene": "scenes/pure.scene.json",
   "assets": [
     {
       "id": "asset:pure-tests",
-      "path": "scripts/pure-tests.lua",
+      "path": "src/pure-tests.rs",
       "kind": "script"
     }
   ]

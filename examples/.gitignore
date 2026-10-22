@@ -1,0 +1,4 @@
+# Example and sample game crates are standalone workspace roots; their lockfiles
+# and build output are generated locally and are not committed.
+Cargo.lock
+target/

@@ -1,51 +1,52 @@
 {
   "schema": 1,
-  "name": "Desktop fixture Lua declaration validation only",
+  "rust": { "manifest": "Cargo.toml" },
+  "name": "Desktop fixture native module compilation validation",
   "startup_scene": "scenes/syntax.scene.json",
   "assets": [
     {
       "id": "asset:syntax-0",
-      "path": "scripts/bindings.lua",
+      "path": "src/bindings.rs",
       "kind": "script"
     },
     {
       "id": "asset:syntax-1",
-      "path": "scripts/controller.lua",
+      "path": "src/controller.rs",
       "kind": "script"
     },
     {
       "id": "asset:syntax-2",
-      "path": "scripts/player.lua",
+      "path": "src/player.rs",
       "kind": "script"
     },
     {
       "id": "asset:syntax-3",
-      "path": "scripts/progression.lua",
+      "path": "src/progression.rs",
       "kind": "script"
     },
     {
       "id": "asset:syntax-4",
-      "path": "scripts/pure-tests.lua",
+      "path": "src/pure-tests.rs",
       "kind": "script"
     },
     {
       "id": "asset:syntax-5",
-      "path": "scripts/test-new-female.lua",
+      "path": "src/test-new-female.rs",
       "kind": "script"
     },
     {
       "id": "asset:syntax-6",
-      "path": "scripts/test-new-male.lua",
+      "path": "src/test-new-male.rs",
       "kind": "script"
     },
     {
       "id": "asset:syntax-7",
-      "path": "scripts/test-restore-female.lua",
+      "path": "src/test-restore-female.rs",
       "kind": "script"
     },
     {
       "id": "asset:syntax-8",
-      "path": "scripts/test-restore-male.lua",
+      "path": "src/test-restore-male.rs",
       "kind": "script"
     }
   ]

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "scene_id": "scene:moving-entity",
+  "entities": [
+    {
+      "id": "entity:mover-owner",
+      "name": "Mover owner",
+      "components": {
+        "Transform": { "position": [0.0, 0.0, 0.0] },
+        "Script": { "asset": "asset:moving-entity" }
+      }
+    }
+  ]
+}

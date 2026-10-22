@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "name": "Moving entity",
+  "rust": { "manifest": "Cargo.toml" },
+  "startup_scene": "scenes/main.scene.json",
+  "assets": [
+    { "id": "asset:moving-entity", "path": "src/lib.rs", "kind": "script" }
+  ]
+}

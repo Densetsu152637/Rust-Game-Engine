@@ -1,0 +1,9 @@
+[package]
+name = "intentionally-invalid-gameplay"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+engine-core = { path = "../../../../crates/engine-core" }
