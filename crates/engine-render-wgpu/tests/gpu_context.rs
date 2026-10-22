@@ -40,7 +40,17 @@ fn a_backend_can_share_a_context_and_render_into_a_foreign_view() {
         DeviceConfig::default(),
     )
     .unwrap();
-    assert!(!device.capabilities().surface_presentation);
+    // A context-sharing backend has no swapchain; its Surface target is the
+    // host-supplied external view.
+    assert!(device.capabilities().surface_presentation);
+    assert!(
+        device.resize(32, 32).is_err(),
+        "there is no surface to resize"
+    );
+    assert!(matches!(
+        submit(&mut device, FrameDesc::new(RenderTarget::Surface), vec![]),
+        Err(RenderError::Unsupported { .. })
+    ));
     let program = shader(&mut device, TEXTURED);
     let mesh = device
         .create_mesh(&quad(16.0, 16.0, 48.0, 48.0, 0.5, [1.0, 0.0, 0.0, 1.0]))
@@ -62,6 +72,20 @@ fn a_backend_can_share_a_context_and_render_into_a_foreign_view() {
     };
     assert_eq!(at(32, 32), [255, 0, 0, 255]);
     assert_eq!(at(4, 4), [0, 0, 0, 255]);
+
+    // The same frame through the device: Surface draws into the external view.
+    device
+        .backend_mut()
+        .set_external_target(target.view.clone(), target.info);
+    let mut desc = FrameDesc::new(RenderTarget::Surface);
+    desc.clear_color = [0.0, 0.0, 1.0, 1.0];
+    let draws = vec![draw(program, mesh, None, &camera, DrawState::default())];
+    let outcome = submit(&mut device, desc, draws).unwrap();
+    assert!(matches!(outcome, FrameOutcome::Rendered(_)), "{outcome:?}");
+    let pixels = target.read_rgba(&gpu).unwrap();
+    assert_eq!(pixels[(32 * 64 + 32) * 4..][..4], [255, 0, 0, 255]);
+    assert_eq!(pixels[(4 * 64 + 4) * 4..][..4], [0, 0, 255, 255]);
+    assert_eq!(device.frames_submitted(), 1);
     // The shared context reports no errors and both handles stay usable.
     gpu.wait_idle().unwrap();
 }
