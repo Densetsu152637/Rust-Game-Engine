@@ -16,6 +16,13 @@ use std::thread;
 use std::time::Duration;
 
 pub fn run(configure: fn(&mut EngineApp) -> Result<()>) -> i32 {
+    // A generation is a host binary, so it installs the logging subscriber that
+    // makes engine-core lifecycle `tracing` events visible. Output goes to stderr
+    // only: stdout carries the run result that the launcher parses. A logging
+    // failure must not stop the game.
+    let _log = engine_log::init(engine_log::LogConfig::new())
+        .inspect_err(|error| eprintln!("warning: logging disabled: {error}"))
+        .ok();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(configure)));
     let (value, code) = match result {
         Ok(Ok(report)) => (

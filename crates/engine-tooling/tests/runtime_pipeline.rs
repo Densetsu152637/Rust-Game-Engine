@@ -159,7 +159,7 @@ fn cli_compiles_runs_packages_and_editor_play_uses_unsaved_scene_without_saving(
             .len(),
         64
     );
-    let executed = success(engine(
+    let run = engine(
         &[
             "run".as_ref(),
             manifest.as_os_str(),
@@ -171,7 +171,16 @@ fn cli_compiles_runs_packages_and_editor_play_uses_unsaved_scene_without_saving(
         ],
         temp.path(),
         &[],
-    ));
+    );
+    // The generation installs the logging subscriber, so engine-core lifecycle
+    // events reach stderr while stdout stays the single run-result line that
+    // `engine` itself asserts.
+    assert!(
+        run.stderr.contains("engine app starting") && run.stderr.contains("engine app stopped"),
+        "generation lifecycle events missing from stderr:\n{}",
+        run.stderr
+    );
+    let executed = success(run);
     assert_eq!(executed["command"], "run");
     let x =
         executed["result"]["scene"]["scene"]["entities"][0]["components"]["Transform"]["position"]

@@ -27,7 +27,8 @@ let warnings = log.history().query(&LogQuery {
 - **History.** `LogHistory` is a cloneable, thread-safe ring buffer of
   `LogRecord { timestamp, level, target, message, fields }`. It evicts the oldest
   record at capacity (default 1024). `records()`, `recent(n)` and `query(&LogQuery)`
-  (level, target prefix, text, limit) serve tools such as MCP and the editor.
+  (level, target prefix, text, limit) are available for tools to query; nothing
+  in the engine consumes the history yet.
 - **Init guard.** `init` installs the global subscriber once; a second call, or
   another installed subscriber, returns `InitError::AlreadyInitialized`.
   `LogConfig::build()` returns the subscriber and history without installing them.
