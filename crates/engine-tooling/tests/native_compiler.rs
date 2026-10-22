@@ -47,7 +47,7 @@ impl Fixture {
         let request = CompileRequest {
             engine_root: engine, project_manifest: game.join("Cargo.toml"), cache_root: root.join("cache"),
             main_source: "fn main() { let mut app=engine_core::EngineApp::default(); gameplay::configure(&mut app).unwrap(); assert_eq!(app.value,7); }".into(),
-            features: vec![], target: None, release: false, offline: true,
+            features: vec![], target: None, release: false, offline: true, target_dir: None,
         };
         Self { root, request }
     }
@@ -369,4 +369,178 @@ fn external_game_uses_real_public_ecs_components_bundles_and_system_sets() {
             .unwrap()
             .success()
     );
+}
+
+fn toml_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .replace('\\', "/")
+}
+
+/// A game crate nested in an unrelated outer directory, built into a cache under
+/// the game exactly as the CLI does (`<project>/.derived/native`).
+fn nested_game(fixture: &Fixture, outer_manifest: &str, game_package: &str) -> CompileRequest {
+    let outer = fixture.root.join("outer");
+    write(&outer.join("Cargo.toml"), outer_manifest);
+    let game = outer.join("game");
+    let core = toml_path(&fixture.request.engine_root.join("crates/engine-core"));
+    write(
+        &game.join("Cargo.toml"),
+        &format!(
+            "[package]\nname='external-game'\n{game_package}\n[dependencies]\nengine-core={{path={core:?}}}\n"
+        ),
+    );
+    write(
+        &game.join("src/lib.rs"),
+        "#[cfg(ancestor_leak)] compile_error!(\"ancestor cargo config leaked\");\npub fn configure(app: &mut engine_core::EngineApp) -> Result<(),String> { app.value=7; Ok(()) }\n",
+    );
+    let mut request = fixture.request.clone();
+    request.project_manifest = game.join("Cargo.toml");
+    request.cache_root = game.join(".derived/native");
+    request.main_source = format!(
+        "#[cfg(ancestor_leak)] compile_error!(\"leak\");\n{}",
+        request.main_source
+    );
+    request
+}
+
+#[test]
+fn ancestor_cargo_config_and_unrelated_workspace_do_not_leak_into_generation() {
+    let fixture = Fixture::new();
+    let request = nested_game(
+        &fixture,
+        "[workspace]\nmembers=[]\n",
+        "version='0.1.0'\nedition='2024'",
+    );
+    let outer = fixture.root.join("outer");
+    write(
+        &outer.join(".cargo/config.toml"),
+        "[build]\nrustflags=['--cfg','ancestor_leak']\n",
+    );
+    write(
+        &outer.join("game/.cargo/config.toml"),
+        "[build]\nrustflags=['--cfg','ancestor_leak']\n",
+    );
+    let mut compiler = compiler();
+    let first = compiler.compile(&request, &uncancelled()).unwrap();
+    assert!(
+        std::process::Command::new(&first.executable)
+            .status()
+            .unwrap()
+            .success()
+    );
+    write(
+        &outer.join(".cargo/config.toml"),
+        "[build]\nrustflags=['--cfg','ancestor_leak','--cfg','changed']\n",
+    );
+    write(
+        &outer.join("Cargo.toml"),
+        "[workspace]\nmembers=[]\n# unrelated edit\n",
+    );
+    let second = compiler.compile(&request, &uncancelled()).unwrap();
+    assert_eq!(first.fingerprint, second.fingerprint);
+}
+
+#[test]
+fn inherited_workspace_manifest_is_a_generation_input() {
+    let fixture = Fixture::new();
+    let workspace =
+        "[workspace]\nmembers=['game']\n[workspace.package]\nversion='0.1.0'\nedition='2024'\n";
+    let request = nested_game(
+        &fixture,
+        workspace,
+        "version.workspace=true\nedition.workspace=true",
+    );
+    let mut compiler = compiler();
+    let first = compiler.compile(&request, &uncancelled()).unwrap();
+    write(
+        &fixture.root.join("outer/Cargo.toml"),
+        &format!("{workspace}description='inherited change'\n"),
+    );
+    let second = compiler.compile(&request, &uncancelled()).unwrap();
+    assert_ne!(first.fingerprint, second.fingerprint);
+}
+
+#[test]
+fn compile_only_check_reports_diagnostics_and_never_replaces_last_good() {
+    let fixture = Fixture::new();
+    let mut compiler = compiler();
+    let good = compiler.compile(&fixture.request, &uncancelled()).unwrap();
+    let source = fixture
+        .request
+        .project_manifest
+        .parent()
+        .unwrap()
+        .join("src/lib.rs");
+    write(
+        &source,
+        "pub fn configure(_: &mut engine_core::EngineApp) -> Result<(),String> { let invalid: u32 = \"bad\"; Ok(()) }",
+    );
+    let failed = compiler
+        .check(&fixture.request, &uncancelled())
+        .unwrap_err();
+    assert_eq!(failed.code, "compiler.check");
+    assert!(
+        failed
+            .diagnostics
+            .iter()
+            .any(|d| d["code"]["code"] == "E0308")
+    );
+    assert_eq!(compiler.last_good().unwrap().generation, good.generation);
+    write(
+        &source,
+        "pub fn configure(app: &mut engine_core::EngineApp) -> Result<(),String> { let unused = 1; app.value=7; Ok(()) }",
+    );
+    let report = compiler.check(&fixture.request, &uncancelled()).unwrap();
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d["level"] == "warning" && d["message"].as_str().unwrap().contains("unused"))
+    );
+    assert_eq!(compiler.last_good().unwrap().generation, good.generation);
+    let leftovers = fs::read_dir(&fixture.request.cache_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("check-"))
+        .count();
+    assert_eq!(leftovers, 0);
+    assert!(good.executable.is_file());
+}
+
+#[test]
+fn shared_target_directory_holds_dependency_output_outside_the_cache() {
+    let fixture = Fixture::new();
+    let mut request = fixture.request.clone();
+    request.target_dir = Some(fixture.root.join("shared-target"));
+    let artifact = compiler().compile(&request, &uncancelled()).unwrap();
+    assert!(fixture.root.join("shared-target/debug").is_dir());
+    assert!(!request.cache_root.join("target").exists());
+    assert!(
+        artifact
+            .executable
+            .starts_with(request.cache_root.canonicalize().unwrap())
+    );
+}
+
+#[test]
+fn unresolvable_candidate_leaves_no_generation_directory() {
+    let fixture = Fixture::new();
+    let mut compiler = compiler();
+    let good = compiler.compile(&fixture.request, &uncancelled()).unwrap();
+    write(
+        &fixture.request.project_manifest,
+        "[package]\nname='external-game'\nversion='0.1.0'\nedition='2024'\n[workspace]\n[dependencies]\nabsent-crate={path='../does-not-exist'}\n",
+    );
+    let failed = compiler
+        .compile(&fixture.request, &uncancelled())
+        .unwrap_err();
+    assert_eq!(failed.code, "compiler.resolve");
+    let generations = fs::read_dir(&fixture.request.cache_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name() != "target")
+        .count();
+    assert_eq!(generations, 1);
+    assert_eq!(compiler.last_good().unwrap().generation, good.generation);
 }
