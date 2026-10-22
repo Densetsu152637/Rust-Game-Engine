@@ -11,6 +11,23 @@ pub struct RunArguments {
     pub inputs: BTreeMap<u64, BTreeSet<String>>,
     pub user_data: Option<PathBuf>,
     pub scene_override: Option<PathBuf>,
+    /// Render the final frame offscreen to this PNG after the last tick.
+    pub screenshot: Option<PathBuf>,
+    /// Screenshot size in pixels; `[640, 360]` unless `--screenshot-size` is given.
+    pub screenshot_size: [u32; 2],
+}
+
+/// Default offscreen screenshot size.
+pub const DEFAULT_SCREENSHOT_SIZE: [u32; 2] = [640, 360];
+/// Largest accepted screenshot edge in pixels.
+pub const MAX_SCREENSHOT_EDGE: u32 = 4096;
+
+fn parse_size(text: &str) -> Option<[u32; 2]> {
+    let (width, height) = text.split_once('x')?;
+    let size = [width.parse().ok()?, height.parse().ok()?];
+    size.iter()
+        .all(|edge| (1..=MAX_SCREENSHOT_EDGE).contains(edge))
+        .then_some(size)
 }
 
 /// The same parser is used by the compiler launcher and compiled runtime.
@@ -25,7 +42,10 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
         inputs: BTreeMap::new(),
         user_data: None,
         scene_override: None,
+        screenshot: None,
+        screenshot_size: DEFAULT_SCREENSHOT_SIZE,
     };
+    let mut size_given = false;
     let mut events = Vec::new();
     let mut seen = BTreeSet::new();
     let mut index = 1;
@@ -74,6 +94,18 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
             }
             "--user-data" => result.user_data = Some(value.into()),
             "--scene-override" => result.scene_override = Some(value.into()),
+            "--screenshot" => result.screenshot = Some(value.into()),
+            "--screenshot-size" => {
+                result.screenshot_size = value.to_str().and_then(parse_size).ok_or_else(|| {
+                    Error::new(
+                        "command.arguments",
+                        format!(
+                            "Screenshot size must be WIDTHxHEIGHT, each 1 to {MAX_SCREENSHOT_EDGE}"
+                        ),
+                    )
+                })?;
+                size_given = true;
+            }
             "--format" if value == "json" => {}
             _ => {
                 return Err(Error::new(
@@ -83,6 +115,12 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
             }
         }
         index += 2;
+    }
+    if size_given && result.screenshot.is_none() {
+        return Err(Error::new(
+            "command.arguments",
+            "--screenshot-size requires --screenshot",
+        ));
     }
     for (action, tick) in events {
         if tick >= result.ticks {

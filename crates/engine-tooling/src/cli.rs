@@ -34,9 +34,39 @@ project assets <manifest>\n  \
 project shaders <manifest>\n  \
 project package <manifest> <new-directory> [--profile release|dev]\n  \
 scene inspect <scene> --project-root <project-directory>\n  \
-run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file]\n  \
+run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--screenshot file.png [--screenshot-size WxH]]\n  \
 editor <manifest>\n  \
-mcp <project-root>";
+mcp <project-root> [--allow-write] [--allow-exec]";
+
+const MCP_USAGE: &str = "Usage: engine mcp <project-root> [--allow-write] [--allow-exec]";
+
+/// Parsed `engine mcp` arguments: the project root and the opt-in access flags.
+struct McpArguments {
+    root: PathBuf,
+    allow_write: bool,
+    allow_exec: bool,
+}
+
+fn parse_mcp(arguments: &[OsString]) -> std::result::Result<McpArguments, String> {
+    let (mut root, mut write, mut exec) = (None, false, false);
+    for argument in arguments {
+        match argument.to_str() {
+            Some("--allow-write") if !write => write = true,
+            Some("--allow-exec") if !exec => exec = true,
+            Some(flag @ ("--allow-write" | "--allow-exec")) => {
+                return Err(format!("duplicate option {flag}"));
+            }
+            Some(flag) if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
+            _ if root.is_none() => root = Some(PathBuf::from(argument)),
+            _ => return Err("expected exactly one project root".into()),
+        }
+    }
+    Ok(McpArguments {
+        root: root.ok_or("expected a project root")?,
+        allow_write: write,
+        allow_exec: exec,
+    })
+}
 
 /// Invalid command-line usage (exit code 2).
 #[derive(Debug)]
@@ -55,14 +85,25 @@ fn usage(message: impl Into<String>) -> Error {
 /// Reserved stdout is one command result; native game logging belongs on stderr.
 pub fn main(arguments: Vec<OsString>) -> i32 {
     if arguments.first().is_some_and(|v| v == "mcp") {
-        if arguments.len() != 2 {
-            eprintln!("Usage: engine mcp <project-root>");
-            return 2;
+        let mcp = match parse_mcp(&arguments[1..]) {
+            Ok(mcp) => mcp,
+            Err(message) => {
+                eprintln!("{message}\n{MCP_USAGE}");
+                return 2;
+            }
+        };
+        let mut config = engine_mcp::ServerConfig::new()
+            .allow_write(mcp.allow_write)
+            .allow_exec(mcp.allow_exec);
+        if mcp.allow_exec {
+            config = config.with_provider(crate::mcp_tools::ExecTools::new());
         }
-        return match engine_mcp::serve(
-            Path::new(&arguments[1]),
+        // Stdout carries JSON-RPC only; every diagnostic goes to stderr.
+        return match engine_mcp::serve_with_config(
+            &mcp.root,
             std::io::stdin().lock(),
             std::io::stdout().lock(),
+            config,
         ) {
             Ok(()) => 0,
             Err(error) => {
@@ -508,7 +549,7 @@ fn options(
 
 /// The project's Rust crate, or `None` for a content-only project. Script assets
 /// require a crate because native gameplay is compiled from it.
-fn rust_crate(project: &Project) -> Result<Option<PathBuf>> {
+pub(crate) fn rust_crate(project: &Project) -> Result<Option<PathBuf>> {
     match project.rust_manifest() {
         Ok(path) => Ok(Some(path)),
         Err(_) if !project.assets.values().any(|a| a.kind == "script") => Ok(None),
@@ -521,7 +562,7 @@ fn rust_crate(project: &Project) -> Result<Option<PathBuf>> {
     }
 }
 
-fn prune(request: &CompileRequest, current: &Path) {
+pub(crate) fn prune(request: &CompileRequest, current: &Path) {
     if let Err(error) =
         artifacts::prune_generations(&request.cache_root, current, RETAINED_GENERATIONS)
     {

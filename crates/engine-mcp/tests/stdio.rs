@@ -126,7 +126,10 @@ fn legacy_negotiation_lifecycle_ping_and_discovery() {
     );
     assert_eq!(responses[2]["error"]["code"], -32002);
     assert_eq!(responses[3]["result"], json!({}));
-    assert_eq!(responses[4]["result"]["tools"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        responses[4]["result"]["tools"].as_array().unwrap().len(),
+        12
+    );
     assert!(responses[4]["result"].get("resultType").is_none());
     assert_eq!(responses[5]["error"]["code"], -32602);
     assert_eq!(responses[6]["error"]["code"], -32600);
@@ -153,7 +156,7 @@ fn modern_requests_are_stateless_and_tools_have_closed_read_only_schemas() {
     );
     assert_eq!(
         responses[0]["result"]["capabilities"],
-        json!({"tools":{"listChanged":false}})
+        json!({"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false}})
     );
     for response in &responses[..2] {
         assert_eq!(response["result"]["resultType"], "complete");
@@ -163,25 +166,25 @@ fn modern_requests_are_stateless_and_tools_have_closed_read_only_schemas() {
         );
     }
     let tools = responses[1]["result"]["tools"].as_array().unwrap();
-    for (index, (name, argument)) in [("project_validate", "manifest"), ("scene_inspect", "scene")]
-        .into_iter()
-        .enumerate()
-    {
-        assert_eq!(tools[index]["name"], name);
-        assert_eq!(tools[index]["inputSchema"]["type"], "object");
+    let find = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
+    for tool in tools {
+        assert_eq!(tool["inputSchema"]["type"], "object");
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(
-            tools[index]["inputSchema"]["properties"][argument]["type"],
-            "string"
-        );
-        assert_eq!(tools[index]["inputSchema"]["required"], json!([argument]));
-        assert_eq!(tools[index]["inputSchema"]["additionalProperties"], false);
-        assert_eq!(
-            tools[index]["annotations"],
+            tool["annotations"],
             json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})
         );
     }
+    assert_eq!(
+        find("scene_inspect")["inputSchema"]["required"],
+        json!(["scene"])
+    );
+    assert_eq!(
+        find("project_validate")["inputSchema"]["properties"]["manifest"]["type"],
+        "string"
+    );
     assert!(
-        tools[0]["description"]
+        find("project_validate")["description"]
             .as_str()
             .unwrap()
             .contains("without compiling")
@@ -254,7 +257,7 @@ fn tool_parameters_are_strict_and_failures_are_protocol_errors() {
         json!({"name":"scene_inspect"}),
         json!({"name":"scene_inspect","arguments":[],}),
         json!({"name":"unknown","arguments":{}}),
-        json!({"name":"project_validate","arguments":{}}),
+        json!({"name":"scene_inspect","arguments":{}}),
         json!({"name":"project_validate","arguments":{"manifest":"project.json","extra":1}}),
         json!({"name":"scene_inspect","arguments":{"scene":"start.json"},"extra":1}),
     ] {
@@ -382,10 +385,10 @@ fn authored_validation_and_scene_inspection_never_build_native_sources() {
             call(2, "scene_inspect", json!({"scene":"scenes/start.json"})),
         ],
     );
-    assert_eq!(
-        responses[0]["result"]["structuredContent"],
-        json!({"ok":true,"command":"project validate","diagnostics":[]})
-    );
+    let validation = &responses[0]["result"]["structuredContent"];
+    assert_eq!(validation["ok"], true);
+    assert_eq!(validation["command"], "project validate");
+    assert_eq!(validation["diagnostics"], json!([]));
     let result = &responses[1]["result"];
     assert_eq!(result["isError"], false);
     let scene = &result["structuredContent"];
@@ -453,7 +456,7 @@ fn tool_paths_reject_missing_absolute_traversal_and_directory_arguments() {
             let result = run(dir.path(), vec![call(1, tool, json!({field:path}))]);
             assert_eq!(result[0]["result"]["isError"], true);
             assert!(
-                result[0]["result"]["structuredContent"]["error"]
+                result[0]["result"]["structuredContent"]["error"]["message"]
                     .as_str()
                     .unwrap()
                     .contains("path is invalid")
@@ -526,8 +529,13 @@ fn canonical_confinement_rejects_symlink_or_junction_escape_and_catalog_escape()
 #[test]
 fn oversized_scene_results_remain_valid_bounded_tool_errors() {
     let dir = fixture();
-    let entities: Vec<_> = (0..5000)
-        .map(|i| json!({"id":format!("entity:{i}"), "name":"x".repeat(150), "components":{}}))
+    let frames: Vec<_> = (0..4096).map(|_| json!([0, 0, 1, 1])).collect();
+    let entities: Vec<_> = (0..200)
+        .map(|i| {
+            json!({"id":format!("entity:{i}"), "name":"x", "components":{
+                "Transform":{"position":[0,0,0]},
+                "SpriteRenderer":{"texture":"asset:texture","frames":frames}}})
+        })
         .collect();
     fs::write(
         dir.path().join("scenes/large.json"),
@@ -543,7 +551,7 @@ fn oversized_scene_results_remain_valid_bounded_tool_errors() {
     );
     assert_eq!(responses[0]["result"]["isError"], true);
     assert_eq!(
-        responses[0]["result"]["structuredContent"]["error"],
+        responses[0]["result"]["structuredContent"]["error"]["message"],
         "tool response exceeds the 1 MiB output limit"
     );
     assert_eq!(responses[0]["result"]["resultType"], "complete");

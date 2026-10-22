@@ -721,3 +721,197 @@ fn editing_continues_normally_after_play_ends() {
     move_to(&mut d, 2.0);
     assert_eq!(player_x(&d), 2.0);
 }
+
+// ---- structural edits (entity create / replace / delete) --------------------------------------
+
+fn extra(id: &str) -> engine_project::SceneEntity {
+    serde_json::from_value(ent(
+        id,
+        serde_json::json!({"Transform":{"position":[1,2,3]}}),
+    ))
+    .unwrap()
+}
+
+fn ids(d: &SceneDocument) -> Vec<String> {
+    d.snapshot().entities.iter().map(|e| e.id.clone()).collect()
+}
+
+#[test]
+fn create_entity_appends_and_changes_the_revision() {
+    let mut d = doc(&Proj::new());
+    let before = d.revision().to_owned();
+    let after = d
+        .apply(
+            EditOperation::CreateEntity {
+                entity: extra("crate"),
+            },
+            &before,
+        )
+        .unwrap();
+    assert_ne!(before, after);
+    assert_eq!(ids(&d).last().unwrap(), "crate");
+    assert!(d.is_dirty());
+}
+
+#[test]
+fn create_entity_rejects_duplicate_ids_and_keeps_the_scene() {
+    let mut d = doc(&Proj::new());
+    let before = d.revision().to_owned();
+    expect_code(
+        d.apply(
+            EditOperation::CreateEntity {
+                entity: extra("player"),
+            },
+            &before,
+        ),
+        "scene.entity.id.duplicate",
+    );
+    assert_eq!(d.revision(), before);
+    assert!(!d.is_dirty());
+}
+
+#[test]
+fn create_entity_is_validated_against_the_project_catalog() {
+    let mut d = doc(&Proj::new());
+    let before = d.revision().to_owned();
+    let mut bad = extra("ghost");
+    bad.components.script = Some(engine_project::Script {
+        version: 1,
+        asset: "missing".into(),
+    });
+    expect_code(
+        d.apply(EditOperation::CreateEntity { entity: bad }, &before),
+        "project.asset.unknown",
+    );
+    assert_eq!(d.revision(), before);
+}
+
+#[test]
+fn replace_entity_swaps_all_components() {
+    let mut d = doc(&Proj::new());
+    let before = d.revision().to_owned();
+    let mut entity = extra("player");
+    entity.name = "Renamed".into();
+    d.apply(EditOperation::ReplaceEntity { entity }, &before)
+        .unwrap();
+    let player = d
+        .snapshot()
+        .entities
+        .iter()
+        .find(|e| e.id == "player")
+        .unwrap();
+    assert_eq!(player.name, "Renamed");
+    assert!(player.components.sprite_renderer.is_none());
+    assert_eq!(
+        player.components.transform.as_ref().unwrap().position,
+        [1.0, 2.0, 3.0]
+    );
+}
+
+#[test]
+fn replace_entity_requires_an_existing_id() {
+    let mut d = doc(&Proj::new());
+    let before = d.revision().to_owned();
+    expect_code(
+        d.apply(
+            EditOperation::ReplaceEntity {
+                entity: extra("nobody"),
+            },
+            &before,
+        ),
+        "scene.entity.unknown",
+    );
+}
+
+#[test]
+fn delete_entity_removes_it_and_can_be_undone() {
+    let mut d = doc(&Proj::new());
+    let before = d.revision().to_owned();
+    d.apply(
+        EditOperation::DeleteEntity {
+            entity_id: "camera".into(),
+        },
+        &before,
+    )
+    .unwrap();
+    assert_eq!(ids(&d), ["player"]);
+    let after = d.revision().to_owned();
+    d.undo(&after).unwrap();
+    assert_eq!(ids(&d), ["player", "camera"]);
+}
+
+#[test]
+fn delete_entity_rejects_dangling_camera_follow_and_unknown_ids() {
+    let mut d = doc(&Proj::new());
+    let before = d.revision().to_owned();
+    // The camera follows the player, so deleting the follow target is invalid.
+    expect_code(
+        d.apply(
+            EditOperation::DeleteEntity {
+                entity_id: "player".into(),
+            },
+            &before,
+        ),
+        "scene.camera.follow",
+    );
+    expect_code(
+        d.apply(
+            EditOperation::DeleteEntity {
+                entity_id: "nobody".into(),
+            },
+            &before,
+        ),
+        "scene.entity.unknown",
+    );
+    assert_eq!(d.revision(), before);
+}
+
+#[test]
+fn structural_edits_still_obey_revision_checks() {
+    let mut d = doc(&Proj::new());
+    expect_code(
+        d.apply(
+            EditOperation::CreateEntity {
+                entity: extra("late"),
+            },
+            "stale",
+        ),
+        "scene.revision.conflict",
+    );
+}
+
+#[test]
+fn for_scene_edits_and_saves_a_non_startup_scene() {
+    let mut p = Proj::new();
+    p.add_scene(
+        "scene:b",
+        "b.json",
+        scene_json(
+            "room:b",
+            vec![ent(
+                "b1",
+                serde_json::json!({"Transform":{"position":[0,0,0]}}),
+            )],
+        ),
+    );
+    let project = p.project();
+    let other = engine_project::load_scene(&project.root, std::path::Path::new("b.json")).unwrap();
+    let mut d = SceneDocument::for_scene(&project, other);
+    let r = d.revision().to_owned();
+    d.apply(
+        EditOperation::CreateEntity {
+            entity: extra("b2"),
+        },
+        &r,
+    )
+    .unwrap();
+    let r = d.revision().to_owned();
+    d.save(&r).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&p.read("b.json")).unwrap();
+    assert_eq!(saved["entities"].as_array().unwrap().len(), 2);
+    let startup: serde_json::Value = serde_json::from_slice(&p.read("scene.json")).unwrap();
+    assert_eq!(
+        startup["scene_id"], "room:a",
+        "the startup scene is untouched"
+    );
+}

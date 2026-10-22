@@ -94,6 +94,61 @@ fn user_data_and_scene_override_paths_are_preserved() {
 }
 
 #[test]
+fn screenshot_options_default_to_640x360_and_accept_a_size() {
+    let plain = parse(&["p.json"]).unwrap();
+    assert!(plain.screenshot.is_none());
+    assert_eq!(plain.screenshot_size, [640, 360]);
+    let shot = parse(&["p.json", "--screenshot", "out dir/a.png"]).unwrap();
+    assert_eq!(
+        shot.screenshot.unwrap(),
+        std::path::Path::new("out dir/a.png")
+    );
+    assert_eq!(shot.screenshot_size, [640, 360]);
+    let sized = parse(&[
+        "p.json",
+        "--screenshot-size",
+        "320x180",
+        "--screenshot",
+        "a.png",
+        "--headless",
+    ])
+    .unwrap();
+    assert_eq!(sized.screenshot_size, [320, 180]);
+    assert!(sized.headless);
+    assert_eq!(
+        parse(&[
+            "p.json",
+            "--screenshot",
+            "a.png",
+            "--screenshot-size",
+            "4096x1"
+        ])
+        .unwrap()
+        .screenshot_size,
+        [4096, 1]
+    );
+}
+
+#[test]
+fn invalid_screenshot_sizes_and_orphan_sizes_are_argument_errors() {
+    for size in [
+        "0x10", "10x0", "4097x10", "10", "axb", "10x", "x10", "10x10x10", "-1x5", "",
+    ] {
+        assert_eq!(
+            error_code(&["p.json", "--screenshot", "a.png", "--screenshot-size", size]),
+            "command.arguments",
+            "{size}"
+        );
+    }
+    assert_eq!(
+        error_code(&["p.json", "--screenshot-size", "10x10"]),
+        "command.arguments"
+    );
+    assert!(parse(&["p.json", "--screenshot"]).is_err());
+    assert!(parse(&["p.json", "--screenshot", "a", "--screenshot", "b"]).is_err());
+}
+
+#[test]
 fn injected_actions_must_be_declared_by_the_project() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(

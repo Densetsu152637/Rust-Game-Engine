@@ -16,6 +16,8 @@ engine-ecs = { path = "crates/engine-ecs" }
 engine-log = { path = "crates/engine-log" }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "registry", "fmt", "env-filter", "ansi"] }
+base64 = "0.22"
+regex = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

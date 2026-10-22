@@ -1,0 +1,258 @@
+//! Asset catalog tools: `asset_list` and `asset_info`.
+
+use super::{Spec, scene::scene_paths, slash, tool};
+use crate::{
+    config::AccessLevel,
+    paths,
+    registry::{Annotations, Tool, ToolContext, ToolFailure, ToolOutcome, ToolResult},
+    schema::{self, Args},
+};
+use engine_project::{Asset, Project, content, load_scene};
+use serde_json::{Map, Value, json};
+use std::path::Path;
+
+const KINDS: [&str; 7] = [
+    "script", "mesh", "texture", "font", "audio", "scene", "shader",
+];
+const MAX_USES: usize = 200;
+
+pub(super) fn tools() -> Vec<Box<dyn Tool>> {
+    vec![
+        tool(
+            Spec {
+                name: "asset_list",
+                title: "List assets",
+                description: "List the project's asset catalog: stable asset ID, kind and \
+                    project-relative path (plus file size). Entities reference assets by these \
+                    IDs, never by path. Filter by kind and page with offset/limit.",
+                input: schema::object(
+                    vec![
+                        (
+                            "kind",
+                            schema::string_enum("Only assets of this kind.", &KINDS),
+                        ),
+                        (
+                            "offset",
+                            schema::integer("Assets to skip (paging).", 0, 10_000_000, Some(0)),
+                        ),
+                        (
+                            "limit",
+                            schema::integer("Maximum assets to return.", 1, 1000, Some(200)),
+                        ),
+                    ],
+                    &[],
+                ),
+                output: schema::output(vec![
+                    (
+                        "count",
+                        json!({"type": "integer", "description": "Total matching assets."}),
+                    ),
+                    (
+                        "assets",
+                        json!({"type": "array", "items": {"type": "object", "properties": {
+                        "id": {"type": "string"}, "kind": {"type": "string"},
+                        "path": {"type": "string"}, "size_bytes": {"type": "integer"}}}}),
+                    ),
+                    ("returned", json!({"type": "integer"})),
+                    ("offset", json!({"type": "integer"})),
+                    ("truncated", json!({"type": "boolean"})),
+                    ("next_offset", json!({"type": "integer"})),
+                ]),
+                annotations: Annotations::READ_ONLY,
+                access: AccessLevel::Read,
+            },
+            asset_list,
+        ),
+        tool(
+            Spec {
+                name: "asset_info",
+                title: "Asset details",
+                description: "Describe one catalog asset by ID: kind, path, size and \
+                    kind-specific details (texture width/height/format, mesh vertex count and \
+                    bounds, font glyph count, script line count, scene entity count) plus where \
+                    it is used (scene, entity, component).",
+                input: schema::object(
+                    vec![(
+                        "asset",
+                        schema::string("Asset ID, for example `asset:player-texture`."),
+                    )],
+                    &["asset"],
+                ),
+                output: schema::output(vec![
+                    ("asset", json!({"type": "object"})),
+                    ("details", json!({"type": "object"})),
+                    (
+                        "used_by",
+                        json!({"type": "array", "items": {"type": "object"}}),
+                    ),
+                    ("used_by_truncated", json!({"type": "boolean"})),
+                ]),
+                annotations: Annotations::READ_ONLY,
+                access: AccessLevel::Read,
+            },
+            asset_info,
+        ),
+    ]
+}
+
+fn file_size(cx: &ToolContext<'_>, asset: &Asset) -> Option<u64> {
+    std::fs::metadata(cx.root.join(&asset.path))
+        .ok()
+        .map(|m| m.len())
+}
+
+fn asset_json(cx: &ToolContext<'_>, asset: &Asset) -> Value {
+    let mut value = json!({"id": asset.id, "kind": asset.kind, "path": slash(&asset.path)});
+    if let Some(size) = file_size(cx, asset) {
+        value["size_bytes"] = json!(size);
+    }
+    value
+}
+
+fn asset_list(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
+    let a = Args(args);
+    let kind = a.one_of("kind", &KINDS)?;
+    let offset = a.integer("offset", 0, 10_000_000, 0)? as usize;
+    let limit = a.integer("limit", 1, cx.limits.max_page_size as u64, 200)? as usize;
+    let project = cx.project()?;
+    let matching: Vec<&Asset> = project
+        .assets
+        .values()
+        .filter(|asset| kind.is_none_or(|k| asset.kind == k))
+        .collect();
+    let page: Vec<Value> = matching
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .map(|asset| asset_json(cx, asset))
+        .collect();
+    let end = offset + page.len();
+    let mut result = json!({"count": matching.len(), "returned": page.len(), "offset": offset,
+        "truncated": end < matching.len(), "assets": page});
+    if end < matching.len() {
+        result["next_offset"] = json!(end);
+    }
+    Ok(ToolResult::new(result))
+}
+
+fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Value, ToolFailure> {
+    let file = project.resolve_asset(&asset.id)?;
+    Ok(match asset.kind.as_str() {
+        "texture" => {
+            let texture = content::load_texture(&file)?;
+            let mut magic = [0_u8; 8];
+            let png = std::fs::File::open(&file)
+                .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+                .is_ok()
+                && magic == *b"\x89PNG\r\n\x1a\n";
+            json!({"width": texture.width, "height": texture.height,
+                "format": if png { "png" } else { "ppm" }, "channels": "rgba8"})
+        }
+        "mesh" => {
+            let mesh = content::load_mesh(&file)?;
+            let mut min = [f32::MAX; 3];
+            let mut max = [f32::MIN; 3];
+            for vertex in &mesh.vertices {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(vertex.position[axis]);
+                    max[axis] = max[axis].max(vertex.position[axis]);
+                }
+            }
+            json!({"vertices": mesh.vertices.len(), "triangles": mesh.indices.len() / 3,
+                "bounds": {"min": min, "max": max}})
+        }
+        "font" => {
+            let font = content::load_font(&file)?;
+            json!({"glyphs": font.glyphs.len(), "line_height": font.line_height,
+                "fallback_codepoint": font.fallback, "texture_asset": font.texture})
+        }
+        "script" => {
+            let bytes = paths::read_bounded(&file, cx.limits.max_file_scan_bytes)
+                .map_err(|_| ToolFailure::new("file_too_large", "script source is too large"))?;
+            let lines = String::from_utf8_lossy(&bytes).lines().count();
+            json!({"language": "rust", "lines": lines, "bytes": bytes.len()})
+        }
+        "scene" => {
+            let relative = file.strip_prefix(cx.root).expect("confined file");
+            let scene = load_scene(cx.root, relative)?;
+            json!({"scene_id": scene.id, "entities": scene.entities.len(),
+                "revision": scene.revision()})
+        }
+        _ => json!({}),
+    })
+}
+
+/// Scenes and fonts that reference `asset`.
+fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value>, bool) {
+    let mut uses = Vec::new();
+    for (path, _, _) in scene_paths(project) {
+        let Ok(scene) = load_scene(cx.root, Path::new(&path)) else {
+            continue;
+        };
+        for entity in &scene.entities {
+            let c = &entity.components;
+            let mut fields: Vec<(&str, &str, &str)> = Vec::new();
+            if let Some(s) = &c.script {
+                fields.push(("Script", "asset", &s.asset));
+            }
+            if let Some(m) = &c.mesh_renderer {
+                fields.push(("MeshRenderer", "mesh", &m.mesh));
+                if let Some(t) = &m.texture {
+                    fields.push(("MeshRenderer", "texture", t));
+                }
+            }
+            if let Some(s) = &c.sprite_renderer {
+                fields.push(("SpriteRenderer", "texture", &s.texture));
+            }
+            for (component, field, id) in fields {
+                if id == asset.id {
+                    uses.push(json!({"scene": path, "entity": entity.id,
+                        "component": component, "field": field}));
+                }
+            }
+        }
+        if uses.len() > MAX_USES {
+            break;
+        }
+    }
+    if asset.kind == "texture" {
+        for font in project.assets.values().filter(|a| a.kind == "font") {
+            if let Ok(file) = project.resolve_asset(&font.id)
+                && content::load_font(&file).is_ok_and(|f| f.texture == asset.id)
+            {
+                uses.push(json!({"asset": font.id, "field": "texture"}));
+            }
+        }
+    }
+    let truncated = uses.len() > MAX_USES;
+    uses.truncate(MAX_USES);
+    (uses, truncated)
+}
+
+fn asset_info(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
+    let id = Args(args).string("asset")?;
+    let project = cx.project()?;
+    let Some(asset) = project.assets.get(id) else {
+        let needle = id.to_lowercase();
+        let suggestions: Vec<&str> = project
+            .assets
+            .keys()
+            .map(String::as_str)
+            .filter(|candidate| candidate.to_lowercase().contains(&needle))
+            .take(10)
+            .collect();
+        return Err(ToolFailure::new(
+            "asset_not_found",
+            format!("the project catalog has no asset with ID {id}"),
+        )
+        .with_hint("List asset IDs with asset_list; IDs are exact and case-sensitive.")
+        .with_details(json!({"suggestions": suggestions})));
+    };
+    let (uses, truncated) = used_by(cx, &project, asset);
+    Ok(ToolResult::new(json!({
+        "asset": asset_json(cx, asset),
+        "details": details(cx, &project, asset)?,
+        "used_by": uses,
+        "used_by_truncated": truncated,
+    })))
+}
