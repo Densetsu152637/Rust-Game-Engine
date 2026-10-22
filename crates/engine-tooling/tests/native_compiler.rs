@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -15,17 +14,18 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        // Kept short: Cargo and rustc nest long build-script and object file
+        // names below this root, and the MSVC linker rejects paths past
+        // MAX_PATH (LNK1181) when the checkout itself is deeply nested.
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/tooling-fixtures")
             .join(format!(
-                "{}-{}-{}",
+                "{}-{}",
                 std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos(),
                 SEQUENCE.fetch_add(1, Ordering::Relaxed)
             ));
+        // A crashed earlier run with a reused process ID may have left it behind.
+        let _ = fs::remove_dir_all(&root);
         let engine = root.join("engine");
         let game = root.join("game");
         write(
@@ -270,7 +270,9 @@ fn readiness_gate_precedes_gameplay_and_stop_allows_native_cleanup() {
     .unwrap();
     assert!(!marker.exists());
     child.start().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // Generous: only reaching the marker matters, and a loaded CI runner may be
+    // slow to schedule the freshly started child. The loop exits on success.
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !marker.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(5));
     }
@@ -300,19 +302,26 @@ fn in_flight_cargo_cancellation_terminates_build_script_tree_and_retains_last_go
         let request = &fixture.request;
         let compiler_ref = &mut compiler;
         let build = scope.spawn(move || compiler_ref.compile(request, &child_cancel));
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while !game.join("build-started").exists() && Instant::now() < deadline {
+        // Cargo must first compile and link the build script; allow for a
+        // loaded CI runner. The loop exits as soon as the script starts.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while !game.join("build-started").exists()
+            && !build.is_finished()
+            && Instant::now() < deadline
+        {
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(
-            game.join("build-started").exists(),
-            "build script never started"
-        );
+        if !game.join("build-started").exists() {
+            let outcome = build.is_finished().then(|| build.join().unwrap());
+            panic!("build script never started; build outcome: {outcome:?}");
+        }
         let cancellation_start = Instant::now();
         cancel.store(true, Ordering::Release);
         let result = build.join().unwrap().unwrap_err();
         assert!(result.cancelled);
-        assert!(cancellation_start.elapsed() < Duration::from_secs(5));
+        // Far below the build script's 60-second sleep, so cancellation must
+        // have terminated the tree rather than waited for it.
+        assert!(cancellation_start.elapsed() < Duration::from_secs(20));
     });
     assert_eq!(compiler.last_good().unwrap().generation, good.generation);
     assert!(!game.join("build-finished").exists());
