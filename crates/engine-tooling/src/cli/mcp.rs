@@ -49,6 +49,13 @@ pub(super) fn serve(arguments: &[OsString]) -> i32 {
     if mcp.allow_exec {
         config = config.with_provider(ExecTools::new());
     }
+    tracing::info!(
+        root = %mcp.root.display(),
+        allow_write = mcp.allow_write,
+        allow_exec = mcp.allow_exec,
+        "MCP session started"
+    );
+    let started = std::time::Instant::now();
     // Stdout carries JSON-RPC only; every diagnostic goes to stderr.
     match engine_mcp::serve_with_config(
         &mcp.root,
@@ -56,8 +63,15 @@ pub(super) fn serve(arguments: &[OsString]) -> i32 {
         std::io::stdout().lock(),
         config,
     ) {
-        Ok(()) => 0,
+        Ok(()) => {
+            tracing::info!(
+                duration_ms = started.elapsed().as_millis() as u64,
+                "MCP session ended"
+            );
+            0
+        }
         Err(error) => {
+            tracing::warn!(%error, duration_ms = started.elapsed().as_millis() as u64, "MCP session failed");
             eprintln!("MCP: {error}");
             1
         }

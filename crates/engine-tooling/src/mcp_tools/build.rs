@@ -40,6 +40,7 @@ pub(super) fn obtain_generation(
         && let Some(artifact) = state.last_build.lock().ok().and_then(|g| g.clone())
         && artifact.executable.is_file()
     {
+        tracing::info!(generation = %artifact.generation, "reusing the last built generation");
         return Ok(Built {
             artifact,
             reused: true,

@@ -932,6 +932,7 @@ dependencies = [
  "engine-core",
  "engine-desktop",
  "engine-editor",
+ "engine-log",
  "engine-mcp",
  "engine-project",
  "image",
@@ -942,6 +943,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "toml",
+ "tracing",
 ]
 
 [[package]]

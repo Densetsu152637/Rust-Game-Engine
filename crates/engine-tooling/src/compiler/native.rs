@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// Compiler paths are explicit so a selected toolchain cannot silently become
 /// another compiler via a changed PATH during a reload.
 pub struct NativeCompiler {
@@ -53,9 +53,34 @@ impl NativeCompiler {
         request: &CompileRequest,
         cancel: &AtomicBool,
     ) -> Result<BuildArtifact, BuildFailure> {
-        let prepared = self.prepare(request, cancel, "")?;
+        let started = Instant::now();
+        tracing::info!(
+            manifest = %request.project_manifest.display(),
+            release = request.release,
+            offline = request.offline,
+            "native build started"
+        );
+        let prepared = self.prepare(request, cancel, "").inspect_err(|error| {
+            tracing::warn!(code = %error.code, "native build could not prepare a generation");
+        })?;
         let directory = prepared.directory.clone();
+        tracing::debug!(generation = %prepared.generation, fingerprint = %prepared.fingerprint, "generation prepared");
         let result = self.build(prepared, request, cancel);
+        let duration_ms = started.elapsed().as_millis() as u64;
+        match &result {
+            Ok(artifact) => tracing::info!(
+                generation = %artifact.generation,
+                fingerprint = %artifact.fingerprint,
+                duration_ms,
+                "native build finished"
+            ),
+            Err(error) => tracing::warn!(
+                code = %error.code,
+                cancelled = error.cancelled,
+                duration_ms,
+                "native build failed"
+            ),
+        }
         if result.is_err() {
             // Failed candidates leave no generation; the last good one is untouched.
             let _ = fs::remove_dir_all(directory);
@@ -127,8 +152,10 @@ impl NativeCompiler {
         request: &CompileRequest,
         cancel: &AtomicBool,
     ) -> Result<CheckReport, BuildFailure> {
+        let started = Instant::now();
+        tracing::info!(manifest = %request.project_manifest.display(), "native check started");
         let prepared = self.prepare(request, cancel, "check-")?;
-        let result = (|| {
+        let result: Result<CheckReport, BuildFailure> = (|| {
             let output = self.run_cargo(&prepared, request, "check", cancel)?;
             let diagnostics = output
                 .stdout
@@ -145,6 +172,13 @@ impl NativeCompiler {
             })
         })();
         let _ = fs::remove_dir_all(&prepared.directory);
+        let duration_ms = started.elapsed().as_millis() as u64;
+        match &result {
+            Ok(_) => tracing::info!(duration_ms, "native check finished"),
+            Err(error) => {
+                tracing::warn!(code = %error.code, duration_ms, "native check failed");
+            }
+        }
         result
     }
 

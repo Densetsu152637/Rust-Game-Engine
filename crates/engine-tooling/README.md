@@ -63,6 +63,12 @@ on, with `path` as `line:column`). Human-readable diagnostics go to stderr. Exit
 codes: 0 success, 1 project/validation/build failure, 2 invalid arguments (codes
 `command.*`), 3 runtime or internal failure. `--format json` is accepted once.
 
+The `engine` binary initialises `engine-log` at start-up: progress and warning
+events (build start/finish with duration, generation reuse, packaging, MCP session
+start/end) are `tracing` events written to stderr only, never stdout. Filter with
+`ENGINE_LOG` (else `RUST_LOG`), for example `ENGINE_LOG=debug`; the default is INFO.
+A logging initialisation failure prints a warning and the command continues.
+
 | Command | Result |
 | --- | --- |
 | `project init <template-manifest> <new-dir>` | Copies a validated template (without generated output) into a new directory |

@@ -34,7 +34,7 @@ pub(crate) fn prune(request: &CompileRequest, current: &Path) {
     if let Err(error) =
         artifacts::prune_generations(&request.cache_root, current, RETAINED_GENERATIONS)
     {
-        eprintln!("generation cache pruning skipped: {error}");
+        tracing::warn!(%error, "generation cache pruning skipped");
     }
 }
 

@@ -11,6 +11,8 @@ sha2 = "0.10"
 toml = "0.8"
 process-wrap = { version = "=10.0.1", features = ["std"] }
 base64.workspace = true
+engine-log.workspace = true
+tracing.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 engine-audio = { path = "../engine-audio" }

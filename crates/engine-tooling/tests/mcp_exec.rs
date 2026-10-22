@@ -182,6 +182,31 @@ fn default_server_is_read_only_and_lists_no_write_or_exec_tools() {
     }
 }
 
+/// Logging is on at debug level, yet stdout stays pure JSON-RPC (the `mcp`
+/// helper rejects any non-JSON-RPC stdout line) and the log events reach stderr.
+#[test]
+fn debug_logging_keeps_mcp_stdout_pure_json_rpc() {
+    let (_temp, root) = game("mcp-log-");
+    let session = mcp(
+        &[root.as_os_str()],
+        &[("ENGINE_LOG", "debug")],
+        &[request(1, "tools/list", json!({}))],
+    );
+    assert_eq!(session.code, 0, "{}", session.stderr);
+    assert_eq!(session.responses.len(), 1);
+    assert_eq!(session.responses[0]["id"], 1);
+    assert!(
+        session.stderr.contains("MCP session started"),
+        "{}",
+        session.stderr
+    );
+    assert!(
+        session.stderr.contains("MCP session ended"),
+        "{}",
+        session.stderr
+    );
+}
+
 #[test]
 fn allow_write_adds_only_the_write_tools() {
     let (_temp, root) = game("mcp-cli-");

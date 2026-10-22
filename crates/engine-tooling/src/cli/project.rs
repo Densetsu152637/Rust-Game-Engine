@@ -104,12 +104,18 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             request.release = release;
             let generation = compiler.compile(&request, &AtomicBool::new(false))?;
             prune(&request, &generation.directory);
+            tracing::info!(
+                generation = %generation.generation,
+                destination = %destination.display(),
+                "packaging project"
+            );
             let path = artifacts::package_project(
                 &project,
                 &generation,
                 destination,
                 &request.engine_root,
             )?;
+            tracing::info!(directory = %path.display(), "package written");
             Ok(Outcome::Json(json!({
                 "directory": path,
                 "generation": generation.generation,
