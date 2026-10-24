@@ -2,7 +2,7 @@
 //! (compute BVH traversal).
 
 use crate::device::{GpuDevice, Tier, tier_name};
-use crate::kernel::{self, Kernel};
+use crate::kernel::{self, JobTotals, Kernel, QueueGuard};
 use crate::scene::{FlatScene, MeshRange};
 use crate::selftest::{self, SelfTestReport};
 use crate::upload::GpuScene;
@@ -20,12 +20,13 @@ struct Runtime {
     self_test: SelfTestReport,
 }
 
-/// The world as last uploaded.
+/// The world as last uploaded. `gpu` is `None` for a world with nothing to
+/// hit (no instances, or only empty meshes): every ray escapes.
 struct WorldState {
     revision: u64,
     dynamic_generation: u64,
     scene: FlatScene,
-    gpu: GpuScene,
+    gpu: Option<GpuScene>,
 }
 
 /// Tier 1 ([`GpuBackend::ray_query`]) or tier 2 ([`GpuBackend::compute`]).
@@ -39,6 +40,8 @@ pub struct GpuBackend {
     api: GraphicsApi,
     runtime: Option<Runtime>,
     world: Option<WorldState>,
+    guard: QueueGuard,
+    segment_budget: u64,
 }
 
 impl std::fmt::Debug for GpuBackend {
@@ -71,6 +74,34 @@ impl GpuBackend {
             api: GraphicsApi::Primary,
             runtime: None,
             world: None,
+            guard: QueueGuard::default(),
+            segment_budget: kernel::DEFAULT_SEGMENT_BUDGET,
+        }
+    }
+
+    /// Upper bound on estimated segments (rays x (bounces + 1)) per queue
+    /// submission; larger requests are split into several dispatches whose
+    /// integer results are summed, so the histogram does not depend on it.
+    /// Default 2^24. Test and tuning hook.
+    #[doc(hidden)]
+    pub fn with_segment_budget(mut self, segments: u64) -> Self {
+        self.segment_budget = segments.max(1);
+        self
+    }
+
+    /// Queue submissions made by `trace` and `raycast_batch` so far.
+    #[doc(hidden)]
+    pub fn submissions(&self) -> u64 {
+        self.guard.submitted
+    }
+
+    /// `true` while work that timed out is still running; traces then return
+    /// `acoustics.backend.timeout` without submitting.
+    #[doc(hidden)]
+    pub fn has_outstanding_submission(&mut self) -> bool {
+        match &self.runtime {
+            Some(runtime) => self.guard.is_blocked(&runtime.gpu),
+            None => false,
         }
     }
 
@@ -141,36 +172,44 @@ impl GpuBackend {
         e
     }
 
+    /// Full upload. Worlds the tier cannot hold (indices, limits) are
+    /// `acoustics.request.invalid` and not fatal; only GPU errors are fatal.
     fn upload_world(&mut self, world: &AcousticWorld) -> Result<(), BackendError> {
+        self.world = None;
         let runtime = self.runtime()?;
         let scene = FlatScene::from_view(&world.gpu_view());
-        let (meshes, mesh_of_instance): (Vec<MeshRange>, Vec<u32>) =
-            scene.validate().map_err(|e| {
-                error::failed(format!(
-                    "{} cannot use this world: {}",
-                    tier_name(self.tier),
-                    e.message
-                ))
-            })?;
-        let scope = runtime
-            .gpu
-            .device
-            .push_error_scope(wgpu::ErrorFilter::Validation);
-        let uploaded =
-            GpuScene::upload(&runtime.gpu, self.tier, &scene, &meshes, &mesh_of_instance)
-                .map_err(|e| error::failed(e.message));
-        let captured = pollster::block_on(scope.pop());
-        let uploaded = uploaded?;
-        if let Some(e) = captured {
-            return Err(error::failed(format!(
-                "GPU validation error uploading the world: {e}"
-            )));
-        }
+        let gpu = if scene.is_empty() {
+            None
+        } else {
+            let (meshes, mesh_of_instance): (Vec<MeshRange>, Vec<u32>) =
+                scene.validate().map_err(|e| BackendError {
+                    message: format!(
+                        "{} cannot use this world: {}",
+                        tier_name(self.tier),
+                        e.message
+                    ),
+                    ..e
+                })?;
+            let scope = runtime
+                .gpu
+                .device
+                .push_error_scope(wgpu::ErrorFilter::Validation);
+            let uploaded =
+                GpuScene::upload(&runtime.gpu, self.tier, &scene, &meshes, &mesh_of_instance);
+            let captured = pollster::block_on(scope.pop());
+            let uploaded = uploaded?;
+            if let Some(e) = captured {
+                return Err(error::failed(format!(
+                    "GPU validation error uploading the world: {e}"
+                )));
+            }
+            Some(uploaded)
+        };
         self.world = Some(WorldState {
             revision: world.revision(),
             dynamic_generation: world.dynamic_generation(),
             scene,
-            gpu: uploaded,
+            gpu,
         });
         Ok(())
     }
@@ -222,13 +261,14 @@ impl GpuBackend {
             state.scene.instances[i] = new;
         }
         state.scene.top_nodes.copy_from_slice(view.top_nodes);
+        let Some(gpu_scene) = state.gpu.as_mut() else {
+            return Ok(());
+        };
         let scope = runtime
             .gpu
             .device
             .push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = state
-            .gpu
-            .update_instances(&runtime.gpu, &state.scene, &changed);
+        let result = gpu_scene.update_instances(&runtime.gpu, &state.scene, &changed);
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(error::failed(format!(
                 "GPU validation error updating instances: {e}"
@@ -261,19 +301,30 @@ impl GpuBackend {
     ) -> Result<Vec<Option<GpuHit>>, BackendError> {
         self.sync_world(world)?;
         let timeout = self.timeout();
-        let runtime = self.runtime()?;
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            error::unavailable(format!("{} is not initialized", tier_name(self.tier)))
+        })?;
         let state = self
             .world
             .as_ref()
             .ok_or_else(|| error::failed("world was not uploaded"))?;
+        let Some(gpu_scene) = state.gpu.as_ref() else {
+            return Ok(vec![None; rays.len()]);
+        };
         let mut hits = Vec::with_capacity(rays.len());
         for chunk in rays.chunks(65_536) {
             let slots: Vec<kernel::ProbeSlot> = chunk
                 .iter()
                 .map(|(o, d, t)| kernel::ProbeSlot::new(*o, *d, *t))
                 .collect();
-            let results =
-                kernel::cast_rays(&runtime.gpu, &runtime.kernel, &state.gpu, &slots, timeout)?;
+            let results = kernel::cast_rays(
+                &runtime.gpu,
+                &runtime.kernel,
+                gpu_scene,
+                &slots,
+                timeout,
+                &mut self.guard,
+            )?;
             for r in results {
                 if r.aborted() {
                     return Err(error::failed("a probe ray aborted"));
@@ -305,6 +356,7 @@ impl PropagationBackend for GpuBackend {
     fn initialize(&mut self) -> Result<(), BackendError> {
         self.runtime = None;
         self.world = None;
+        self.guard = QueueGuard::default();
         let gpu = GpuDevice::open(self.tier, &self.options, self.api)?;
         let kernel = Kernel::new(&gpu, self.tier)?;
         let self_test = selftest::run(
@@ -358,18 +410,31 @@ impl PropagationBackend for GpuBackend {
         }
         self.sync_world(world)?;
         let timeout = self.timeout();
-        let runtime = self.runtime()?;
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            error::unavailable(format!("{} is not initialized", tier_name(self.tier)))
+        })?;
         let state = self
             .world
             .as_ref()
             .ok_or_else(|| error::failed("world was not uploaded"))?;
+        let Some(gpu_scene) = state.gpu.as_ref() else {
+            // Nothing to hit: every ray escapes on its first segment.
+            out.extend(jobs.iter().map(|job| JobTotals::all_escaped(job, settings)));
+            return Ok(TraceStats {
+                rays: jobs.iter().map(|j| u64::from(j.rays)).sum(),
+                segments: jobs.iter().map(|j| u64::from(j.rays)).sum(),
+                elapsed_us: 0,
+            });
+        };
         let result = kernel::trace_blocking(
             &runtime.gpu,
             &runtime.kernel,
-            &state.gpu,
+            gpu_scene,
             settings,
             jobs,
             timeout,
+            self.segment_budget,
+            &mut self.guard,
         );
         let trace = match result {
             Ok(trace) => trace,

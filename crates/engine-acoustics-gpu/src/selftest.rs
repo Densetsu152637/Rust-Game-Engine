@@ -5,7 +5,7 @@
 
 use crate::device::{GpuDevice, Tier};
 use crate::error;
-use crate::kernel::{self, Kernel, ProbeSlot};
+use crate::kernel::{self, Kernel, ProbeSlot, QueueGuard};
 use crate::scene::{FlatScene, leaf_over};
 use crate::upload::GpuScene;
 use engine_acoustics::gpu_layout::{BvhNode, GpuInstance, GpuMaterial, GpuTriangle};
@@ -221,11 +221,12 @@ pub(crate) fn run(
         .map_err(|e| step_failed(tier, "quad upload", e.message))?;
     let rays = quad_rays();
     let slots: Vec<ProbeSlot> = rays.iter().map(|(slot, _)| *slot).collect();
-    let results = kernel::cast_rays(gpu, kernel, &quad, &slots, SELF_TEST_TIMEOUT)
+    let mut guard = QueueGuard::default();
+    let results = kernel::cast_rays(gpu, kernel, &quad, &slots, SELF_TEST_TIMEOUT, &mut guard)
         .map_err(|e| step_failed(tier, "quad dispatch", e.message))?;
     report.quad_rays = rays.len() as u32;
     report.quad_expected_hits = rays.iter().filter(|(_, e)| e.is_some()).count() as u32;
-    for (result, (_, expected)) in results.iter().zip(&rays) {
+    for (index, (result, (slot, expected))) in results.iter().zip(&rays).enumerate() {
         if result.aborted() {
             return Err(step_failed(
                 tier,
@@ -248,8 +249,26 @@ pub(crate) fn run(
                 }
             }
             (None, None) => {}
-            (Some(_), None) => report.quad_hits += 1,
-            (None, Some(_)) => {}
+            (Some((t, triangle, _)), None) => {
+                return Err(step_failed(
+                    tier,
+                    "quad hit count",
+                    format!(
+                        "ray {index} from {:?} hit triangle {triangle} at t = {t}, expected a miss",
+                        &slot.origin[..3]
+                    ),
+                ));
+            }
+            (None, Some(expected_triangle)) => {
+                return Err(step_failed(
+                    tier,
+                    "quad hit count",
+                    format!(
+                        "ray {index} from {:?} missed, expected triangle {expected_triangle}",
+                        &slot.origin[..3]
+                    ),
+                ));
+            }
         }
     }
     if report.quad_hits != report.quad_expected_hits {
@@ -287,8 +306,17 @@ pub(crate) fn run(
         max_bounces: 64,
         seed: 0x5eed_0001,
     };
-    let trace = kernel::trace_blocking(gpu, kernel, &shoebox, &settings, &[job], SELF_TEST_TIMEOUT)
-        .map_err(|e| step_failed(tier, "shoebox dispatch", e.message))?;
+    let trace = kernel::trace_blocking(
+        gpu,
+        kernel,
+        &shoebox,
+        &settings,
+        &[job],
+        SELF_TEST_TIMEOUT,
+        kernel::DEFAULT_SEGMENT_BUDGET,
+        &mut guard,
+    )
+    .map_err(|e| step_failed(tier, "shoebox dispatch", e.message))?;
     let histogram = &trace.histograms[0];
     let [x, y, z] = SHOEBOX;
     let expected = 4.0 * x * y * z / (2.0 * (x * y + y * z + x * z));

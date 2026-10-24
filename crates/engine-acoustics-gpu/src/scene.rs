@@ -46,12 +46,18 @@ impl FlatScene {
         }
     }
 
+    /// Nothing can be hit: no instances, or only instances of empty meshes
+    /// (which are not in the instance BVH).
+    pub fn is_empty(&self) -> bool {
+        self.top_nodes.is_empty()
+    }
+
     /// Checks every index a shader will follow, so out-of-range data is an error
     /// here rather than undefined traversal on the GPU. Returns the distinct
     /// meshes, ordered by first use; `mesh_of_instance[i]` indexes that list.
     pub fn validate(&self) -> Result<(Vec<MeshRange>, Vec<u32>), BackendError> {
-        if self.instances.is_empty() || self.top_nodes.is_empty() {
-            return Err(error::invalid("acoustic world has no instances"));
+        if self.is_empty() {
+            return Ok((Vec::new(), vec![NO_MESH; self.instances.len()]));
         }
         if self.instances.len() > (1 << 24) {
             return Err(error::invalid(
