@@ -18,7 +18,10 @@ Create `ServerSecurity::new(server_chain, private_key, client_roots, policy)` an
 `ClientSecurity::new(server_name, server_roots, client_chain, private_key)` from
 native configuration or a host secret store. Inputs are owned DER certificates
 and `PrivateKeyDer` keys, re-exported by `engine-network`. Config types deliberately
-have no Debug/Serialize and do not accept a caller-built insecure rustls config.
+have no Debug/Serialize. `from_rustls_config` accepts a caller-built rustls config
+whose verifier becomes trusted configuration while the endpoint still enforces
+ALPN, TLS 1.3, no 0-RTT/resumption and policy; see
+[network transports](networking-transport.md#caller-supplied-rustls-configurations).
 Keys, certificate contents and account identifiers never belong in authored
 scene data, MCP parameters, snapshots or logs. A native game configuration
 callback can select credentials by a nonsecret deployment profile, then attach
@@ -104,10 +107,12 @@ Limits are validated on construction. IDs are nonempty and exclude control
 characters. Duplicate IDs and non-unit rotations are rejected. Each receive
 buffer holds at most one bounded frame. Encoding uses a capped writer so an
 oversized snapshot fails without constructing an unbounded serialized buffer.
-A four-byte big-endian unsigned payload length precedes each UTF-8 JSON message.
-The server sends a version-1 welcome before snapshots; endpoints reject unexpected
+A four-byte big-endian unsigned payload length precedes each UTF-8 JSON message
+or binary `MessageEndpoint` data frame.
+The server sends a version-2 welcome before snapshots; endpoints reject unexpected
 message directions and versions. TCP preserves reliable ordered delivery, with
-head-of-line blocking and no lossy-packet simulation.
+head-of-line blocking. Loss and latency simulation is available through
+`ConditionedEndpoint` ([network transports](networking-transport.md#network-simulation)).
 
 PollBudget bounds messages parsed per connection, bytes read per connection,
 bytes written per connection, and connection acceptance attempts. Values are
@@ -173,15 +178,18 @@ Native runtime callbacks can call `disconnect_peer(world, peer_id)` to close a
 server peer and remove its grants, or use `Server::disconnect` before attachment.
 
 No matchmaking, NAT traversal, reconnect/session recovery, rollback/prediction,
-delta compression, transport congestion tuning or anti-cheat assurance is
-implemented. Internet use requires a reachable TCP listener or host-supplied
-connection. TCP head-of-line latency remains. The native target scope is Windows,
+delta compression or anti-cheat assurance is implemented. Internet use of this
+replication protocol requires a reachable TCP listener or host-supplied
+connection, and TCP head-of-line latency remains. The separate `engine-net-quic`
+`MessageEndpoint` transport provides per-lane streams, datagrams and congestion
+control ([network transports](networking-transport.md)). The native target scope is Windows,
 Linux and macOS; browser/mobile/console transports are outside this implementation.
 
 TLS on the existing framed TCP path preserves authority and runtime contracts
-while using a maintained cryptographic implementation. QUIC/UDP would also require
-new reliability, scheduling and congestion contracts; a bespoke crypto wrapper
-would create avoidable verification risk. The pure snapshot model and owned
+while using a maintained cryptographic implementation. QUIC/UDP needed new
+reliability, scheduling and congestion contracts, now provided by the
+transport-neutral `MessageEndpoint` and `engine-net-quic`; a bespoke crypto
+wrapper would create avoidable verification risk. The pure snapshot model and owned
 stream entry point keep simulation and connection setup independent. Dependency
 API references: [rustls Connection](https://docs.rs/rustls/0.23.46/rustls/enum.Connection.html)
 and [WebPkiClientVerifier](https://docs.rs/rustls/0.23.46/rustls/server/struct.WebPkiClientVerifier.html).

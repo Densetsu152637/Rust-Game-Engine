@@ -61,6 +61,9 @@
   native callback integration.
 - [Multiplayer](networking.md): authoritative sessions, mutual-TLS 1.3 transport,
   replication, ownership, runtime integration and plaintext trusted-LAN limits.
+- [Network transports](networking-transport.md): the `MessageEndpoint` lane/delivery
+  contract over TCP and QUIC, limits, congestion control, caller rustls configs and
+  loss/latency simulation.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,
   typed adapters, hierarchy, events, batches and prefabs shared with MCP.
 - [Scheduled events](scheduled-events.md): CLI/MCP event injection, callback
