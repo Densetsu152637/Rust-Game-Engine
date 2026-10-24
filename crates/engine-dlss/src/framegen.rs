@@ -49,8 +49,10 @@ impl FrameGenerationOptions {
 }
 
 /// Unjittered camera constants for the current real frame. Matrices are passed
-/// verbatim as NVIDIA `float[4][4]` (element `[row][column]`); they must agree
-/// with the depth buffer and motion vectors.
+/// verbatim as NVIDIA `float[4][4]` in row-major order assuming
+/// post-multiplication (`clip = M * v` with column vectors; DLSS-FG guide
+/// 310.7.0, "Required Input Engine Data"). They must agree with the depth
+/// buffer and motion vectors.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pub view_to_clip: [[f32; 4]; 4],
@@ -116,12 +118,13 @@ impl Default for Interpolation {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GenerationFrame {
     pub camera: Camera,
-    /// Projection jitter of the current frame (NGX "JitterOffset"); zero
-    /// without TAA/DLSS SR jitter. Matrices themselves must exclude jitter.
+    /// Projection jitter of the current frame (NGX "JitterOffset", documented
+    /// only as a clip-space offset); zero without TAA/DLSS SR jitter. Matrices
+    /// and motion vectors must exclude jitter.
     pub jitter: [f32; 2],
     /// Multiply stored motion by this value to obtain current-to-previous
-    /// motion normalized to the render extent, e.g. `1/render_size` for
-    /// pixel-unit motion vectors (NGX "MvecScale").
+    /// screen-space motion in pixels of the motion texture (NGX "MvecScale"):
+    /// 1 for pixel motion, `render_size` for UV motion, negative to flip an axis.
     pub motion_scale: [f32; 2],
     /// History is unrelated to the previous real frame: camera cut, teleport,
     /// resize, first frame after FG was paused, or a scene/load transition.
@@ -213,7 +216,8 @@ pub enum Generated {
     /// Reset or first frame: there is no valid previous frame. Present only the
     /// real frame.
     NoHistory,
-    /// NGX's OutputDisableInterpolation hint asked to skip the generated frame.
+    /// NGX's OutputDisableInterpolation hint: interpolation was disabled and the
+    /// output is a copy of the backbuffer, so the generated frame is skipped.
     Disabled,
 }
 

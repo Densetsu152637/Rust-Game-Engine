@@ -29,36 +29,12 @@ static NVSDK_NGX_Resource_VK image_resource(const Image& image, bool write) {
         image.width, image.height, write);
 }
 
-// The VK create helper sets only the generic size and format. DLSS-G 310.2.1
-// caches extents at creation and rejects an evaluation whose extents differ
-// (observed NGX log: "BackbufferExtent should be constant for the lifetime of
-// the feature. (0, 0) != (256, 128)"), so set the header-defined extents first.
-static void set_rect(NVSDK_NGX_Parameter* p, const char* x, const char* y, const char* w, const char* h,
-    unsigned width, unsigned height) {
-    NVSDK_NGX_Parameter_SetUI(p, x, 0);
-    NVSDK_NGX_Parameter_SetUI(p, y, 0);
-    NVSDK_NGX_Parameter_SetUI(p, w, width);
-    NVSDK_NGX_Parameter_SetUI(p, h, height);
-}
-static void set_extents(const FgBridge* b) {
-    auto* p = b->params;
-    NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_DLSSG_Parameter_Width, b->width);
-    NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_DLSSG_Parameter_Height, b->height);
-    NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_DLSSG_Parameter_InternalWidth, b->render_width);
-    NVSDK_NGX_Parameter_SetUI(p, NVSDK_NGX_DLSSG_Parameter_InternalHeight, b->render_height);
-    set_rect(p, NVSDK_NGX_DLSSG_Parameter_InputBackbufferSubrectBaseX, NVSDK_NGX_DLSSG_Parameter_InputBackbufferSubrectBaseY,
-        NVSDK_NGX_DLSSG_Parameter_InputBackbufferSubrectWidth, NVSDK_NGX_DLSSG_Parameter_InputBackbufferSubrectHeight, b->width, b->height);
-    set_rect(p, NVSDK_NGX_DLSSG_Parameter_BackbufferSubrectBaseX, NVSDK_NGX_DLSSG_Parameter_BackbufferSubrectBaseY,
-        NVSDK_NGX_DLSSG_Parameter_BackbufferSubrectWidth, NVSDK_NGX_DLSSG_Parameter_BackbufferSubrectHeight, b->width, b->height);
-    set_rect(p, NVSDK_NGX_DLSSG_Parameter_OutputInterpolatedSubrectBaseX, NVSDK_NGX_DLSSG_Parameter_OutputInterpolatedSubrectBaseY,
-        NVSDK_NGX_DLSSG_Parameter_OutputInterpolatedSubrectWidth, NVSDK_NGX_DLSSG_Parameter_OutputInterpolatedSubrectHeight, b->width, b->height);
-    set_rect(p, NVSDK_NGX_DLSSG_Parameter_MVecsSubrectBaseX, NVSDK_NGX_DLSSG_Parameter_MVecsSubrectBaseY,
-        NVSDK_NGX_DLSSG_Parameter_MVecsSubrectWidth, NVSDK_NGX_DLSSG_Parameter_MVecsSubrectHeight, b->render_width, b->render_height);
-    set_rect(p, NVSDK_NGX_DLSSG_Parameter_DepthSubrectBaseX, NVSDK_NGX_DLSSG_Parameter_DepthSubrectBaseY,
-        NVSDK_NGX_DLSSG_Parameter_DepthSubrectWidth, NVSDK_NGX_DLSSG_Parameter_DepthSubrectHeight, b->render_width, b->render_height);
-    if (b->hudless)
-        set_rect(p, NVSDK_NGX_DLSSG_Parameter_HUDLessSubrectBaseX, NVSDK_NGX_DLSSG_Parameter_HUDLessSubrectBaseY,
-            NVSDK_NGX_DLSSG_Parameter_HUDLessSubrectWidth, NVSDK_NGX_DLSSG_Parameter_HUDLessSubrectHeight, b->width, b->height);
+// The VK create helper (unlike the D3D12 one) does not forward the render
+// size; set it as NGX_D3D12_CREATE_DLSSG does. Dynamic resolution is disabled.
+static void set_render_size(const FgBridge* b) {
+    NVSDK_NGX_Parameter_SetUI(b->params, NVSDK_NGX_DLSSG_Parameter_InternalWidth, b->render_width);
+    NVSDK_NGX_Parameter_SetUI(b->params, NVSDK_NGX_DLSSG_Parameter_InternalHeight, b->render_height);
+    NVSDK_NGX_Parameter_SetUI(b->params, NVSDK_NGX_DLSSG_Parameter_DynamicResolution, 0);
 }
 
 extern "C" {
@@ -120,8 +96,7 @@ uint32_t engine_ngx_create_fg_feature(FgBridge* b, uint64_t command) {
     else never |= NVSDK_NGX_DLSSG_ResourceFlags_HUDLess;
     NVSDK_NGX_Parameter_SetUI(b->params, NVSDK_NGX_DLSSG_Parameter_ResourceAlwaysProvided_Flags, always);
     NVSDK_NGX_Parameter_SetUI(b->params, NVSDK_NGX_DLSSG_Parameter_ResourceNeverProvided_Flags, never);
-    NVSDK_NGX_Parameter_SetUI(b->params, NVSDK_NGX_DLSSG_Parameter_DynamicResolution, 0);
-    set_extents(b);
+    set_render_size(b);
     NVSDK_NGX_DLSSG_Create_Params create{};
     create.Width = b->width; create.Height = b->height;
     create.NativeBackbufferFormat = b->format;

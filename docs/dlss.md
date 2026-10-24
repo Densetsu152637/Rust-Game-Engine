@@ -1,8 +1,9 @@
 # DLSS native integration
 
 The optional `engine-dlss` crate performs actual NVIDIA NGX Super Resolution (SR)
-on Vulkan. It also contains an NGX DLSS Frame Generation (FG) adapter whose GPU
-evaluation is not yet verified (see [Frame Generation](#frame-generation)).
+on Vulkan and NGX DLSS Frame Generation (FG), including multi-frame generation.
+FG produces generated frames; presenting them is the renderer's job (see
+[Frame Generation](#frame-generation)).
 Ordinary workspace builds do not need the NVIDIA SDK, libraries,
 models, or GPU. Build availability is separate from device support and from
 successful GPU evaluation. Explicit requests return errors, never a simulated
@@ -13,7 +14,7 @@ success. Hosts retain their normal rendering path when setup fails.
 | Feature | This slice | Required renderer data |
 | --- | --- | --- |
 | Super Resolution / DLAA | Native NGX execution, tested on Windows RTX 5080 | Jittered HDR color, clip depth, current-to-previous motion, temporal reset |
-| Frame Generation | NGX adapter built; capability query and feature creation verified on RTX 5080; evaluation **not verified** (blocked on the SDK-matched runtime) | Backbuffer and HUD-less color, depth/motion, unjittered camera constants, reset, presentation pacing |
+| Frame Generation (2x and multi-frame) | Native NGX generation into a caller texture, tested offscreen on Windows RTX 5080; presentation pending renderer integration | Backbuffer and HUD-less color, depth/motion, unjittered camera constants, reset, presentation pacing |
 | Ray Reconstruction | Separate integration pending | Noisy ray-traced lighting, diffuse/specular albedo, normals/roughness, depth/motion, camera matrices |
 | DLSS 5 neural rendering | Deferred by user: no SDK access | Requires NVIDIA's neural-rendering SDK/runtime/model access; do not infer its ABI |
 
@@ -123,18 +124,23 @@ cargo test -p engine-dlss --features ngx-vulkan --test native_gpu -- --ignored -
 ```
 
 The FG hardware test uses the same environment variables, and `NGX_RUNTIME_DIR`
-must also contain `nvngx_dlssg.dll`. It renders a 16-pixel bar moving 24 pixels
-per frame and requires the generated bar's brightness centroid to lie strictly
-between its previous and current positions. When NGX reports multi-frame
-support, it also checks that the generated positions advance in order. Finally
-it checks the error for a destroyed output:
+must also contain `nvngx_dlssg.dll`. It renders a white 16-pixel bar that moves
+24 pixels per frame, then requires the following:
+
+- 2x: each generated bar's brightness centroid lies within 1 pixel of the
+  midpoint between the previous and current positions, and its brightness stays
+  within 10% of one bar's.
+- 4x: when NGX reports multi-frame support, indices 1..=3 lie within 1 pixel of
+  the 1/4, 2/4 and 3/4 positions.
+- A reset returns `NoHistory` and outputs the current frame.
+- A destroyed output fails safely.
 
 ```text
 cargo test -p engine-dlss --features ngx-vulkan --test framegen_gpu -- --ignored --nocapture
 ```
 
-It currently fails at the first evaluation, as described in
-[Frame Generation](#frame-generation).
+On 2026-10-24 the FG test passed on the RTX 5080 / driver 617.14 with the SDK's
+`nvngx_dlssg.dll` 310.9.16 (see [Frame Generation](#frame-generation)).
 
 On 2026-10-24 the SR hardware test created and evaluated the real SR feature for
 three frames on NVIDIA GeForce RTX 5080 / driver 617.14. NGX selected 512x341
@@ -153,38 +159,42 @@ full authored-game temporal behavior require their own validation.
 `native/ngx_dlssg.cpp`) drives NGX `NVSDK_NGX_Feature_FrameGeneration` through
 the official `nvsdk_ngx_helpers_dlssg_vk.h` create/evaluate helpers. Like SR, it
 never redeclares NVIDIA structures in Rust. The bridge passes only engine-owned
-records (`FgCaps`, `FgFrame`, `FgResources` in `native/ngx_bridge.h`).
+records (`FgCaps`, `FgFrame`, `FgResources` in `native/ngx_bridge.h`). The
+reference is NVIDIA's *DLSS Frame Generation SDK* guide, version 310.7.0
+(`doc/DLSS-FG Programming Guide.pdf` in the SDK). NVIDIA recommends Streamline
+for FG, but the guide documents this direct NGX path.
 
 ### Status and evidence (2026-10-24, RTX 5080, driver 617.14)
 
 - `create_device_for_features(.., &[SuperResolution, FrameGeneration])` creates a
   device. NGX requested no FG extension outside the reviewed allowlist.
-- With only the SR runtime present, NGX reports `FrameGeneration.Available=0`
-  and `FeatureInitResult=0xBAD00004` (FeatureNotFound). `FrameGenerator::new`
-  rejects a runtime directory without `nvngx_dlssg.dll` before loading NGX.
-  `with_context` maps FeatureNotFound to a precise missing-runtime error.
-- The installed driver package contains a WHQL-signed `nvngx_dlssg.dll` 310.2.1.
-  NGX logs it as the "dlssg driver fallback snippet". With a local copy beside
-  the SR runtime, NGX reports FG available (minimum driver 520.0, multi-frame
-  maximum 1 before creation), and feature creation succeeds.
-- **Every evaluation then fails** with `NVSDK_NGX_Result_FAIL_InvalidParameter`
-  (`0xBAD00005`). The snippet log reports `cached size cannot be zero` and
-  `BackbufferExtent should be constant for the lifetime of the feature. (0, 0) !=
-  (256, 128)`, then re-initializes on every call. None of these changed the
-  result: creating on the context device (`CreateFeature1`), creating in a prior
-  submission, tagging resources before creation, supplying HUD-less color,
-  retrying evaluation, or setting every extent parameter the public header
-  defines.
-- The cause is unresolved. Either the 310.2.1 driver fallback snippet cannot
-  serve the 310.9.16 header contract, or creation has a requirement documented
-  only in NVIDIA's FG guide. The local SDK copy has neither the SDK-matched
-  runtime nor the guide. The next inputs needed (downloading needs user
-  approval) are `lib/Windows_x86_64/rel/nvngx_dlssg.dll` and
-  `doc/DLSS-FG Programming Guide.pdf` from
-  [NVIDIA/DLSS v310.9.16](https://github.com/NVIDIA/DLSS/tree/v310.9.16).
+- With the official SDK runtime (`nvngx_dlssg.dll` 310.9.16.0, Authenticode
+  signed by NVIDIA Corporation) next to `nvngx_dlss.dll`, NGX reports:
+  - FG available;
+  - minimum driver 520.0;
+  - `MultiFrameCountMax` 5.
+- Measured on real NGX, with no simulated output:
 
-FG therefore produces no verified generated frame. Do not enable it in a
-shipping renderer until `tests/framegen_gpu.rs` passes.
+  | Mode | Expected positions | Measured centroids |
+  | --- | --- | --- |
+  | 2x | 83.5, 107.5, 131.5 (midpoints) | 83.50, 107.50, 131.50 |
+  | 4x (bar 143.5 to 167.5) | 149.5, 155.5, 161.5 | 149.50, 155.50, 161.50 |
+
+  Each generated frame kept one bar's brightness (about 2049 of 2048), and a
+  reset returned the current frame. Generation is exact only for this synthetic
+  scene: it has pixel motion vectors, a static camera and no disocclusion
+  complexity.
+- Runtime selection matters:
+  - With only the SR runtime present, NGX reports
+    `FrameGeneration.Available=0` and `FeatureInitResult=0xBAD00004`
+    (FeatureNotFound). `FrameGenerator::new` rejects a runtime directory
+    without `nvngx_dlssg.dll` before loading NGX, and `with_context` maps
+    FeatureNotFound to a precise missing-runtime error.
+  - The driver-bundled fallback `nvngx_dlssg.dll` 310.2.1 creates the feature,
+    but every evaluation fails with `NVSDK_NGX_Result_FAIL_InvalidParameter`
+    (`0xBAD00005`). Its log reports "BackbufferExtent should be constant for
+    the lifetime of the feature. (0, 0) != (256, 128)".
+  - Ship the SDK's runtime, not the driver fallback.
 
 ### API
 
@@ -192,15 +202,16 @@ shipping renderer until `tests/framegen_gpu.rs` passes.
   initializes the shared NGX runtime. Its `runtime_dir` must contain both
   `nvngx_dlss.dll` and `nvngx_dlssg.dll`, because the shared `Context` checks SR
   availability during initialization. `FrameGenerator::with_context` adds FG to
-  an existing SR context. Both are thread-confined (`Rc` context) and follow
-  the context lifetime rules above.
+  an existing SR context. Both are thread-confined (`Rc` context), and NGX is
+  not thread-safe. Both follow the context lifetime rules above.
 - `FrameGenerationOptions` holds:
   - the output (backbuffer) size;
   - the render (depth/motion) size, no larger than the output;
   - `ColorFormat::{Rgba8Unorm, Rgba16Float}`;
   - whether a HUD-less color is always supplied.
 
-  Any change requires a new generator. Dynamic resolution is disabled.
+  As the guide requires, any change (resize, render-size change) needs a new
+  generator. Dynamic resolution is disabled.
 - `evaluate(&GenerationInputs, &GenerationFrame, &wgpu::Texture)` takes the
   caller's single-sample 2D `COPY_SRC` textures: backbuffer and HUD-less in the
   color format at output size, `R32Float` depth and `Rg16Float` motion at render
@@ -212,73 +223,106 @@ shipping renderer until `tests/framegen_gpu.rs` passes.
     mismatched caller textures are rejected with `InvalidInput` before native
     work.
   - A native or GPU failure poisons the generator.
-- `Generated::Presentable` is returned only when a previous real frame exists
-  and NGX's `OutputDisableInterpolation` buffer was not set. `NoHistory` (reset
-  or first frame) and `Disabled` both mean "present only the real frame".
-- `FrameGenerationStatus` reports the adapter, raw driver version, NGX minimum
-  FG driver, multi-frame maximum (refreshed after feature creation), sizes,
-  format and successful evaluation count.
+- `Generated` reports how the frame should be used:
+  - `Presentable`: a previous real frame exists and NGX's
+    `OutputDisableInterpolation` byte was zero.
+  - `NoHistory` (reset or first frame) and `Disabled` (NGX disabled
+    interpolation and copied the backbuffer): present only the real frame.
+- `FrameGenerationStatus` reports:
+  - adapter and raw driver version;
+  - NGX minimum FG driver;
+  - `MultiFrameCountMax`, re-read after feature creation;
+  - sizes, format and successful evaluation count.
 
 ### Per-frame data contract
 
 `GenerationFrame` carries:
 
 - unjittered camera matrices (`view_to_clip`, `clip_to_view`,
-  `clip_to_lens_clip`, `clip_to_prev_clip`, `prev_clip_to_clip`), copied
-  verbatim as NVIDIA `float[4][4]` rows;
-- camera position and basis, near/far, vertical FOV and aspect;
+  `clip_to_lens_clip`, `clip_to_prev_clip`, `prev_clip_to_clip`) as
+  `float[4][4]` in row-major order assuming post-multiplication (`clip = M * v`
+  with column vectors), as the guide specifies;
+- camera position and unit basis vectors, near/far, FOV in radians and aspect;
 - projection jitter (NGX `JitterOffset`);
-- the motion scale that converts stored current-to-previous motion to
-  render-extent normalized units (`1/render_size` for pixel motion);
+- `motion_scale` (NGX `MvecScale`);
 - `reset`, inverted-depth, camera-motion-included, HDR and orthographic flags;
 - the multi-frame `Interpolation { index, count }`.
 
-Validation rejects non-finite values, zero motion scale, `near <= 0`,
-`far <= near`, non-positive aspect, a perspective FOV outside (0, pi), and
-out-of-range or out-of-order interpolation indices. The header calls the jitter
-"clip space". Its unit and the matrix vector convention must be confirmed
-against NVIDIA's FG guide during integration.
+Motion vectors are current-to-previous screen-space motion **in pixels at the
+motion texture's resolution**. `motion_scale` rescales stored values into those
+units: 1 for pixel motion (the same convention as the SR input), the texture
+size for UV-space motion, and a negative value flips an axis. The API reference
+section and the header comment still say "normalize ... to [-1,1]". The
+integration and parameter sections say pixels, and the GPU test confirms
+pixels. An earlier run used `1/render_size` together with transposed
+projection matrices, and its 2x centroids missed the midpoint by about 1 pixel,
+with uneven 4x spacing. With pixel scale and guide-convention matrices, the
+positions were exact. The two changes were not isolated, but the test camera is
+static (`clip_to_prev_clip` is identity).
+
+Motion vectors must exclude jitter (`MvecJittered` is set to 0). The guide
+describes `jitterOffset` only as a "clip space jitter offset" without a unit.
+The test uses zero jitter, so a jittered SR plus FG pipeline must confirm the
+unit during renderer integration.
+
+Validation rejects:
+
+- non-finite values and zero motion scale;
+- `near <= 0`, `far <= near` and a non-positive aspect;
+- a perspective FOV outside (0, pi);
+- out-of-range or out-of-order interpolation indices.
+
+`evaluate` reports a count above `multi_frame_max` as `Unavailable`.
 
 ### Presentation contract for the renderer
 
-Generating a frame is not presenting it, and this crate owns no swapchain. For
-each real frame N:
+Generating a frame is not presenting it. Per the guide, NGX FG does not handle
+timing or presentation, and this crate owns no swapchain. For each real frame N:
 
-1. Render the scene to HUD-less color, depth and motion, then composite UI onto
-   the backbuffer. Without HUD-less input, the backbuffer must contain no UI,
-   and UI must be composited afterwards onto both real and generated frames.
-2. Call `evaluate` with frame N's inputs. It generates the frame between N-1
-   and N, so real frame N is held until the generated frame is presented.
-3. On `Presentable`, present the generated frame, then real frame N. Pace them
-   evenly: the generated frame goes about half a real-frame interval after N-1
-   (with `count` k, index i goes at i/(k+1)). For multi-frame generation, call
-   `evaluate` for indices 1..=k in order with the same inputs. On `NoHistory`
-   or `Disabled`, present only N.
-4. Set `reset` after a camera cut or teleport, a scene load, history
-   invalidation, or when FG resumes after menus or pauses. Stop calling
-   `evaluate` while no game frames are rendered. Size, format and HUD-less
-   changes require a new generator, whose first evaluation resets
-   automatically.
+1. Render the scene to HUD-less color, depth and motion. Then composite UI onto
+   the backbuffer, which is the image that would be presented without FG and
+   includes post-processing and UI.
+   - HUD-less must equal the backbuffer for every non-UI pixel.
+   - Without HUD-less input, UI may smear in generated frames. Either provide
+     HUD-less, or keep UI out of the backbuffer and composite it afterwards onto
+     both real and generated frames.
+2. Instead of presenting N, call `evaluate` with N's inputs. It generates the
+   frame between N-1 and N. Keep N's backbuffer, which `evaluate` does not
+   modify, until it is presented.
+3. On `Presentable`, present the generated frame as soon as `evaluate`
+   completes, then present N so that intervals are about equal. With
+   multi-frame (`count` k ≤ `multi_frame_max`), call `evaluate` for indices
+   1..=k in order with the same inputs. Present each generated frame in order,
+   then N, at roughly 1/(k+1) spacing. Present the first generated frame
+   without waiting for the rest. On `NoHistory` or `Disabled`, present only N.
+4. Set `reset` whenever the current frame's content is unrelated to the
+   previous frame: camera cuts, teleports, scene loads, history invalidation,
+   and resuming after menus, pauses or cutscenes. Stop calling `evaluate` while
+   no game frames are rendered. Size, format and HUD-less changes require a new
+   generator, whose first evaluation resets automatically.
+5. Halve motion blur for 2x, or divide it by the multiplier for multi-frame
+   generation, as the guide recommends.
 
-Holding frame N adds roughly one real-frame interval of latency, and this crate
-provides no latency-reduction mechanism. The synchronous submit-and-wait and the
-extra copies are a correctness baseline, not a performance claim.
+Holding frame N adds latency; the guide pairs FG with NVIDIA Reflex, which this
+crate does not provide. The synchronous submit-and-wait and the extra copies
+are a correctness baseline, not a performance claim.
 
 ### Remaining for renderer integration
 
 To schedule after SR lands:
 
-- a verified FG evaluation (blocked, see above);
-- swapchain pacing and present ordering;
+- asynchronous presentation pacing and present ordering on the swapchain;
 - the HUD-less/UI split;
-- jittered camera constants for SR versus unjittered ones for FG;
+- jittered camera constants for SR versus unjittered ones for FG, including
+  confirming the jitter unit;
 - depth and motion copies into `R32Float`/`Rg16Float`;
 - an asynchronous lifetime to replace the per-frame wait;
-- frame-rate and VSync interaction;
+- VSync and frame-rate-limit interaction, and latency reduction (Reflex);
 - a context that does not require the SR runtime for FG-only use;
-- UI recomposition, `NotRenderingGameFrames` and dynamic-resolution parameters;
-- Linux runtime packaging;
-- image-quality validation (disocclusion, transparency, UI).
+- `OutputReal`, UI-alpha recomposition, `NotRenderingGameFrames`, HDR and
+  dynamic-resolution parameters;
+- Linux runtime packaging (`libnvidia-ngx-dlssg.so.<ver>`, unvalidated);
+- image-quality validation (disocclusion, transparency, UI, camera motion).
 
 ## Evidence and architecture decision
 
@@ -302,8 +346,10 @@ Inspected on 2026-10-24:
   evaluates into an application output texture (`OutputInterpolated`), with an
   optional `OutputDisableInterpolation` hint buffer. Nothing in these headers
   requires a swapchain, so offscreen evaluation is a valid test, and
-  presentation pacing is the application's job. They do not show that
-  Streamline is required.
+  presentation pacing is the application's job. The SDK's DLSS Frame
+  Generation guide (310.7.0) says the feature does not handle timing or
+  presentation. It recommends Streamline, but it documents the direct NGX
+  integration used here.
 - [Public DLSS headers](https://github.com/NVIDIA/DLSS/tree/v310.9.16/include) and
   [Streamline headers](https://github.com/NVIDIA-RTX/Streamline/tree/main/include)
   expose SR, RR and FG, but the inspected inventories contain no neural-rendering

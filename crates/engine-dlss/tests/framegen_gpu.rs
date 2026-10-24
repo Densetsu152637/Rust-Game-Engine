@@ -118,12 +118,13 @@ fn generates_real_dlss_interpolated_frame() {
             k - 1
         );
         assert!(
-            mass > 0.5 * (BAR * H) as f64,
-            "generated frame lost the bar"
+            (mass - (BAR * H) as f64).abs() < 0.1 * (BAR * H) as f64,
+            "generated frame must keep one bar's brightness, got {mass:.0}"
         );
+        let midpoint = (previous + current) / 2.;
         assert!(
-            x > previous + 4. && x < current - 4.,
-            "generated bar centroid {x:.2} must lie between {previous} and {current}"
+            x > previous + 4. && x < current - 4. && (x - midpoint).abs() < 1.,
+            "generated bar centroid {x:.2} must lie at the midpoint {midpoint} of {previous} and {current}"
         );
     }
 
@@ -144,16 +145,38 @@ fn generates_real_dlss_interpolated_frame() {
                 centroid(&read(&device, &queue, &scene.output)).expect("multi-frame bar");
             eprintln!("4x frame {index}/3: {result:?}, centroid {x:.2}, mass {mass:.0}");
             assert_eq!(result, Generated::Presentable);
+            let expected = center(k - 1) + f64::from(STEP * index) / 4.;
             assert!(
-                x > previous && x < center(k),
-                "4x frame {index} centroid {x:.2} must advance from {previous} toward {}",
-                center(k)
+                x > previous && x < center(k) && (x - expected).abs() < 1.,
+                "4x frame {index} centroid {x:.2} must advance from {previous} to about {expected}"
+            );
+            assert!(
+                (mass - (BAR * H) as f64).abs() < 0.1 * (BAR * H) as f64,
+                "4x frame {index} lost the bar"
             );
             previous = x;
         }
     } else {
         eprintln!("multi-frame generation not reported (max {max}); 4x not evaluated");
     }
+
+    // A reset has no previous frame; NGX copies the current backbuffer.
+    let k = 7;
+    fill(&queue, &scene, bar_x(k));
+    let result = generator
+        .evaluate(
+            &inputs,
+            &frame(true, Interpolation::default()),
+            &scene.output,
+        )
+        .expect("reset NGX FG evaluation");
+    let (_, x) = centroid(&read(&device, &queue, &scene.output)).expect("reset bar");
+    eprintln!("reset frame {k}: {result:?}, centroid {x:.2}");
+    assert_eq!(result, Generated::NoHistory);
+    assert!(
+        (x - center(k)).abs() < 1.,
+        "reset output must be the current frame"
+    );
 
     scene.output.destroy();
     let error = generator
@@ -174,8 +197,8 @@ fn center(k: u32) -> f64 {
 }
 
 fn frame(reset: bool, interpolation: Interpolation) -> GenerationFrame {
-    // Static camera, D3D-style [0,1] depth, row-vector projection; only object
-    // motion is present, so clip_to_prev_clip is identity.
+    // Static camera, D3D-style [0,1] depth, row-major matrices for column
+    // vectors (clip = M * v); only object motion, so clip_to_prev_clip is identity.
     let (near, far, fov, aspect) = (
         0.1f32,
         100f32,
@@ -187,14 +210,14 @@ fn frame(reset: bool, interpolation: Interpolation) -> GenerationFrame {
     let view_to_clip = [
         [f / aspect, 0., 0., 0.],
         [0., f, 0., 0.],
-        [0., 0., q, 1.],
-        [0., 0., -q * near, 0.],
+        [0., 0., q, -q * near],
+        [0., 0., 1., 0.],
     ];
     let clip_to_view = [
         [aspect / f, 0., 0., 0.],
         [0., 1. / f, 0., 0.],
-        [0., 0., 0., -1. / (q * near)],
-        [0., 0., 1., 1. / near],
+        [0., 0., 0., 1.],
+        [0., 0., -1. / (q * near), 1. / near],
     ];
     GenerationFrame {
         camera: Camera {
@@ -206,7 +229,7 @@ fn frame(reset: bool, interpolation: Interpolation) -> GenerationFrame {
             aspect,
             ..Camera::default()
         },
-        motion_scale: [1. / W as f32, 1. / H as f32],
+        motion_scale: [1., 1.],
         reset,
         camera_motion_included: true,
         interpolation,

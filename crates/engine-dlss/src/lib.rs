@@ -1,7 +1,7 @@
 //! DLSS capabilities are separate features, never inferred from a marketing version.
-//! The optional native adapter performs NGX super resolution and contains an NGX
-//! frame-generation adapter whose GPU evaluation is not yet verified (see
-//! docs/dlss.md; presentation is the renderer's job). Ordinary builds need no
+//! The optional native adapter performs NGX super resolution and frame generation
+//! (generation only; presenting generated frames is the renderer's job, see
+//! docs/dlss.md). Ordinary builds need no
 //! NVIDIA SDK and must continue using their normal render path.
 
 use std::{fmt, path::PathBuf};
