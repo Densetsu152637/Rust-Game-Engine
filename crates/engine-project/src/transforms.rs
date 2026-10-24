@@ -98,10 +98,6 @@ pub fn refresh_world_transforms(world: &mut World) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn propagate_system(world: &mut World) -> bevy_ecs::error::Result {
-    refresh_world_transforms(world)?;
-    Ok(())
-}
 /// Resolves an authored scene without constructing a runtime (transition validation).
 pub fn scene_world_transform(scene: &crate::Scene, id: &str) -> Result<WorldTransform> {
     let mut chain = Vec::new();

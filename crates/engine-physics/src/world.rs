@@ -62,6 +62,11 @@ macro_rules! world {
                     .friction(material.friction)
                     .restitution(material.restitution)
                     .sensor(material.sensor)
+                    .active_collision_types(if material.sensor {
+                        ActiveCollisionTypes::all()
+                    } else {
+                        ActiveCollisionTypes::default()
+                    })
                     .collision_groups(InteractionGroups::new(
                         Group::from_bits_truncate(material.layer),
                         Group::from_bits_truncate(material.mask),

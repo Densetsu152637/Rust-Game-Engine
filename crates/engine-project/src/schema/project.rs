@@ -93,7 +93,7 @@ impl Project {
                     1024 * 1024,
                 )?)?)?
             } else {
-                Default::default()
+                crate::catalog::ComponentCatalog::new(Vec::new())?
             },
             schema: 1,
             name: raw.name,
@@ -161,6 +161,9 @@ impl Project {
                 "scene" | "prefab" => self.validate_scene(&load_scene(&self.root, &asset.path)?)?,
                 "model" => {
                     crate::model_import::load_model(&file)?;
+                }
+                "animation" => {
+                    crate::simulation::load_clip(self, &asset.id)?;
                 }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;

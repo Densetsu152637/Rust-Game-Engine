@@ -994,10 +994,13 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "blake3",
+ "engine-animation",
  "engine-assets",
  "engine-audio",
  "engine-core",
+ "engine-navigation",
  "engine-network",
+ "engine-physics",
  "fs2",
  "glam 0.34.1",
  "image",
