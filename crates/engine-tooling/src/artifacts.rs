@@ -174,6 +174,8 @@ pub fn package_project(
     destination: &Path,
     engine_root: &Path,
 ) -> Result<PathBuf> {
+    let package_host = engine_platform::PackageHost::current()
+        .map_err(|error| Error::new("package.platform.unsupported", error.to_string()))?;
     reject_source_destination(&project.root, destination, true)?;
     if !artifact.executable.is_file() {
         return Err(Error::new(
@@ -220,6 +222,10 @@ pub fn package_project(
             serde_json::to_vec_pretty(artifact)?,
         )?;
         fs::write(
+            staging.join("package-host.json"),
+            serde_json::to_vec_pretty(&package_host)?,
+        )?;
+        fs::write(
             staging.join("run.cmd"),
             "@echo off\r\n\"%~dp0runtime.exe\" \"%~dp0game\\project.json\" %*\r\nexit /b %errorlevel%\r\n",
         )?;
@@ -235,8 +241,12 @@ pub fn package_project(
         fs::write(
             staging.join("PACKAGE.txt"),
             format!(
-                "Native runtime generation {}\nFingerprint {}\nLaunch run.cmd on Windows or run.sh on Unix.\nPlayer saves/settings remain outside this directory.\nDependency notices are inventoried in licenses/dependencies.json.\n",
-                artifact.generation, artifact.fingerprint
+                "Native runtime generation {}\nFingerprint {}\nPackaged on {} ({}). Launch {} on this host platform.\nThis is a host-native directory package, not a cross-platform binary, installer, signed application or store bundle.\nPlayer saves/settings remain outside this directory.\nDependency notices are inventoried in licenses/dependencies.json.\n",
+                artifact.generation,
+                artifact.fingerprint,
+                package_host.platform.name(),
+                package_host.architecture,
+                package_host.launcher_filename
             ),
         )?;
         Ok(())

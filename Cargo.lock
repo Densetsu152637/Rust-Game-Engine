@@ -847,6 +847,7 @@ dependencies = [
  "bevy_ecs",
  "engine-ecs",
  "engine-log",
+ "serde",
  "tracing",
 ]
 
@@ -911,6 +912,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-platform"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "engine-project"
 version = "0.1.0"
 dependencies = [
@@ -956,6 +964,7 @@ dependencies = [
  "engine-editor",
  "engine-log",
  "engine-mcp",
+ "engine-platform",
  "engine-project",
  "image",
  "pollster",

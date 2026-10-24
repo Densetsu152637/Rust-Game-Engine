@@ -9,6 +9,7 @@ mod editor;
 mod errors;
 mod mcp;
 mod options;
+mod platform;
 mod project;
 mod run;
 mod scene;
@@ -23,6 +24,7 @@ use serde_json::{Value, json};
 use std::ffi::OsString;
 
 const USAGE: &str = "Usage: engine <command> [--format json]\n  \
+platform [--target windows|linux|macos|android|ios|web|unknown]\n  \
 project init <template-manifest> <new-directory>\n  \
 project validate <manifest> [--no-rust]\n  \
 project assets <manifest>\n  \
@@ -98,6 +100,7 @@ fn text(value: &OsString) -> Result<&str> {
 fn dispatch(arguments: &[OsString]) -> Result<Outcome> {
     let name = arguments.first().map(text).transpose()?.unwrap_or("");
     match name {
+        "platform" => platform::platform(&arguments[1..]),
         "run" => run::run(&arguments[1..]),
         "project" => {
             let action = arguments.get(1).map(text).transpose()?.unwrap_or("");

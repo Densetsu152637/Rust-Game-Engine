@@ -74,6 +74,15 @@ fn initialize_and_package_refuse_existing_destination_and_leave_authored_data() 
     );
     assert!(output.join("licenses/engine-LICENSE").is_file());
     assert!(output.join("licenses/runtime-Cargo.lock").is_file());
+    let host: engine_platform::PackageHost =
+        serde_json::from_slice(&fs::read(output.join("package-host.json")).unwrap()).unwrap();
+    assert_eq!(host.platform, engine_platform::HostPlatform::current());
+    assert!(output.join(host.runtime_filename).is_file());
+    assert!(
+        fs::read_to_string(output.join("PACKAGE.txt"))
+            .unwrap()
+            .contains(&host.launcher_filename)
+    );
     assert!(package_project(&project, &artifact, &output, &engine).is_err());
     assert_eq!(original, fs::read(project.manifest).unwrap());
 }

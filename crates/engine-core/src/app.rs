@@ -1,8 +1,10 @@
 use std::{
     any::TypeId,
     collections::{HashMap, HashSet},
+    time::Instant,
 };
 
+use crate::profile::{ProfileSnapshot, Profiler};
 use anyhow::{Result, anyhow, bail, ensure};
 use engine_ecs::{
     ExtractionSet, RenderWorld,
@@ -15,7 +17,8 @@ use engine_ecs::{
 use tracing::{debug, error, info};
 
 /// Startup/update/extract/shutdown use the simulation world; render uses its snapshot.
-#[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Stage {
     Startup,
     Update,
@@ -70,6 +73,7 @@ pub struct EngineApp {
     schedules: HashMap<Stage, Schedule>,
     extracted_types: HashSet<TypeId>,
     state: AppState,
+    profiler: Profiler,
 }
 
 impl Default for EngineApp {
@@ -104,6 +108,7 @@ impl EngineApp {
             schedules,
             extracted_types: HashSet::new(),
             state: AppState::Configuring,
+            profiler: Profiler::default(),
         };
         app.schedule_mut(Stage::Extract)
             .configure_sets((ExtractionSet::Cleanup, ExtractionSet::Components).chain())
@@ -134,6 +139,16 @@ impl EngineApp {
     }
     pub fn time(&self) -> &Time {
         self.world.resource::<Time>()
+    }
+
+    /// CPU wall-clock timings; independent of deterministic simulation time.
+    pub fn profile(&self) -> ProfileSnapshot {
+        self.profiler.snapshot()
+    }
+
+    /// Retains the newest frames. Zero disables frame retention, not aggregates.
+    pub fn set_profile_capacity(&mut self, capacity: usize) -> Result<()> {
+        self.profiler.set_capacity(capacity)
     }
 
     pub fn schedule_mut(&mut self, stage: Stage) -> &mut Schedule {
@@ -200,6 +215,28 @@ impl EngineApp {
             time.dt = dt;
             time.elapsed += f64::from(dt);
         }
+        let started = Instant::now();
+        self.profiler.begin_frame(self.time().tick);
+        let result = self.tick_stages();
+        self.profiler.end_frame(
+            started.elapsed(),
+            self.world
+                .archetypes()
+                .iter()
+                .map(|archetype| archetype.len())
+                .sum(),
+            self.render
+                .world()
+                .archetypes()
+                .iter()
+                .map(|archetype| archetype.len())
+                .sum(),
+            result.is_ok(),
+        );
+        result
+    }
+
+    fn tick_stages(&mut self) -> Result<()> {
         for stage in [Stage::Update, Stage::Extract, Stage::Render] {
             self.run_stage(stage)?;
             if self.stop_requested() {
@@ -261,7 +298,10 @@ impl EngineApp {
     }
 
     fn run_stage(&mut self, stage: Stage) -> Result<()> {
+        let started = Instant::now();
         let result = tracing::trace_span!("stage", ?stage).in_scope(|| self.execute_stage(stage));
+        self.profiler
+            .record_stage(stage, started.elapsed(), result.is_ok());
         if let Err(error) = &result {
             error!(?stage, %error, "stage failed; app marked failed");
             self.state = AppState::Failed;
