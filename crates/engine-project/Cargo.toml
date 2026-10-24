@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+engine-assets = { path = "../engine-assets" }
 engine-core = { path = "../engine-core" }
 engine-audio = { path = "../engine-audio" }
 bevy_ecs = "=0.20.0"

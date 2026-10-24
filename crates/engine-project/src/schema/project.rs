@@ -30,7 +30,16 @@ impl Project {
                 ));
             }
             if ![
-                "script", "mesh", "texture", "font", "audio", "scene", "shader", "prefab",
+                "script",
+                "mesh",
+                "texture",
+                "font",
+                "audio",
+                "scene",
+                "shader",
+                "prefab",
+                "model",
+                "animation",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -149,7 +158,10 @@ impl Project {
         for asset in self.assets.values() {
             let file = self.resolve_asset(&asset.id)?;
             match asset.kind.as_str() {
-                "scene" => self.validate_scene(&load_scene(&self.root, &asset.path)?)?,
+                "scene" | "prefab" => self.validate_scene(&load_scene(&self.root, &asset.path)?)?,
+                "model" => {
+                    crate::model_import::load_model(&file)?;
+                }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;
                 }
