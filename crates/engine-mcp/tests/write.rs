@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 7] = [
+const WRITE_TOOLS: [&str; 8] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -28,6 +28,7 @@ const WRITE_TOOLS: [&str; 7] = [
     "component_set",
     "component_remove",
     "file_write",
+    "asset_import_model",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -81,7 +82,7 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 19);
+    assert_eq!(names.len(), 20);
     assert_eq!(names[12..], WRITE_TOOLS);
     assert_eq!(names[..12], tool_names(dir.path(), read_only()));
 }
@@ -112,6 +113,7 @@ fn write_tool_annotations_are_accurate() {
     expect("component_set", true, true);
     expect("component_remove", true, true);
     expect("file_write", true, true);
+    expect("asset_import_model", false, false);
     for tool in tools
         .iter()
         .filter(|t| t["annotations"]["readOnlyHint"] == true)

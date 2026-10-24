@@ -411,3 +411,18 @@ fn rejects_invalid_indices_joint_references_and_key_order() {
         assert!(import(temp.path()).is_err());
     }
 }
+#[test]
+fn rejects_dependencies_inside_protected_metadata_or_build_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut document, binary) = fixture();
+    for directory in [".git", ".derived", "target"] {
+        std::fs::create_dir(temp.path().join(directory)).unwrap();
+        std::fs::write(temp.path().join(directory).join("mesh.bin"), &binary).unwrap();
+        document["buffers"][0]["uri"] = json!(format!("{directory}/mesh.bin"));
+        write_glb(temp.path(), &document, &binary);
+        assert!(matches!(
+            import(temp.path()),
+            Err(AssetError::Unsupported(_))
+        ));
+    }
+}

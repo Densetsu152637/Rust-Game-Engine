@@ -11,8 +11,17 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 7] = [
-    "script", "mesh", "texture", "font", "audio", "scene", "shader",
+const KINDS: [&str; 10] = [
+    "script",
+    "mesh",
+    "texture",
+    "font",
+    "audio",
+    "scene",
+    "shader",
+    "prefab",
+    "model",
+    "animation",
 ];
 const MAX_USES: usize = 200;
 
@@ -172,7 +181,13 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
             let lines = String::from_utf8_lossy(&bytes).lines().count();
             json!({"language": "rust", "lines": lines, "bytes": bytes.len()})
         }
-        "scene" => {
+        "model" => {
+            let model = engine_project::model_import::load_model(&file)?;
+            json!({"version":model.version,"nodes":model.scene.nodes.len(),"meshes":model.scene.meshes.len(),
+                "materials":model.scene.materials.len(),"images":model.scene.images.len(),"skins":model.scene.skins.len(),
+                "clips":model.scene.clips.len(),"fingerprint":blake3::Hash::from(model.scene.fingerprint.0).to_hex().to_string()})
+        }
+        "scene" | "prefab" => {
             let relative = file.strip_prefix(cx.root).expect("confined file");
             let scene = load_scene(cx.root, relative)?;
             json!({"scene_id": scene.id, "entities": scene.entities.len(),
@@ -185,7 +200,12 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
 /// Scenes and fonts that reference `asset`.
 fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value>, bool) {
     let mut uses = Vec::new();
-    for (path, _, _) in scene_paths(project) {
+    let prefabs = project
+        .assets
+        .values()
+        .filter(|a| a.kind == "prefab")
+        .map(|a| (slash(&a.path), Some(a.id.clone()), false));
+    for (path, _, _) in scene_paths(project).into_iter().chain(prefabs) {
         let Ok(scene) = load_scene(cx.root, Path::new(&path)) else {
             continue;
         };
@@ -203,6 +223,14 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
             }
             if let Some(s) = &c.sprite_renderer {
                 fields.push(("SpriteRenderer", "texture", &s.texture));
+            }
+            if let Some(clip) = c
+                .custom
+                .get("engine.AnimationPlayer")
+                .and_then(|v| v.data.get("clip"))
+                .and_then(Value::as_str)
+            {
+                fields.push(("engine.AnimationPlayer", "clip", clip));
             }
             for (component, field, id) in fields {
                 if id == asset.id {

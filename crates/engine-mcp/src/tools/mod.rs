@@ -5,6 +5,7 @@ mod assets;
 mod components;
 mod edit;
 mod files;
+mod model_import;
 mod project;
 mod scene;
 
@@ -71,6 +72,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(files::read_tools());
     tools.extend(edit::tools());
     tools.extend(files::write_tools());
+    tools.extend(model_import::tools());
     tools
 }
 
