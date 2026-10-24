@@ -266,8 +266,13 @@ fn outline(shape: &Footprint2D, max_vertices: u32) -> Result<Vec<P2>> {
             place(pts, center, rotation)
         }
         Footprint2D::Polygon { ref points } => {
-            if points.len() < 3 || points.len() > max_vertices as usize {
-                return Err(proxy_err(format!("polygon needs 3-{max_vertices} points")));
+            if points.len() < 3 {
+                return Err(proxy_err("polygon needs at least 3 points"));
+            }
+            if points.len() > max_vertices as usize {
+                return Err(limit(format!(
+                    "polygon has more than {max_vertices} points"
+                )));
             }
             if !points.iter().all(|p| finite(p)) {
                 return Err(proxy_err("polygon points must be finite"));
@@ -563,10 +568,11 @@ impl AcousticWorldBuilder {
         let mut outlines = Vec::with_capacity(footprints.len());
         for (i, f) in footprints.iter().enumerate() {
             self.check_material(f.material)?;
-            let pts = outline(&f.shape, limits.max_footprint_vertices)
-                .map_err(|e| proxy_err(format!("footprint {i}: {}", e.message)))?;
+            let pts = outline(&f.shape, limits.max_footprint_vertices).map_err(|e| {
+                AcousticsError::new(e.code, format!("footprint {i}: {}", e.message))
+            })?;
             if pts.len() > limits.max_footprint_vertices as usize {
-                return Err(proxy_err(format!(
+                return Err(limit(format!(
                     "footprint {i} has more than {} vertices",
                     limits.max_footprint_vertices
                 )));
