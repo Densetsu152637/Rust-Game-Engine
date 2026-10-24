@@ -7,6 +7,7 @@ mod animation;
 mod descriptors;
 mod imported;
 mod navigation;
+mod navmesh;
 mod physics;
 mod skinning;
 mod types;
@@ -15,6 +16,7 @@ pub use animation::{
 };
 pub use descriptors::component_descriptors;
 pub use imported::{imported_clip, imported_skeleton, skin_palette};
+pub use navmesh::*;
 pub use types::*;
 
 fn invalid(message: impl Into<String>) -> Error {

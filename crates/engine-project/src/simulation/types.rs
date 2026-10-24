@@ -148,12 +148,23 @@ impl Default for AnimationPlayer {
 pub struct NavigationAgent {
     pub waypoints: Vec<[f32; 3]>,
     pub speed: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navmesh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<[f32; 3]>,
+    pub query: engine_navigation::QuerySettings,
+    /// Increment from a native callback to request a new route from the current pose.
+    pub repath: u64,
 }
 impl Default for NavigationAgent {
     fn default() -> Self {
         Self {
             waypoints: vec![],
             speed: 1.,
+            navmesh: None,
+            target: None,
+            query: Default::default(),
+            repath: 0,
         }
     }
 }

@@ -40,6 +40,7 @@ impl Project {
                 "prefab",
                 "model",
                 "animation",
+                "navigation",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -172,6 +173,9 @@ impl Project {
                 }
                 "animation" => {
                     crate::simulation::load_clip(self, &asset.id)?;
+                }
+                "navigation" => {
+                    crate::simulation::load_navmesh(self, &asset.id)?;
                 }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;

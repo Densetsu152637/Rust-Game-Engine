@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 10] = [
+const KINDS: [&str; 11] = [
     "script",
     "mesh",
     "texture",
@@ -22,6 +22,7 @@ const KINDS: [&str; 10] = [
     "prefab",
     "model",
     "animation",
+    "navigation",
 ];
 const MAX_USES: usize = 200;
 
@@ -187,6 +188,10 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
                 "materials":model.scene.materials.len(),"images":model.scene.images.len(),"skins":model.scene.skins.len(),
                 "clips":model.scene.clips.len(),"fingerprint":blake3::Hash::from(model.scene.fingerprint.0).to_hex().to_string()})
         }
+        "navigation" => {
+            let mesh = engine_project::simulation::load_navmesh(project, &asset.id)?;
+            json!({"polygons":mesh.polygon_count(),"settings":mesh.settings()})
+        }
         "scene" | "prefab" => {
             let relative = file.strip_prefix(cx.root).expect("confined file");
             let scene = load_scene(cx.root, relative)?;
@@ -239,6 +244,14 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
                 .and_then(Value::as_str)
             {
                 fields.push(("engine.SkinBinding", "model", model));
+            }
+            if let Some(navmesh) = c
+                .custom
+                .get("engine.NavigationAgent")
+                .and_then(|v| v.data.get("navmesh"))
+                .and_then(Value::as_str)
+            {
+                fields.push(("engine.NavigationAgent", "navmesh", navmesh));
             }
             for (component, field, id) in fields {
                 if id == asset.id {

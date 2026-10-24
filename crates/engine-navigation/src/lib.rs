@@ -1,6 +1,8 @@
-//! Bounded deterministic weighted-grid and waypoint-graph pathfinding.
+//! Bounded deterministic grid, graph and baked polygon navigation.
+mod navmesh;
 use anyhow::{Result, ensure};
 use glam::Vec3;
+pub use navmesh::*;
 use std::{cmp::Reverse, collections::BinaryHeap};
 #[derive(Clone, Copy, Debug)]
 pub struct SearchBudget {
