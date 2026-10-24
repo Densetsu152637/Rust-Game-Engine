@@ -1330,6 +1330,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-render-rt"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.34.1",
+ "naga",
+ "pollster 0.4.0",
+ "serde",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
 name = "engine-render-wgpu"
 version = "0.1.0"
 dependencies = [
