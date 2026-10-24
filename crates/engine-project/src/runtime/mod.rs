@@ -250,7 +250,14 @@ impl Runtime {
         self.dispatch_events()?;
         let viewport = self.extract_camera().logical_size;
         let ui_input = self.app.world().resource::<UiModel>().gameplay_frame();
-        crate::ui_tree::tick_world(self.app.world_mut(), viewport, &ui_input)?;
+        let ui_text =
+            crate::ui_tree::BitmapTextBackend::new(&self.content.fonts, &self.content.textures);
+        let ui_context = crate::ui_tree::UiTickContext {
+            viewport,
+            dt,
+            text: &ui_text,
+        };
+        crate::ui_tree::tick_world(self.app.world_mut(), &ui_context, &ui_input)?;
         let mut scripts = std::mem::take(&mut self.scripts);
         let mut failure = None;
         for script in &mut scripts {

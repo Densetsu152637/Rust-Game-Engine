@@ -32,20 +32,25 @@ fn roots(world: &World) -> Vec<(String, Entity, UiRoot)> {
 
 /// Called once per simulation tick with UiModel::gameplay_frame after the modal
 /// panel update. Queued events are delivered by the runtime's event dispatcher.
-pub fn tick_world(world: &mut World, viewport: [u32; 2], input: &crate::ActionFrame) -> Result<()> {
+pub fn tick_world(
+    world: &mut World,
+    ctx: &UiTickContext<'_>,
+    input: &crate::ActionFrame,
+) -> Result<()> {
     let sources = roots(world);
     let mut roots: Vec<_> = sources
         .iter()
         .map(|(id, _, root)| (id.clone(), root.clone()))
         .collect();
-    let mut state = world.get_resource::<GameUi>().cloned().unwrap_or_default();
-    let events = state.tick(&mut roots, viewport, input)?;
+    let mut state = world.remove_resource::<GameUi>().unwrap_or_default();
+    let result = state.tick_with(&mut roots, input, ctx);
+    world.insert_resource(state);
+    let events = result?;
     for ((_, entity, previous), (_, root)) in sources.iter().zip(roots) {
         if &root != previous {
             world.entity_mut(*entity).insert(root);
         }
     }
-    world.insert_resource(state);
     for event in events {
         let source = sources
             .iter()
@@ -71,18 +76,19 @@ pub fn extract_world(
     textures: &BTreeMap<String, Arc<Texture>>,
 ) -> Result<Vec<Draw>> {
     let roots = roots(world);
-    if roots.len() > 64 {
+    if roots.len() > MAX_UI_ROOTS {
         return Err(invalid("UI exceeds 64 roots"));
     }
-    let focus = world.get_resource::<GameUi>().and_then(GameUi::focus);
+    let ui = world.get_resource::<GameUi>();
+    let text = BitmapTextBackend::new(fonts, textures);
     let mut draws = vec![];
     let mut ids = std::collections::BTreeSet::new();
     for (id, _, root) in roots {
         if !ids.insert(id.clone()) {
             return Err(invalid("Duplicate UI root ID"));
         }
-        let focused = focus.filter(|f| f.root == id).map(|f| f.node.as_str());
-        draws.extend(root.extract_draws(&id, viewport, focused, fonts, textures)?);
+        let state = ui.map(|ui| ui.render_state(&id)).unwrap_or_default();
+        draws.extend(root.extract_draws_with(&id, viewport, &state, &text, textures)?);
     }
     Ok(draws)
 }

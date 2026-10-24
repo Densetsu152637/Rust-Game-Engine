@@ -19,6 +19,8 @@ blake3 = "1"
 tempfile = "3"
 fs2 = "0.4"
 glam.workspace = true
+# Flexbox, CSS grid and absolute layout for retained game UI (MIT).
+taffy = { version = "=0.15.0", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
 
 [dev-dependencies]
 tempfile = "3"
