@@ -106,6 +106,12 @@ const PLAYER: &str = r#"
             std::thread::sleep(std::time::Duration::from_millis(1));
             Ok(())
         }
+        fn on_event(&mut self,world:&mut World,owner:Entity,event:&engine_project::EngineEvent)->engine_project::Result<()> {
+            if event.name=="test.bump" {
+                world.get_mut::<Transform>(owner).unwrap().position[0]+=event.payload["delta"].as_f64().unwrap() as f32;
+            }
+            Ok(())
+        }
         fn on_destroy(&mut self,world:&mut World,_:Entity)->engine_project::Result<()> { world.resource_mut::<engine_project::runtime::RuntimeLog>().0.push("clean native teardown".into()); Ok(()) }
     }
     pub fn configure(app:&mut engine_core::EngineApp)->engine_core::Result<()> {
@@ -425,7 +431,8 @@ fn build_run_input_reuse_failure_and_timeouts_over_stdio() {
     assert_eq!(run["logs_truncated"], false);
     assert_eq!(run["entities_truncated"], false);
 
-    // 3. One server session: build once, then reuse it and filter entities.
+    // 3. One server session: build once, reuse it, filter entities and invoke a native callback.
+    let authored_before = fs::read(root.join("main.scene.json")).unwrap();
     let session = mcp(
         &exec,
         &[],
@@ -441,6 +448,13 @@ fn build_run_input_reuse_failure_and_timeouts_over_stdio() {
                 "project_run_headless",
                 json!({"ticks":3,"rebuild":false,"entities":["nobody"]}),
             ),
+            call(
+                4,
+                "project_run_headless",
+                json!({"ticks":3,"rebuild":false,"events":[{
+                    "tick":0,"name":"test.bump","target":"entity:player","payload":{"delta":7}
+                }]}),
+            ),
         ],
     );
     assert_eq!(result_of(&session, 0)["ok"], true);
@@ -453,6 +467,20 @@ fn build_run_input_reuse_failure_and_timeouts_over_stdio() {
     assert_eq!(reused["entities"][0]["id"], "entity:player");
     assert_eq!(result_of(&session, 2)["entities"], json!([]));
     assert_eq!(result_of(&session, 2)["entity_count"], 1);
+    let scheduled = result_of(&session, 3);
+    assert_eq!(scheduled["ok"], true, "{scheduled}");
+    assert_eq!(
+        scheduled["entities"][0]["components"]["Transform"]["position"][0],
+        7.0
+    );
+    assert_eq!(scheduled["event_count"], 1);
+    assert_eq!(scheduled["event_trace"][0]["name"], "test.bump");
+    assert_eq!(scheduled["event_trace"][0]["tick"], 0);
+    assert_eq!(scheduled["event_trace_truncated"], false);
+    assert_eq!(
+        fs::read(root.join("main.scene.json")).unwrap(),
+        authored_before
+    );
 
     // 4. Argument validation yields structured tool errors, not protocol errors.
     let bad = mcp(

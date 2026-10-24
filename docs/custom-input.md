@@ -105,8 +105,10 @@ responsibility; polling must be nonblocking.
 
 `InputDevices::snapshot()` returns the serializable
 `engine_project::input::InputDevicesSnapshot`: device descriptors, connection/error
-status, bindings and accessibility behaviors. Hosts can expose this through their
-inspection reports. It contains no raw driver handles. No hardware-specific
+status, bindings and accessibility behaviors. Runtime snapshots include it as
+`input_devices` when the resource exists. MCP `project_run_headless` returns this
+field as well, capped at 64 KiB; an oversized field becomes null and is named in
+`telemetry_omitted`. It contains no raw driver handles. No hardware-specific
 compatibility is implied by a registered descriptor.
 
 `cargo test -p engine-project --test input_devices` verifies fake native adapters

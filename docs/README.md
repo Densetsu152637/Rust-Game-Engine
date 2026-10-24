@@ -47,12 +47,16 @@
   and flock helpers.
 - [Input and UI](desktop-input-ui.md): action mapping, rebinding, focus handling and
   the modal UI model.
+- [Custom and accessible input](custom-input.md): injectable peripheral adapters,
+  remapping, hold/toggle actions and device diagnostics.
 - [Retained game UI](game-ui.md): hierarchy/layout, controls, clipping, focus and
   native callback integration.
 - [Multiplayer](networking.md): authoritative sessions, replication, ownership,
   runtime integration and trusted-network limits.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,
   typed adapters, hierarchy, events, batches and prefabs shared with MCP.
+- [Scheduled events](scheduled-events.md): CLI/MCP event injection, callback
+  delivery and bounded execution traces.
 - [Audio and persistence](desktop-services.md): the mixer, spatial sources, CPAL
   playback, durable saves and separate settings.
 - [Desktop packages](desktop-packaging.md): relocatable packages and dependency

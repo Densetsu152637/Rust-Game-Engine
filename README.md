@@ -15,6 +15,11 @@ Windows, Linux and macOS; mobile, browser and console application hosts remain
 unimplemented. See [Platforms](docs/platforms.md) for exact capability boundaries and
 [Architecture](docs/architecture.md#design-decisions) for the design decisions.
 
+Keyboard, mouse/trackpad and controller actions support remapping. Native games
+can inject custom peripheral adapters, including accessibility devices, and offer
+hold/toggle actions. OS-emulating devices use the standard input paths; proprietary
+protocols need an adapter. See [Custom and accessible input](docs/custom-input.md).
+
 ## Workspace layout
 
 | Path | Purpose |

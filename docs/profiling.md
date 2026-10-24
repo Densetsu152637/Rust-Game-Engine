@@ -1,5 +1,11 @@
 # CPU profiling
 
+CLI run reports include `profile`. MCP `project_run_headless` exposes the same
+aggregates and newest 32 retained frames, with `profile_frames_truncated` marking
+summary trimming. Each telemetry object (`profile`, `network`, `input_devices`)
+is capped at 64 KiB; oversized objects become null and are named in
+`telemetry_omitted`. Absent optional services are null without an omission entry.
+
 `EngineApp` measures actual CPU wall time with `std::time::Instant`. It retains
 the newest 120 simulation ticks by default. This telemetry never changes the
 fixed `Time.dt`, `Time.elapsed` or `Time.tick` used by gameplay.

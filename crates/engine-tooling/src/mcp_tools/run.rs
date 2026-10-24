@@ -88,6 +88,11 @@ impl Tool for RunTool {
                 ("event_trace", json!({"type":"array","items":{"type":"object"}})),
                 ("event_count", json!({"type":"integer"})),
                 ("event_trace_truncated", json!({"type":"boolean"})),
+                ("profile", json!({"type":["object","null"]})),
+                ("profile_frames_truncated", json!({"type":"boolean"})),
+                ("network", json!({"type":["object","null"]})),
+                ("input_devices", json!({"type":["object","null"]})),
+                ("telemetry_omitted", json!({"type":"array","items":{"type":"string"}})),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
             ])),
@@ -187,7 +192,27 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
         .as_bool()
         .unwrap_or(false)
         || source_events.is_some_and(|events| events.len() > event_trace.len());
+    let mut profile = report["profile"].clone();
+    let mut profile_frames_truncated = false;
+    if let Some(frames) = profile.get_mut("frames").and_then(Value::as_array_mut) {
+        profile_frames_truncated = frames.len() > 32;
+        frames.drain(..frames.len().saturating_sub(32));
+    }
+    let mut telemetry_omitted = Vec::new();
+    let mut telemetry = |name: &str, value: &Value| {
+        if value.to_string().len() > 64 * 1024 {
+            telemetry_omitted.push(name.to_owned());
+            Value::Null
+        } else {
+            value.clone()
+        }
+    };
+    let profile = telemetry("profile", &profile);
+    let network = telemetry("network", &snapshot["network"]);
+    let input_devices = telemetry("input_devices", &snapshot["input_devices"]);
     json!({
+        "profile": profile, "profile_frames_truncated": profile_frames_truncated,
+        "network": network, "input_devices": input_devices, "telemetry_omitted": telemetry_omitted,
         "event_trace":event_trace, "event_count":report["event_trace"]["count"].as_u64().unwrap_or(0),
         "event_trace_truncated":trace_truncated,
         "ticks": report["ticks"], "fixed_delta": report["fixed_delta"],

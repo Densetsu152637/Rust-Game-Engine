@@ -396,6 +396,12 @@ commands as human controllers, with revision checks and dry runs. See
 
 ## Scheduled events and delivery traces
 
+`project_run_headless` also returns CPU `profile` aggregates and the newest 32
+retained frames (`profile_frames_truncated` indicates trimming), optional
+`network` status and `input_devices` descriptors, bindings and diagnostics.
+Each telemetry field is capped at 64 KiB. Oversized fields become null and are
+named in `telemetry_omitted`; absent optional services are simply null.
+
 `project_run_headless` accepts an ordered `events` array of
 `{tick,name,source?,target?,payload?}`. The existing exec gate applies; write access
 is not required for this ephemeral run input. The result includes `event_trace`,

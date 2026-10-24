@@ -519,5 +519,15 @@ fn ordinary_headless_runtime_polls_before_callbacks_and_modal_capture() {
             .held("jump")
     );
     assert_eq!(handle.polls.load(Ordering::Relaxed), 3);
+    let snapshot = serde_json::to_value(runtime.try_snapshot().unwrap()).unwrap();
+    assert_eq!(
+        snapshot["input_devices"]["devices"][0]["descriptor"]["id"],
+        "switchboard"
+    );
+    assert_eq!(snapshot["input_devices"]["devices"][0]["connected"], true);
+    assert_eq!(
+        snapshot["input_devices"]["bindings"]["jump"][0]["control"],
+        "switch"
+    );
     runtime.stop().unwrap();
 }

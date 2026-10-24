@@ -125,6 +125,39 @@ fn run_summaries_are_bounded() {
 }
 
 #[test]
+fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
+    let report = json!({"profile": {
+        "frames": (0..100).map(|tick| json!({"tick":tick})).collect::<Vec<_>>(),
+        "frames_recorded": 100, "stages": []
+    }, "scene": {
+        "network":{"connected":true},
+        "input_devices":{"devices":[{"descriptor":{"id":"switch"},"connected":true}]}
+    }});
+    let summary = summarize(&report, None, 50);
+    assert_eq!(summary["profile"]["frames"].as_array().unwrap().len(), 32);
+    assert_eq!(summary["profile"]["frames"][0]["tick"], 68);
+    assert_eq!(summary["profile"]["frames_recorded"], 100);
+    assert_eq!(summary["profile_frames_truncated"], true);
+    assert_eq!(summary["network"]["connected"], true);
+    assert_eq!(
+        summary["input_devices"]["devices"][0]["descriptor"]["id"],
+        "switch"
+    );
+    assert_eq!(summary["telemetry_omitted"], json!([]));
+    let oversized = summarize(
+        &json!({"scene":{"input_devices":{"label":"x".repeat(65_536)}}}),
+        None,
+        50,
+    );
+    assert!(oversized["input_devices"].is_null());
+    assert_eq!(oversized["telemetry_omitted"], json!(["input_devices"]));
+    let absent = summarize(&json!({}), None, 50);
+    assert!(absent["profile"].is_null());
+    assert!(absent["input_devices"].is_null());
+    assert_eq!(absent["telemetry_omitted"], json!([]));
+}
+
+#[test]
 fn the_deadline_fires_and_reports_it() {
     let (value, fired) = with_deadline(Duration::from_millis(60), |cancel| {
         while !cancel.load(Ordering::Acquire) {

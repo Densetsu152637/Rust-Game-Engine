@@ -7,6 +7,8 @@ pub struct RuntimeSnapshot {
     pub events: Vec<crate::events::EventRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<crate::networking::NetworkStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_devices: Option<crate::input::InputDevicesSnapshot>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -151,6 +153,11 @@ impl Runtime {
             diagnostics,
             events: crate::events::records(self.app.world()),
             network: crate::networking::status(self.app.world()),
+            input_devices: self
+                .app
+                .world()
+                .get_resource::<crate::input::InputDevices>()
+                .map(crate::input::InputDevices::snapshot),
             ticks: self.ticks,
             scene,
             live_entities: self
