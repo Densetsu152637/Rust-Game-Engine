@@ -66,8 +66,10 @@ impl TriangleGrid {
     fn new(mesh: &MeshData) -> Self {
         let tris: Vec<[DVec3; 3]> = mesh
             .indices
-            .chunks_exact(3)
-            .map(|t| t.map(|i| mesh.positions[i as usize].as_dvec3()))
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| [0, 1, 2].map(|k| mesh.positions[t[k] as usize].as_dvec3()))
             .collect();
         let mut lo = DVec3::splat(f64::INFINITY);
         let mut hi = DVec3::splat(f64::NEG_INFINITY);
@@ -87,8 +89,10 @@ impl TriangleGrid {
         for (ti, t) in tris.iter().enumerate() {
             let tlo = t[0].min(t[1]).min(t[2]);
             let thi = t[0].max(t[1]).max(t[2]);
-            let clo = [0, 1, 2].map(|a| (((tlo[a] - lo[a]) / cell).floor().max(0.0) as usize).min(dims[a] - 1));
-            let chi = [0, 1, 2].map(|a| (((thi[a] - lo[a]) / cell).floor().max(0.0) as usize).min(dims[a] - 1));
+            let clo = [0, 1, 2]
+                .map(|a| (((tlo[a] - lo[a]) / cell).floor().max(0.0) as usize).min(dims[a] - 1));
+            let chi = [0, 1, 2]
+                .map(|a| (((thi[a] - lo[a]) / cell).floor().max(0.0) as usize).min(dims[a] - 1));
             for z in clo[2]..=chi[2] {
                 for y in clo[1]..=chi[1] {
                     for x in clo[0]..=chi[0] {
@@ -108,7 +112,9 @@ impl TriangleGrid {
 
     /// Distance from `p` to the nearest triangle.
     fn distance(&self, p: DVec3) -> f64 {
-        let c0 = [0, 1, 2].map(|a| (((p[a] - self.origin[a]) / self.cell).floor().max(0.0) as usize).min(self.dims[a] - 1));
+        let c0 = [0, 1, 2].map(|a| {
+            (((p[a] - self.origin[a]) / self.cell).floor().max(0.0) as usize).min(self.dims[a] - 1)
+        });
         let max_ring = self.dims.iter().copied().max().unwrap_or(1);
         let mut best = f64::INFINITY;
         for r in 0..=max_ring {
@@ -154,7 +160,7 @@ fn one_sided(from: &MeshData, to: &TriangleGrid) -> f64 {
     for p in &from.positions {
         worst = worst.max(to.distance(p.as_dvec3()));
     }
-    for t in from.indices.chunks_exact(3) {
+    for t in from.indices.as_chunks::<3>().0 {
         let c = (from.positions[t[0] as usize].as_dvec3()
             + from.positions[t[1] as usize].as_dvec3()
             + from.positions[t[2] as usize].as_dvec3())

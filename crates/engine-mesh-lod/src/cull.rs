@@ -27,7 +27,11 @@ pub struct Frustum {
 
 fn normalize_plane(p: Vec4) -> Vec4 {
     let len = p.truncate().length();
-    if len > 1e-12 && len.is_finite() { p / len } else { Vec4::ZERO }
+    if len > 1e-12 && len.is_finite() {
+        p / len
+    } else {
+        Vec4::ZERO
+    }
 }
 
 impl Frustum {

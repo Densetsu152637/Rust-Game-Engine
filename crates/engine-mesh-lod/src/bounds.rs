@@ -109,7 +109,10 @@ impl BoundingSphere {
         }
         // Rounding safety: inflate to cover every point exactly.
         let r = points.iter().map(|p| p.distance(c)).fold(r, f32::max);
-        let ritter = Self { center: c, radius: r };
+        let ritter = Self {
+            center: c,
+            radius: r,
+        };
         Some(if ritter.radius < box_sphere.radius {
             ritter
         } else {

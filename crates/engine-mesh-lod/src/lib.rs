@@ -22,8 +22,8 @@ pub use distance::{distance_to_surface, mesh_error};
 pub use error::{MeshLodError, Result};
 pub use hlod::{HlodCluster, HlodInstance, HlodOptions, build_hlod};
 pub use lod::{
-    LodChain, LodLevel, LodSelectionParams, LodTarget, ScreenSizeLods, build_lod_chain, level_pixel_error,
-    projected_error_pixels, screen_height_fraction, select_lod,
+    LodChain, LodLevel, LodSelectionParams, LodTarget, ScreenSizeLods, build_lod_chain,
+    level_pixel_error, projected_error_pixels, screen_height_fraction, select_lod,
 };
 pub use mesh::MeshData;
 pub use simplify::{SimplifyOptions, SimplifyResult, simplify};

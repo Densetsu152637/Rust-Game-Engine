@@ -487,8 +487,16 @@ pub fn simplify(mesh: &MeshData, options: &SimplifyOptions) -> Result<SimplifyRe
     }
     let tris: Vec<[u32; 3]> = mesh
         .indices
-        .chunks_exact(3)
-        .map(|t| [remap[t[0] as usize], remap[t[1] as usize], remap[t[2] as usize]])
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|t| {
+            [
+                remap[t[0] as usize],
+                remap[t[1] as usize],
+                remap[t[2] as usize],
+            ]
+        })
         .filter(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
         .collect();
     if tris.is_empty() {
@@ -718,7 +726,9 @@ pub fn simplify(mesh: &MeshData, options: &SimplifyOptions) -> Result<SimplifyRe
         achieved_error,
         original_triangles,
         final_triangles,
-        reached_target: options.target_triangles.is_none_or(|t| final_triangles <= t),
+        reached_target: options
+            .target_triangles
+            .is_none_or(|t| final_triangles <= t),
         mesh: out,
     })
 }

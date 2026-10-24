@@ -77,7 +77,9 @@ impl HlodOptions {
             && self.pixel_threshold.is_finite()
             && self.pixel_threshold > 0.0)
         {
-            return bad("vertical_fov in (0, pi), viewport_height > 0 and pixel_threshold > 0 required");
+            return bad(
+                "vertical_fov in (0, pi), viewport_height > 0 and pixel_threshold > 0 required",
+            );
         }
         Ok(())
     }
@@ -117,7 +119,8 @@ fn cluster_items(items: Vec<Item>, opts: &HlodOptions) -> Vec<Vec<Item>> {
             .map(|i| i.bounds)
             .reduce(|a, b| a.union(&b))
             .expect("non-empty group");
-        let small = group.len() <= opts.max_cluster_instances && bounds.max_extent() <= opts.max_cluster_extent;
+        let small = group.len() <= opts.max_cluster_instances
+            && bounds.max_extent() <= opts.max_cluster_extent;
         if small || group.len() == 1 {
             done.push(group);
             continue;
@@ -133,11 +136,16 @@ fn cluster_items(items: Vec<Item>, opts: &HlodOptions) -> Vec<Vec<Item>> {
             2
         };
         let mid = (centers.min[axis] + centers.max[axis]) * 0.5;
-        let (mut lo, mut hi): (Vec<Item>, Vec<Item>) = group.into_iter().partition(|i| i.center[axis] <= mid);
+        let (mut lo, mut hi): (Vec<Item>, Vec<Item>) =
+            group.into_iter().partition(|i| i.center[axis] <= mid);
         if lo.is_empty() || hi.is_empty() {
             // All centres coincide on the axis: split by order to guarantee progress.
             let mut all: Vec<Item> = lo.into_iter().chain(hi).collect();
-            all.sort_by(|a, b| a.center[axis].total_cmp(&b.center[axis]).then(a.index.cmp(&b.index)));
+            all.sort_by(|a, b| {
+                a.center[axis]
+                    .total_cmp(&b.center[axis])
+                    .then(a.index.cmp(&b.index))
+            });
             hi = all.split_off(all.len() / 2);
             lo = all;
         }
@@ -147,13 +155,24 @@ fn cluster_items(items: Vec<Item>, opts: &HlodOptions) -> Vec<Vec<Item>> {
     done
 }
 
-fn append_instance(dst: &mut MeshData, mesh: &MeshData, transform: &Mat4, with_normals: bool, with_uvs: bool) -> Result<()> {
+fn append_instance(
+    dst: &mut MeshData,
+    mesh: &MeshData,
+    transform: &Mat4,
+    with_normals: bool,
+    with_uvs: bool,
+) -> Result<()> {
     let base = u32::try_from(dst.positions.len()).map_err(|_| MeshLodError::TooManyVertices)?;
-    base.checked_add(u32::try_from(mesh.positions.len()).map_err(|_| MeshLodError::TooManyVertices)?)
-        .ok_or(MeshLodError::TooManyVertices)?;
+    base.checked_add(
+        u32::try_from(mesh.positions.len()).map_err(|_| MeshLodError::TooManyVertices)?,
+    )
+    .ok_or(MeshLodError::TooManyVertices)?;
     let normal_matrix = Mat3::from_mat4(*transform).inverse().transpose();
-    dst.positions
-        .extend(mesh.positions.iter().map(|p| transform.transform_point3(*p)));
+    dst.positions.extend(
+        mesh.positions
+            .iter()
+            .map(|p| transform.transform_point3(*p)),
+    );
     if with_normals && let (Some(dn), Some(sn)) = (dst.normals.as_mut(), mesh.normals.as_ref()) {
         dn.extend(sn.iter().map(|n| (normal_matrix * *n).normalize_or_zero()));
     }
@@ -161,7 +180,7 @@ fn append_instance(dst: &mut MeshData, mesh: &MeshData, transform: &Mat4, with_n
         du.extend(su.iter().copied());
     }
     let mirrored = Mat3::from_mat4(*transform).determinant() < 0.0;
-    for t in mesh.indices.chunks_exact(3) {
+    for t in mesh.indices.as_chunks::<3>().0 {
         if mirrored {
             dst.indices.extend([base + t[0], base + t[2], base + t[1]]);
         } else {
@@ -181,7 +200,11 @@ fn append_instance(dst: &mut MeshData, mesh: &MeshData, transform: &Mat4, with_n
 /// them; mirrored transforms have their winding corrected) and simplified to
 /// `min(ceil(merged * proxy_ratio), max_proxy_triangles)` triangles.
 /// Clusters are returned ordered by their first member index.
-pub fn build_hlod(meshes: &[MeshData], instances: &[HlodInstance], options: &HlodOptions) -> Result<Vec<HlodCluster>> {
+pub fn build_hlod(
+    meshes: &[MeshData],
+    instances: &[HlodInstance],
+    options: &HlodOptions,
+) -> Result<Vec<HlodCluster>> {
     options.validate()?;
     if instances.is_empty() {
         return Ok(Vec::new());
@@ -192,7 +215,10 @@ pub fn build_hlod(meshes: &[MeshData], instances: &[HlodInstance], options: &Hlo
     let mut items = Vec::with_capacity(instances.len());
     for (index, inst) in instances.iter().enumerate() {
         let mesh = meshes.get(inst.mesh).ok_or(MeshLodError::InvalidOption {
-            reason: format!("instance {index} references mesh {} out of range", inst.mesh),
+            reason: format!(
+                "instance {index} references mesh {} out of range",
+                inst.mesh
+            ),
         })?;
         if !inst.transform.is_finite() {
             return Err(MeshLodError::NonFiniteValue {
@@ -205,7 +231,10 @@ pub fn build_hlod(meshes: &[MeshData], instances: &[HlodInstance], options: &Hlo
                 reason: format!("instance {index} has a singular transform"),
             });
         }
-        let bounds = mesh.bounds().ok_or(MeshLodError::EmptyMesh)?.transformed(&inst.transform);
+        let bounds = mesh
+            .bounds()
+            .ok_or(MeshLodError::EmptyMesh)?
+            .transformed(&inst.transform);
         items.push(Item {
             index,
             center: bounds.center(),
@@ -227,8 +256,12 @@ pub fn build_hlod(meshes: &[MeshData], instances: &[HlodInstance], options: &Hlo
             .map(|i| i.bounds)
             .reduce(|a, b| a.union(&b))
             .expect("non-empty group");
-        let all_normals = members.iter().all(|&m| meshes[instances[m].mesh].normals.is_some());
-        let all_uvs = members.iter().all(|&m| meshes[instances[m].mesh].uvs.is_some());
+        let all_normals = members
+            .iter()
+            .all(|&m| meshes[instances[m].mesh].normals.is_some());
+        let all_uvs = members
+            .iter()
+            .all(|&m| meshes[instances[m].mesh].uvs.is_some());
         let mut merged = MeshData {
             normals: all_normals.then(Vec::new),
             uvs: all_uvs.then(Vec::new),
@@ -236,7 +269,13 @@ pub fn build_hlod(meshes: &[MeshData], instances: &[HlodInstance], options: &Hlo
         };
         for &m in &members {
             let inst = &instances[m];
-            append_instance(&mut merged, &meshes[inst.mesh], &inst.transform, all_normals, all_uvs)?;
+            append_instance(
+                &mut merged,
+                &meshes[inst.mesh],
+                &inst.transform,
+                all_normals,
+                all_uvs,
+            )?;
         }
         let merged_triangles = merged.triangle_count();
         let target = ((merged_triangles as f64 * f64::from(options.proxy_ratio)).ceil() as usize)
@@ -246,7 +285,8 @@ pub fn build_hlod(meshes: &[MeshData], instances: &[HlodInstance], options: &Hlo
         sopts.max_error = None;
         let result = simplify(&merged, &sopts)?;
         let sphere = BoundingSphere::from_aabb(&bounds);
-        let px_scale = projected_error_pixels(1.0, 1.0, options.vertical_fov, options.viewport_height);
+        let px_scale =
+            projected_error_pixels(1.0, 1.0, options.vertical_fov, options.viewport_height);
         let error_distance = result.achieved_error * px_scale / options.pixel_threshold;
         clusters.push(HlodCluster {
             members,

@@ -40,6 +40,8 @@
   wgpu host and native render-pass extensions.
 - [3D scene rendering](rendering3d.md): cameras, depth, metallic-roughness PBR
   materials, directional shadow maps, transparent draws and custom WGSL.
+- [Mesh LOD, HLOD and culling](rendering-lod.md): the CPU engine-mesh-lod crate:
+  quadric mesh simplification, LOD chains and selection, HLOD clusters, frustum culling.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency

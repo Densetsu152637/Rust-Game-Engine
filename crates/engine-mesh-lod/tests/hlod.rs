@@ -8,7 +8,9 @@ fn group(meshes_index: usize, origin: Vec3, count: usize) -> Vec<HlodInstance> {
     (0..count)
         .map(|i| HlodInstance {
             mesh: meshes_index,
-            transform: Mat4::from_translation(origin + Vec3::new(i as f32 * 3.0, 0.0, (i % 2) as f32 * 2.0)),
+            transform: Mat4::from_translation(
+                origin + Vec3::new(i as f32 * 3.0, 0.0, (i % 2) as f32 * 2.0),
+            ),
         })
         .collect()
 }
@@ -37,10 +39,16 @@ fn two_distant_groups_make_two_clusters_with_bounded_proxies() {
         assert!(c.proxy.triangle_count() < merged);
         c.proxy.validate().unwrap();
         assert!(c.switch_distance.is_finite() && c.switch_distance >= c.bounding_sphere.radius);
-        // Proxy lives in world space inside the (slightly padded) cluster bounds.
+        // Proxy lives in world space inside the cluster bounds padded by its error.
         for p in &c.proxy.positions {
-            assert!(p.cmpge(c.bounds.min - Vec3::splat(1e-3)).all());
-            assert!(p.cmple(c.bounds.max + Vec3::splat(1e-3)).all());
+            assert!(
+                p.cmpge(c.bounds.min - Vec3::splat(c.proxy_error + 1e-3))
+                    .all()
+            );
+            assert!(
+                p.cmple(c.bounds.max + Vec3::splat(c.proxy_error + 1e-3))
+                    .all()
+            );
         }
     }
     assert!(clusters[0].bounds.max.x < 100.0);
@@ -51,7 +59,10 @@ fn two_distant_groups_make_two_clusters_with_bounded_proxies() {
 fn instance_count_limit_splits_clusters_and_covers_every_instance_once() {
     let meshes = vec![uv_sphere(6, 6, 0.5, Vec3::ZERO)];
     let instances = group(0, Vec3::ZERO, 9);
-    let opts = HlodOptions { max_cluster_instances: 3, ..HlodOptions::default() };
+    let opts = HlodOptions {
+        max_cluster_instances: 3,
+        ..HlodOptions::default()
+    };
     let clusters = build_hlod(&meshes, &instances, &opts).unwrap();
     assert!(clusters.len() >= 3);
     let mut all: Vec<usize> = clusters.iter().flat_map(|c| c.members.clone()).collect();
@@ -64,10 +75,17 @@ fn instance_count_limit_splits_clusters_and_covers_every_instance_once() {
 fn extent_limit_splits_clusters() {
     let meshes = vec![uv_sphere(6, 6, 0.5, Vec3::ZERO)];
     let instances = group(0, Vec3::ZERO, 8); // spans ~24 units
-    let opts = HlodOptions { max_cluster_extent: 10.0, ..HlodOptions::default() };
+    let opts = HlodOptions {
+        max_cluster_extent: 6.0,
+        ..HlodOptions::default()
+    };
     let clusters = build_hlod(&meshes, &instances, &opts).unwrap();
-    assert!(clusters.len() >= 3, "{}", clusters.len());
-    assert!(clusters.iter().all(|c| c.members.len() == 1 || c.bounds.max_extent() <= 10.0));
+    assert!(clusters.len() >= 4, "{}", clusters.len());
+    assert!(
+        clusters
+            .iter()
+            .all(|c| c.members.len() == 1 || c.bounds.max_extent() <= 6.0)
+    );
 }
 
 #[test]
@@ -78,32 +96,58 @@ fn build_is_deterministic_and_validates_input() {
     let b = build_hlod(&meshes, &instances, &HlodOptions::default()).unwrap();
     assert_eq!(a, b);
 
-    let bad = [HlodInstance { mesh: 3, transform: Mat4::IDENTITY }];
+    let bad = [HlodInstance {
+        mesh: 3,
+        transform: Mat4::IDENTITY,
+    }];
     assert!(matches!(
         build_hlod(&meshes, &bad, &HlodOptions::default()),
         Err(MeshLodError::InvalidOption { .. })
     ));
-    let bad = [HlodInstance { mesh: 0, transform: Mat4::ZERO }];
+    let bad = [HlodInstance {
+        mesh: 0,
+        transform: Mat4::ZERO,
+    }];
     assert!(build_hlod(&meshes, &bad, &HlodOptions::default()).is_err());
-    let bad = [HlodInstance { mesh: 0, transform: Mat4::from_translation(Vec3::NAN) }];
+    let bad = [HlodInstance {
+        mesh: 0,
+        transform: Mat4::from_translation(Vec3::NAN),
+    }];
     assert!(matches!(
         build_hlod(&meshes, &bad, &HlodOptions::default()),
         Err(MeshLodError::NonFiniteValue { .. })
     ));
-    let opts = HlodOptions { proxy_ratio: 0.0, ..HlodOptions::default() };
+    let opts = HlodOptions {
+        proxy_ratio: 0.0,
+        ..HlodOptions::default()
+    };
     assert!(build_hlod(&meshes, &instances, &opts).is_err());
-    assert!(build_hlod(&meshes, &[], &HlodOptions::default()).unwrap().is_empty());
+    assert!(
+        build_hlod(&meshes, &[], &HlodOptions::default())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
 fn mirrored_instances_keep_outward_winding() {
     let meshes = vec![uv_sphere(8, 8, 1.0, Vec3::ZERO)];
-    let instances = [HlodInstance { mesh: 0, transform: Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)) }];
-    let opts = HlodOptions { proxy_ratio: 1.0, ..HlodOptions::default() };
+    let instances = [HlodInstance {
+        mesh: 0,
+        transform: Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)),
+    }];
+    let opts = HlodOptions {
+        proxy_ratio: 1.0,
+        ..HlodOptions::default()
+    };
     let clusters = build_hlod(&meshes, &instances, &opts).unwrap();
     let m = &clusters[0].proxy;
-    for t in m.indices.chunks_exact(3) {
-        let (a, b, c) = (m.positions[t[0] as usize], m.positions[t[1] as usize], m.positions[t[2] as usize]);
+    for t in m.indices.as_chunks::<3>().0 {
+        let (a, b, c) = (
+            m.positions[t[0] as usize],
+            m.positions[t[1] as usize],
+            m.positions[t[2] as usize],
+        );
         assert!((b - a).cross(c - a).dot((a + b + c) / 3.0) > 0.0);
     }
 }

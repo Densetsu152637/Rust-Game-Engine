@@ -20,7 +20,11 @@ fn flat_plane_collapses_to_corners_with_zero_error_and_boundary_preserved() {
     let b = r.mesh.bounds().unwrap();
     assert!((b.min - Vec3::ZERO).length() < 1e-4);
     assert!((b.max - Vec3::new(10.0, 0.0, 10.0)).length() < 1e-4);
-    assert!((total_area(&r.mesh) - 100.0).abs() < 1e-2, "area {}", total_area(&r.mesh));
+    assert!(
+        (total_area(&r.mesh) - 100.0).abs() < 1e-2,
+        "area {}",
+        total_area(&r.mesh)
+    );
     assert!(r.mesh.positions.iter().all(|p| p.y.abs() < 1e-5));
     assert!(min_double_area(&r.mesh) > 1e-3);
 }
@@ -42,7 +46,10 @@ fn uv_seam_vertices_are_kept() {
             .map(|(_, uv)| *uv)
             .collect();
         assert_eq!(copies.len(), 2, "seam vertex {s:?} lost a copy");
-        assert!((copies[0].x - copies[1].x).abs() > 0.4, "UV discontinuity lost at {s:?}");
+        assert!(
+            (copies[0].x - copies[1].x).abs() > 0.4,
+            "UV discontinuity lost at {s:?}"
+        );
     }
 }
 
@@ -64,15 +71,31 @@ fn sphere_to_ten_percent_stays_on_surface_without_flips() {
     );
     assert!(r.final_triangles <= target && r.final_triangles + 1 >= target);
 
-    let max_vertex_dev = m.positions.iter().map(|p| (p.length() - radius).abs()).fold(0.0, f32::max);
-    println!("sphere max vertex |r - R| = {:.5} ({:.3}% of R)", max_vertex_dev, 100.0 * max_vertex_dev / radius);
-    assert!(max_vertex_dev <= 0.02 * radius, "vertex deviation {max_vertex_dev}");
+    let max_vertex_dev = m
+        .positions
+        .iter()
+        .map(|p| (p.length() - radius).abs())
+        .fold(0.0, f32::max);
+    println!(
+        "sphere max vertex |r - R| = {:.5} ({:.3}% of R)",
+        max_vertex_dev,
+        100.0 * max_vertex_dev / radius
+    );
+    assert!(
+        max_vertex_dev <= 0.02 * radius,
+        "vertex deviation {max_vertex_dev}"
+    );
     // Surface (face centroids) is inside the sphere by at most the chord sagitta.
     let max_centroid_dev = m
         .indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|t| {
-            let c = (m.positions[t[0] as usize] + m.positions[t[1] as usize] + m.positions[t[2] as usize]) / 3.0;
+            let c = (m.positions[t[0] as usize]
+                + m.positions[t[1] as usize]
+                + m.positions[t[2] as usize])
+                / 3.0;
             (c.length() - radius).abs()
         })
         .fold(0.0, f32::max);
@@ -82,11 +105,18 @@ fn sphere_to_ten_percent_stays_on_surface_without_flips() {
     assert!(r.achieved_error > 0.0);
 
     // No flipped faces (outward normal agrees with radial direction) and no degenerate faces.
-    for t in m.indices.chunks_exact(3) {
-        let (a, b, c) = (m.positions[t[0] as usize], m.positions[t[1] as usize], m.positions[t[2] as usize]);
+    for t in m.indices.as_chunks::<3>().0 {
+        let (a, b, c) = (
+            m.positions[t[0] as usize],
+            m.positions[t[1] as usize],
+            m.positions[t[2] as usize],
+        );
         let n = (b - a).cross(c - a);
         let centroid = (a + b + c) / 3.0;
-        assert!(n.normalize().dot(centroid.normalize()) > 0.0, "flipped face");
+        assert!(
+            n.normalize().dot(centroid.normalize()) > 0.0,
+            "flipped face"
+        );
         assert!(n.length() > 1e-6, "degenerate face");
     }
     // Output normals are unit and indices valid.
@@ -159,7 +189,10 @@ fn invalid_input_is_rejected() {
 
     let mut bad = ok.clone();
     bad.indices[0] = 999;
-    assert!(matches!(simplify(&bad, &opts), Err(MeshLodError::IndexOutOfRange { .. })));
+    assert!(matches!(
+        simplify(&bad, &opts),
+        Err(MeshLodError::IndexOutOfRange { .. })
+    ));
 
     let mut bad = ok.clone();
     bad.indices.pop();
@@ -170,7 +203,10 @@ fn invalid_input_is_rejected() {
 
     let mut bad = ok.clone();
     bad.positions[1].x = f32::NAN;
-    assert!(matches!(simplify(&bad, &opts), Err(MeshLodError::NonFiniteValue { .. })));
+    assert!(matches!(
+        simplify(&bad, &opts),
+        Err(MeshLodError::NonFiniteValue { .. })
+    ));
 
     let mut bad = ok.clone();
     bad.normals.as_mut().unwrap().pop();
@@ -181,7 +217,10 @@ fn invalid_input_is_rejected() {
 
     let mut bad = ok.clone();
     bad.uvs.as_mut().unwrap()[0] = Vec2::new(f32::INFINITY, 0.0);
-    assert!(matches!(simplify(&bad, &opts), Err(MeshLodError::NonFiniteValue { .. })));
+    assert!(matches!(
+        simplify(&bad, &opts),
+        Err(MeshLodError::NonFiniteValue { .. })
+    ));
 
     assert!(matches!(
         simplify(&MeshData::default(), &opts),

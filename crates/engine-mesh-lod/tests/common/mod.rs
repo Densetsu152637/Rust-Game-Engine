@@ -75,11 +75,13 @@ pub fn uv_sphere(segments: usize, rings: usize, radius: f32, center: Vec3) -> Me
         let theta = std::f32::consts::PI * i as f32 / rings as f32;
         for j in 0..segments {
             let phi = std::f32::consts::TAU * j as f32 / segments as f32;
-            positions.push(Vec3::new(
-                theta.sin() * phi.cos(),
-                theta.cos(),
-                theta.sin() * phi.sin(),
-            ) * radius);
+            positions.push(
+                Vec3::new(
+                    theta.sin() * phi.cos(),
+                    theta.cos(),
+                    theta.sin() * phi.sin(),
+                ) * radius,
+            );
         }
     }
     positions.push(-Vec3::Y * radius);
@@ -91,7 +93,12 @@ pub fn uv_sphere(segments: usize, rings: usize, radius: f32, center: Vec3) -> Me
     }
     for i in 1..rings - 1 {
         for j in 0..segments {
-            let (a, b, c, d) = (ring(i, j), ring(i, j + 1), ring(i + 1, j), ring(i + 1, j + 1));
+            let (a, b, c, d) = (
+                ring(i, j),
+                ring(i, j + 1),
+                ring(i + 1, j),
+                ring(i + 1, j + 1),
+            );
             indices.extend([a, b, c, b, d, c]);
         }
     }
@@ -100,14 +107,20 @@ pub fn uv_sphere(segments: usize, rings: usize, radius: f32, center: Vec3) -> Me
     }
     // Orient outward using the signed volume.
     let volume: f32 = indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|t| {
-            let (a, b, c) = (positions[t[0] as usize], positions[t[1] as usize], positions[t[2] as usize]);
+            let (a, b, c) = (
+                positions[t[0] as usize],
+                positions[t[1] as usize],
+                positions[t[2] as usize],
+            );
             a.dot(b.cross(c))
         })
         .sum();
     if volume < 0.0 {
-        for t in indices.chunks_exact_mut(3) {
+        for t in indices.as_chunks_mut::<3>().0 {
             t.swap(1, 2);
         }
     }
@@ -119,9 +132,15 @@ pub fn uv_sphere(segments: usize, rings: usize, radius: f32, center: Vec3) -> Me
 /// Smallest triangle double-area in the mesh.
 pub fn min_double_area(mesh: &MeshData) -> f32 {
     mesh.indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|t| {
-            let (a, b, c) = (mesh.positions[t[0] as usize], mesh.positions[t[1] as usize], mesh.positions[t[2] as usize]);
+            let (a, b, c) = (
+                mesh.positions[t[0] as usize],
+                mesh.positions[t[1] as usize],
+                mesh.positions[t[2] as usize],
+            );
             (b - a).cross(c - a).length()
         })
         .fold(f32::INFINITY, f32::min)
@@ -129,9 +148,15 @@ pub fn min_double_area(mesh: &MeshData) -> f32 {
 
 pub fn total_area(mesh: &MeshData) -> f32 {
     mesh.indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|t| {
-            let (a, b, c) = (mesh.positions[t[0] as usize], mesh.positions[t[1] as usize], mesh.positions[t[2] as usize]);
+            let (a, b, c) = (
+                mesh.positions[t[0] as usize],
+                mesh.positions[t[1] as usize],
+                mesh.positions[t[2] as usize],
+            );
             0.5 * (b - a).cross(c - a).length()
         })
         .sum()
