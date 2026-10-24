@@ -7,7 +7,9 @@ Those layers depend on this crate, never the reverse.
 The ECS layer (Bevy ECS re-export, `Current`/`Next` buffered values and
 render-world extraction) lives in `engine-ecs`. This crate re-exports all of it,
 so `engine_core::bevy_ecs`, `engine_core::Current` and `engine_core::prelude::*`
-keep resolving, and owns only app lifecycle, stages, `Time` and `RuntimeControl`.
+keep resolving, and owns app lifecycle, stages, `Time`, `RuntimeControl` and
+bounded measured CPU profiling. `app.profile()` returns a serializable snapshot;
+see [CPU profiling](../../docs/profiling.md) for timing and retention semantics.
 Lifecycle transitions (start, stop requests, shutdown, stage failures) are
 emitted as `tracing` events; this crate never installs a subscriber, see
 `engine-log`.
