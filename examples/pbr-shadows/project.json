@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "PBR and directional shadows",
+  "startup_scene": "scene.json",
+  "assets": [
+    {
+      "id": "sphere",
+      "kind": "mesh",
+      "path": "sphere.json"
+    },
+    {
+      "id": "floor",
+      "kind": "mesh",
+      "path": "floor.json"
+    }
+  ]
+}

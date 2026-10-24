@@ -76,6 +76,8 @@ pub enum BindingKind {
     UniformBuffer { size: u32 },
     /// `texture_2d<f32>`.
     SampledTexture2d,
+    /// Frame directional shadow map, at group 3 binding 0.
+    ShadowTexture2d,
     /// Non-comparison `sampler`.
     Sampler,
 }
@@ -184,6 +186,14 @@ impl ShaderInterface {
                             },
                     },
                 ) => BindingKind::SampledTexture2d,
+                (
+                    naga::AddressSpace::Handle,
+                    naga::TypeInner::Image {
+                        dim: naga::ImageDimension::D2,
+                        arrayed: false,
+                        class: naga::ImageClass::Depth { multi: false },
+                    },
+                ) => BindingKind::ShadowTexture2d,
                 (naga::AddressSpace::Handle, naga::TypeInner::Sampler { comparison: false }) => {
                     BindingKind::Sampler
                 }
@@ -223,8 +233,12 @@ impl ShaderInterface {
     fn check_conventions(&self, name: &str) -> Result<()> {
         for binding in &self.bindings {
             let by_convention = match binding.kind {
-                BindingKind::SampledTexture2d => binding.slot == TEXTURE_SLOT,
+                BindingKind::SampledTexture2d => {
+                    binding.slot == TEXTURE_SLOT
+                        || (binding.slot.group == 1 && matches!(binding.slot.binding, 2 | 3))
+                }
                 BindingKind::Sampler => binding.slot == SAMPLER_SLOT,
+                BindingKind::ShadowTexture2d => binding.slot == crate::SHADOW_SLOT,
                 BindingKind::UniformBuffer { .. } => {
                     binding.slot != TEXTURE_SLOT && binding.slot != SAMPLER_SLOT
                 }
@@ -232,7 +246,7 @@ impl ShaderInterface {
             if !by_convention {
                 bail_shader!(
                     "shader {name:?}: @group({}) @binding({}) is reserved for the conventional \
-                     texture (1,0) / sampler (1,1) bindings",
+                     texture (1,0), sampler (1,1), data textures (1,2)/(1,3) or shadow (3,0) bindings",
                     binding.slot.group,
                     binding.slot.binding
                 );

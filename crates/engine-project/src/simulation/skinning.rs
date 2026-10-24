@@ -155,7 +155,7 @@ impl Skins {
                 .source
                 .vertices
                 .iter()
-                .map(|v| Vec3::from(v.normal.unwrap_or([0., 1., 0.])))
+                .map(|v| Vec3::from(v.normal.unwrap_or([0.; 3])))
                 .collect();
             let joints: Vec<_> = binding
                 .source
@@ -169,9 +169,11 @@ impl Skins {
                 .iter()
                 .map(|v| v.weights.expect("validated weights"))
                 .collect();
-            let (positions, _) = skin_vertices(&positions, &normals, &joints, &weights, &matrices)
-                .map_err(mapped)?;
+            let (positions, skinned_normals) =
+                skin_vertices(&positions, &normals, &joints, &weights, &matrices)
+                    .map_err(mapped)?;
             let mesh = Mesh {
+                normals: skinned_normals.iter().map(|n| n.to_array()).collect(),
                 vertices: binding
                     .source
                     .vertices

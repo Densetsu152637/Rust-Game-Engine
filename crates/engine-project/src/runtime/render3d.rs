@@ -106,6 +106,28 @@ impl Runtime {
                 id: id.clone(),
                 mesh,
                 texture,
+                metallic_roughness_texture: material
+                    .metallic_roughness_texture
+                    .as_ref()
+                    .map(|id| {
+                        self.content
+                            .textures
+                            .get(id)
+                            .cloned()
+                            .ok_or_else(|| Error::new("render.texture.unknown", id))
+                    })
+                    .transpose()?,
+                normal_texture: material
+                    .normal_texture
+                    .as_ref()
+                    .map(|id| {
+                        self.content
+                            .textures
+                            .get(id)
+                            .cloned()
+                            .ok_or_else(|| Error::new("render.texture.unknown", id))
+                    })
+                    .transpose()?,
                 model: crate::world_transform(world, entity.id())?.matrix,
                 material,
                 shader,

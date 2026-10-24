@@ -142,7 +142,14 @@ impl Project {
                 if let Some(shader) = &material.shader {
                     self.require_asset(shader, "shader")?;
                 }
-                if let Some(texture) = &material.texture {
+                for texture in [
+                    &material.texture,
+                    &material.metallic_roughness_texture,
+                    &material.normal_texture,
+                ]
+                .into_iter()
+                .flatten()
+                {
                     self.require_asset(texture, "texture")?;
                 }
             }

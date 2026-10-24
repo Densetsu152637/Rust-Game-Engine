@@ -39,8 +39,8 @@ pub use backend::{
     RenderFeatureStatus,
 };
 pub use command::{
-    DrawCommand, DrawOrderKey, DrawUniform, RenderCommandBuffer, SAMPLER_SLOT, TEXTURE_SLOT,
-    UniformSlot,
+    DrawCommand, DrawOrderKey, DrawUniform, RenderCommandBuffer, SAMPLER_SLOT, SHADOW_SLOT,
+    ShadowCaster, TEXTURE_SLOT, UniformSlot,
 };
 pub use device::{DeviceConfig, RenderDevice, ResourceCounts};
 pub use error::{RenderError, Result};

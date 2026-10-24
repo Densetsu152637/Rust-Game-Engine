@@ -6,7 +6,7 @@
 //!   `SpriteRenderer<WgpuBackend>` sharing the caller's [`GpuContext`] that also
 //!   runs [`NativeRenderPass`]es after the engine draws.
 //! * `cache.rs`: Arc-keyed mesh/texture handle caches with eviction.
-//! * `vertex.rs`: the 36-byte vertex record and its neutral layout.
+//! * `vertex.rs`: the 48-byte vertex record and its neutral layout.
 
 mod cache;
 mod scene;

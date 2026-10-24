@@ -80,6 +80,15 @@ impl ResourceCache {
         device: &mut RenderDevice<B>,
         draws: &[Draw],
     ) -> Result<UploadCounts> {
+        self.sync_with_textures(device, draws, &[])
+    }
+
+    pub fn sync_with_textures<B: RenderBackend>(
+        &mut self,
+        device: &mut RenderDevice<B>,
+        draws: &[Draw],
+        extra: &[Arc<Texture>],
+    ) -> Result<UploadCounts> {
         let mut counts = UploadCounts::default();
         let mut live_meshes = HashSet::new();
         let mut live_textures = HashSet::new();
@@ -98,21 +107,25 @@ impl ResourceCache {
                 });
                 counts.meshes += 1;
             }
-            if let Some(texture) = &draw.texture {
-                let key = address(texture);
-                live_textures.insert(key);
-                if let Entry::Vacant(slot) = self.textures.entry(key) {
-                    let handle = device.create_texture(&Texture2D::new(
-                        texture.width,
-                        texture.height,
-                        texture.pixels.clone(),
-                    )?)?;
-                    slot.insert(CachedTexture {
-                        _source: texture.clone(),
-                        handle,
-                    });
-                    counts.textures += 1;
-                }
+        }
+        for texture in draws
+            .iter()
+            .filter_map(|d| d.texture.as_ref())
+            .chain(extra.iter())
+        {
+            let key = address(texture);
+            live_textures.insert(key);
+            if let Entry::Vacant(slot) = self.textures.entry(key) {
+                let handle = device.create_texture(&Texture2D::new(
+                    texture.width,
+                    texture.height,
+                    texture.pixels.clone(),
+                )?)?;
+                slot.insert(CachedTexture {
+                    _source: texture.clone(),
+                    handle,
+                });
+                counts.textures += 1;
             }
         }
         let mut retired: Vec<ResourceId> = Vec::new();
@@ -169,6 +182,7 @@ mod tests {
             color: [1.0; 4],
         };
         Arc::new(Mesh {
+            normals: vec![],
             vertices: vec![vertex; 3],
             indices: vec![],
         })

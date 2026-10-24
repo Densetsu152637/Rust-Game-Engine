@@ -8,6 +8,9 @@ pub struct Vertex {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Mesh {
+    /// Empty selects flat geometric normals; otherwise one normal per vertex.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub normals: Vec<[f32; 3]>,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
 }
@@ -21,7 +24,9 @@ pub fn load_mesh(path: &Path) -> Result<Mesh> {
     let bytes = read_bounded(path, 64 * 1024 * 1024)?;
     if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') {
         let mesh: Mesh = serde_json::from_slice(&bytes)?;
-        if mesh.vertices.is_empty()
+        if (!mesh.normals.is_empty() && mesh.normals.len() != mesh.vertices.len())
+            || mesh.normals.iter().flatten().any(|n| !n.is_finite())
+            || mesh.vertices.is_empty()
             || mesh.vertices.len() > 1_000_000
             || mesh.indices.is_empty()
             || mesh.indices.len() > 3_000_000

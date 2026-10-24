@@ -78,7 +78,7 @@ pub(super) fn generate(
         assets: Vec::new(),
         bytes: 0,
     };
-    let mut warnings=vec!["Rendering uses vertex color, base-color texture/tint and alpha blending. Full PBR, source normals/tangents and cubic animation remain preserved in the model asset.".into()];
+    let mut warnings=vec!["Rendering uses metallic-roughness PBR, base-color and data textures, smooth normals and alpha blending. Tangent frames are reconstructed from UV derivatives. Emissive/occlusion maps, alpha masking and cubic animation remain preserved in the model asset.".into()];
     let node_entities: Vec<_> = (0..scene.nodes.len())
         .map(|i| format!("node:{i}"))
         .collect();
@@ -144,16 +144,36 @@ pub(super) fn generate(
     for (mesh_index, mesh) in scene.meshes.iter().enumerate() {
         for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
             let material = primitive.material.map(|i| &scene.materials[i]);
-            let uv_set = material
-                .and_then(|m| m.base_color_texture)
-                .map_or(0, |t| t.tex_coord);
+            let texture_refs: Vec<_> = material
+                .into_iter()
+                .flat_map(|m| {
+                    [
+                        m.base_color_texture,
+                        m.metallic_roughness_texture,
+                        m.normal_texture,
+                    ]
+                })
+                .flatten()
+                .collect();
+            let uv_set = texture_refs.first().map_or(0, |t| t.tex_coord);
+            if texture_refs.iter().any(|t| t.tex_coord != uv_set) {
+                return Err(Error::new(
+                    "asset.import.uv",
+                    "Material textures must share one UV set",
+                ));
+            }
             if uv_set > 1 {
                 return Err(Error::new(
                     "asset.import.uv",
-                    "Static renderer supports base-color texture coordinates 0 or 1",
+                    "Renderer supports shared texture coordinates 0 or 1",
                 ));
             }
             let mesh = Mesh {
+                normals: primitive
+                    .vertices
+                    .iter()
+                    .map(|v| v.normal.unwrap_or([0.0; 3]))
+                    .collect(),
                 vertices: primitive
                     .vertices
                     .iter()
@@ -207,7 +227,10 @@ pub(super) fn generate(
                     .map(|t| format!("{prefix}:texture:{}", scene.textures[t.texture].image));
                 let mut entity = json!({"id":format!("node:{node_index}:primitive:{primitive_index}"),"name":format!("Primitive {primitive_index}"),"parent":node_entities[node_index],
                 "components":{"Transform":{"position":[0,0,0]},"MeshRenderer":{"mesh":format!("{prefix}:mesh:{mesh_index}:{primitive_index}"),"texture":texture},
-                "MeshMaterial":{"version":1,"texture":texture,"tint":material.map_or([1.0;4],|m|m.base_color),"unlit":false,"transparent":material.is_some_and(|m|m.alpha_mode==AlphaMode::Blend)}}});
+                "MeshMaterial":{"version":1,"texture":texture,"tint":material.map_or([1.0;4],|m|m.base_color),"metallic":material.map_or(1.0,|m|m.metallic),"roughness":material.map_or(1.0,|m|m.roughness),
+                "metallic_roughness_texture":material.and_then(|m|m.metallic_roughness_texture).map(|t|format!("{prefix}:texture:{}",scene.textures[t.texture].image)),
+                "normal_texture":material.and_then(|m|m.normal_texture).map(|t|format!("{prefix}:texture:{}",scene.textures[t.texture].image)),"normal_scale":material.map_or(1.0,|m|m.normal_scale),
+                "unlit":false,"transparent":material.is_some_and(|m|m.alpha_mode==AlphaMode::Blend)}}});
                 if node.skin.is_some() {
                     entity["components"]["custom"] = json!({"engine.SkinBinding":{"version":1,"data":{
                         "model":format!("{prefix}:model"),"mesh_node":node_index,"primitive":primitive_index,"bindings":node_entities

@@ -26,6 +26,14 @@ pub const TEXTURE_SLOT: UniformSlot = UniformSlot::new(1, 0);
 /// Conventional sampler binding: `@group(1) @binding(1) var s: sampler`. The
 /// sampler is always nearest-filtered with clamp-to-edge addressing.
 pub const SAMPLER_SLOT: UniformSlot = UniformSlot::new(1, 1);
+/// Directional shadow depth map generated before the color pass.
+pub const SHADOW_SLOT: UniformSlot = UniformSlot::new(3, 0);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShadowCaster {
+    pub light_mvp: [[f32; 4]; 4],
+    pub resolution: u32,
+}
 
 /// Bytes bound to one uniform-buffer slot for a single draw.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,11 +81,13 @@ impl DrawOrderKey {
 }
 
 /// One mesh drawn with one shader, optional texture, uniforms and state.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DrawCommand {
     pub shader: ShaderHandle,
     pub mesh: MeshHandle,
     pub texture: Option<TextureHandle>,
+    /// Linear-data textures at group 1 bindings 2 (metallic/roughness) and 3 (normal).
+    pub data_textures: [Option<TextureHandle>; 2],
     pub uniforms: Vec<DrawUniform>,
     pub state: DrawState,
     /// Assigned by [`RenderCommandBuffer`]: the serial index, or the position
@@ -85,6 +95,8 @@ pub struct DrawCommand {
     pub order: u64,
     /// Set by [`RenderCommandBuffer::record_keyed`].
     pub stable_order: Option<DrawOrderKey>,
+    /// Opaque triangle geometry participating in the frame's directional shadow map.
+    pub shadow: Option<ShadowCaster>,
 }
 
 impl DrawCommand {
@@ -93,10 +105,12 @@ impl DrawCommand {
             shader,
             mesh,
             texture: None,
+            data_textures: [None; 2],
             uniforms: Vec::new(),
             state: DrawState::default(),
             order: 0,
             stable_order: None,
+            shadow: None,
         }
     }
 

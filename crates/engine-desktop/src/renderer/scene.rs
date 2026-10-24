@@ -9,7 +9,7 @@ use engine_render::{
     DrawCommand, DrawUniform, RenderBackend, RenderCommandBuffer, RenderDevice, ShaderHandle,
     ShaderInterface, ShaderResource, ShaderSource, UniformSlot,
 };
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use std::collections::HashMap;
 
 pub const LIT_WGSL: &str = include_str!("lit.wgsl");
@@ -19,6 +19,8 @@ pub(super) fn overlay_material(draw: &Draw, material: &MaterialSnapshot) -> Mesh
         id: draw.id.clone(),
         mesh: draw.mesh.clone(),
         texture: draw.texture.clone(),
+        metallic_roughness_texture: None,
+        normal_texture: None,
         model: Mat4::IDENTITY.to_cols_array_2d(),
         material: material.material.clone(),
         shader: material.shader.clone(),
@@ -31,7 +33,12 @@ pub(super) fn validate_material(draw: &MeshDraw3D, vp: Mat4) -> Result<ShaderInt
     let interface =
         ShaderInterface::reflect(&ShaderResource::new(&draw.id, ShaderSource::wgsl(source)))?;
     interface.check_vertex_layout(&vertex_layout())?;
-    interface.check_uniforms(&uniforms(draw, vp, &interface)?)?;
+    interface.check_uniforms(&uniforms(
+        draw,
+        vp,
+        &interface,
+        &LightingUniform::default(),
+    )?)?;
     Ok(interface)
 }
 
@@ -60,13 +67,62 @@ pub fn camera_matrix(camera: &CameraInstance3D, aspect: f32) -> Result<Mat4> {
             )
         }
     };
-    Ok(projection * world.inverse())
+    let matrix = projection * world.inverse();
+    ensure!(matrix.is_finite(), "camera matrix overflow");
+    Ok(matrix)
 }
 
 #[derive(Default)]
 pub(super) struct SceneResources {
     cache: ResourceCache,
     shaders: HashMap<String, (ShaderHandle, ShaderInterface)>,
+    lighting: LightingUniform,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LightingUniform {
+    light_vp: [[f32; 4]; 4],
+    eye: [f32; 4],
+    direction: [f32; 4],
+    radiance: [f32; 4],
+    shadow: [f32; 4],
+}
+impl Default for LightingUniform {
+    fn default() -> Self {
+        Self::new(&SceneLighting::default(), Vec3::Z)
+    }
+}
+impl LightingUniform {
+    fn new(light: &SceneLighting, eye: Vec3) -> Self {
+        let direction = Vec3::from_array(light.direction).normalize();
+        let s = &light.shadows;
+        let center = Vec3::from_array(s.center);
+        let up = if direction.dot(Vec3::Y).abs() > 0.99 {
+            Vec3::X
+        } else {
+            Vec3::Y
+        };
+        // Build orientation near the origin so small depth volumes remain valid
+        // at large world coordinates (adding the eye offset there can round to zero).
+        let view = glam::camera::rh::view::look_at_mat4(direction * s.depth * 0.5, Vec3::ZERO, up)
+            * Mat4::from_translation(-center);
+        let half = s.extent * 0.5;
+        let projection =
+            glam::camera::rh::proj::directx::orthographic(-half, half, -half, half, 0.0, s.depth);
+        Self {
+            light_vp: (projection * view).to_cols_array_2d(),
+            eye: eye.extend(1.0).to_array(),
+            direction: direction.extend(0.0).to_array(),
+            radiance: [
+                light.color[0] * light.intensity,
+                light.color[1] * light.intensity,
+                light.color[2] * light.intensity,
+                light.ambient,
+            ],
+            shadow: [if s.enabled { 1.0 } else { 0.0 }, s.bias, 0.0, 0.0],
+        }
+    }
 }
 impl SceneResources {
     pub fn build<B: RenderBackend>(
@@ -85,10 +141,15 @@ impl SceneResources {
             .as_ref()
             .context("3D meshes require an active Camera3D")?;
         let vp = camera_matrix(camera, size.0 as f32 / size.1 as f32)?;
+        self.lighting = LightingUniform::new(
+            &camera.camera.lighting,
+            Mat4::from_cols_array_2d(&camera.world).w_axis.truncate(),
+        );
         // Validate the entire candidate before mutating the cache.
         for draw in &frame.meshes {
             ensure!(
-                Mat4::from_cols_array_2d(&draw.model).is_finite(),
+                Mat4::from_cols_array_2d(&draw.model).is_finite()
+                    && Mat4::from_cols_array_2d(&draw.model).determinant().abs() > 1e-8,
                 "nonfinite model transform"
             );
             validate_material(draw, vp)?;
@@ -108,7 +169,14 @@ impl SceneResources {
                 offset: [0.0; 3],
             })
             .collect();
-        let uploads = self.cache.sync(device, &proxies)?;
+        let extra: Vec<_> = frame
+            .meshes
+            .iter()
+            .flat_map(|d| [&d.metallic_roughness_texture, &d.normal_texture])
+            .flatten()
+            .cloned()
+            .collect();
+        let uploads = self.cache.sync_with_textures(device, &proxies, &extra)?;
         let mut stats = RenderStats {
             mesh_uploads: uploads.meshes,
             texture_uploads: uploads.textures,
@@ -146,7 +214,32 @@ impl SceneResources {
                 .texture
                 .as_ref()
                 .and_then(|t| self.cache.texture_handle(t));
+            let interface = &self.shaders[draw.shader.as_deref().unwrap_or(LIT_WGSL)].1;
+            for (index, texture) in [&draw.metallic_roughness_texture, &draw.normal_texture]
+                .into_iter()
+                .enumerate()
+            {
+                if interface
+                    .bindings
+                    .iter()
+                    .any(|b| b.slot == UniformSlot::new(1, index as u32 + 2))
+                {
+                    command.data_textures[index] =
+                        texture.as_ref().and_then(|t| self.cache.texture_handle(t));
+                }
+            }
             command.state.depth_test = true;
+            if camera.camera.lighting.shadows.enabled
+                && draw.material.cast_shadows
+                && !draw.material.transparent
+            {
+                command.shadow = Some(engine_render::ShadowCaster {
+                    light_mvp: (Mat4::from_cols_array_2d(&self.lighting.light_vp)
+                        * Mat4::from_cols_array_2d(&draw.model))
+                    .to_cols_array_2d(),
+                    resolution: camera.camera.lighting.shadows.resolution,
+                });
+            }
             command.state.depth_write = !draw.material.transparent;
             command.state.blend = if draw.material.transparent {
                 engine_render::BlendMode::StraightAlpha
@@ -176,7 +269,7 @@ impl SceneResources {
                 .insert(source.into(), (device.create_shader(resource)?, interface));
         }
         let (shader, interface) = &self.shaders[source];
-        let values = uniforms(draw, vp, interface)?;
+        let values = uniforms(draw, vp, interface, &self.lighting)?;
         interface.check_uniforms(&values)?;
         Ok((*shader, values))
     }
@@ -208,12 +301,26 @@ impl SceneResources {
         Ok(())
     }
 }
-fn uniforms(draw: &MeshDraw3D, vp: Mat4, interface: &ShaderInterface) -> Result<Vec<DrawUniform>> {
+fn uniforms(
+    draw: &MeshDraw3D,
+    vp: Mat4,
+    interface: &ShaderInterface,
+    lighting: &LightingUniform,
+) -> Result<Vec<DrawUniform>> {
     let model = Mat4::from_cols_array_2d(&draw.model);
     let mvp = (vp * model).to_cols_array();
     let material = [
         draw.material.tint,
-        [if draw.material.unlit { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+        [
+            if draw.material.unlit { 1.0 } else { 0.0 },
+            draw.material.metallic,
+            draw.material.roughness,
+            if draw.material.receive_shadows {
+                1.0
+            } else {
+                0.0
+            },
+        ],
     ];
     interface
         .uniform_bindings()
@@ -229,6 +336,34 @@ fn uniforms(draw: &MeshDraw3D, vp: Mat4, interface: &ShaderInterface) -> Result<
                     "material",
                     UniformSlot::new(2, 0),
                     &material,
+                )),
+                (0, 2) => Ok(DrawUniform::from_pod(
+                    "normal matrix",
+                    UniformSlot::new(0, 2),
+                    &model.inverse().transpose().to_cols_array_2d(),
+                )),
+                (2, 2) => Ok(DrawUniform::from_pod(
+                    "texture controls",
+                    UniformSlot::new(2, 2),
+                    &[
+                        if draw.normal_texture.is_some() {
+                            1.0f32
+                        } else {
+                            0.0
+                        },
+                        draw.material.normal_scale,
+                        if draw.metallic_roughness_texture.is_some() {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        0.0,
+                    ],
+                )),
+                (2, 1) => Ok(DrawUniform::from_pod(
+                    "lighting",
+                    UniformSlot::new(2, 1),
+                    lighting,
                 )),
                 slot => anyhow::bail!("unsupported material uniform slot {slot:?}"),
             },

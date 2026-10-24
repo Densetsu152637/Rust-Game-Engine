@@ -25,6 +25,7 @@ pub(crate) struct MeshEntry {
 pub(crate) struct TextureEntry {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    pub linear_view: wgpu::TextureView,
     pub width: u32,
     pub height: u32,
 }
@@ -59,6 +60,7 @@ pub(crate) struct Core {
     pub sampler: wgpu::Sampler,
     pub white: TextureEntry,
     pub surface: Option<SurfaceState>,
+    pub shadow: crate::shadow::ShadowResources,
 }
 
 impl Core {
@@ -97,6 +99,7 @@ impl Core {
             ..Default::default()
         });
         let white = gpu.validated(|| Ok(upload_texture(&gpu, &Texture2D::white())))?;
+        let shadow = crate::shadow::ShadowResources::new(&gpu.device);
         check_gpu(&gpu)?;
         Ok(Self {
             gpu,
@@ -114,6 +117,7 @@ impl Core {
             sampler,
             white,
             surface,
+            shadow,
         })
     }
 
@@ -241,8 +245,9 @@ impl Core {
     }
 
     fn drop_texture_bind_groups(&mut self, texture: u64) {
-        self.bind_groups
-            .retain(|key, _| key.texture != Some(texture));
+        self.bind_groups.retain(|key, _| {
+            key.texture != Some(texture) && !key.data_textures.contains(&Some(texture))
+        });
     }
 
     pub fn read_target(&mut self, handle: TargetHandle) -> Result<ReadbackImage> {
@@ -326,11 +331,16 @@ fn upload_texture(gpu: &GpuContext, texture: &Texture2D) -> TextureEntry {
         dimension: wgpu::TextureDimension::D2,
         format: COLOR_FORMAT,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
+        view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
     });
     write_texture(gpu, &created, texture);
     let view = created.create_view(&Default::default());
+    let linear_view = created.create_view(&wgpu::TextureViewDescriptor {
+        format: Some(wgpu::TextureFormat::Rgba8Unorm),
+        ..Default::default()
+    });
     TextureEntry {
+        linear_view,
         texture: created,
         view,
         width: texture.width,

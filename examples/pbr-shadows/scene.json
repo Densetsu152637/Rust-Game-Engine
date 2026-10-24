@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "scene_id": "pbr",
+  "entities": [
+    {
+      "id": "camera",
+      "name": "Camera",
+      "components": {
+        "Transform": {
+          "position": [
+            0,
+            2.5,
+            8
+          ],
+          "rotation": [
+            -0.15,
+            0,
+            0,
+            0.9886859966642595
+          ]
+        },
+        "Camera3D": {
+          "lighting": {
+            "direction": [
+              0.6,
+              1,
+              0.8
+            ],
+            "intensity": 3,
+            "ambient": 0.05,
+            "shadows": {
+              "enabled": true,
+              "resolution": 1024,
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "extent": 12,
+              "depth": 20,
+              "bias": 0.0008
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "floor",
+      "name": "Floor",
+      "components": {
+        "Transform": {"position": [0, 0, 0]},
+        "MeshRenderer": {
+          "mesh": "floor"
+        },
+        "MeshMaterial": {
+          "tint": [
+            0.32,
+            0.36,
+            0.4,
+            1
+          ],
+          "roughness": 0.9
+        }
+      }
+    },
+    {
+      "id": "gold",
+      "name": "Gold",
+      "components": {
+        "Transform": {
+          "position": [
+            -2.35,
+            0,
+            0
+          ]
+        },
+        "MeshRenderer": {
+          "mesh": "sphere"
+        },
+        "MeshMaterial": {
+          "tint": [
+            1,
+            0.62,
+            0.19,
+            1
+          ],
+          "metallic": 1,
+          "roughness": 0.18
+        }
+      }
+    },
+    {
+      "id": "copper",
+      "name": "Copper",
+      "components": {
+        "Transform": {
+          "position": [
+            0.0,
+            0,
+            0
+          ]
+        },
+        "MeshRenderer": {
+          "mesh": "sphere"
+        },
+        "MeshMaterial": {
+          "tint": [
+            0.95,
+            0.45,
+            0.25,
+            1
+          ],
+          "metallic": 1,
+          "roughness": 0.6
+        }
+      }
+    },
+    {
+      "id": "blue",
+      "name": "Blue",
+      "components": {
+        "Transform": {
+          "position": [
+            2.35,
+            0,
+            0
+          ]
+        },
+        "MeshRenderer": {
+          "mesh": "sphere"
+        },
+        "MeshMaterial": {
+          "tint": [
+            0.05,
+            0.3,
+            0.75,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.35
+        }
+      }
+    }
+  ]
+}

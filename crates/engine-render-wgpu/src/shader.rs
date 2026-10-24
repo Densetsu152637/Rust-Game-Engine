@@ -24,6 +24,7 @@ pub(crate) struct BindKey {
     pub shader: u64,
     pub group: u32,
     pub texture: Option<u64>,
+    pub data_textures: [Option<u64>; 2],
 }
 
 pub(crate) struct GroupEntry {
@@ -186,6 +187,11 @@ fn layout_entry(binding: &ShaderBinding) -> wgpu::BindGroupLayoutEntry {
             multisampled: false,
         },
         BindingKind::Sampler => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        BindingKind::ShadowTexture2d => wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
     };
     wgpu::BindGroupLayoutEntry {
         binding: binding.slot.binding,

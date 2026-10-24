@@ -30,6 +30,8 @@ fn imports_renderable_prefab_and_retains_full_model_metadata() {
     let material = serde_json::to_value(&primitive.components).unwrap()["MeshMaterial"].clone();
     assert_eq!(material["texture"], "ship:texture:0");
     assert_eq!(material["transparent"], true);
+    assert!((material["metallic"].as_f64().unwrap() - 0.9).abs() < 1e-5);
+    assert!((material["roughness"].as_f64().unwrap() - 0.2).abs() < 1e-5);
     let mesh = content::load_mesh(&reloaded.resolve_asset("ship:mesh:0:0").unwrap()).unwrap();
     assert_eq!(mesh.indices, vec![0, 1, 2]);
     assert_eq!(mesh.vertices[1].color, [0., 1., 0., 1.]);
@@ -199,4 +201,76 @@ fn generated_skin_bindings_remap_and_model_rejects_invalid_joint_indices() {
         serde_json::json!({"model":"skinned:model","mesh_node":1,"primitive":0,
             "bindings":["copy:node:0","copy:node:1","copy:node:2"]})
     );
+}
+#[test]
+fn importer_maps_pbr_textures_and_source_normals_into_render_assets() {
+    use serde_json::json;
+    let temp = tempfile::tempdir().unwrap();
+    fixture::write_project(temp.path());
+    fixture::write_source(temp.path(), false);
+    let file = temp.path().join("source/model.gltf");
+    let mut source: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    let data = temp.path().join("source/geometry.bin");
+    let mut bytes = fs::read(&data).unwrap();
+    let offset = bytes.len();
+    for _ in 0..3 {
+        for v in [0.0f32, 0.0, 1.0] {
+            bytes.extend(v.to_le_bytes());
+        }
+    }
+    source["buffers"][0]["byteLength"] = json!(bytes.len());
+    source["bufferViews"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"buffer":0,"byteOffset":offset,"byteLength":36}));
+    source["accessors"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"bufferView":5,"componentType":5126,"count":3,"type":"VEC3"}));
+    source["meshes"][0]["primitives"][0]["attributes"]["NORMAL"] = json!(5);
+    source["materials"][0]["pbrMetallicRoughness"]["metallicRoughnessTexture"] = json!({"index":0});
+    source["materials"][0]["normalTexture"] = json!({"index":0,"scale":0.75});
+    fs::write(&file, serde_json::to_vec(&source).unwrap()).unwrap();
+    fs::write(data, bytes).unwrap();
+    let project = Project::load(temp.path().join("project.json")).unwrap();
+    import_model(&project, Path::new("source/model.gltf"), "pbr").unwrap();
+    let project = Project::load(&project.manifest).unwrap();
+    let prefab = load_scene(&project.root, &project.assets["pbr:prefab"].path).unwrap();
+    let material = prefab
+        .entities
+        .iter()
+        .find_map(|e| e.components.material.as_ref())
+        .unwrap();
+    assert_eq!(material.normal_texture.as_deref(), Some("pbr:texture:0"));
+    assert_eq!(
+        material.metallic_roughness_texture.as_deref(),
+        Some("pbr:texture:0")
+    );
+    assert_eq!(material.normal_scale, 0.75);
+    let mesh = content::load_mesh(&project.resolve_asset("pbr:mesh:0:0").unwrap()).unwrap();
+    assert_eq!(mesh.normals, vec![[0.0, 0.0, 1.0]; 3]);
+    // Shared-UV renderer rejects incompatible per-map coordinate sets at import.
+    source["materials"][0]["normalTexture"]["texCoord"] = json!(1);
+    fs::write(&file, serde_json::to_vec(&source).unwrap()).unwrap();
+    assert!(
+        import_model(&project, Path::new("source/model.gltf"), "mixed")
+            .unwrap_err()
+            .to_string()
+            .contains("UV set")
+    );
+}
+#[test]
+fn mesh_loader_rejects_mismatched_normal_array() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("mesh.json");
+    let vertices = vec![serde_json::json!({"position":[0,0,0],"uv":[0,0],"color":[1,1,1,1]}); 3];
+    fs::write(
+        &path,
+        serde_json::to_vec(
+            &serde_json::json!({"vertices":vertices,"indices":[0,1,2],"normals":[[0,0,1]]}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(content::load_mesh(&path).is_err());
 }

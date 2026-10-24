@@ -1,5 +1,5 @@
-//! Frame recording: uniform upload, pipeline and bind group lookup, one render
-//! pass per frame.
+//! Frame recording: uniform upload, pipeline and bind group lookup, directional
+//! shadow depth pass followed by the color pass.
 
 use crate::core::{Arena, Core, create_depth};
 use crate::error::{backend_error, check_gpu};
@@ -150,6 +150,7 @@ impl Core {
     ) -> Result<FrameStats> {
         check_gpu(&self.gpu)?;
         self.wait_for_frame_slot()?;
+        self.prepare_shadow_map(draws)?;
         let prepared = self.prepare(destination, draws)?;
         let clear = frame.clear_color.map(f64::from);
         let mut encoder = self
@@ -159,6 +160,7 @@ impl Core {
                 label: Some("engine frame"),
             });
         let mut batches = 0;
+        self.encode_shadows(&mut encoder, draws)?;
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("engine draws"),
@@ -386,6 +388,11 @@ impl Core {
                 shader: shader_id,
                 group: group.group,
                 texture: group.has_texture.then_some(texture_id).flatten(),
+                data_textures: if group.has_texture {
+                    draw.data_textures.map(|t| t.map(|t| t.id()))
+                } else {
+                    [None; 2]
+                },
             };
             let bind_group = match self.bind_groups.get(&bind_key) {
                 Some(bind_group) => bind_group.clone(),
@@ -411,10 +418,26 @@ impl Core {
                                 })
                             }
                             engine_render::shader::BindingKind::SampledTexture2d => {
-                                wgpu::BindingResource::TextureView(&texture.view)
+                                if matches!(binding.slot.binding, 2 | 3) {
+                                    let data = draw.data_textures
+                                        [(binding.slot.binding - 2) as usize]
+                                        .map(|h| {
+                                            self.textures
+                                                .get(&h.id())
+                                                .ok_or_else(|| stale_resource("texture", h.id()))
+                                        })
+                                        .transpose()?
+                                        .unwrap_or(&self.white);
+                                    wgpu::BindingResource::TextureView(&data.linear_view)
+                                } else {
+                                    wgpu::BindingResource::TextureView(&texture.view)
+                                }
                             }
                             engine_render::shader::BindingKind::Sampler => {
                                 wgpu::BindingResource::Sampler(&self.sampler)
+                            }
+                            engine_render::shader::BindingKind::ShadowTexture2d => {
+                                wgpu::BindingResource::TextureView(&self.shadow.view)
                             }
                         };
                         entries.push(wgpu::BindGroupEntry {

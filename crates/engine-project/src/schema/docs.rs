@@ -51,6 +51,26 @@ fn closed(properties: Value, required: &[&str]) -> Value {
         "additionalProperties": false})
 }
 
+fn lighting_schema() -> Value {
+    closed(
+        json!({
+            "direction":vector(3, "Finite nonzero direction from surface toward directional light", Some(json!([0.4,0.7,1.0]))),
+            "color":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":3,"maxItems":3,"default":[1,1,1]},
+            "intensity":{"type":"number","minimum":0,"maximum":100,"default":3},
+            "ambient":{"type":"number","minimum":0,"maximum":1,"default":0.08},
+            "shadows":closed(json!({
+                "enabled":{"type":"boolean","default":false},
+                "resolution":{"type":"integer","enum":[64,128,256,512,1024,2048,4096],"default":1024},
+                "center":{"type":"array","items":{"type":"number","minimum":-1000000,"maximum":1000000},"minItems":3,"maxItems":3,"default":[0,0,0]},
+                "extent":{"type":"number","minimum":0.01,"maximum":100000,"default":20},
+                "depth":{"type":"number","minimum":0.1,"maximum":100000,"default":100},
+                "bias":{"type":"number","minimum":0,"maximum":0.1,"default":0.001}
+            }), &[])
+        }),
+        &[],
+    )
+}
+
 /// All authored component documents.
 pub fn component_docs() -> Vec<ComponentDoc> {
     vec![
@@ -59,7 +79,7 @@ pub fn component_docs() -> Vec<ComponentDoc> {
             description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order.",
             requires: &["Transform"],
             schema: closed(
-                json!({"version":version(),"active":{"type":"boolean","default":true},"projection":{"oneOf":[
+                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"projection":{"oneOf":[
                     closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
                     closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])
                 ]}}),
@@ -72,7 +92,7 @@ pub fn component_docs() -> Vec<ComponentDoc> {
             description: "Material for MeshRenderer or SpriteRenderer: custom WGSL shader, texture, tint and 3D transparency/lighting controls.",
             requires: &[],
             schema: closed(
-                json!({"version":version(),"shader":{"type":["string","null"]},"texture":{"type":["string","null"]},"tint":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":4,"maxItems":4,"default":[1,1,1,1]},"unlit":{"type":"boolean","default":false},"transparent":{"type":"boolean","default":false}}),
+                json!({"version":version(),"shader":{"type":["string","null"]},"texture":{"type":["string","null"]},"tint":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":4,"maxItems":4,"default":[1,1,1,1]},"unlit":{"type":"boolean","default":false},"transparent":{"type":"boolean","default":false},"metallic":{"type":"number","minimum":0,"maximum":1,"default":0},"roughness":{"type":"number","minimum":0,"maximum":1,"default":0.5},"cast_shadows":{"type":"boolean","default":true},"receive_shadows":{"type":"boolean","default":true},"normal_scale":{"type":"number","minimum":0,"maximum":10,"default":1},"normal_texture":{"type":["string","null"],"minLength":1},"metallic_roughness_texture":{"type":["string","null"],"minLength":1}}),
                 &[],
             ),
             example: json!({"tint":[0.4,0.8,1.0,1.0],"unlit":true}),
@@ -208,5 +228,5 @@ pub const SCENE_RULES: [&str; 5] = [
     "A scene may contain at most one Camera2D.",
     "SpriteRenderer, Collider2D and Camera3D require a Transform on the same entity.",
     "Camera2D.follow must name an entity that has a Transform.",
-    "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture) must be catalog asset IDs of the right kind.",
+    "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture/normal_texture/metallic_roughness_texture) must be catalog asset IDs of the right kind.",
 ];

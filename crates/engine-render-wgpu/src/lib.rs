@@ -28,6 +28,7 @@ mod core;
 mod error;
 mod frame;
 mod shader;
+mod shadow;
 mod surface;
 mod target;
 pub mod translate;

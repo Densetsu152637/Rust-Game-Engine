@@ -189,7 +189,14 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 .collect(),
         };
         let camera = CameraView::new(&frame.sprites.camera, size.0, size.1)?;
-        self.validate(&proxies, &camera)?;
+        let extra: Vec<_> = frame
+            .meshes
+            .iter()
+            .flat_map(|d| [&d.metallic_roughness_texture, &d.normal_texture])
+            .flatten()
+            .cloned()
+            .collect();
+        self.validate(&proxies, &camera, &extra)?;
         // Failed authoring edits must not create resources for earlier valid draws.
         for draw in &frame.sprites.draws {
             if let Some(material) = frame.materials2d.get(&draw.id) {
@@ -234,7 +241,7 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         >,
     ) -> Result<BuiltFrame> {
         let camera = CameraView::new(&frame.camera, size.0, size.1)?;
-        self.validate(frame, &camera)?;
+        self.validate(frame, &camera, &[])?;
         let uploads = self.cache.sync(&mut self.device, &frame.draws)?;
         let mut stats = RenderStats {
             mesh_uploads: uploads.meshes,
@@ -336,7 +343,12 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         })
     }
 
-    fn validate(&self, frame: &RenderFrame, camera: &CameraView) -> Result<()> {
+    fn validate(
+        &self,
+        frame: &RenderFrame,
+        camera: &CameraView,
+        extra: &[std::sync::Arc<engine_project::content::Texture>],
+    ) -> Result<()> {
         ensure!(
             frame.draws.len() <= self.limits.max_draws,
             "frame draw limit exceeded"
@@ -387,6 +399,11 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 );
                 if !self.cache.has_current_mesh(mesh) {
                     ensure!(
+                        (mesh.normals.is_empty() || mesh.normals.len() == mesh.vertices.len())
+                            && mesh.normals.iter().flatten().all(|n| n.is_finite()),
+                        "invalid mesh normals"
+                    );
+                    ensure!(
                         mesh.vertices.iter().all(|v| v
                             .position
                             .iter()
@@ -409,9 +426,14 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                     ensure!(count % 3 == 0, "mesh must contain complete triangles");
                 }
             }
-            if let Some(texture) = &draw.texture
-                && textures.insert(address(texture))
-            {
+        }
+        for texture in frame
+            .draws
+            .iter()
+            .filter_map(|d| d.texture.as_ref())
+            .chain(extra.iter())
+        {
+            if textures.insert(address(texture)) {
                 let expected = (texture.width as usize)
                     .checked_mul(texture.height as usize)
                     .and_then(|n| n.checked_mul(4))
@@ -853,7 +875,11 @@ mod tests {
     fn malformed_meshes_are_rejected() {
         let (mut renderer, _) = renderer(RenderLimits::default());
         let mesh = |vertices: Vec<Vertex>, indices: Vec<u32>| {
-            let mesh = Arc::new(Mesh { vertices, indices });
+            let mesh = Arc::new(Mesh {
+                normals: vec![],
+                vertices,
+                indices,
+            });
             frame(vec![draw("m", 0, &mesh, None)])
         };
         let nan = vec![vertex([f32::NAN, 0.0, 0.0]); 3];
@@ -879,6 +905,7 @@ mod tests {
             ..Default::default()
         });
         let tri = Arc::new(Mesh {
+            normals: vec![],
             vertices: vec![vertex([0.0; 3]); 3],
             indices: vec![],
         });
@@ -893,6 +920,7 @@ mod tests {
             pixels: vec![0; 16],
         });
         let tri = Arc::new(Mesh {
+            normals: vec![],
             vertices: vec![vertex([0.0; 3]); 3],
             indices: vec![],
         });
@@ -923,6 +951,7 @@ mod tests {
             pixels: vec![0; 20],
         });
         let tri = Arc::new(Mesh {
+            normals: vec![],
             vertices: vec![vertex([0.0; 3]); 3],
             indices: vec![],
         });

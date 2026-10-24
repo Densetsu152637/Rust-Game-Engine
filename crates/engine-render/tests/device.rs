@@ -741,3 +741,50 @@ fn unsupported_backend_features_surface_their_reason() {
         }
     );
 }
+#[test]
+fn invalid_shadow_commands_fail_before_backend_submission() {
+    let (mut device, log) = device(2);
+    let shader = device
+        .create_shader(ShaderResource::new(
+            "untextured",
+            ShaderSource::wgsl(UNTEXTURED),
+        ))
+        .unwrap();
+    let mesh = device.create_mesh(&triangle()).unwrap();
+    let mut draw = DrawCommand::new(shader, mesh);
+    let identity = [
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [0., 0., 1., 0.],
+        [0., 0., 0., 1.],
+    ];
+    for resolution in [0, 65, 8192] {
+        draw.shadow = Some(ShadowCaster {
+            light_mvp: identity,
+            resolution,
+        });
+        assert!(
+            device
+                .submit(surface_frame(), frame_of(vec![draw.clone()]))
+                .is_err()
+        );
+    }
+    draw.shadow = Some(ShadowCaster {
+        light_mvp: identity,
+        resolution: 256,
+    });
+    let mut other = draw.clone();
+    other.shadow.as_mut().unwrap().resolution = 512;
+    assert!(
+        device
+            .submit(surface_frame(), frame_of(vec![draw.clone(), other]))
+            .is_err()
+    );
+    draw.shadow.as_mut().unwrap().light_mvp[0][0] = f32::NAN;
+    assert!(
+        device
+            .submit(surface_frame(), frame_of(vec![draw]))
+            .is_err()
+    );
+    assert!(log.frames().is_empty());
+}

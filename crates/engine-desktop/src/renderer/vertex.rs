@@ -1,6 +1,6 @@
-//! The 36-byte sprite vertex record and its backend-neutral layout.
+//! The 48-byte sprite vertex record and its backend-neutral layout.
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use bytemuck::{Pod, Zeroable};
 use engine_project::content::Mesh;
 use engine_render::{MeshResource, VertexAttribute, VertexFormat, VertexLayout};
@@ -12,6 +12,7 @@ pub(crate) struct GpuVertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    pub normal: [f32; 3],
 }
 
 /// Bytes per vertex.
@@ -37,6 +38,11 @@ pub(crate) fn vertex_layout() -> VertexLayout {
                 format: VertexFormat::Float32x4,
                 offset: std::mem::offset_of!(GpuVertex, color) as u32,
             },
+            VertexAttribute {
+                location: 3,
+                format: VertexFormat::Float32x3,
+                offset: 36,
+            },
         ],
     )
 }
@@ -44,13 +50,20 @@ pub(crate) fn vertex_layout() -> VertexLayout {
 /// Convert a CPU mesh into the neutral resource description. The mesh must not
 /// be empty (the adapter rejects empty meshes).
 pub(crate) fn mesh_resource(mesh: &Mesh) -> Result<MeshResource> {
+    ensure!(
+        (mesh.normals.is_empty() || mesh.normals.len() == mesh.vertices.len())
+            && mesh.normals.iter().flatten().all(|n| n.is_finite()),
+        "invalid mesh normals"
+    );
     let vertices: Vec<GpuVertex> = mesh
         .vertices
         .iter()
-        .map(|v| GpuVertex {
+        .enumerate()
+        .map(|(index, v)| GpuVertex {
             position: v.position,
             uv: v.uv,
             color: v.color,
+            normal: mesh.normals.get(index).copied().unwrap_or([0.0; 3]),
         })
         .collect();
     Ok(MeshResource::new(
@@ -66,8 +79,8 @@ mod layout_tests {
     use std::mem::{align_of, offset_of, size_of};
 
     #[test]
-    fn gpu_vertex_is_a_tightly_packed_36_byte_record() {
-        assert_eq!(size_of::<GpuVertex>(), 36);
+    fn gpu_vertex_is_a_tightly_packed_48_byte_record() {
+        assert_eq!(size_of::<GpuVertex>(), 48);
         assert_eq!(align_of::<GpuVertex>(), 4);
     }
 
@@ -77,7 +90,7 @@ mod layout_tests {
         assert_eq!(offset_of!(GpuVertex, position), 0);
         assert_eq!(offset_of!(GpuVertex, uv), 12);
         assert_eq!(offset_of!(GpuVertex, color), 20);
-        assert_eq!(20 + size_of::<[f32; 4]>(), size_of::<GpuVertex>());
+        assert_eq!(36 + size_of::<[f32; 3]>(), size_of::<GpuVertex>());
     }
 
     #[test]
@@ -86,6 +99,7 @@ mod layout_tests {
             position: [1.0, 2.0, 3.0],
             uv: [0.5, 0.25],
             color: [0.0, 1.0, -1.0, 8.0],
+            normal: [0.0; 3],
         };
         let bytes = bytemuck::bytes_of(&vertex);
         let floats: Vec<f32> = bytes
@@ -94,13 +108,16 @@ mod layout_tests {
             .iter()
             .map(|c| f32::from_le_bytes(*c))
             .collect();
-        assert_eq!(floats, [1.0, 2.0, 3.0, 0.5, 0.25, 0.0, 1.0, -1.0, 8.0]);
+        assert_eq!(
+            floats,
+            [1.0, 2.0, 3.0, 0.5, 0.25, 0.0, 1.0, -1.0, 8.0, 0.0, 0.0, 0.0]
+        );
     }
 
     #[test]
     fn vertex_slices_cast_without_padding_between_elements() {
         let vertices = [GpuVertex::zeroed(); 5];
-        assert_eq!(bytemuck::cast_slice::<_, u8>(&vertices).len(), 5 * 36);
+        assert_eq!(bytemuck::cast_slice::<_, u8>(&vertices).len(), 5 * 48);
         assert!(
             bytemuck::cast_slice::<_, u8>(&vertices)
                 .iter()
@@ -119,9 +136,13 @@ mod layout_tests {
             position: source.position,
             uv: source.uv,
             color: source.color,
+            normal: [0.0; 3],
         };
         let floats: &[f32] = bytemuck::cast_slice(bytemuck::bytes_of(&gpu));
-        assert_eq!(floats, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        assert_eq!(
+            floats,
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 0.0, 0.0, 0.0]
+        );
     }
 
     #[test]
@@ -157,7 +178,10 @@ mod layout_tests {
             ]
         );
         let stride: u32 = inputs.iter().map(|(_, components, _)| components * 4).sum();
-        assert_eq!(stride as usize, size_of::<GpuVertex>());
+        assert_eq!(
+            stride as usize, 36,
+            "legacy shader inputs retain their offsets"
+        );
     }
 
     #[test]
@@ -170,7 +194,7 @@ mod layout_tests {
             .iter()
             .map(|a| (a.location, a.offset))
             .collect();
-        assert_eq!(offsets, [(0, 0), (1, 12), (2, 20)]);
+        assert_eq!(offsets, [(0, 0), (1, 12), (2, 20), (3, 36)]);
         let interface =
             engine_render::ShaderInterface::reflect(&engine_render::ShaderResource::new(
                 "textured",
@@ -183,6 +207,7 @@ mod layout_tests {
     #[test]
     fn mesh_resource_carries_vertices_and_indices_verbatim() {
         let mesh = Mesh {
+            normals: vec![],
             vertices: vec![
                 engine_project::content::Vertex {
                     position: [0.0, 0.0, 0.0],
@@ -195,7 +220,7 @@ mod layout_tests {
         };
         let resource = mesh_resource(&mesh).unwrap();
         assert_eq!(resource.vertex_count, 3);
-        assert_eq!(resource.vertices.len(), 3 * 36);
+        assert_eq!(resource.vertices.len(), 3 * 48);
         assert_eq!(resource.indices, [0, 1, 2]);
         assert_eq!(resource.draw_count(), 3);
         assert!(

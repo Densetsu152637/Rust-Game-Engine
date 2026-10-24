@@ -110,3 +110,87 @@ fn invalid_camera_and_material_asset_kinds_fail_before_runtime() {
             .contains("must be shader")
     );
 }
+#[test]
+fn pbr_and_shadow_controls_validate_and_round_trip_through_authored_components() {
+    let dir = fixture();
+    let mut project = Project::load(dir.path().join("project.json")).unwrap();
+    let material = project.scene.entities[2]
+        .components
+        .material
+        .as_mut()
+        .unwrap();
+    material.metallic = 0.8;
+    material.roughness = 0.25;
+    material.cast_shadows = false;
+    let camera = project.scene.entities[0]
+        .components
+        .camera3d
+        .as_mut()
+        .unwrap();
+    camera.lighting.shadows.enabled = true;
+    camera.lighting.shadows.resolution = 512;
+    camera.lighting.intensity = 4.0;
+    project.validate_scene(&project.scene).unwrap();
+    let runtime = Runtime::new(project).unwrap();
+    let frame = runtime.extract_scene_frame().unwrap();
+    assert_eq!(frame.meshes[0].material.metallic, 0.8);
+    assert!(!frame.meshes[0].material.cast_shadows);
+    assert_eq!(
+        frame.camera3d.unwrap().camera.lighting.shadows.resolution,
+        512
+    );
+    let snapshot = runtime.try_snapshot().unwrap();
+    let value = serde_json::to_value(
+        snapshot.scene.entities[0]
+            .components
+            .camera3d
+            .as_ref()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(value["lighting"]["shadows"]["enabled"], true);
+}
+#[test]
+fn invalid_pbr_light_and_shadow_values_are_rejected_at_boundary() {
+    for value in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+        let material = MeshMaterial {
+            metallic: value,
+            ..Default::default()
+        };
+        assert!(material.validate().is_err());
+        let material = MeshMaterial {
+            roughness: value,
+            ..Default::default()
+        };
+        assert!(material.validate().is_err());
+    }
+    for resolution in [0, 63, 65, 8192] {
+        let mut camera = Camera3D::default();
+        camera.lighting.shadows.resolution = resolution;
+        assert!(camera.validate().is_err());
+    }
+    let mut light = SceneLighting {
+        direction: [0.0; 3],
+        ..Default::default()
+    };
+    assert!(light.validate().is_err());
+    light.direction = [0.0, 1.0, 0.0];
+    light.validate().unwrap();
+    light.shadows.bias = f32::NAN;
+    assert!(light.validate().is_err());
+    let dir = fixture();
+    let mut project = Project::load(dir.path().join("project.json")).unwrap();
+    project.scene.entities[2]
+        .components
+        .material
+        .as_mut()
+        .unwrap()
+        .normal_texture = Some("mesh-asset".into());
+    assert!(
+        project
+            .validate_scene(&project.scene)
+            .unwrap_err()
+            .to_string()
+            .contains("must be texture")
+    );
+}

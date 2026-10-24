@@ -107,6 +107,7 @@ fn runtime_deforms_mesh_before_extraction_preserving_uv_and_color() {
         .clone();
     assert!((mesh.vertices[0].position[0] + 3.).abs() < 0.001);
     assert_eq!(mesh.vertices[0].uv, [0.25, 0.75]);
+    assert_eq!(mesh.normals, vec![[0.0, 0.0, 1.0]; 3]);
     assert_eq!(mesh.vertices[0].color, [0.2, 0.4, 0.6, 1.]);
     assert!((runtime.app().world().resource::<Extracted>().0 + 3.).abs() < 0.001);
     let frame2d = runtime.extract_frame().unwrap();

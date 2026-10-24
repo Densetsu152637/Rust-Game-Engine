@@ -24,11 +24,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// A draw as the backend received it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RecordedDraw {
     pub shader: ShaderHandle,
     pub mesh: MeshHandle,
     pub texture: Option<TextureHandle>,
+    pub data_textures: [Option<TextureHandle>; 2],
+    pub shadow: Option<crate::ShadowCaster>,
     pub uniforms: Vec<(UniformSlot, Vec<u8>)>,
     pub state: DrawState,
     pub order: u64,
@@ -407,6 +409,12 @@ impl RenderBackend for RecordingBackend {
         for draw in draws {
             let mut referenced = vec![draw.shader.into(), draw.mesh.into()];
             referenced.extend(draw.texture.map(ResourceId::from));
+            referenced.extend(
+                draw.data_textures
+                    .into_iter()
+                    .flatten()
+                    .map(ResourceId::from),
+            );
             if let Some(dead) = referenced.iter().find(|id| !inner.live.contains(id)) {
                 return Err(contract(format!(
                     "draw {} references dead resource {dead}",
@@ -431,6 +439,8 @@ impl RenderBackend for RecordingBackend {
                     shader: draw.shader,
                     mesh: draw.mesh,
                     texture: draw.texture,
+                    data_textures: draw.data_textures,
+                    shadow: draw.shadow.clone(),
                     uniforms: draw
                         .uniforms
                         .iter()

@@ -379,6 +379,18 @@ impl<B: RenderBackend> RenderDevice<B> {
             }
         }
         let draws = commands.into_ordered();
+        let resolution = draws
+            .iter()
+            .find_map(|d| d.shadow.as_ref().map(|s| s.resolution));
+        if draws
+            .iter()
+            .filter_map(|d| d.shadow.as_ref())
+            .any(|s| Some(s.resolution) != resolution)
+        {
+            return Err(RenderError::InvalidDraw(
+                "shadow casters require one resolution per frame".into(),
+            ));
+        }
         for draw in &draws {
             self.validate_draw(draw)?;
         }
@@ -393,6 +405,16 @@ impl<B: RenderBackend> RenderDevice<B> {
     }
 
     fn validate_draw(&self, draw: &DrawCommand) -> Result<()> {
+        if let Some(shadow) = &draw.shadow
+            && (!(64..=4096).contains(&shadow.resolution)
+                || !shadow.resolution.is_power_of_two()
+                || shadow.resolution > self.caps.max_texture_dimension
+                || !shadow.light_mvp.iter().flatten().all(|v| v.is_finite()))
+        {
+            return Err(RenderError::InvalidDraw(
+                "invalid shadow matrix or resolution".into(),
+            ));
+        }
         let label = |what: &str| format!("draw {}: {what}", draw.order);
         let Live::Shader(interface) = self.require(draw.shader.into())? else {
             return Err(RenderError::InvalidDraw(label(
@@ -402,12 +424,38 @@ impl<B: RenderBackend> RenderDevice<B> {
         let Live::Mesh { layout } = self.require(draw.mesh.into())? else {
             return Err(RenderError::InvalidDraw(label("mesh handle is not a mesh")));
         };
+        if draw.shadow.is_some()
+            && !layout.attributes.iter().any(|a| {
+                a.location == 0
+                    && matches!(
+                        a.format,
+                        crate::VertexFormat::Float32x3 | crate::VertexFormat::Float32x4
+                    )
+            })
+        {
+            return Err(RenderError::InvalidDraw(label(
+                "shadow casters require a position at location 0",
+            )));
+        }
         if let Some(texture) = draw.texture {
             self.require(texture.into())?;
             if !interface.uses_texture() {
                 return Err(RenderError::InvalidDraw(label(
                     "a texture is bound but the shader samples none",
                 )));
+            }
+        }
+        for (index, texture) in draw.data_textures.iter().enumerate() {
+            if let Some(texture) = texture {
+                self.require((*texture).into())?;
+                if !interface.bindings.iter().any(|b| {
+                    b.slot == crate::UniformSlot::new(1, index as u32 + 2)
+                        && b.kind == crate::shader::BindingKind::SampledTexture2d
+                }) {
+                    return Err(RenderError::InvalidDraw(label(
+                        "data texture is bound but shader does not declare its slot",
+                    )));
+                }
             }
         }
         interface
