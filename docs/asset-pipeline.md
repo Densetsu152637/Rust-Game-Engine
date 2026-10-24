@@ -162,8 +162,12 @@ first supported clip is attached to the prefab root as `engine.AnimationPlayer`,
 with bindings ordered by source node index. Prefab instantiation remaps those
 bindings. Cubic clips, clips with over 4096 nodes, or binding components too large
 for the 64 KiB authoring limit remain in model metadata and produce a warning.
-Generated meshes stay static; explicit skinning adapters can use the retained
-joint palette, inverse binds and original vertex weights.
+Skinned primitive entities receive `engine.SkinBinding` with the model asset ID,
+source mesh-node/primitive indices and the complete source-node binding table.
+Prefab instantiation remaps these entity references. The runtime skin adapter uses
+the retained joint palette, inverse binds and original vertex weights. Skinned
+imports require at most 4096 source nodes, 60 KiB per binding table and 8 MiB
+aggregate duplicated binding data; exceeding these limits fails the import.
 
 All content is staged in a temporary directory inside the project. Importers
 coordinate through `.model-import.lock`, and an optimistic byte comparison rejects
@@ -182,4 +186,3 @@ Project tests exercise import/reload, prefab instantiation, material/PNG/mesh
 association, animation binding remapping, conflicts, traversal and rollback.
 MCP tests exercise write gating and actual import; a CLI test launches the
 `engine` executable, imports a real source fixture, and reloads generated assets.
-

@@ -37,3 +37,24 @@ fn mcp_import_is_write_gated_and_reloads_a_renderable_prefab() {
     let mesh = data(temp.path(), "asset_info", json!({"asset":"mcp:mesh:0:0"}));
     assert_eq!(mesh["ok"], true, "{mesh}");
 }
+#[test]
+fn mcp_model_info_reports_generated_skin_binding_use() {
+    let temp = fixture();
+    fixture::write_skinned_source(temp.path());
+    let result = write(
+        temp.path(),
+        "asset_import_model",
+        json!({"source":"source/model.gltf","prefix":"skin"}),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    let info = data(temp.path(), "asset_info", json!({"asset":"skin:model"}));
+    assert_eq!(info["ok"], true, "{info}");
+    assert_eq!(info["details"]["skins"], 1);
+    assert!(
+        info["used_by"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["component"] == "engine.SkinBinding" && entry["field"] == "model")
+    );
+}

@@ -60,6 +60,7 @@ pub fn write_source(root: &Path, animated: bool) {
     )
     .unwrap();
 }
+#[allow(dead_code)]
 pub fn write_skinned_source(root: &Path) {
     write_source(root, true);
     let directory = root.join("source");
