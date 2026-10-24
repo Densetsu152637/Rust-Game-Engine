@@ -1,6 +1,6 @@
 //! ECS adapters for the independent mixer. Entity removal drops scoped source voices.
 use crate::{
-    Error, Project, Result, Transform,
+    Error, Project, Result,
     runtime::{ProjectResource, TriggerEvents},
 };
 use bevy_ecs::prelude::*;
@@ -58,15 +58,14 @@ pub fn source(
         ));
     }
     if let Some(entity) = attachment {
-        options.spatial.position = world
-            .get::<Transform>(entity)
-            .ok_or_else(|| {
+        options.spatial.position = crate::world_transform(world, entity)
+            .map_err(|_| {
                 Error::new(
                     "audio.attachment.invalid",
-                    "Source attachment requires live Transform",
+                    "Attachment requires a live transformed entity",
                 )
             })?
-            .position;
+            .position();
         options.spatial.enabled = true;
     }
     options.validate().map_err(audio_error)?;
@@ -106,15 +105,14 @@ pub fn configure(
     attachment: Option<Entity>,
 ) -> Result<()> {
     if let Some(entity) = attachment {
-        options.spatial.position = world
-            .get::<Transform>(entity)
-            .ok_or_else(|| {
+        options.spatial.position = crate::world_transform(world, entity)
+            .map_err(|_| {
                 Error::new(
                     "audio.attachment.invalid",
-                    "Source attachment requires live Transform",
+                    "Attachment requires a live transformed entity",
                 )
             })?
-            .position;
+            .position();
         options.spatial.enabled = true;
     }
     options.validate().map_err(audio_error)?;
@@ -180,15 +178,14 @@ pub fn listener(
         ));
     }
     if let Some(entity) = attachment {
-        value.position = world
-            .get::<Transform>(entity)
-            .ok_or_else(|| {
+        value.position = crate::world_transform(world, entity)
+            .map_err(|_| {
                 Error::new(
                     "audio.attachment.invalid",
-                    "Listener attachment requires live Transform",
+                    "Attachment requires a live transformed entity",
                 )
             })?
-            .position;
+            .position();
     }
     value.validate().map_err(audio_error)?;
     let mut audio = world
@@ -215,7 +212,9 @@ pub fn synchronize(world: &mut World) -> Result<()> {
         .collect();
     for (owner, attachments) in updates {
         for (source, (attachment, mut options)) in attachments {
-            let position = world.get::<Transform>(attachment).map(|t| t.position);
+            let position = crate::world_transform(world, attachment)
+                .ok()
+                .map(|t| t.position());
             let mut audio = world.get_mut::<EntityAudio>(owner).expect("queried owner");
             if let Some(position) = position {
                 options.spatial.position = position;
@@ -237,8 +236,8 @@ pub fn synchronize(world: &mut World) -> Result<()> {
             } else {
                 let mut value = attached.value;
                 if let Some(entity) = attached.attachment {
-                    if let Some(t) = world.get::<Transform>(entity) {
-                        value.position = t.position;
+                    if let Ok(t) = crate::world_transform(world, entity) {
+                        value.position = t.position();
                     } else {
                         audio.control.reset_listener().map_err(audio_error)?;
                         return Ok(());

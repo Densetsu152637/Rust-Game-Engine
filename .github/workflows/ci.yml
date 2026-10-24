@@ -223,3 +223,47 @@ jobs:
             echo
             echo "Passed: $(bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log")"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  macos-tests:
+    name: Workspace tests (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+      - name: Report passed tests
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "### Workspace tests (macOS)"
+            echo
+            echo "Passed: $(bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  wasm-portable-check:
+    name: Portable library compile (WebAssembly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - name: Install WebAssembly target
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: wasm-portable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # A compile check is not a browser host or a runnable WebAssembly game.
+      - name: Check portable library boundaries
+        run: cargo check --locked --target wasm32-unknown-unknown -p engine-core -p engine-ecs -p engine-render -p engine-platform

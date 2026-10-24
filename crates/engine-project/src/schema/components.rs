@@ -31,12 +31,33 @@ pub struct Transform {
     #[serde(default = "one")]
     pub version: u32,
     pub position: [f32; 3],
+    #[serde(
+        default = "identity_rotation",
+        skip_serializing_if = "is_identity_rotation"
+    )]
+    pub rotation: [f32; 4],
+    #[serde(default = "unit_scale", skip_serializing_if = "is_unit_scale")]
+    pub scale: [f32; 3],
+}
+fn identity_rotation() -> [f32; 4] {
+    [0.0, 0.0, 0.0, 1.0]
+}
+fn is_identity_rotation(value: &[f32; 4]) -> bool {
+    *value == identity_rotation()
+}
+fn is_unit_scale(value: &[f32; 3]) -> bool {
+    *value == unit_scale()
+}
+fn unit_scale() -> [f32; 3] {
+    [1.0; 3]
 }
 impl Default for Transform {
     fn default() -> Self {
         Self {
             version: 1,
             position: [0.0; 3],
+            rotation: identity_rotation(),
+            scale: unit_scale(),
         }
     }
 }
@@ -144,6 +165,14 @@ pub struct Collider2D {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Components {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom: BTreeMap<String, crate::catalog::CustomValue>,
+    #[serde(
+        rename = "EventBindings",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub event_bindings: Option<crate::events::EventBindings>,
     #[serde(rename = "Transform", default, skip_serializing_if = "Option::is_none")]
     pub transform: Option<Transform>,
     #[serde(rename = "Script", default, skip_serializing_if = "Option::is_none")]

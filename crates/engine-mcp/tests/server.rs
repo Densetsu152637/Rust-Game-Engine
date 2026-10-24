@@ -86,7 +86,7 @@ fn access_flags_are_independent() {
             .count()
     };
     assert_eq!(count(ServerConfig::new()), 12);
-    assert_eq!(count(ServerConfig::new().allow_write(true)), 18);
+    assert_eq!(count(ServerConfig::new().allow_write(true)), 19);
     assert_eq!(
         count(ServerConfig::new().allow_exec(true)),
         12,

@@ -317,7 +317,8 @@ fn transform_version_defaults_to_one() {
         transform,
         Transform {
             version: 1,
-            position: [1.0, 2.0, 3.0]
+            position: [1.0, 2.0, 3.0],
+            ..Default::default()
         }
     );
     assert_eq!(Transform::default().position, [0.0; 3]);

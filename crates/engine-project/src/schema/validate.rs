@@ -41,9 +41,12 @@ impl Scene {
             }
             let c = &entity.components;
             if let Some(t) = &c.transform
-                && (t.version != 1 || !finite(t.position))
+                && (t.version != 1 || crate::transforms::local_matrix(t).is_err())
             {
                 return Err(bad("Invalid Transform"));
+            }
+            if let Some(bindings) = &c.event_bindings {
+                crate::events::validate_bindings(bindings)?;
             }
             if let Some(s) = &c.script
                 && (s.version != 1 || !identifier(&s.asset))
@@ -107,6 +110,26 @@ impl Scene {
             ));
         }
         for e in &self.entities {
+            let mut current = e;
+            let mut visited = BTreeSet::new();
+            while let Some(parent) = &current.parent {
+                if current.components.transform.is_none()
+                    || !visited.insert(&current.id)
+                    || visited.len() > 256
+                {
+                    return Err(Error::new(
+                        "scene.parent.invalid",
+                        "Parent cycle, missing transform or hierarchy too deep",
+                    ));
+                }
+                current = self
+                    .entities
+                    .iter()
+                    .find(|e| &e.id == parent && e.components.transform.is_some())
+                    .ok_or_else(|| {
+                        Error::new("scene.parent.invalid", "Parent requires transformed entity")
+                    })?;
+            }
             if let Some(follow) = e
                 .components
                 .camera_2d

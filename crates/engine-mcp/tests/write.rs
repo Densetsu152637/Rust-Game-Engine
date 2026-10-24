@@ -20,7 +20,8 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 6] = [
+const WRITE_TOOLS: [&str; 7] = [
+    "scene_edit",
     "entity_create",
     "entity_update",
     "entity_delete",
@@ -80,7 +81,7 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 18);
+    assert_eq!(names.len(), 19);
     assert_eq!(names[12..], WRITE_TOOLS);
     assert_eq!(names[..12], tool_names(dir.path(), read_only()));
 }
@@ -1041,4 +1042,50 @@ fn file_write_results_are_searchable_and_listed() {
     assert_eq!(search["matches"][0]["path"], "src/extra.rs");
     let listing = data(dir.path(), "file_list", json!({"extension":"rs"}));
     assert_eq!(listing["total"], 2);
+}
+
+#[test]
+fn custom_schema_discovery_set_validation_and_transactional_parent_edit_share_model() {
+    let dir = fixture();
+    let manifest = dir.path().join("project.json");
+    let mut project: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    project["componentSchemas"] = json!("components.json");
+    fs::write(&manifest, serde_json::to_vec(&project).unwrap()).unwrap();
+    fs::write(dir.path().join("components.json"),json!([{"name":"game.Health","version":1,"schema":{"type":"object","properties":{"hp":{"type":"integer","minimum":0}},"required":["hp"],"additionalProperties":false},"defaults":{"hp":10},"dataOnly":true}]).to_string()).unwrap();
+    let schema = data(
+        dir.path(),
+        "component_schema",
+        json!({"component":"game.Health"}),
+    );
+    assert_eq!(schema["components"][0]["name"], "game.Health");
+    let set = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"player","component":"game.Health","value":{"version":1,"data":{"hp":7}}}),
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    assert_eq!(
+        set["entity"]["components"]["custom"]["game.Health"]["data"]["hp"],
+        7
+    );
+    let before = bytes(dir.path(), START);
+    let invalid = write(
+        dir.path(),
+        "scene_edit",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"operations":[{"op":"set_position","entity_id":"player","position":[9,9,0]},{"op":"reparent","entity_id":"player","parent":"player"}]}),
+    );
+    assert_eq!(invalid["ok"], false);
+    assert_eq!(bytes(dir.path(), START), before);
+    let edited = write(
+        dir.path(),
+        "scene_edit",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"operations":[{"op":"reparent","entity_id":"player","parent":"camera"}]}),
+    );
+    assert_eq!(edited["ok"], true, "{edited}");
+    let got = data(
+        dir.path(),
+        "entity_get",
+        json!({"scene":START,"id":"player"}),
+    );
+    assert_eq!(got["entity"]["parent"], "camera");
 }

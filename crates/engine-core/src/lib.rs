@@ -7,6 +7,7 @@
 //! subscriber; see `engine-log`).
 
 mod app;
+mod profile;
 
 pub use anyhow::{self, Result};
 pub use engine_ecs::{
@@ -15,6 +16,7 @@ pub use engine_ecs::{
 };
 
 pub use app::{AppState, EngineApp, RuntimeControl, Stage, Time};
+pub use profile::{FrameProfile, MAX_PROFILE_CAPACITY, ProfileSnapshot, StageProfile, StageTiming};
 
 pub mod prelude {
     pub use crate::{AppState, EngineApp, Result, RuntimeControl, Stage, Time};

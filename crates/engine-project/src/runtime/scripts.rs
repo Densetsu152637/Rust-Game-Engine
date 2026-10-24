@@ -53,6 +53,14 @@ pub(super) fn despawn_owned(world: &mut World, owner: Entity) {
 /// Native code has full World access; callbacks run serially at lifecycle boundaries.
 /// Use ordinary Bevy schedules for data-parallel custom component systems.
 pub trait NativeScript: Send + Sync + 'static {
+    fn on_event(
+        &mut self,
+        _world: &mut World,
+        _owner: Entity,
+        _event: &crate::EngineEvent,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn on_create(&mut self, _world: &mut World, _owner: Entity) -> Result<()> {
         Ok(())
     }

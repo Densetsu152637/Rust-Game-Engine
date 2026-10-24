@@ -5,6 +5,8 @@ use super::*;
 pub struct SceneEntity {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     pub components: Components,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -26,6 +28,7 @@ pub struct Asset {
 }
 #[derive(Clone, Debug)]
 pub struct Project {
+    pub component_catalog: crate::catalog::ComponentCatalog,
     pub schema: u32,
     pub name: String,
     pub root: PathBuf,
@@ -40,6 +43,8 @@ pub struct Project {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Manifest {
+    #[serde(default, rename = "componentSchemas")]
+    pub(super) component_schemas: Option<PathBuf>,
     pub(super) schema: u32,
     pub(super) name: String,
     pub(super) startup_scene: PathBuf,

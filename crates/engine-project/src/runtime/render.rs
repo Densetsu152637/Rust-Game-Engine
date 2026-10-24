@@ -151,9 +151,10 @@ impl Runtime {
         let camera = self.extract_camera();
         let mut draws = Vec::new();
         for entity in world.iter_entities() {
-            let Some(transform) = entity.get::<Transform>() else {
+            let Some(_) = entity.get::<Transform>() else {
                 continue;
             };
+            let transform = crate::world_transform(world, entity.id())?;
             let id = entity
                 .get::<AuthoredId>()
                 .map(|a| a.id.clone())
@@ -181,17 +182,24 @@ impl Runtime {
                     renderer.frames[frame.min(renderer.frames.len() - 1)]
                 };
                 let motion = DrawMotion {
-                    position: transform.position,
+                    position: transform.position(),
                     pixel_snap: camera.pixel_snap,
                 };
-                let mesh = content::sprite_quad(
-                    motion.baked_position(camera.pixels_per_unit),
+                let mut mesh = content::sprite_quad(
+                    [0.0; 3],
                     renderer.size,
                     renderer.pivot,
                     source,
                     &texture,
                     renderer.tint,
                 )?;
+                let baked = motion.baked_position(camera.pixels_per_unit);
+                for vertex in &mut mesh.vertices {
+                    vertex.position = transform.transform_point(vertex.position);
+                    for (axis, value) in baked.iter().enumerate() {
+                        vertex.position[axis] += value - motion.position[axis];
+                    }
+                }
                 let draw_id = format!("sprite:{id}");
                 draws.push(Draw {
                     id: draw_id.clone(),
@@ -213,9 +221,7 @@ impl Runtime {
                     .ok_or_else(|| Error::new("render.mesh.unknown", &renderer.mesh))?;
                 let mut mesh = (**original).clone();
                 for vertex in &mut mesh.vertices {
-                    for axis in 0..3 {
-                        vertex.position[axis] += transform.position[axis];
-                    }
+                    vertex.position = transform.transform_point(vertex.position);
                 }
                 let texture = renderer
                     .texture
@@ -242,7 +248,7 @@ impl Runtime {
                         depth_write: true,
                     },
                     motion: Some(DrawMotion {
-                        position: transform.position,
+                        position: transform.position(),
                         pixel_snap: false,
                     }),
                     offset: [0.0; 3],

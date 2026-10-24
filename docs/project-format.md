@@ -118,3 +118,11 @@ rejected, and saving replaces the file atomically. Failures are `Error` values w
 `message`; codes and paths are the machine contract and messages may change.
 Schema version 1 is the baseline and has no migration; unsupported versions are
 errors, and future format changes must define an explicit, tested migration.
+
+## Extensible authored data
+
+Scenes additionally support local quaternion/scale transforms, entity parents,
+`EventBindings` and namespaced custom components. Project manifests may reference
+a declarative `componentSchemas` file and `prefab` scene-fragment assets. Defaults
+preserve existing schema-1 scenes. See [components and scene commands](meta-programming.md)
+for formats, validation, cloning and runtime integration.
