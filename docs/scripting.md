@@ -141,3 +141,11 @@ and state migration across generations are not provided. See
 An intentionally uncompilable crate lives in
 [`examples/first-project/fixtures/invalid`](../examples/first-project/fixtures/invalid)
 to exercise diagnostics and last-good retention.
+
+## Typed components and event callbacks
+
+Gameplay `configure` can register typed authored ECS components with
+`register_component::<T>` and named callbacks with `register_event_handler`.
+`NativeScript::on_event` receives queued events; collider events and native
+`emit_event` use the same bounded next-tick dispatcher. See
+[metaprogramming](meta-programming.md) for complete contracts and examples.

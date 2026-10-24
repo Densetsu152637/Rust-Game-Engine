@@ -385,3 +385,11 @@ flag parsing, gating, stdout cleanliness, and the execution tools against real n
 generations (build, failed build keeping the last good generation, scripted-input
 runs, timeouts). The screenshot test needs a GPU and is `#[ignore]`d; run it with
 `cargo test -p engine-tooling --test mcp_exec -- --ignored`.
+
+## Shared scene commands
+
+`component_schema` includes project-declared custom types. `component_set` and
+`component_remove` accept their namespaced names. `scene_edit` exposes atomic
+batches, reparenting and prefab instantiation through the same `SceneDocument`
+commands as human controllers, with revision checks and dry runs. See
+[metaprogramming](meta-programming.md) for schemas and operation payloads.

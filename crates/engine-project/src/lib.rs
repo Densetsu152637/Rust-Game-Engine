@@ -1,23 +1,31 @@
 //! Authored projects, deterministic desktop gameplay, and CPU render extraction.
 //! Native game systems register directly on [`engine_core::EngineApp`].
 pub mod audio;
+pub mod catalog;
 pub mod content;
 pub mod document;
+pub mod events;
 pub mod gameplay2d;
 pub mod input;
 pub mod persistence;
 pub mod runtime;
 pub mod schema;
 pub mod services;
+pub mod transforms;
 pub mod ui;
 
+pub use catalog::{ComponentCatalog, ComponentDescriptor, CustomValue, register_component};
 pub use document::{EditOperation, SceneDocument};
+pub use events::{
+    EngineEvent, EventBinding, EventBindings, EventLimits, emit_event, register_event_handler,
+};
 pub use input::{ActionFrame, ActionMapper, InputSnapshot, RawInput};
 pub use runtime::{
     AuthoredId, NativeScript, RenderFrame, Runtime, RuntimeSnapshot, ScriptFactory, ScriptRegistry,
     register_script,
 };
 pub use schema::*;
+pub use transforms::{Parent, WorldTransform, refresh_world_transforms, world_transform};
 
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};

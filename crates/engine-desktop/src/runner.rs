@@ -197,7 +197,7 @@ pub fn run_with_wgpu_backends(
     Ok(RunReport {
         ticks: app.ticks,
         fixed_delta: FIXED_DELTA,
-        scene: app.runtime.snapshot(),
+        scene: app.runtime.try_snapshot()?,
         presented_frames: app.presented_frames,
     })
 }
@@ -246,7 +246,7 @@ fn run_headless(
     Ok(RunReport {
         ticks,
         fixed_delta: FIXED_DELTA,
-        scene: runtime.snapshot(),
+        scene: runtime.try_snapshot()?,
         presented_frames: 0,
     })
 }

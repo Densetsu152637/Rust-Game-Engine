@@ -199,7 +199,7 @@ fn screenshot_on(
     Ok(json!({
         "ticks": shot["ticks"],
         "fixed_delta": FIXED_DELTA,
-        "scene": runtime.snapshot(),
+        "scene": runtime.try_snapshot()?,
         "presented_frames": 0,
         "screenshot": shot,
     }))

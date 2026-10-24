@@ -7,7 +7,7 @@
 //! only then is it saved atomically. A rejected edit changes nothing on disk.
 
 use super::{
-    COMPONENT_NAMES, Spec, clean,
+    Spec, clean,
     scene::{self, Loaded},
     tool,
 };
@@ -74,6 +74,24 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
         ])
     };
     vec![
+        tool(
+            Spec {
+                name: "scene_edit",
+                title: "Transactional scene edits",
+                description: "Atomically apply an ordered batch of document operations. Each object has op: set_component {entity_id,component,value,merge?}, remove_component {entity_id,component}, reparent {entity_id,parent}, instantiate_prefab {asset,prefix,parent}, create_entity {entity}, replace_entity {entity}, or delete_entity {entity_id}. One revision and undo unit; failures leave the scene unchanged. Custom values are {version,data}.",
+                input: common(
+                    vec![(
+                        "operations",
+                        json!({"description":"Ordered document operations applied atomically.","type":"array","maxItems":1024,"items":{"type":"object"}}),
+                    )],
+                    &["operations"],
+                ),
+                output: output(),
+                annotations: Annotations::mutation(true, true),
+                access: AccessLevel::Write,
+            },
+            scene_edit,
+        ),
         tool(
             Spec {
                 name: "entity_create",
@@ -156,7 +174,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                         ("entity", id("ID of the existing entity.")),
                         (
                             "component",
-                            schema::string_enum("Component type.", &COMPONENT_NAMES),
+                            schema::string("Built-in or declared namespaced custom component."),
                         ),
                         (
                             "value",
@@ -193,7 +211,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                         ("entity", id("ID of the existing entity.")),
                         (
                             "component",
-                            schema::string_enum("Component type to remove.", &COMPONENT_NAMES),
+                            schema::string("Built-in or declared namespaced custom component."),
                         ),
                     ],
                     &["entity", "component"],
@@ -262,9 +280,16 @@ fn apply_edit(
     } = loaded;
     let scene_id = scene.id.clone();
     let mut document = SceneDocument::for_scene(&project, scene);
-    let revision = document
-        .apply(operation, expected)
-        .map_err(ToolFailure::from)?;
+    let revision = document.apply(operation, expected).map_err(|e| {
+        if e.diagnostics
+            .first()
+            .is_some_and(|d| d.code == "project.document.malformed")
+        {
+            invalid_entity("", e)
+        } else {
+            ToolFailure::from(e)
+        }
+    })?;
     if !dry_run {
         document.save(&revision).map_err(ToolFailure::from)?;
     }
@@ -343,44 +368,59 @@ fn entity_delete(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome
 fn component_set(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     let a = Args(args);
     let id = a.string("entity")?.to_owned();
-    let component = a
-        .one_of("component", &COMPONENT_NAMES)?
-        .ok_or_else(|| schema::invalid("component", "a string"))?;
+    let component = a.string("component")?.to_owned();
+    validate_component_name(cx, &component)?;
     let value = a
         .optional_object("value")?
-        .ok_or_else(|| schema::invalid("value", "an object"))?;
+        .ok_or_else(|| schema::invalid("value", "an object"))?
+        .clone();
     let merge = a.boolean("merge", false)?;
     apply_edit(cx, args, |loaded| {
-        let existing = find(&loaded.scene, &id, &loaded.path)?;
-        let mut entity = clean(existing);
-        let slot = &mut entity["components"][component];
-        let new_value = match (merge, slot.as_object()) {
-            (true, Some(current)) => {
-                let mut merged = current.clone();
-                merged.extend(value.iter().map(|(k, v)| (k.clone(), v.clone())));
-                Value::Object(merged)
-            }
-            _ => Value::Object(value.clone()),
-        };
-        *slot = new_value;
-        let entity = entity_from(entity, &id)?;
-        Ok((EditOperation::ReplaceEntity { entity }, Some(id.clone())))
+        find(&loaded.scene, &id, &loaded.path)?;
+        Ok((
+            EditOperation::SetComponent {
+                entity_id: id.clone(),
+                component,
+                value: Value::Object(value),
+                merge,
+            },
+            Some(id),
+        ))
     })
 }
-
 fn component_remove(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     let a = Args(args);
     let id = a.string("entity")?.to_owned();
-    let component = a
-        .one_of("component", &COMPONENT_NAMES)?
-        .ok_or_else(|| schema::invalid("component", "a string"))?;
+    let component = a.string("component")?.to_owned();
+    validate_component_name(cx, &component)?;
     apply_edit(cx, args, |loaded| {
-        let existing = find(&loaded.scene, &id, &loaded.path)?;
-        let mut entity = clean(existing);
-        if let Some(components) = entity["components"].as_object_mut() {
-            components.remove(component);
-        }
-        let entity = entity_from(entity, &id)?;
-        Ok((EditOperation::ReplaceEntity { entity }, Some(id.clone())))
+        find(&loaded.scene, &id, &loaded.path)?;
+        Ok((
+            EditOperation::RemoveComponent {
+                entity_id: id.clone(),
+                component,
+            },
+            Some(id),
+        ))
     })
+}
+fn scene_edit(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
+    let value = args
+        .get("operations")
+        .cloned()
+        .ok_or_else(|| schema::invalid("operations", "an array"))?;
+    let operations: Vec<EditOperation> =
+        serde_json::from_value(value).map_err(|e| schema::invalid("operations", &e.to_string()))?;
+    apply_edit(cx, args, |_| {
+        Ok((EditOperation::Batch { operations }, None))
+    })
+}
+
+fn validate_component_name(cx: &ToolContext<'_>, name: &str) -> Result<(), ToolFailure> {
+    if !engine_project::COMPONENT_NAMES.contains(&name)
+        && !cx.project()?.component_catalog.0.contains_key(name)
+    {
+        return Err(schema::invalid("component", "a declared component name"));
+    }
+    Ok(())
 }

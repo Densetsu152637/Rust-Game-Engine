@@ -919,6 +919,7 @@ dependencies = [
  "engine-audio",
  "engine-core",
  "fs2",
+ "glam 0.34.1",
  "image",
  "serde",
  "serde_json",
