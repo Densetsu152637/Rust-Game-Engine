@@ -71,12 +71,47 @@ fn until(mut test: impl FnMut() -> bool) {
     }
 }
 fn pair(callback: bool) -> (tempfile::TempDir, tempfile::TempDir, Runtime, Runtime) {
+    pair_with_transport(callback, false)
+}
+fn pair_with_transport(
+    callback: bool,
+    secure: bool,
+) -> (tempfile::TempDir, tempfile::TempDir, Runtime, Runtime) {
     let server_dir = fixture("server", callback);
     let client_dir = fixture("remote", false);
     let mut server_runtime = runtime(&server_dir, callback);
     let mut client_runtime = runtime(&client_dir, false);
-    let server = Server::bind(ServerConfig::default()).unwrap();
-    let client = Client::connect(ClientConfig::new(server.local_addr().unwrap())).unwrap();
+    let (server, client) = if secure {
+        use engine_network::{ClientSecurity, PrivateKeyDer, ServerSecurity};
+        let server_id = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let client_id = rcgen::generate_simple_self_signed(vec!["player".into()]).unwrap();
+        let client_certificate = client_id.cert.der().clone();
+        let server_security = ServerSecurity::new(
+            vec![server_id.cert.der().clone()],
+            PrivateKeyDer::Pkcs8(server_id.signing_key.serialize_der().into()),
+            [client_certificate.clone()],
+            move |_, chain| chain.first() == Some(&client_certificate),
+        )
+        .unwrap();
+        let client_security = ClientSecurity::new(
+            "localhost",
+            [server_id.cert.der().clone()],
+            vec![client_id.cert.der().clone()],
+            PrivateKeyDer::Pkcs8(client_id.signing_key.serialize_der().into()),
+        )
+        .unwrap();
+        let server = Server::bind_secure(ServerConfig::default(), server_security).unwrap();
+        let client = Client::connect_secure(
+            ClientConfig::new(server.local_addr().unwrap()),
+            client_security,
+        )
+        .unwrap();
+        (server, client)
+    } else {
+        let server = Server::bind(ServerConfig::default()).unwrap();
+        let client = Client::connect(ClientConfig::new(server.local_addr().unwrap())).unwrap();
+        (server, client)
+    };
     attach_server(&mut server_runtime, server, NetworkSettings::default()).unwrap();
     attach_client(&mut client_runtime, client, NetworkSettings::default()).unwrap();
     until(|| {
@@ -85,6 +120,62 @@ fn pair(callback: bool) -> (tempfile::TempDir, tempfile::TempDir, Runtime, Runti
         status(client_runtime.app().world()).unwrap().connected
     });
     (server_dir, client_dir, server_runtime, client_runtime)
+}
+#[test]
+fn tls_runtime_authentication_status_and_input_callbacks_share_the_native_path() {
+    let (_server_dir, _client_dir, mut server, mut client) = pair_with_transport(true, true);
+    let report = status(client.app().world()).unwrap();
+    assert_eq!(
+        report.security,
+        engine_network::TransportSecurity::MutualTls13
+    );
+    assert_eq!(status(server.app().world()).unwrap().pending_peers, 0);
+    assert!(
+        client
+            .snapshot()
+            .events
+            .iter()
+            .any(|e| e.name == "network.authenticated")
+    );
+    let encoded = serde_json::to_value(&report).unwrap();
+    assert_eq!(encoded["security"], "mutual_tls13");
+    assert!(encoded.get("certificate").is_none());
+    assign_owner(
+        server.app_mut().world_mut(),
+        "hero",
+        report.peer_id.unwrap(),
+    )
+    .unwrap();
+    send_input(
+        client.app_mut().world_mut(),
+        InputCommand {
+            tick: 1,
+            entity_id: "hero".into(),
+            movement: [1.0, 0.0, 0.0],
+            buttons: 0,
+        },
+    )
+    .unwrap();
+    until(|| {
+        step(&mut client);
+        step(&mut server);
+        server.position("hero").unwrap()[0] == 1.0 && client.position("hero").unwrap()[0] == 1.0
+    });
+    assert_eq!(status(server.app().world()).unwrap().accepted_inputs, 1);
+    assert!(disconnect_peer(server.app_mut().world_mut(), report.peer_id.unwrap()).unwrap());
+    assert!(!disconnect_peer(server.app_mut().world_mut(), report.peer_id.unwrap()).unwrap());
+    assert!(
+        assign_owner(
+            server.app_mut().world_mut(),
+            "hero",
+            report.peer_id.unwrap()
+        )
+        .is_err()
+    );
+    until(|| {
+        step(&mut client);
+        !status(client.app().world()).unwrap().connected
+    });
 }
 #[test]
 fn authorized_input_callback_moves_server_then_client_and_preserves_local_scripts() {

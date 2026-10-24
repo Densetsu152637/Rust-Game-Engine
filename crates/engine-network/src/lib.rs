@@ -1,10 +1,14 @@
-//! Opt-in, bounded authoritative TCP replication for trusted networks.
+//! Opt-in authoritative replication over explicit trusted-LAN TCP or authenticated TLS 1.3.
 //! No socket is opened until `Server::bind` or `Client::connect` is called.
 mod endpoint;
 mod framing;
+mod security;
 mod state;
+mod transport;
 
 pub use endpoint::{Client, ClientConfig, ClientEvent, Server, ServerConfig, ServerEvent};
+pub use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+pub use security::{ClientSecurity, SecurityLimits, ServerSecurity, TransportSecurity};
 use serde::{Deserialize, Serialize};
 pub use state::{EntitySnapshot, ReplicationState, Snapshot};
 use std::{fmt, io, time::Duration};

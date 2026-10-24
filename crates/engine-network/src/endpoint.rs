@@ -1,6 +1,6 @@
 use crate::{
-    Error, InputCommand, Limits, Message, PeerId, PollBudget, ReplicationState, Result, Snapshot,
-    framing::Framed,
+    ClientSecurity, Error, InputCommand, Limits, Message, PeerId, PollBudget, ReplicationState,
+    Result, ServerSecurity, Snapshot, TransportSecurity, framing::Framed, transport::Transport,
 };
 use std::{
     collections::BTreeMap,
@@ -40,6 +40,7 @@ impl ClientConfig {
 
 #[derive(Debug)]
 pub enum ServerEvent {
+    Authenticated(PeerId),
     Connected(PeerId),
     Disconnected {
         peer_id: PeerId,
@@ -56,17 +57,20 @@ pub enum ServerEvent {
 }
 #[derive(Debug)]
 pub enum ClientEvent {
+    Authenticated(PeerId),
     Connected(PeerId),
     Snapshot(u64),
     Disconnected(String),
 }
 
 struct Peer {
-    connection: Framed<TcpStream>,
+    connection: Framed<Transport>,
+    admitted: bool,
     last_message: Instant,
     last_input_tick: Option<u64>,
 }
 pub struct Server {
+    security: Option<ServerSecurity>,
     listener: TcpListener,
     limits: Limits,
     peers: BTreeMap<PeerId, Peer>,
@@ -80,6 +84,7 @@ impl Server {
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
         Ok(Self {
+            security: None,
             listener,
             limits: config.limits,
             peers: BTreeMap::new(),
@@ -88,16 +93,38 @@ impl Server {
             last_snapshot_tick: None,
         })
     }
+    /// TLS 1.3 + mandatory client certificate and application authorization. No plaintext fallback.
+    pub fn bind_secure(config: ServerConfig, security: ServerSecurity) -> Result<Self> {
+        security.limits.validate()?;
+        let mut server = Self::bind(config)?;
+        server.security = Some(security);
+        Ok(server)
+    }
+    pub fn security(&self) -> TransportSecurity {
+        if self.security.is_some() {
+            TransportSecurity::MutualTls13
+        } else {
+            TransportSecurity::TrustedLanPlaintext
+        }
+    }
+    pub fn pending_peers(&self) -> usize {
+        self.peers.values().filter(|peer| !peer.admitted).count()
+    }
     pub fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.listener.local_addr()?)
     }
     pub fn peer_ids(&self) -> impl Iterator<Item = PeerId> + '_ {
-        self.peers.keys().copied()
+        self.peers
+            .iter()
+            .filter(|(_, peer)| peer.admitted)
+            .map(|(&id, _)| id)
     }
     /// Server-only authorization map; assigning ownership does not spawn an entity.
     pub fn assign_owner(&mut self, entity_id: impl Into<String>, peer_id: PeerId) -> Result<()> {
         let entity_id = entity_id.into();
-        if !self.limits.valid_id(&entity_id) || !self.peers.contains_key(&peer_id) {
+        if !self.limits.valid_id(&entity_id)
+            || !self.peers.get(&peer_id).is_some_and(|peer| peer.admitted)
+        {
             return Err(Error::Invalid("unknown peer or invalid entity ID"));
         }
         if !self.owners.contains_key(&entity_id) && self.owners.len() >= self.limits.max_entities {
@@ -125,15 +152,15 @@ impl Server {
             return Err(Error::Invalid("snapshot tick must increase"));
         }
         let tick = snapshot.tick;
-        let frame = Framed::<TcpStream>::encode(&Message::Snapshot(snapshot), &self.limits)?;
+        let frame = Framed::<Transport>::encode(&Message::Snapshot(snapshot), &self.limits)?;
         if self
             .peers
             .values()
-            .any(|peer| !peer.connection.can_queue(&frame, &self.limits))
+            .any(|peer| peer.admitted && !peer.connection.can_queue(&frame, &self.limits))
         {
             return Err(Error::QueueFull);
         }
-        for peer in self.peers.values_mut() {
+        for peer in self.peers.values_mut().filter(|peer| peer.admitted) {
             peer.connection.queue(frame.clone(), &self.limits)?;
         }
         self.last_snapshot_tick = Some(tick);
@@ -155,26 +182,34 @@ impl Server {
                         .next_peer
                         .checked_add(1)
                         .ok_or(Error::Invalid("peer IDs exhausted"))?;
-                    let mut connection = Framed::new(stream);
-                    connection.queue(
-                        Framed::<TcpStream>::encode(
-                            &Message::Welcome {
-                                version: 1,
-                                peer_id,
-                            },
-                            &self.limits,
-                        )?,
-                        &self.limits,
-                    )?;
+                    let transport = if let Some(security) = &self.security {
+                        Transport::tls(
+                            stream,
+                            rustls::ServerConnection::new(security.config.clone())
+                                .map_err(|_| Error::Invalid("TLS server setup failed"))?
+                                .into(),
+                            security.limits.clone(),
+                        )?
+                    } else {
+                        Transport::Plain(stream)
+                    };
+                    let mut connection = Framed::new(transport);
+                    let admitted = self.security.is_none();
+                    if admitted {
+                        queue_welcome(&mut connection, peer_id, &self.limits)?;
+                    }
                     self.peers.insert(
                         peer_id,
                         Peer {
                             connection,
+                            admitted,
                             last_message: Instant::now(),
                             last_input_tick: None,
                         },
                     );
-                    events.push(ServerEvent::Connected(peer_id));
+                    if admitted {
+                        events.push(ServerEvent::Connected(peer_id));
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
@@ -183,7 +218,32 @@ impl Server {
         }
         let mut disconnected = Vec::new();
         for (&peer_id, peer) in &mut self.peers {
-            let result = poll_peer(peer, budget, &self.limits);
+            let result = (|| {
+                prepare_peer(peer, budget, &self.limits)?;
+                if !peer.admitted {
+                    if !peer.connection.transport_mut().ready() {
+                        return Ok(Vec::new());
+                    }
+                    let security = self
+                        .security
+                        .as_ref()
+                        .ok_or(Error::Protocol("missing authorization policy"))?;
+                    let chain = peer
+                        .connection
+                        .transport_mut()
+                        .certificates()
+                        .ok_or(Error::Protocol("missing client identity"))?;
+                    if !(security.authorize)(peer_id, chain) {
+                        return Err(Error::Protocol("client identity unauthorized"));
+                    }
+                    peer.admitted = true;
+                    peer.last_message = Instant::now();
+                    queue_welcome(&mut peer.connection, peer_id, &self.limits)?;
+                    events.push(ServerEvent::Authenticated(peer_id));
+                    events.push(ServerEvent::Connected(peer_id));
+                }
+                receive_peer(peer, budget, &self.limits)
+            })();
             match result {
                 Err(error) => disconnected.push((peer_id, error.to_string())),
                 Ok(messages) => {
@@ -233,12 +293,38 @@ impl Server {
         Ok(events)
     }
 }
-fn poll_peer(peer: &mut Peer, budget: PollBudget, limits: &Limits) -> Result<Vec<Message>> {
+fn queue_welcome(
+    connection: &mut Framed<Transport>,
+    peer_id: PeerId,
+    limits: &Limits,
+) -> Result<()> {
+    connection.queue(
+        Framed::<Transport>::encode(
+            &Message::Welcome {
+                version: 1,
+                peer_id,
+            },
+            limits,
+        )?,
+        limits,
+    )
+}
+fn prepare_peer(peer: &mut Peer, budget: PollBudget, limits: &Limits) -> Result<()> {
     if peer.last_message.elapsed() >= limits.idle_timeout {
         return Err(Error::Protocol("idle timeout"));
     }
+    peer.connection.transport_mut().pump(budget.max_bytes)?;
+    Ok(())
+}
+fn receive_peer(peer: &mut Peer, budget: PollBudget, limits: &Limits) -> Result<Vec<Message>> {
+    if !peer.connection.transport_mut().ready() {
+        return Ok(Vec::new());
+    }
     peer.connection.flush(budget.max_bytes)?;
     let messages = peer.connection.receive(budget, limits)?;
+    peer.connection
+        .transport_mut()
+        .charge_messages(messages.len())?;
     if !messages.is_empty() {
         peer.last_message = Instant::now();
     }
@@ -246,6 +332,7 @@ fn poll_peer(peer: &mut Peer, budget: PollBudget, limits: &Limits) -> Result<Vec
 }
 
 pub struct Client {
+    security: TransportSecurity,
     peer: Option<Peer>,
     peer_id: Option<PeerId>,
     limits: Limits,
@@ -265,13 +352,48 @@ impl Client {
     /// Inject an already connected TCP stream (for host-managed connection establishment).
     /// This takes ownership, sets nonblocking mode, and expects this protocol's welcome frame.
     pub fn from_stream(stream: TcpStream, limits: Limits) -> Result<Self> {
+        Self::from_transport(
+            Transport::Plain(stream),
+            limits,
+            TransportSecurity::TrustedLanPlaintext,
+        )
+    }
+    /// TCP connect has a timeout; TLS authentication progresses only through bounded poll calls.
+    pub fn connect_secure(config: ClientConfig, security: ClientSecurity) -> Result<Self> {
+        config.limits.validate()?;
+        security.limits.validate()?;
+        if config.connect_timeout.is_zero() {
+            return Err(Error::Invalid("zero connect timeout"));
+        }
+        let stream = TcpStream::connect_timeout(&config.server_addr, config.connect_timeout)?;
+        Self::from_secure_stream(stream, config.limits, security)
+    }
+    pub fn from_secure_stream(
+        stream: TcpStream,
+        limits: Limits,
+        security: ClientSecurity,
+    ) -> Result<Self> {
+        let connection = rustls::ClientConnection::new(security.config, security.server_name)
+            .map_err(|_| Error::Invalid("TLS client setup failed"))?;
+        Self::from_transport(
+            Transport::tls(stream, connection.into(), security.limits)?,
+            limits,
+            TransportSecurity::MutualTls13,
+        )
+    }
+    fn from_transport(
+        transport: Transport,
+        limits: Limits,
+        security: TransportSecurity,
+    ) -> Result<Self> {
         limits.validate()?;
-        stream.set_nonblocking(true)?;
-        stream.set_nodelay(true)?;
+        transport.configure_socket()?;
         let state = ReplicationState::new(limits.clone())?;
         Ok(Self {
+            security,
             peer: Some(Peer {
-                connection: Framed::new(stream),
+                connection: Framed::new(transport),
+                admitted: false,
                 last_message: Instant::now(),
                 last_input_tick: None,
             }),
@@ -280,6 +402,9 @@ impl Client {
             state,
             last_sent_tick: None,
         })
+    }
+    pub fn security(&self) -> TransportSecurity {
+        self.security
     }
     pub fn peer_id(&self) -> Option<PeerId> {
         self.peer_id
@@ -298,7 +423,7 @@ impl Client {
         if !self.is_connected() {
             return Err(Error::Disconnected);
         }
-        let frame = Framed::<TcpStream>::encode(&Message::Heartbeat, &self.limits)?;
+        let frame = Framed::<Transport>::encode(&Message::Heartbeat, &self.limits)?;
         self.peer
             .as_mut()
             .ok_or(Error::Disconnected)?
@@ -314,7 +439,7 @@ impl Client {
             return Err(Error::Invalid("input tick must increase"));
         }
         let tick = command.tick;
-        let frame = Framed::<TcpStream>::encode(&Message::Input(command), &self.limits)?;
+        let frame = Framed::<Transport>::encode(&Message::Input(command), &self.limits)?;
         self.peer
             .as_mut()
             .ok_or(Error::Disconnected)?
@@ -327,7 +452,10 @@ impl Client {
         let Some(peer) = &mut self.peer else {
             return Ok(Vec::new());
         };
-        let messages = match poll_peer(peer, budget.capped(&self.limits), &self.limits) {
+        let budget = budget.capped(&self.limits);
+        let messages = match prepare_peer(peer, budget, &self.limits)
+            .and_then(|()| receive_peer(peer, budget, &self.limits))
+        {
             Ok(messages) => messages,
             Err(error) => {
                 self.disconnect();
@@ -342,6 +470,9 @@ impl Client {
                     peer_id,
                 } if self.peer_id.is_none() && peer_id != 0 => {
                     self.peer_id = Some(peer_id);
+                    if self.security == TransportSecurity::MutualTls13 {
+                        events.push(ClientEvent::Authenticated(peer_id));
+                    }
                     events.push(ClientEvent::Connected(peer_id));
                     Ok(())
                 }

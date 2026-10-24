@@ -1,4 +1,4 @@
-//! Explicit runtime attachment of trusted-network sessions; authored data never opens sockets.
+//! Explicit runtime attachment of plaintext or mutually authenticated TLS sessions.
 use crate::{
     ComponentDescriptor, EngineEvent, Error, Result, Runtime, Scene, SceneEntity, Transform,
     runtime::{AuthoredId, EntityLookup, OwnedBy, ProjectResource},
@@ -6,7 +6,7 @@ use crate::{
 use bevy_ecs::prelude::*;
 use engine_network::{
     Client, ClientEvent, EntitySnapshot, InputCommand, PeerId, PollBudget, Server, ServerEvent,
-    Snapshot,
+    Snapshot, TransportSecurity,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -136,6 +136,8 @@ impl NetworkSettings {
 #[derive(Clone, Debug, Serialize)]
 pub struct NetworkStatus {
     pub role: String,
+    pub security: TransportSecurity,
+    pub pending_peers: usize,
     pub connected: bool,
     pub peer_id: Option<PeerId>,
     pub peers: Vec<PeerId>,
@@ -146,7 +148,7 @@ pub struct NetworkStatus {
     pub last_error: Option<String>,
 }
 enum Endpoint {
-    Server(Server),
+    Server(Box<Server>),
     Client(Box<Client>),
 }
 #[derive(Resource)]
@@ -184,7 +186,7 @@ pub fn attach_server(
     server: Server,
     settings: NetworkSettings,
 ) -> Result<()> {
-    attach(runtime, Endpoint::Server(server), settings)
+    attach(runtime, Endpoint::Server(Box::new(server)), settings)
 }
 /// Attach a caller-created client. Only locally authored Remote templates are eligible to spawn.
 pub fn attach_client(
@@ -229,6 +231,10 @@ fn attach(runtime: &mut Runtime, endpoint: Endpoint, settings: NetworkSettings) 
             }
         }
     }
+    let security = match &endpoint {
+        Endpoint::Server(server) => server.security(),
+        Endpoint::Client(client) => client.security(),
+    };
     let role = if matches!(endpoint, Endpoint::Server(_)) {
         "server"
     } else {
@@ -245,6 +251,8 @@ fn attach(runtime: &mut Runtime, endpoint: Endpoint, settings: NetworkSettings) 
             snapshot_age_ticks: 0.0,
             report: NetworkStatus {
                 role,
+                security,
+                pending_peers: 0,
                 connected: false,
                 peer_id: None,
                 peers: vec![],
@@ -290,6 +298,23 @@ pub fn revoke_owner(world: &mut World, entity_id: &str) -> Result<()> {
             Ok(())
         }
         _ => Err(error("Input ownership requires a server session")),
+    }
+}
+/// Host policy can revoke an admitted identity immediately, removing all of its ownership grants.
+pub fn disconnect_peer(world: &mut World, peer_id: PeerId) -> Result<bool> {
+    let mut session = world
+        .get_resource_mut::<NetworkSession>()
+        .ok_or_else(|| error("No network session"))?;
+    match session.endpoint.as_mut() {
+        Some(Endpoint::Server(server)) => {
+            let removed = server.disconnect(peer_id);
+            let pending = server.pending_peers();
+            session.report.peers.retain(|id| *id != peer_id);
+            session.report.pending_peers = pending;
+            session.report.connected = !session.report.peers.is_empty();
+            Ok(removed)
+        }
+        _ => Err(error("Disconnecting a peer requires a server session")),
     }
 }
 pub fn send_input(world: &mut World, command: InputCommand) -> Result<()> {
@@ -353,18 +378,27 @@ pub fn before_step(world: &mut World, dt: f32) -> Result<()> {
                     .map_err(transport)?;
                 for event in events {
                     match event {
+                        ServerEvent::Authenticated(peer_id) => emit(
+                            world,
+                            "network.authenticated",
+                            None,
+                            serde_json::json!({"peer_id":peer_id}),
+                        )?,
                         ServerEvent::Connected(peer_id) => emit(
                             world,
                             "network.connected",
                             None,
                             serde_json::json!({"peer_id":peer_id}),
                         )?,
-                        ServerEvent::Disconnected { peer_id, reason } => emit(
-                            world,
-                            "network.disconnected",
-                            None,
-                            serde_json::json!({"peer_id":peer_id,"reason":reason}),
-                        )?,
+                        ServerEvent::Disconnected { peer_id, reason } => {
+                            session.report.last_error = Some(reason.clone());
+                            emit(
+                                world,
+                                "network.disconnected",
+                                None,
+                                serde_json::json!({"peer_id":peer_id,"reason":reason}),
+                            )?;
+                        }
                         ServerEvent::Input { peer_id, command } => {
                             let target = crate::services::find_entity(world, &command.entity_id);
                             // A callback may have despawned/replaced a previously authorized entity.
@@ -406,6 +440,7 @@ pub fn before_step(world: &mut World, dt: f32) -> Result<()> {
                     }
                 }
                 session.report.peers = server.peer_ids().collect();
+                session.report.pending_peers = server.pending_peers();
                 session.report.connected = !session.report.peers.is_empty();
             }
             Some(Endpoint::Client(client)) => {
@@ -415,6 +450,12 @@ pub fn before_step(world: &mut World, dt: f32) -> Result<()> {
                     .map_err(transport)?
                 {
                     match event {
+                        ClientEvent::Authenticated(peer_id) => emit(
+                            world,
+                            "network.authenticated",
+                            None,
+                            serde_json::json!({"peer_id":peer_id}),
+                        )?,
                         ClientEvent::Connected(peer_id) => emit(
                             world,
                             "network.connected",
@@ -591,6 +632,7 @@ pub fn shutdown(world: &mut World) {
         session.endpoint = None;
         session.report.connected = false;
         session.report.peers.clear();
+        session.report.pending_peers = 0;
         session.report.peer_id = None;
     }
 }

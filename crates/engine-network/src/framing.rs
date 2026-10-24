@@ -15,6 +15,9 @@ pub(crate) struct Framed<T> {
     pending_error: Option<Error>,
 }
 impl<T: Read + Write> Framed<T> {
+    pub(crate) fn transport_mut(&mut self) -> &mut T {
+        &mut self.io
+    }
     pub(crate) fn new(io: T) -> Self {
         Self {
             io,

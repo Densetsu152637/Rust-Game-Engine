@@ -1,4 +1,46 @@
-# Authoritative multiplayer baseline
+# Authenticated authoritative multiplayer
+
+## Internet transport setup
+
+`Server::bind_secure(config, ServerSecurity)` and
+`Client::connect_secure(config, ClientSecurity)` use rustls TLS 1.3 over TCP.
+Server certificate chain, validity and DNS name/IP SAN are verified against the
+client's explicitly supplied trust roots. Every client must prove possession of a
+private key for a certificate trusted by the server. The server then invokes a
+required native `Fn(PeerId, &[CertificateDer]) -> bool` policy exactly once with
+the verified certificate chain. The policy must authorize the participant for
+this application/session, for example by matching a pinned certificate to an
+account allowlist. CA membership alone need not grant gameplay access. The peer
+ID lets native policy maintain its own account mapping; certificate/account data
+is never placed in engine events or reports. Policy must be fast and nonblocking.
+
+Create `ServerSecurity::new(server_chain, private_key, client_roots, policy)` and
+`ClientSecurity::new(server_name, server_roots, client_chain, private_key)` from
+native configuration or a host secret store. Inputs are owned DER certificates
+and `PrivateKeyDer` keys, re-exported by `engine-network`. Config types deliberately
+have no Debug/Serialize and do not accept a caller-built insecure rustls config.
+Keys, certificate contents and account identifiers never belong in authored
+scene data, MCP parameters, snapshots or logs. A native game configuration
+callback can select credentials by a nonsecret deployment profile, then attach
+the endpoint through the usual runtime API. Native configuration/build/exec
+tooling remains the setup path; there is no secret-bearing MCP transport tool.
+
+Secure endpoints require ALPN `rust-game-engine/1`, disable session resumption
+and 0-RTT, and never retry using plaintext. `Client::from_secure_stream` accepts
+a host-connected TCP stream while preserving the same verification. TCP connect
+is bounded by `connect_timeout`; TLS progresses asynchronously through `poll`.
+No Connected event, ownership grant, snapshot publication to that peer, or input
+delivery occurs until server TLS verification and application policy both pass.
+Client Connected requires the authenticated server's welcome. `Authenticated`
+events precede Connected on both secure endpoints. Pending sockets count against
+the peer cap but are excluded from `peer_ids()` and `assign_owner`.
+
+Run `cargo run -p engine-network --example secure_loopback` for a complete
+encrypted input/snapshot exchange. Its identities are generated afresh in memory
+using rcgen and are strictly synthetic. Production certificate issuance,
+provisioning, trust distribution, key protection and rotation remain host duties.
+
+## Explicit trusted-LAN transport
 
 `engine-network` is an opt-in Rust library. Creating an engine does not open a
 socket. `Server::bind(ServerConfig::default())` listens on an OS-assigned loopback
@@ -85,25 +127,63 @@ explicitly disconnect a slow peer. A failed send does not advance client tick.
 The same published tick cannot be reused after a successful broadcast. Caller-
 provided limits are trusted configuration and can intentionally raise memory use.
 
-## Security scope and design choice
+## Threat model, deployment limits and design choice
 
-This is a plaintext trusted-network baseline, not a public Internet security or
-AAA networking claim. There is no encryption, peer authentication, matchmaking,
-NAT traversal, reconnect/session recovery, rollback/prediction, delta compression,
-interest management, transport congestion tuning or anti-cheat assurance. A
-reachable stranger can occupy a peer slot and receives every published entity.
-Bind only to a trusted interface, or add an authenticated encrypted deployment
-boundary before using it outside that trust model. Never send secrets in snapshots.
-Server ownership gates protect simulated objects against another connected peer's
-input; connection identity is not human/account identity.
+The TLS path protects gameplay confidentiality/integrity against passive capture
+and active network tampering, authenticates the server name and client key, and
+rejects clients outside native application policy. TLS record replay fails
+authentication; application replay still faces the shared increasing-tick check.
+Authenticated malicious participants remain untrusted for ownership, directions,
+frame lengths, movement and snapshot validation. An authorized participant sees
+all published entities: this is not interest management or protection from a
+compromised authorized endpoint. Never put secrets in snapshots.
 
-TCP plus length-prefixed JSON was chosen over a UDP reliability layer for a small,
-inspectable executable baseline with existing serde dependencies. It trades
-bandwidth and latency under loss for reliable ordering and straightforward bounded
-I/O. The pure snapshot model and owned connected-stream entry point keep simulation
-and connection setup independent. A future transport must preserve authority,
-validation, bounded queues, and observable errors; transport substitution alone
-must not accept client-authored transforms.
+The original `bind`, `connect` and `from_stream` APIs remain explicit plaintext
+trusted-LAN operations. They provide no transport encryption/authentication and
+must not be used on untrusted networks. Status differentiates
+`trusted_lan_plaintext` from `mutual_tls13`; there is no mode negotiation/downgrade.
+
+TLS bounds add to the shared frame/queue limits: by default a 5-second absolute
+handshake deadline, 128 KiB of incoming handshake bytes, eight read/process and
+eight write steps per peer per poll, 2 MiB of received TLS bytes per second and
+256 complete messages per second. `SecurityLimits` configures these trusted
+deployment choices. Fixed one-second windows allow two adjacent bursts at the
+boundary. Exceeding a cap closes the peer, including a valid but overactive
+participant. Budgets count ciphertext socket bytes separately from bounded
+plaintext framing work; each direction stays within `PollBudget.max_bytes`.
+TLS uses a 64 KiB limit on each outgoing plaintext/ciphertext buffer per peer,
+plus rustls's bounded incoming record and handshake buffers. TLS cryptographic
+steps have bounded input/iteration counts, not a hard wall-clock deadline.
+Even with zero I/O budgets, handshake and idle deadlines expire. Valid complete
+messages refresh idle time, never partial byte trickles. Large frames drain over
+multiple polls; queue backpressure is explicit.
+
+These controls bound retained connections and work per call, not global Internet
+DoS. An attacker can occupy pending slots, reconnect to reset per-connection rate
+windows, consume TLS cryptographic CPU and saturate OS/network resources. Use an
+appropriate firewall, connection admission/rate controls and monitored host
+deployment for public exposure. Native policy execution is trusted application
+code and is outside the transport work budget. Its failures must fail closed;
+do not perform blocking network/disk lookups inside it. Certificate expiry and
+trust checks happen at handshake, not continuously. The host must track
+revocation/rotation and disconnect admitted peers whose authorization changes;
+there is no online revocation fetch or automatic account service.
+Native runtime callbacks can call `disconnect_peer(world, peer_id)` to close a
+server peer and remove its grants, or use `Server::disconnect` before attachment.
+
+No matchmaking, NAT traversal, reconnect/session recovery, rollback/prediction,
+delta compression, transport congestion tuning or anti-cheat assurance is
+implemented. Internet use requires a reachable TCP listener or host-supplied
+connection. TCP head-of-line latency remains. The native target scope is Windows,
+Linux and macOS; browser/mobile/console transports are outside this implementation.
+
+TLS on the existing framed TCP path preserves authority and runtime contracts
+while using a maintained cryptographic implementation. QUIC/UDP would also require
+new reliability, scheduling and congestion contracts; a bespoke crypto wrapper
+would create avoidable verification risk. The pure snapshot model and owned
+stream entry point keep simulation and connection setup independent. Dependency
+API references: [rustls Connection](https://docs.rs/rustls/0.23.46/rustls/enum.Connection.html)
+and [WebPkiClientVerifier](https://docs.rs/rustls/0.23.46/rustls/server/struct.WebPkiClientVerifier.html).
 
 ## Verification
 
@@ -115,6 +195,12 @@ framing/partial writes. Tests own/drop all sockets and use no external service.
 `cargo clippy -p engine-network --all-targets -- -D warnings` and
 `cargo fmt -p engine-network --check` cover the crate's static gates. Workspace
 integration and platform-specific network deployment remain separate checks.
+The secure suite adds real mutual TLS sockets, wrong roots/name/client identity,
+missing certificates, denied native policy, plaintext downgrade attempts,
+encrypted record capture/replay, raw authenticated input replay/ownership and
+transform injection, oversized frames, pending caps, zero/tiny budgets, handshake
+deadlines/byte caps, rate rejection and disconnect cleanup. All certificates and
+private keys are synthetic and generated in test memory.
 
 ## Runtime attachment and callbacks
 
@@ -131,6 +217,10 @@ endpoint as an ECS resource; `status(world)` and the optional runtime snapshot
 `network` field report its role, peers, snapshot
 progress, accepted/rejected input counts and last failure. `NetworkVelocity` is
 optional native velocity metadata for the replicated pose.
+Reports also include the nonsecret `security` mode and `pending_peers` count.
+Only admitted peers appear in reports. Secure attachment emits
+`network.authenticated` with peer_id through the same bounded callback/event
+path used by headless/MCP runtime execution. It includes no certificate or key.
 
 Server input polling emits targeted `network.input` events containing peer_id,
 tick, entity_id, movement and buttons. Registered game event callbacks determine
@@ -178,3 +268,5 @@ endpoints. Detachment and shutdown preserve the final status report.
 loopback TCP, input callbacks, local script preservation, full-set remote
 spawn/despawn, unknown-ID filtering, script authority conflicts, opt-in loading,
 scene-transition guards, and shutdown disconnects through ordinary runtime ticks.
+The runtime suite also runs TLS authorization, status/authentication events and
+authoritative input callbacks followed by remote pose replication and disconnect.
