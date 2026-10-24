@@ -1,25 +1,18 @@
-//! Native authoring editor. The controller is platform-independent; Win32 FFI is
-//! confined to the native module. Tooling injects a compiler-backed `PlayHost`.
+//! Portable visual authoring editor. Tooling injects a compiler-backed `PlayHost`.
+//! Legacy Win32 smoke controls remain confined to the native module.
 
 mod controller;
 #[cfg(windows)]
 mod native;
+mod portable;
 
 pub use controller::{EditorController, PlayHost, PlayStatus};
 pub use engine_core::Result;
+pub use portable::ViewNavigation;
 
-/// Opens the native editor on the calling UI thread until the user closes it.
-/// This is a Windows-only editor; unsupported platforms return an explicit error.
+/// Opens the portable desktop editor on the calling UI thread.
 pub fn run(manifest: impl AsRef<std::path::Path>, host: Box<dyn PlayHost>) -> Result<()> {
-    #[cfg(windows)]
-    {
-        native::run(manifest.as_ref(), host, None).map(|_| ())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (manifest, host);
-        engine_core::anyhow::bail!("native editor is supported on Windows only")
-    }
+    portable::run(manifest.as_ref(), host)
 }
 
 /// Native controls verified by the bounded smoke test. This is structural UI

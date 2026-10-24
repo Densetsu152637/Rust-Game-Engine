@@ -317,6 +317,8 @@ fn documented_component_names_match_the_scene_schema() {
         "MeshRenderer": {"mesh": "m"},
         "SpriteRenderer": {"texture": "t"},
         "Camera2D": {},
+        "Camera3D": {},
+        "MeshMaterial": {},
         "Collider2D": {"size": [1, 1]},
         "EventBindings": {"bindings": []},
     });

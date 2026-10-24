@@ -140,6 +140,14 @@ impl WindowSurface {
         frame: &RenderFrame,
         world: Option<&World>,
     ) -> Result<Option<RenderStats>> {
+        self.present_scene(&frame.clone().into(), world)
+    }
+
+    pub fn present_scene(
+        &mut self,
+        frame: &engine_project::rendering3d::SceneRenderFrame,
+        world: Option<&World>,
+    ) -> Result<Option<RenderStats>> {
         if self.suspended {
             return Ok(None);
         }
@@ -174,7 +182,7 @@ impl WindowSurface {
             }
         };
         let view = output.texture.create_view(&Default::default());
-        let stats = self.renderer.render(frame, &view, world)?;
+        let stats = self.renderer.render_scene(frame, &view, world)?;
         self.window.pre_present_notify();
         self.renderer.gpu.queue.present(output);
         if suboptimal {

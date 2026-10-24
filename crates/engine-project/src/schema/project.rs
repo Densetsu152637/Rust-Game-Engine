@@ -137,6 +137,14 @@ impl Project {
         for entity in &scene.entities {
             self.component_catalog.validate_entity(scene, entity)?;
             let c = &entity.components;
+            if let Some(material) = &c.material {
+                if let Some(shader) = &material.shader {
+                    self.require_asset(shader, "shader")?;
+                }
+                if let Some(texture) = &material.texture {
+                    self.require_asset(texture, "texture")?;
+                }
+            }
             if let Some(s) = &c.script {
                 self.require_asset(&s.asset, "script")?;
             }

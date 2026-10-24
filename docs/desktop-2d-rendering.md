@@ -6,7 +6,7 @@ through the thin `engine-render` adapter onto wgpu (which selects Vulkan, DX12, 
 or GL). Shaders are authored in WGSL and validated with Naga
 (`engine_render::validate_wgsl`); wgpu consumes WGSL directly. The crate README
 (`crates/engine-desktop/README.md`) is the detailed contract; this page summarizes
-the 2D content pipeline.
+the 2D content pipeline. For integrated 3D cameras, materials and custom shader draws, see [Scene rendering](rendering3d.md).
 
 ## Crates and graphics API selection
 
