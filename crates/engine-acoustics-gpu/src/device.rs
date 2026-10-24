@@ -34,10 +34,13 @@ fn experimental_features_token() -> wgpu::ExperimentalFeatures {
     // its own. Its `# Safety` contract (wgpu-types 30.0.1, `tokens.rs`) is an
     // acknowledgement that wgpu's experimental APIs may contain UB-causing bugs
     // reachable from safe calls. We accept that for exactly one feature,
-    // `EXPERIMENTAL_RAY_QUERY` (BLAS/TLAS builds and WGSL `ray_query`), which we
-    // use only on Vulkan adapters (the one backend verified on hardware,
-    // docs/spatial-audio-design.md section 6.1) and only after the tier's
-    // self-test has checked exact hit results. Mitigations against such bugs:
+    // `EXPERIMENTAL_RAY_QUERY` (BLAS/TLAS builds and WGSL `ray_query`), enabled
+    // only when creating a device on a Vulkan adapter (the one backend verified
+    // on hardware, docs/spatial-audio-design.md section 6.1). The token is
+    // therefore active from device creation, including while the self-test
+    // itself builds acceleration structures and traces; the self-test (exact
+    // hit results) gates every later use, since the tier is not reported
+    // available and `trace` refuses to run until it passes. Mitigations:
     // wgpu is pinned to `=30.0.1`, all inputs are validated `gpu_layout` data,
     // validation errors and device loss are fatal and demote to a lower tier,
     // and the compute and CPU tiers never use the token.

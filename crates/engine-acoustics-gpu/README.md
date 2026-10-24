@@ -39,9 +39,20 @@ println!("{:?} {:?} {:?}", selection.active, selection.state, selection.fallback
 - `sync_world` uploads the world's `GpuWorldView`. A new `revision` is a full
   rebuild; a new `dynamic_generation` at the same revision rewrites the moved
   instance records, the refitted instance BVH (tier 2) and the TLAS entries, then
-  rebuilds the TLAS (tier 1).
-- `trace` dispatches at most 64 jobs at a time (one invocation per ray, `x` = ray,
-  `y` = job) and waits up to `readback_timeout_ms` (default 100 ms) for the readback.
+  rebuilds the TLAS (tier 1). A world with nothing to hit (no instances, or only
+  empty meshes) is valid: nothing is uploaded and `trace` returns the CPU's result
+  for it (every ray escapes, `escaped = 1`, empty bins) without a dispatch.
+- `trace` splits a request into dispatches of at most 64 job pieces and at most
+  2^24 estimated segments (rays x (bounces + 1)) each, about 43 ms of compute-tier
+  traversal of a 100k-triangle mesh on the RTX 5080 and about 2-3 ms on the
+  ray-query tier, so one request (up to 64 jobs x 1M rays x 256 bounces, about
+  1.7e10 segments) never holds the shared GPU for seconds or nears the OS GPU
+  watchdog. Pieces of one job are summed as integers, so the histogram does not
+  depend on the split. Each dispatch is one invocation per ray (`x` = ray, `y` =
+  piece) and waits up to `readback_timeout_ms` (default 100 ms) for its readback.
+- After a readback timeout the timed-out work keeps running; until it completes,
+  `trace` returns `acoustics.backend.timeout` ("... nothing new was submitted")
+  without submitting, so at most one submission is outstanding.
 - `probe_capabilities()` lists every adapter with its ray-query availability and the
   reason when unavailable, without opening a device.
 
@@ -61,9 +72,9 @@ call `initialize` again (or re-select) to re-probe.
 | Code | Fatal | When |
 | --- | --- | --- |
 | `acoustics.backend.unavailable` | no | capability, adapter, device creation or self-test failure; not initialized |
-| `acoustics.backend.failed` | yes | validation error, device loss, uncaptured GPU error, saturated or non-finite histogram, a world the tier cannot hold |
-| `acoustics.backend.timeout` | no | readback not complete within `readback_timeout_ms`; the work keeps running and later calls queue behind it (the service demotes after three in a row) |
-| `acoustics.request.invalid` | no | jobs or settings outside section 5.3 (rays 1-1,048,576, bounces at most 256, bins 0.5-10 ms, at most 4 s) |
+| `acoustics.backend.failed` | yes | GPU validation error, device loss, uncaptured GPU error, saturated or non-finite histogram |
+| `acoustics.backend.timeout` | no | readback not complete within `readback_timeout_ms`, or an earlier timed-out submission still running (the service demotes after three in a row) |
+| `acoustics.request.invalid` | no | jobs or settings outside section 5.3 (rays 1-1,048,576, bounces at most 256, bins 0.5-10 ms, at most 4 s), or a world the tier cannot hold (out-of-range indices or materials, storage-binding or TLAS/BLAS limits) |
 
 A fatal error drops the device; the tier stays unusable until `initialize` succeeds again.
 
@@ -87,7 +98,8 @@ measurements are in `GpuBackend::self_test_report()`.
 1. **Quad:** a 2 x 2 m quad (2 triangles) rotated 90 degrees about Z and moved to
    z = 5, hit by 8 x 8 parallel rays offset from every edge and the diagonal. It
    requires exactly 16 hits, |t - 5| <= 1e-4 and the expected triangle and instance
-   for every hit (this checks transforms, TLAS custom data and primitive indexing).
+   for every hit (this checks transforms, TLAS custom data and primitive indexing);
+   the first unexpected hit or missed expected hit fails the step and names the ray.
 2. **Shoebox:** 4,096 rays x 64 bounces through the energy kernel in a lossless,
    fully diffuse 10 x 6 x 8 m box. It requires the mean free path within 2% of 4V/S
    = 5.106 m, no aborted rays, no escaped energy and a finite, non-zero histogram.
@@ -131,8 +143,11 @@ the ordinary `cargo test`, so a shader error fails on any machine.
   unit of energy, 2^16 per metre of path). Integer addition is order-independent, so
   a fixed seed is bitwise reproducible on one device and driver. This replaces the
   2^31-per-unit single word of section 6.3, which loses the -35 dB tail at 1M rays.
-  Saturation of the high word and non-finite energies set flags that become
-  `acoustics.backend.failed`.
+  The low word is rounded to nearest (with carry), not truncated. Saturation of the
+  high word and non-finite energies (detected from the exponent bits, which
+  compilers cannot fold away like `x != x`) set flags that become
+  `acoustics.backend.failed`. A zero or non-finite hit normal falls back to +Y, as
+  on the CPU.
 
 ## The single unsafe token
 
@@ -142,18 +157,21 @@ The crate opts out of the workspace lint table (which forbids unsafe code) and s
 `unsafe { wgpu::ExperimentalFeatures::enabled() }` with a `// SAFETY:` comment. The
 token has no memory-safety precondition of its own: it acknowledges that wgpu's
 experimental APIs may contain UB bugs reachable from safe calls. It is requested
-only for tier-1 devices, together with `EXPERIMENTAL_RAY_QUERY`, on Vulkan, gated by
-the self-test, with wgpu pinned to `=30.0.1`. A wgpu upgrade must re-run the ignored
-hardware tests.
+only when creating a tier-1 device, together with `EXPERIMENTAL_RAY_QUERY`, on
+Vulkan, so it is active from device creation (including during the self-test's own
+BLAS/TLAS builds and traces); the self-test gates every later use. wgpu is pinned to
+`=30.0.1`; a wgpu upgrade must re-run the ignored hardware tests.
 
 ## Tests
 
 `cargo test -p engine-acoustics-gpu` runs the non-GPU tests (shader validation,
-tier order, bounded reasons, the deny hook before any wgpu call, and the `Cpu`
-preference creating no instance). Hardware tests are `#[ignore]`d:
+tier order, bounded reasons, dispatch splitting including the 1.7e10-segment worst
+case, the deny hook before any wgpu call, and the `Cpu` preference creating no
+instance). Hardware tests are `#[ignore]`d:
 
 ```text
 cargo test -p engine-acoustics-gpu --test gpu_tiers   -- --ignored --nocapture --test-threads=1
+cargo test -p engine-acoustics-gpu --test empty_world -- --ignored --nocapture --test-threads=1
 cargo test -p engine-acoustics-gpu --test bvh_parity  -- --ignored --nocapture
 cargo test -p engine-acoustics-gpu --test parity      -- --ignored --nocapture --test-threads=1
 cargo test -p engine-acoustics-gpu --test coexistence -- --ignored --nocapture
@@ -166,21 +184,34 @@ cargo test -p engine-acoustics-gpu --test coexistence -- --ignored --nocapture
   an L-shaped room before and after moving a dynamic panel). Measured: no hit/miss
   disagreement, |dt| at most 4.4e-5 m, and at most 10 of 100,000 rays resolving a
   coplanar tie (panel base on the floor) to a different triangle.
+- `empty_world`: an empty world and a world of one empty-mesh instance on both tiers
+  give the CPU's histogram exactly (`escaped = 1`), the tier stays alive, and a real
+  world uploads and traces afterwards.
 - `parity`: design tests 16-18 against `CpuBackend` (65,536 rays x 256 bounces, 3 s
-  histogram, reference shoebox with scattering 1, and an L-shaped room before and
-  after moving a dynamic panel), the readback-timeout path and throughput. Measured:
-  T30 per band within 0.1% of the CPU, early (0-50 ms) and late window energies
-  within 0.001 dB, mean free path within 0.03%, no aborted rays, bitwise-identical
-  repeat runs; tier 2 against tier 1 per window at most 0.49% (1-3 s window).
-  Throughput (submit to decoded result): shoebox 65,536 x 256 in 1.9 ms (ray query,
-  8.7e9 segments/s) and 8.8 ms (compute); 1,048,576 x 64 on the 99,372-triangle
-  shoebox 2.5e9 segments/s (ray query) and 3.9e8 (compute). A 1 ms readback
-  timeout returns `acoustics.backend.timeout` and the tier recovers.
+  histogram): the reference shoebox (scattering 1), the shoebox with air absorption
+  [0.0002, 0.0007, 0.0025, 0.012] Np/m and a 0.25 m receiver (scattering 0.7), and
+  an L-shaped room before and after moving a dynamic panel (the GPU result must
+  change). Required here: T30 within 0.5%, window energies within 0.05 dB, mean
+  free path within 0.2% (tighter than the design's 5% / 0.5 dB / 1%). Measured on
+  the RTX 5080: T30 within 0.08% (0.31% for the compute tier in the 125 Hz band
+  with air and the small receiver), windows within 0.001 dB, mean free path within
+  0.03%, no aborted rays, bitwise-identical repeat runs and bitwise-identical
+  results with a 2^18-segment budget (33 submissions) and the default one. Tier 2
+  against tier 1 per window at most 0.47% (1-3 s window). Air absorption lowers the
+  late 8 kHz energy by 2.76 dB in that room.
+  Throughput (submit to decoded result, split under the default budget): 1,048,576
+  rays x 64 bounces on the 99,372-triangle shoebox 5.8e9 segments/s (ray query) and
+  3.6e8 (compute), on the 12-triangle shoebox 7.4e9 and 2.2e9. An independent
+  review measured 9.1e9 segments/s on the 99k-triangle mesh through the ray-query
+  tier. The 1 ms readback-timeout test checks that the tier survives, that traces
+  are refused without submitting while the timed-out work runs (10 refusals
+  observed), and that it recovers.
 - `coexistence`: design test 20 at library level, a separate wgpu device rendering
   1920 x 1080 offscreen frames in the same process while the ray-query tier traces.
-  Measured over 3 s each: render only p95 8.76 ms; with the default tracer (4,096
-  rays x 64 bounces at 4 Hz) p95 8.40 ms (within noise; median +0.10 ms); with a
-  stress tracer (65,536 rays x 256 bounces back to back) p95 13.28 ms. The desktop
+  Latest measurement over 3 s each: render only p95 0.536 ms; with the default
+  tracer (4,096 rays x 64 bounces at 4 Hz) p95 0.542 ms (+0.006 ms); with a stress
+  tracer (65,536 rays x 256 bounces back to back) p95 1.587 ms (+1.05 ms). An
+  earlier run on a busier GPU measured 8.76 / 8.40 / 13.28 ms. The desktop
   measurement with the real renderer belongs to the late integration.
 
 ## Limitations

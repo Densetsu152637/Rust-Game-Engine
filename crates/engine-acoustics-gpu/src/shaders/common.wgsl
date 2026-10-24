@@ -23,10 +23,16 @@ struct Job {
     emitter: vec4<f32>,
     // xyz = receiver centre, w = receiver radius.
     receiver: vec4<f32>,
+    // All rays of the job; deposits carry 1 / rays.
     rays: u32,
     max_bounces: u32,
     seed_lo: u32,
     seed_hi: u32,
+    // This dispatch traces rays first_ray .. first_ray + count.
+    first_ray: u32,
+    count: u32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 struct Triangle {
@@ -150,15 +156,35 @@ fn cosine_hemisphere(n: vec3<f32>, u1: f32, u2: f32) -> vec3<f32> {
 
 // ---- Fixed-point atomics ----
 
+// Splits `v` (in units of 2^32 counts, v >= 0) into (lo, hi) words of a 64-bit
+// fixed-point value, rounding the low word to nearest (with carry).
+fn split_fixed(v: f32) -> vec2<u32> {
+    var hi = floor(v);
+    let lo_f = round((v - hi) * 4294967296.0);
+    var lo = 0u;
+    if lo_f >= 4294967296.0 {
+        hi += 1.0;
+    } else {
+        lo = u32(lo_f);
+    }
+    return vec2<u32>(lo, u32(hi));
+}
+
 // Adds `v` (in units of 2^32 counts) to the 64-bit stats counter at `index`.
 fn add_stat_fixed(index: u32, v: f32) {
-    let hi = floor(v);
-    let lo = u32(min((v - hi) * 4294967296.0, 4294967295.0));
-    let old = atomicAdd(&job_stats[index], lo);
-    let add_hi = u32(hi) + select(0u, 1u, old > 0xffffffffu - lo);
+    let parts = split_fixed(v);
+    let old = atomicAdd(&job_stats[index], parts.x);
+    let add_hi = parts.y + select(0u, 1u, old > 0xffffffffu - parts.x);
     if add_hi != 0u {
         atomicAdd(&job_stats[index + 1u], add_hi);
     }
+}
+
+// Infinity or NaN in any lane, from the exponent bits (not `x != x`, which a
+// compiler may fold away under fast-math assumptions).
+fn not_finite(v: vec4<f32>) -> bool {
+    let exponent = bitcast<vec4<u32>>(v) & vec4<u32>(0x7f800000u);
+    return any(exponent == vec4<u32>(0x7f800000u));
 }
 
 fn flag(job_index: u32, bit: u32) {
@@ -174,7 +200,7 @@ fn add_count(job_index: u32, word: u32, n: u32) {
 }
 
 fn deposit_energy(job_index: u32, bin: u32, energy: vec4<f32>) {
-    if any(energy != energy) || any(abs(energy) > vec4<f32>(1e30)) {
+    if not_finite(energy) || any(abs(energy) > vec4<f32>(1e30)) {
         flag(job_index, FLAG_NONFINITE);
         return;
     }
@@ -193,11 +219,10 @@ fn deposit_energy(job_index: u32, bin: u32, energy: vec4<f32>) {
 
 // Histogram add that flags saturation of the high word.
 fn add_hi_checked(job_index: u32, index: u32, v: f32) {
-    let hi = floor(v);
-    let lo = u32(min((v - hi) * 4294967296.0, 4294967295.0));
-    let old = atomicAdd(&histogram[index], lo);
-    let carry = select(0u, 1u, old > 0xffffffffu - lo);
-    let add_hi = u32(hi) + carry;
+    let parts = split_fixed(v);
+    let old = atomicAdd(&histogram[index], parts.x);
+    let carry = select(0u, 1u, old > 0xffffffffu - parts.x);
+    let add_hi = parts.y + carry;
     if add_hi != 0u {
         let old_hi = atomicAdd(&histogram[index + 1u], add_hi);
         if old_hi > 0xffffffffu - add_hi {
@@ -213,7 +238,13 @@ fn world_normal(hit: Hit) -> vec3<f32> {
     let n = cross(tri.v1.xyz - tri.v0.xyz, tri.v2.xyz - tri.v0.xyz);
     // Normal matrix = transpose(object_from_world).
     let m = instances[hit.instance].object_from_world;
-    return normalize(n.x * m[0].xyz + n.y * m[1].xyz + n.z * m[2].xyz);
+    let w = n.x * m[0].xyz + n.y * m[1].xyz + n.z * m[2].xyz;
+    // As the CPU: a zero or non-finite normal falls back to +Y.
+    let len = length(w);
+    if not_finite(vec4<f32>(w, len)) || !(len > 0.0) {
+        return vec3<f32>(0.0, 1.0, 0.0);
+    }
+    return w / len;
 }
 
 fn material_of(hit: Hit) -> Material {
@@ -258,10 +289,10 @@ fn trace_energy(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let job = jobs[job_index];
-    let ray = gid.x;
-    if ray >= job.rays {
+    if gid.x >= job.count {
         return;
     }
+    let ray = job.first_ray + gid.x;
     // The loop mirrors engine_acoustics::trace_cpu::trace_chunk step for step:
     // relative energy 1 per band (deposits carry 1 / rays), air absorption
     // exp(-2 m t) on energy, `max_bounces` reflections, then the hit ends the ray.
