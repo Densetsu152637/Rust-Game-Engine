@@ -4,6 +4,12 @@ Input mapping and the modal UI model are CPU-only types in `engine-project`
 (`input` and `ui` modules); the desktop host in `engine-desktop` supplies physical
 samples. Everything here is deterministic and testable without a window.
 
+Custom peripherals and accessibility toggle actions join this same runtime path
+through [`InputSource` and `InputDevices`](custom-input.md). OS-emulated keyboard,
+mouse and controller devices use the normal desktop translation. Native adapters
+are polled in headless runs too; their combined actions reach UI capture before
+gameplay callbacks.
+
 ## Action mapping
 
 `ActionMapper` converts one `RawInput` sample per simulation tick into an
@@ -35,7 +41,14 @@ gamepad-connected state. `ActionFrame` exposes `pressed(action)`, `held(action)`
   host JSON settings. `validate_bindings(map, strict)` accepts up to 256 actions
   and 1-16 unique tokens each, and reports sharing a token between actions as
   advisory conflicts (errors when `strict`). `rebind` is atomic and quarantines
-  currently held actions until neutral. Action names are non-empty opaque strings.
+  currently held controls and actions until neutral, including a held token moved
+  to another action. Action names are non-empty opaque strings.
+- **Lifecycle cancellation.** `ActionFrame.cancelled` identifies actions affected
+  by a physical binding change or selected gamepad disconnect. It is distinct
+  from an ordinary button release, so accessibility toggles can remain latched
+  across a release while resetting after device loss. A still-held contribution
+  from another source takes precedence. Switching selected controllers emits a
+  disconnect boundary before sampling the replacement.
 - **Injection.** `merge_input(physical, injected, previous)` combines physical input
   with injected actions (CLI `--input action:tick` or tests). Injected actions are
   one-tick pulses; physical holds persist until released.
