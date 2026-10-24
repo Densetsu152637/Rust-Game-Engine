@@ -632,3 +632,27 @@ impl eframe::App for PortableEditor {
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn navigation_maps_screen_motion_to_world_axes() {
+        let view = ViewNavigation::default();
+        assert_eq!(view.screen_delta([16.0, -16.0], 360.0), [1.0, 1.0, 0.0]);
+        let view = ViewNavigation {
+            three_dimensional: true,
+            yaw: std::f32::consts::FRAC_PI_2,
+            ..Default::default()
+        };
+        let movement = view.screen_delta([100.0, 0.0], 360.0);
+        assert!(movement[0].abs() < 1e-5 && movement[2] < -1.0);
+        let camera = CameraInstance3D {
+            camera: Camera3D::default(),
+            world: view.camera_world().to_cols_array_2d(),
+        };
+        let projected = engine_desktop::camera_matrix(&camera, 16.0 / 9.0).unwrap()
+            * Vec3::from_array(view.center).extend(1.0);
+        assert!(projected.x.abs() < 1e-5 && projected.y.abs() < 1e-5 && projected.w > 0.0);
+    }
+}

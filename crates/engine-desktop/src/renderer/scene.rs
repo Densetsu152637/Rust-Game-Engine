@@ -123,7 +123,7 @@ impl SceneResources {
                 .then_with(|| a.id.cmp(&b.id))
         });
         for draw in draws {
-            let (shader, uniforms) = self.material(device,draw,vp)?;
+            let (shader, uniforms) = self.material(device, draw, vp)?;
             let Some(mesh) = self.cache.mesh_handle(&draw.mesh) else {
                 continue;
             };
