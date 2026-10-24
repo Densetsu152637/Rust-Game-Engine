@@ -111,6 +111,66 @@ impl std::fmt::Display for RayTracingStatus {
     }
 }
 
+/// One RT lighting effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RtEffect {
+    Shadows,
+    AmbientOcclusion,
+    Reflections,
+    DiffuseGi,
+}
+
+/// How an effect runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RtEffectMode {
+    /// The ray-traced kernel runs.
+    RayTraced,
+    /// Enabled, but the raster fallback runs (`reason` says why).
+    Fallback,
+    /// Disabled in settings.
+    Disabled,
+}
+
+/// Status of one effect, from [`crate::RtEffectsSettings::status`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtEffectStatus {
+    pub effect: RtEffect,
+    pub mode: RtEffectMode,
+    /// The signal goes through the spatio-temporal denoiser.
+    pub denoised: bool,
+    /// Why the effect is disabled or falls back, or a note on a ray-traced
+    /// effect (for example the roughness cutoff of reflections); at most
+    /// [`MAX_REASON_BYTES`].
+    pub reason: Option<String>,
+}
+
+impl RtEffectStatus {
+    pub(crate) fn new(
+        effect: RtEffect,
+        mode: RtEffectMode,
+        denoised: bool,
+        reason: impl AsRef<str>,
+    ) -> Self {
+        Self {
+            effect,
+            mode,
+            denoised,
+            reason: Some(bounded_reason(reason.as_ref())),
+        }
+    }
+}
+
+/// Status of every RT lighting effect.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtEffectsStatus {
+    pub shadows: RtEffectStatus,
+    pub ambient_occlusion: RtEffectStatus,
+    pub reflections: RtEffectStatus,
+    pub diffuse_gi: RtEffectStatus,
+}
+
 /// `adapter_label` as used in statuses: `"<name> (<backend>)"`.
 pub(crate) fn adapter_label(info: &wgpu::AdapterInfo) -> String {
     format!("{} ({:?})", info.name, info.backend)

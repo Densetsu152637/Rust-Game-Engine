@@ -2,24 +2,13 @@
 
 use crate::device::{Core, RtDevice};
 use crate::error::{RtError, invalid};
+use crate::material::{RtMaterial, upload_materials};
 use crate::scene::RtScene;
 use crate::wgsl;
 use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-/// Lambertian material. `material_index` of an instance selects one; indices
-/// past the end use the last material.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PathTracerMaterial {
-    /// Diffuse reflectance per channel, in [0, 1].
-    pub albedo: [f32; 3],
-    /// Emitted radiance per channel, >= 0 (both sides).
-    pub emissive: [f32; 3],
-}
-
-/// Most materials one tracer holds.
-pub const MAX_PATH_TRACER_MATERIALS: usize = 65_536;
 /// Largest accepted `max_bounces`.
 pub const MAX_PATH_TRACER_BOUNCES: u32 = 1024;
 
@@ -74,13 +63,6 @@ impl Default for PathTracerParams {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct GpuMaterial {
-    albedo: [f32; 4],
-    emissive: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
 struct GpuParams {
     inv_view_proj: [[f32; 4]; 4],
     eye: [f32; 4],
@@ -89,30 +71,6 @@ struct GpuParams {
     a: [u32; 4],
     b: [u32; 4],
     c: [f32; 4],
-}
-
-pub(crate) fn validate_materials(materials: &[PathTracerMaterial]) -> Result<(), RtError> {
-    if materials.is_empty() || materials.len() > MAX_PATH_TRACER_MATERIALS {
-        return Err(invalid(format!(
-            "{} materials; between 1 and {MAX_PATH_TRACER_MATERIALS} are allowed",
-            materials.len()
-        )));
-    }
-    for (i, m) in materials.iter().enumerate() {
-        if !m.albedo.iter().all(|a| (0.0..=1.0).contains(a)) {
-            return Err(invalid(format!(
-                "material {i} albedo {:?} must be within [0, 1]",
-                m.albedo
-            )));
-        }
-        if !m.emissive.iter().all(|e| e.is_finite() && *e >= 0.0) {
-            return Err(invalid(format!(
-                "material {i} emissive {:?} must be finite and >= 0",
-                m.emissive
-            )));
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn validate_params(p: &PathTracerParams) -> Result<(), RtError> {
@@ -171,7 +129,7 @@ impl PathTracer {
         rt: &RtDevice,
         width: u32,
         height: u32,
-        materials: &[PathTracerMaterial],
+        materials: &[RtMaterial],
     ) -> Result<Self, RtError> {
         let core = rt.core().clone();
         core.ensure_usable()?;
@@ -181,7 +139,6 @@ impl PathTracer {
                 "path tracer size {width}x{height} must be 1..={max} per side"
             )));
         }
-        validate_materials(materials)?;
         let device = &core.device;
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -272,7 +229,7 @@ impl PathTracer {
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
         });
-        let (materials_buffer, material_count) = upload_materials(device, materials);
+        let (materials_buffer, material_count) = upload_materials(device, materials)?;
         Ok(Self {
             core,
             pipeline,
@@ -289,9 +246,8 @@ impl PathTracer {
     }
 
     /// Replaces the materials and restarts accumulation.
-    pub fn set_materials(&mut self, materials: &[PathTracerMaterial]) -> Result<(), RtError> {
-        validate_materials(materials)?;
-        let (buffer, count) = upload_materials(&self.core.device, materials);
+    pub fn set_materials(&mut self, materials: &[RtMaterial]) -> Result<(), RtError> {
+        let (buffer, count) = upload_materials(&self.core.device, materials)?;
         self.materials = buffer;
         self.material_count = count;
         self.reset();
@@ -419,52 +375,12 @@ impl PathTracer {
     }
 }
 
-fn upload_materials(
-    device: &wgpu::Device,
-    materials: &[PathTracerMaterial],
-) -> (wgpu::Buffer, u32) {
-    let records: Vec<GpuMaterial> = materials
-        .iter()
-        .map(|m| GpuMaterial {
-            albedo: [m.albedo[0], m.albedo[1], m.albedo[2], 0.0],
-            emissive: [m.emissive[0], m.emissive[1], m.emissive[2], 0.0],
-        })
-        .collect();
-    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("engine-render-rt path tracer materials"),
-        contents: bytemuck::cast_slice(&records),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    (buffer, materials.len() as u32)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn materials_and_parameters_are_validated() {
-        let ok = PathTracerMaterial {
-            albedo: [0.5; 3],
-            emissive: [0.0; 3],
-        };
-        assert!(validate_materials(&[ok]).is_ok());
-        assert!(validate_materials(&[]).is_err());
-        let bright = PathTracerMaterial {
-            albedo: [1.2, 0.5, 0.5],
-            ..ok
-        };
-        assert!(
-            validate_materials(&[bright])
-                .unwrap_err()
-                .to_string()
-                .contains("[0, 1]")
-        );
-        let nan = PathTracerMaterial {
-            emissive: [f32::NAN, 0.0, 0.0],
-            ..ok
-        };
-        assert!(validate_materials(&[nan]).is_err());
+    fn parameters_are_validated() {
         let p = PathTracerParams::default();
         assert!(validate_params(&p).is_ok());
         assert!(
@@ -495,6 +411,5 @@ mod tests {
     fn uniform_layout_matches_wgsl() {
         // mat4x4 (64) + 3 x vec4<f32> (48) + 2 x vec4<u32> (32) + vec4<f32> (16).
         assert_eq!(size_of::<GpuParams>(), 160);
-        assert_eq!(size_of::<GpuMaterial>(), 32);
     }
 }

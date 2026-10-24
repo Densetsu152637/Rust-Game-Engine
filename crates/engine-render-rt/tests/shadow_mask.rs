@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use engine_render_rt::{
-    RtDevice, ShadowMaskFormat, ShadowMaskKernel, ShadowMaskParams, ShadowMaskTargets,
+    RtDevice, RtScalarFormat, ShadowMaskKernel, ShadowMaskParams, ShadowMaskTargets,
 };
 
 const SIZE: u32 = 256;
@@ -18,7 +18,7 @@ fn world_x(i: u32) -> f32 {
 }
 
 /// Visibility of every pixel, row-major (row = z, column = x).
-fn render(rt: &RtDevice, format: ShadowMaskFormat) -> Vec<f32> {
+fn render(rt: &RtDevice, format: RtScalarFormat) -> Vec<f32> {
     let mut scene = scene(rt);
     let plane = ground(8.0, 0.0);
     let block = cuboid([-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]);
@@ -79,17 +79,15 @@ fn render(rt: &RtDevice, format: ShadowMaskFormat) -> Vec<f32> {
     submit(rt, encoder);
     println!("{format:?}: dispatch + wait {:?}", start.elapsed());
     match format {
-        ShadowMaskFormat::R8Unorm => read_texture(rt, &output, 1)
+        RtScalarFormat::R8Unorm => read_texture(rt, &output, 1)
             .iter()
             .map(|&v| f32::from(v) / 255.0)
             .collect(),
-        ShadowMaskFormat::R16Float => {
-            bytemuck::cast_slice::<u8, u16>(&read_texture(rt, &output, 2))
-                .iter()
-                .map(|&h| half_to_f32(h))
-                .collect()
-        }
-        ShadowMaskFormat::R32Float => bytemuck::cast_slice(&read_texture(rt, &output, 4)).to_vec(),
+        RtScalarFormat::R16Float => bytemuck::cast_slice::<u8, u16>(&read_texture(rt, &output, 2))
+            .iter()
+            .map(|&h| half_to_f32(h))
+            .collect(),
+        RtScalarFormat::R32Float => bytemuck::cast_slice(&read_texture(rt, &output, 4)).to_vec(),
     }
 }
 
@@ -98,7 +96,7 @@ fn render(rt: &RtDevice, format: ShadowMaskFormat) -> Vec<f32> {
 const SHADOW_X: (f32, f32) = (-3.0, 1.0);
 const SHADOW_Z: (f32, f32) = (-1.0, 1.0);
 
-fn check(format: ShadowMaskFormat, mask: &[f32]) {
+fn check(format: RtScalarFormat, mask: &[f32]) {
     let at = |i: u32, j: u32| mask[(j * SIZE + i) as usize];
     let (mut max_shadowed, mut min_lit) = (0.0f32, 1.0f32);
     let margin = 2.0 * PX;
@@ -173,9 +171,9 @@ fn check(format: ShadowMaskFormat, mask: &[f32]) {
 fn shadow_mask_matches_the_analytic_shadow() {
     let rt = open();
     for format in [
-        ShadowMaskFormat::R8Unorm,
-        ShadowMaskFormat::R16Float,
-        ShadowMaskFormat::R32Float,
+        RtScalarFormat::R8Unorm,
+        RtScalarFormat::R16Float,
+        RtScalarFormat::R32Float,
     ] {
         if !rt.supports_storage_format(format.texture_format()) {
             println!("{format:?}: not a storage format on this device; skipped");

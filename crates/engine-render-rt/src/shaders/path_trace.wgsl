@@ -1,16 +1,11 @@
-// Reference progressive path tracer. Appended to the ray-query library at
-// group 0.
+// Reference progressive path tracer. Appended to the ray-query and sampling
+// libraries at group 0.
 //
 // Lambertian albedo and emission per material, a sky whose radiance is
 // horizon + (zenith - horizon) * max(dir.y, 0) (constant when both are equal),
 // cosine-weighted hemisphere sampling around the face-forwarded geometric
 // normal, Russian roulette from bounce rr_start, and a running mean in
 // Rgba32Float (w = accumulated sample count).
-
-struct PtMaterial {
-    albedo: vec4<f32>,
-    emissive: vec4<f32>,
-}
 
 struct PtParams {
     inv_view_proj: mat4x4<f32>,
@@ -27,45 +22,12 @@ struct PtParams {
 
 @group(1) @binding(0) var pt_previous: texture_2d<f32>;
 @group(1) @binding(1) var pt_output: texture_storage_2d<rgba32float, write>;
-@group(1) @binding(2) var<storage, read> pt_materials: array<PtMaterial>;
+@group(1) @binding(2) var<storage, read> pt_materials: array<RtMaterialRecord>;
 @group(1) @binding(3) var<uniform> pt_params: PtParams;
 // [0]: samples discarded because they were not finite.
 @group(1) @binding(4) var<storage, read_write> pt_stats: array<atomic<u32>, 4>;
 
-var<private> pt_rng: u32;
-
-fn pt_pcg(v: u32) -> u32 {
-    let state = v * 747796405u + 2891336453u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-fn pt_rand() -> f32 {
-    pt_rng = pt_pcg(pt_rng);
-    return f32(pt_rng >> 8u) * (1.0 / 16777216.0);
-}
-
-fn pt_sky(dir: vec3<f32>) -> vec3<f32> {
-    let h = pt_params.sky_horizon.xyz;
-    return h + (pt_params.sky_zenith.xyz - h) * max(dir.y, 0.0);
-}
-
-// Cosine-weighted direction about unit n (Duff et al. 2017 basis).
-fn pt_cosine_sample(n: vec3<f32>) -> vec3<f32> {
-    let r1 = pt_rand();
-    let r2 = pt_rand();
-    let phi = 6.283185307179586 * r1;
-    let r = sqrt(r2);
-    let local = vec3<f32>(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - r2)));
-    let s = select(-1.0, 1.0, n.z >= 0.0);
-    let a = -1.0 / (s + n.z);
-    let b = n.x * n.y * a;
-    let t = vec3<f32>(1.0 + s * n.x * n.x * a, s * b, -s * n.x);
-    let bt = vec3<f32>(b, s + n.y * n.y * a, -n.y);
-    return normalize(t * local.x + bt * local.y + n * local.z);
-}
-
-fn pt_material(index: u32) -> PtMaterial {
+fn pt_material(index: u32) -> RtMaterialRecord {
     return pt_materials[min(index, pt_params.b.w - 1u)];
 }
 
@@ -81,7 +43,7 @@ fn pt_radiance(origin_in: vec3<f32>, dir_in: vec3<f32>) -> vec3<f32> {
     for (var bounce = 0u; bounce <= max_bounces; bounce += 1u) {
         let hit = rt_closest_hit(origin, dir, 0.0, t_max, mask);
         if !hit.hit {
-            radiance += throughput * pt_sky(dir);
+            radiance += throughput * rt_sky(dir, pt_params.sky_zenith.xyz, pt_params.sky_horizon.xyz);
             break;
         }
         let surface = rt_surface(hit, origin, dir);
@@ -98,14 +60,13 @@ fn pt_radiance(origin_in: vec3<f32>, dir_in: vec3<f32>) -> vec3<f32> {
         throughput *= material.albedo.xyz;
         if bounce + 1u >= rr_start {
             let p = clamp(max(throughput.x, max(throughput.y, throughput.z)), 0.05, 0.95);
-            if pt_rand() >= p {
+            if rt_rand() >= p {
                 break;
             }
             throughput /= p;
         }
-        let offset = pt_params.c.z * (1.0 + max(abs(surface.position.x), max(abs(surface.position.y), abs(surface.position.z))));
-        origin = surface.position + n * offset;
-        dir = pt_cosine_sample(n);
+        origin = surface.position + n * rt_offset(surface.position, pt_params.c.z);
+        dir = rt_cosine_sample(n);
     }
     return radiance;
 }
@@ -117,10 +78,10 @@ fn path_trace(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let frame = pt_params.a.z;
-    pt_rng = pt_pcg(id.x + id.y * size.x + pt_pcg(frame ^ pt_pcg(pt_params.b.y)));
+    rt_seed(id.xy, size.x, frame, pt_params.b.y);
     var jitter = vec2<f32>(0.5);
     if pt_params.c.y > 0.5 {
-        jitter = vec2<f32>(pt_rand(), pt_rand());
+        jitter = vec2<f32>(rt_rand(), rt_rand());
     }
     let pixel = vec2<f32>(id.xy) + jitter;
     let ndc = vec2<f32>(pixel.x / f32(size.x) * 2.0 - 1.0, 1.0 - pixel.y / f32(size.y) * 2.0);
@@ -128,7 +89,7 @@ fn path_trace(@builtin(global_invocation_id) id: vec3<u32>) {
     let eye = pt_params.eye.xyz;
     let dir = normalize(far.xyz / far.w - eye);
     var sample = pt_radiance(eye, dir);
-    let finite = all(sample == sample) && all(abs(sample) <= vec3<f32>(3.0e38));
+    let finite = rt_all_finite(sample);
     var previous = vec4<f32>(0.0);
     if frame > 0u {
         previous = textureLoad(pt_previous, id.xy, 0);

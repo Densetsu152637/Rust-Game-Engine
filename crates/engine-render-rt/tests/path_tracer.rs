@@ -5,7 +5,7 @@
 mod common;
 
 use common::*;
-use engine_render_rt::{PathTracer, PathTracerMaterial, PathTracerParams, RtDevice, RtScene};
+use engine_render_rt::{PathTracer, PathTracerParams, RtDevice, RtMaterial, RtScene};
 use glam::Vec3;
 
 /// Relative tolerance of every converged mean.
@@ -23,7 +23,7 @@ fn run(
     rt: &RtDevice,
     scene: &RtScene,
     size: u32,
-    materials: &[PathTracerMaterial],
+    materials: &[RtMaterial],
     params: PathTracerParams,
     frames: u32,
 ) -> Vec<[f32; 4]> {
@@ -123,7 +123,7 @@ fn convex_diffuse_object_under_uniform_sky_converges_to_albedo_times_sky() {
         &rt,
         &scene,
         size,
-        &[PathTracerMaterial {
+        &[RtMaterial {
             albedo,
             emissive: [0.0; 3],
         }],
@@ -184,7 +184,7 @@ fn closed_furnace_converges_to_emission_over_one_minus_albedo() {
         .add_instance(&instance(id, translation(0.0, 0.0, 0.0)))
         .unwrap();
     scene.commit().unwrap();
-    let material = PathTracerMaterial {
+    let material = RtMaterial {
         albedo: [0.5, 0.5, 0.8],
         emissive: [0.5; 3],
     };
@@ -257,7 +257,7 @@ fn plane_under_gradient_sky_checks_cosine_sampling() {
         &rt,
         &scene,
         64,
-        &[PathTracerMaterial {
+        &[RtMaterial {
             albedo: [albedo; 3],
             emissive: [0.0; 3],
         }],
