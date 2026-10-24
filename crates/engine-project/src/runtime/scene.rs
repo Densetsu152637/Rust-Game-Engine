@@ -19,6 +19,10 @@ pub struct RuntimeSnapshot {
     /// absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_pipeline: Option<crate::rendering3d::RenderPipelineStatus>,
+    /// Renderer-reported light culling, clustering and shadow allocation of
+    /// the active camera view; absent without a 3D camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<crate::lights::LightingStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -171,6 +175,7 @@ impl Runtime {
             upscaler: self.upscaler_status(),
             frame_generation: self.frame_generation_status(),
             render_pipeline: self.render_pipeline_status(),
+            lighting: self.lighting_status(),
             ticks: self.ticks,
             scene,
             live_entities: self
@@ -227,6 +232,26 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
         e.insert(value.clone());
     } else {
         e.remove::<crate::rendering3d::MeshMaterial>();
+    }
+    if let Some(value) = &c.directional_light {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::lights::DirectionalLight>();
+    }
+    if let Some(value) = &c.point_light {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::lights::PointLight>();
+    }
+    if let Some(value) = &c.spot_light {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::lights::SpotLight>();
+    }
+    if let Some(value) = &c.area_light {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::lights::AreaLight>();
     }
     if let Some(parent) = &authored.parent {
         e.insert(crate::Parent(parent.clone()));

@@ -49,6 +49,20 @@ impl Scene {
             if let Some(material) = &c.material {
                 material.validate()?;
             }
+            if let Some(light) = &c.directional_light {
+                light.validate()?;
+            }
+            let local_lights = [
+                c.point_light.as_ref().map(|l| l.validate()),
+                c.spot_light.as_ref().map(|l| l.validate()),
+                c.area_light.as_ref().map(|l| l.validate()),
+            ];
+            for result in local_lights.into_iter().flatten() {
+                result?;
+                if c.transform.is_none() {
+                    return Err(bad("PointLight, SpotLight and AreaLight require Transform"));
+                }
+            }
             if let Some(t) = &c.transform
                 && (t.version != 1 || crate::transforms::local_matrix(t).is_err())
             {

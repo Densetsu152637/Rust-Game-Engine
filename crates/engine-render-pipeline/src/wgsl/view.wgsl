@@ -33,38 +33,67 @@ const ENGINE_LIGHT_POINT: u32 = 1u;
 const ENGINE_LIGHT_SPOT: u32 = 2u;
 const ENGINE_LIGHT_AREA: u32 = 3u;
 
+// Intensities are shading units: photometric value x view exposure
+// (directional: lux, point/spot: candela, area: cd/m^2).
 struct EngineLight {
     color: vec3<f32>,
     intensity: f32,
     position: vec3<f32>,
+    // Distance where the windowed inverse-square falloff reaches zero.
     range: f32,
     // Directional: from surfaces toward the light. Spot/area: light forward.
     direction: vec3<f32>,
     kind: u32,
-    // Spot: cos inner, cos outer. Area: half width, half height, two-sided.
-    params: vec4<f32>,
-    // Index into engine_shadows, or -1.
+    // Area: unit width axis of the rectangle.
+    tangent: vec3<f32>,
+    // First EngineShadow (cascade 0, cube face +X), or -1.
     shadow_index: i32,
-    flags: u32,
-    reserved: vec2<u32>,
+    // Directional: cascade count, cascade blend. Spot: cos inner, cos outer.
+    // Area: half width, half height, two-sided.
+    params: vec4<f32>,
 }
 
 struct EngineLightList {
-    // x light count; yzw reserved.
+    // x light count, y directional light count (they come first); zw reserved.
     counts: vec4<u32>,
     lights: array<EngineLight>,
 }
 
 struct EngineShadow {
     clip_from_world: mat4x4<f32>,
-    // x depth bias, y atlas layer, z resolution, w 1.
-    params: vec4<f32>,
+    // Atlas uv offset xy, uv size, layer.
+    rect: vec4<f32>,
+    // Depth bias and normal bias (texels), world texel size (perspective: at
+    // unit distance), 1 when perspective.
+    bias: vec4<f32>,
+    // Mode (0 hard, 1 PCF, 2 PCSS), PCF radius, PCSS source size, PCSS max radius.
+    sampling: vec4<f32>,
+    // Projection near, far; cascade split near, far (camera view depth).
+    range: vec4<f32>,
+}
+
+// The froxel grid of local lights built by engine.lights.clusters.
+struct EngineClusterGrid {
+    // x, y, z cluster counts; w lights per cluster list.
+    dims: vec4<u32>,
+    // x near, y far (view depth); slice = log(depth) * z + w.
+    depth: vec4<f32>,
+    // xy clusters per render pixel; zw reserved.
+    tile: vec4<f32>,
+    // x 0 clustered / 1 all lights, y first local light, z light count.
+    params: vec4<u32>,
+    counts: array<u32>,
 }
 
 @group(0) @binding(0) var<uniform> engine_view: EngineView;
 @group(0) @binding(1) var<storage, read> engine_lights: EngineLightList;
 @group(0) @binding(2) var<storage, read> engine_shadows: array<EngineShadow>;
 @group(0) @binding(3) var engine_shadow_atlas: texture_depth_2d_array;
+@group(0) @binding(4) var<storage, read> engine_clusters: EngineClusterGrid;
+// Cluster c's light indices start at c * engine_clusters.dims.w.
+@group(0) @binding(5) var<storage, read> engine_cluster_lights: array<u32>;
+// Linear-filtered less-equal comparison sampler of the shadow atlas.
+@group(0) @binding(6) var engine_shadow_sampler: sampler_comparison;
 
 fn engine_light_count() -> u32 {
     return engine_lights.counts.x;
@@ -84,37 +113,4 @@ fn engine_ambient() -> vec3<f32> {
 
 fn engine_clip_from_world() -> mat4x4<f32> {
     return engine_view.clip_from_world;
-}
-
-// Fraction of `light` reaching `world` (3x3 PCF with receiver-plane depth
-// correction). Fragment stage only: it uses derivatives, so call it in
-// uniform control flow. `receive` false returns 1.
-fn engine_shadow_visibility(light: EngineLight, world: vec3<f32>, receive: bool) -> f32 {
-    let shadow = engine_shadows[max(light.shadow_index, 0)];
-    let p = shadow.clip_from_world * vec4<f32>(world, 1.0);
-    let ndc = p.xyz / p.w;
-    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-    // Derivatives before divergent bounds checks.
-    let ux = dpdx(uv);
-    let uy = dpdy(uv);
-    let zx = dpdx(ndc.z);
-    let zy = dpdy(ndc.z);
-    let det = ux.x * uy.y - ux.y * uy.x;
-    let safe_det = select(1.0, det, abs(det) > 0.00000001);
-    let gradient = select(vec2<f32>(0.0), vec2<f32>(uy.y * zx - ux.y * zy, ux.x * zy - uy.x * zx) / safe_det, abs(det) > 0.00000001);
-    if light.shadow_index < 0 || !receive { return 1.0; }
-    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z < 0.0 || ndc.z > 1.0 { return 1.0; }
-    let layer = i32(shadow.params.y);
-    let size = vec2<i32>(textureDimensions(engine_shadow_atlas));
-    let texel = vec2<i32>(uv * vec2<f32>(size));
-    var sum = 0.0;
-    for (var y = -1; y <= 1; y++) {
-        for (var x = -1; x <= 1; x++) {
-            let coord = clamp(texel + vec2<i32>(x, y), vec2<i32>(0), size - vec2<i32>(1));
-            let tap_uv = (vec2<f32>(coord) + vec2<f32>(0.5)) / vec2<f32>(size);
-            let receiver_depth = ndc.z + dot(gradient, tap_uv - uv);
-            sum += select(0.0, 1.0, receiver_depth - shadow.params.x <= textureLoad(engine_shadow_atlas, coord, layer, 0));
-        }
-    }
-    return sum / 9.0;
 }

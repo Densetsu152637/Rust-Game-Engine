@@ -46,34 +46,13 @@ struct Output {
         }
     }
     let mr = textureSample(metallic_roughness_map, image_sampler, input.uv);
-    let metallic = material.options.y * select(1.0, mr.b, maps.z > 0.5);
-    let roughness = max(material.options.z * select(1.0, mr.g, maps.z > 0.5), 0.045);
-    let alpha = roughness * roughness;
-    let a2 = alpha * alpha;
-    let nv = max(dot(n, v), 0.0001);
-    let f0 = mix(vec3<f32>(0.04), color.rgb, metallic);
-    var direct = vec3<f32>(0.0);
-    // Only directional lights are shaded by this material today.
-    for (var index = 0u; index < engine_light_count(); index++) {
-        let light = engine_light(index);
-        if light.kind != ENGINE_LIGHT_DIRECTIONAL { continue; }
-        let visibility = engine_shadow_visibility(light, input.world, material.options.w > 0.5);
-        let l = normalize(light.direction);
-        let half_vector = l + v;
-        let h = half_vector / max(length(half_vector), 0.000001);
-        let nl = max(dot(n, l), 0.0);
-        let nh = max(dot(n, h), 0.0);
-        let vh = max(dot(v, h), 0.0);
-        let denom = nh * nh * (a2 - 1.0) + 1.0;
-        let distribution = a2 / max(3.14159265 * denom * denom, 0.0000001);
-        let gv = 2.0 * nv / (nv + sqrt(a2 + (1.0 - a2) * nv * nv));
-        let gl = 2.0 * nl / max(nl + sqrt(a2 + (1.0 - a2) * nl * nl), 0.000001);
-        let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vh, 5.0);
-        let specular = distribution * gv * gl * fresnel / max(4.0 * nv * nl, 0.000001);
-        let diffuse = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic) * color.rgb / 3.14159265;
-        direct += (diffuse + specular) * (light.color * light.intensity) * nl * visibility;
-    }
-    let ambient = color.rgb * (1.0 - metallic) * engine_ambient();
+    var surface: EngineSurface;
+    surface.albedo = color.rgb;
+    surface.metallic = material.options.y * select(1.0, mr.b, maps.z > 0.5);
+    surface.roughness = material.options.z * select(1.0, mr.g, maps.z > 0.5);
+    surface.normal = n;
+    let direct = engine_direct_lighting(surface, input.world, v, input.position.xy, material.options.w > 0.5);
+    let ambient = color.rgb * (1.0 - surface.metallic) * engine_ambient();
     let shaded = direct + ambient;
     let result = select(shaded, color.rgb, material.options.x > 0.5);
     return vec4<f32>(result, color.a);

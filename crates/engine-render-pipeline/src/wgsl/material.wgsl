@@ -1,6 +1,7 @@
 // engine::material - everything a material shader may use. Import it and
 // write `vs_main`/`fs_main`; never declare bindings yourself.
 #import engine::mesh
+#import engine::lighting
 
 struct EngineMaterial {
     tint: vec4<f32>,

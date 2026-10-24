@@ -101,6 +101,8 @@ impl Runtime {
             .insert_resource(crate::rendering3d::FrameGenerationControl::default());
         app.world_mut()
             .insert_resource(crate::rendering3d::RenderPipelineControl::default());
+        app.world_mut()
+            .insert_resource(crate::lights::LightingControl::default());
         if !app
             .world()
             .contains_resource::<crate::rendering3d::TextureStreams>()

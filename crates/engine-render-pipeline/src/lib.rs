@@ -6,7 +6,12 @@
 //! * [`ViewData`] / [`ViewUniform`]: per-view matrices (jittered and
 //!   unjittered), inverses, previous view-projection, sizes, frame index and
 //!   time, bound for every feature as `engine::view` (group 0) together with
-//!   the [`LightList`] storage buffer and the shadow atlas.
+//!   the light list, shadow views, shadow atlas and light clusters.
+//! * [`LightList`] / [`Light`]: directional, point, spot and rectangular
+//!   area lights in shading units, with [`ShadowSettings`] (cascades, cube
+//!   faces, spot views in a [`ShadowAtlasConfig`] atlas; PCF or PCSS).
+//!   `engine.lights.clusters` builds a froxel grid of light lists per view
+//!   and `engine::lighting` shades them (docs/rendering-lights.md).
 //! * [`FrameTargets`]: HDR scene colour (`Rgba16Float`), depth, optional
 //!   normals and motion vectors.
 //! * [`InstanceBatcher`] and the built-in mesh path: identical mesh +
@@ -25,11 +30,13 @@ mod builtin;
 mod context;
 mod feature;
 mod instancing;
+mod lighting;
 mod lights;
 mod pipeline;
 pub mod readback;
 mod resources;
 pub mod shader;
+pub mod shadows;
 mod streams;
 mod targets;
 mod view;
@@ -49,13 +56,22 @@ pub use feature::{
     ResolvedFeatures, Stage, StageRule, validate_feature_name,
 };
 pub use instancing::{DrawStats, Grouping, InstanceBatcher, InstancedBatch, group_keys};
-pub use lights::{GpuLight, GpuShadow, LightKind, LightList, MAX_LIGHTS, MAX_SHADOWS, ShadowView};
+pub use lighting::{
+    CLUSTER_DIMS, ClusterMode, ClusterStats, LightingReport, MAX_LIGHTING_REASONS,
+    MAX_LIGHTS_PER_CLUSTER, frustum_planes, sphere_in_frustum,
+};
+pub use lights::{
+    CascadeSettings, GpuLight, GpuShadow, Light, LightKind, LightList, LightShape, MAX_CASCADES,
+    MAX_LIGHTS, MAX_PCF_RADIUS, MAX_PCSS_RADIUS, MAX_SHADOWS, MAX_SUBMITTED_LIGHTS,
+    SHADOW_RESOLUTIONS, ShadowFilter, ShadowSettings, ShadowView, photometric,
+};
 pub use pipeline::{
     HdrImage, HostStages, HostUpscale, NoHost, SceneFrame, ScenePipeline, SceneTextures,
     ViewReport, builtin_registry, names,
 };
 pub use resources::{ENGINE_VERTEX_LAYOUT, EngineVertex, GpuMesh, GpuTexture, TEXTURE_USAGES};
 pub use shader::{LIT_WGSL, MaterialTarget, ShaderComposer, compose_material, validate_wgsl};
+pub use shadows::{ShadowAtlasConfig, cascade_splits};
 pub use streams::{MAX_STREAMS, StreamMode, TextureStreams};
 pub use targets::{DEPTH_FORMAT, FrameTargets, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT, Target};
 pub use view::{

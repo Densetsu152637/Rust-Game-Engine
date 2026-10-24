@@ -227,6 +227,11 @@ fn screenshot_on(
         if let Some(mut control) = world.get_resource_mut::<RenderPipelineControl>() {
             control.status = renderer.pipeline_status().clone();
         }
+        if let Some(mut control) =
+            world.get_resource_mut::<engine_project::lights::LightingControl>()
+        {
+            control.status = renderer.lighting_status().clone();
+        }
         // Generated frames before the final real frame, as sibling PNGs.
         let mut generated = Vec::new();
         for (index, captured) in renderer

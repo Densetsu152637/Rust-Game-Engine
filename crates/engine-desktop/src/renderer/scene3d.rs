@@ -5,14 +5,16 @@ use super::RenderStats;
 use super::cache::address;
 use anyhow::{Context, Result, ensure};
 use engine_project::content::{Mesh, Texture};
+use engine_project::lights::{
+    DirectionalShadows, LightInstance3D, LightShadows, SceneLight, ShadowFilterMode,
+};
 use engine_project::rendering3d::{
-    CameraInstance3D, MeshDraw3D, Projection3D, SceneLighting, SceneRenderFrame, StreamFrame,
-    TextureStreamMode,
+    CameraInstance3D, MeshDraw3D, Projection3D, SceneRenderFrame, StreamFrame, TextureStreamMode,
 };
 use engine_render_pipeline::{
-    EngineVertex, FeatureOverrides, GpuContext, GpuLight, GpuMesh, GpuTexture, LightList,
-    MaterialParams, MaterialTarget, SceneMesh, ShadowView, TextureStreams, ViewData, ViewId,
-    compose_material, validate_params,
+    CascadeSettings, EngineVertex, FeatureOverrides, GpuContext, GpuMesh, GpuTexture, Light,
+    LightList, LightShape, MaterialParams, MaterialTarget, SceneMesh, ShadowFilter, ShadowSettings,
+    TextureStreams, ViewData, ViewId, compose_material, photometric, validate_params,
 };
 use glam::{Mat4, Vec3};
 use std::collections::{HashMap, HashSet};
@@ -71,29 +73,156 @@ pub(crate) fn camera_view(
     Ok(view)
 }
 
-/// The directional light (and its shadow view) of authored lighting.
-pub(crate) fn light_list(lighting: &SceneLighting) -> Result<LightList> {
-    lighting.validate()?;
-    let direction = Vec3::from_array(lighting.direction);
-    let mut light = GpuLight::directional(
-        direction,
-        Vec3::from_array(lighting.color),
-        lighting.intensity,
-    );
-    let mut list = LightList::default();
-    let s = &lighting.shadows;
-    if s.enabled {
-        light.shadow_index = 0;
-        list.shadows.push(ShadowView::directional(
-            direction,
-            Vec3::from_array(s.center),
-            s.extent,
-            s.depth,
-            s.resolution,
-            s.bias,
-        ));
+fn filter(
+    mode: ShadowFilterMode,
+    pcf_radius: u32,
+    source_size: f32,
+    max_radius: u32,
+) -> ShadowFilter {
+    match mode {
+        ShadowFilterMode::Hard => ShadowFilter::Hard,
+        ShadowFilterMode::Pcf => ShadowFilter::Pcf { radius: pcf_radius },
+        ShadowFilterMode::Pcss => ShadowFilter::Pcss {
+            source_size,
+            max_radius,
+        },
     }
-    list.lights.push(light);
+}
+
+fn local_shadow(s: &LightShadows) -> Option<ShadowSettings> {
+    s.enabled.then(|| ShadowSettings {
+        resolution: s.resolution,
+        depth_bias: s.depth_bias,
+        normal_bias: s.normal_bias,
+        filter: filter(s.filter, s.pcf_radius, s.source_radius, s.pcss_max_radius),
+        near: s.near,
+        cascades: CascadeSettings::default(),
+    })
+}
+
+fn directional_shadow(s: &DirectionalShadows) -> Option<ShadowSettings> {
+    s.enabled.then(|| ShadowSettings {
+        resolution: s.resolution,
+        depth_bias: s.depth_bias,
+        normal_bias: s.normal_bias,
+        filter: filter(
+            s.filter,
+            s.pcf_radius,
+            s.angular_diameter_radians,
+            s.pcss_max_radius,
+        ),
+        near: 0.05,
+        cascades: CascadeSettings {
+            count: s.cascades,
+            split_lambda: s.split_lambda,
+            max_distance: s.max_distance,
+            blend: s.cascade_blend,
+            caster_extension: s.caster_extension,
+        },
+    })
+}
+
+/// One authored light in shading units (photometric value x `exposure`),
+/// oriented by its world transform (local -Z forward, local X right).
+pub(crate) fn scene_light(instance: &LightInstance3D, exposure: f32) -> Result<Light> {
+    let world = Mat4::from_cols_array_2d(&instance.world);
+    ensure!(
+        world.is_finite(),
+        "light {}: nonfinite transform",
+        instance.id
+    );
+    let position = world.w_axis.truncate();
+    let forward = world.transform_vector3(Vec3::NEG_Z).normalize_or_zero();
+    ensure!(
+        forward != Vec3::ZERO,
+        "light {}: degenerate transform",
+        instance.id
+    );
+    let color = |c: [f32; 3]| Vec3::from_array(c);
+    let light = match &instance.light {
+        SceneLight::Directional(l) => {
+            l.validate()?;
+            Light {
+                shadow: directional_shadow(&l.shadows),
+                ..Light::directional(forward, color(l.color), l.lux * exposure)
+            }
+        }
+        SceneLight::Point(l) => {
+            l.validate()?;
+            Light {
+                direction: forward,
+                shadow: local_shadow(&l.shadows),
+                ..Light::point(
+                    position,
+                    color(l.color),
+                    photometric::candela_from_lumens(l.lumens) * exposure,
+                    l.range,
+                )
+            }
+        }
+        SceneLight::Spot(l) => {
+            l.validate()?;
+            Light {
+                shadow: local_shadow(&l.shadows),
+                ..Light::spot(
+                    position,
+                    forward,
+                    color(l.color),
+                    photometric::candela_from_lumens(l.lumens) * exposure,
+                    l.range,
+                    l.inner_angle_radians,
+                    l.outer_angle_radians,
+                )
+            }
+        }
+        SceneLight::Area(l) => {
+            l.validate()?;
+            let right = world.transform_vector3(Vec3::X);
+            let right = (right - forward * right.dot(forward)).normalize_or_zero();
+            ensure!(
+                right != Vec3::ZERO,
+                "light {}: degenerate transform",
+                instance.id
+            );
+            let luminance =
+                photometric::area_luminance_from_lumens(l.lumens, l.width * l.height, l.two_sided);
+            Light {
+                shape: LightShape::Area {
+                    width: l.width,
+                    height: l.height,
+                    right,
+                    two_sided: l.two_sided,
+                },
+                color: color(l.color),
+                intensity: luminance * exposure,
+                position,
+                direction: forward,
+                range: l.range,
+                shadow: local_shadow(&l.shadows),
+            }
+        }
+    };
+    light
+        .validate()
+        .with_context(|| format!("light {}", instance.id))?;
+    Ok(light)
+}
+
+/// The frame's lights in shading units of its 3D camera's exposure (none
+/// without a camera).
+pub(crate) fn light_list(frame: &SceneRenderFrame) -> Result<LightList> {
+    let Some(camera) = &frame.camera3d else {
+        return Ok(LightList::default());
+    };
+    camera.camera.lighting.validate()?;
+    let exposure = camera.camera.lighting.exposure;
+    let lights = frame
+        .lights
+        .iter()
+        .map(|instance| scene_light(instance, exposure))
+        .collect::<Result<Vec<_>>>()?;
+    let list = LightList { lights };
+    list.validate()?;
     Ok(list)
 }
 
@@ -302,17 +431,80 @@ mod tests {
     }
 
     #[test]
-    fn authored_lighting_becomes_one_directional_light_with_an_optional_shadow() {
-        let mut lighting = SceneLighting::default();
-        let list = light_list(&lighting).unwrap();
-        assert_eq!(list.lights.len(), 1);
-        assert_eq!(list.lights[0].shadow_index, -1);
-        assert_eq!(list.lights[0].intensity, 3.0);
-        assert!(list.shadows.is_empty());
-        lighting.shadows.enabled = true;
-        let list = light_list(&lighting).unwrap();
-        assert_eq!(list.lights[0].shadow_index, 0);
-        assert_eq!(list.shadows[0].resolution, 1024);
-        list.validate().unwrap();
+    fn authored_lights_become_exposed_pipeline_lights() {
+        use engine_project::lights::*;
+        use engine_render_pipeline::ShadowFilter;
+        let rotation = Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let at = |position: Vec3| (Mat4::from_translation(position) * rotation).to_cols_array_2d();
+        let mut sun = DirectionalLight::default();
+        sun.shadows.enabled = true;
+        sun.shadows.cascades = 2;
+        let mut spot = SpotLight {
+            lumens: 4.0 * std::f32::consts::PI,
+            ..Default::default()
+        };
+        spot.shadows.enabled = true;
+        spot.shadows.filter = ShadowFilterMode::Pcss;
+        let mut frame = SceneRenderFrame::from(engine_project::runtime::RenderFrame {
+            camera: Default::default(),
+            draws: vec![],
+        });
+        frame.camera3d = Some(CameraInstance3D {
+            camera: Camera3D {
+                lighting: engine_project::rendering3d::SceneLighting {
+                    exposure: 0.5,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            world: Mat4::IDENTITY.to_cols_array_2d(),
+        });
+        frame.lights = vec![
+            LightInstance3D {
+                id: "sun".into(),
+                light: SceneLight::Directional(sun),
+                world: rotation.to_cols_array_2d(),
+            },
+            LightInstance3D {
+                id: "spot".into(),
+                light: SceneLight::Spot(spot),
+                world: at(Vec3::new(1.0, 4.0, 0.0)),
+            },
+            LightInstance3D {
+                id: "area".into(),
+                light: SceneLight::Area(AreaLight {
+                    lumens: std::f32::consts::PI * 2.0,
+                    width: 2.0,
+                    height: 1.0,
+                    ..Default::default()
+                }),
+                world: at(Vec3::new(0.0, 3.0, 0.0)),
+            },
+        ];
+        let list = light_list(&frame).unwrap();
+        let [sun, spot, area] = &list.lights[..] else {
+            panic!("{list:?}");
+        };
+        assert!(
+            sun.direction.abs_diff_eq(Vec3::NEG_Y, 1e-6),
+            "-Z rotated down"
+        );
+        assert_eq!(sun.intensity, 1.5, "3 lux x exposure 0.5");
+        assert_eq!(sun.shadow.unwrap().cascades.count, 2);
+        assert!((spot.intensity - 0.5).abs() < 1e-6, "1 cd x exposure");
+        assert!(spot.position.abs_diff_eq(Vec3::new(1.0, 4.0, 0.0), 1e-6));
+        assert!(matches!(
+            spot.shadow.unwrap().filter,
+            ShadowFilter::Pcss { .. }
+        ));
+        // 2 pi lm over a 2 m^2 one-sided rectangle: 1 cd/m^2.
+        assert!((area.intensity - 0.5).abs() < 1e-6);
+        assert!(matches!(
+            area.shape,
+            LightShape::Area { right, .. } if right.abs_diff_eq(Vec3::X, 1e-6)
+        ));
+        assert!(area.shadow.is_none());
+        frame.camera3d = None;
+        assert!(light_list(&frame).unwrap().lights.is_empty());
     }
 }

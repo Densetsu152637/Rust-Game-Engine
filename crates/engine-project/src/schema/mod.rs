@@ -13,6 +13,7 @@ use std::{
 mod components;
 mod docs;
 mod files;
+mod light_docs;
 mod model;
 mod project;
 mod validate;

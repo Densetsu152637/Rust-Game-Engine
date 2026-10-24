@@ -1,6 +1,8 @@
 // engine::material for 2D sprites with a material: the same functions and
 // material bindings as the 3D module, implemented with the sprite path's
 // per-draw uniform. Sprites are unlit: no lights, no shadows, identity model.
+#import engine::brdf
+
 struct EngineVertex {
     @location(0) position: vec3<f32>,
     @location(1) uv: vec2<f32>,
@@ -20,10 +22,14 @@ struct EngineLight {
     range: f32,
     direction: vec3<f32>,
     kind: u32,
-    params: vec4<f32>,
+    tangent: vec3<f32>,
     shadow_index: i32,
-    flags: u32,
-    reserved: vec2<u32>,
+    params: vec4<f32>,
+}
+
+struct EngineIncident {
+    l: vec3<f32>,
+    irradiance: vec3<f32>,
 }
 
 struct EngineMaterial {
@@ -68,9 +74,29 @@ fn engine_light_count() -> u32 {
 }
 
 fn engine_light(index: u32) -> EngineLight {
-    return EngineLight(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0, vec3<f32>(0.0, 0.0, 1.0), ENGINE_LIGHT_DIRECTIONAL, vec4<f32>(0.0), -1, 0u, vec2<u32>(0u));
+    return EngineLight(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0, vec3<f32>(0.0, 0.0, 1.0), ENGINE_LIGHT_DIRECTIONAL, vec3<f32>(1.0, 0.0, 0.0), -1, vec4<f32>(0.0));
 }
 
-fn engine_shadow_visibility(light: EngineLight, world: vec3<f32>, receive: bool) -> f32 {
+fn engine_view_depth(world: vec3<f32>) -> f32 {
+    return 0.0;
+}
+
+fn engine_light_incident(light: EngineLight, world: vec3<f32>, n: vec3<f32>, v: vec3<f32>) -> EngineIncident {
+    return EngineIncident(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0));
+}
+
+fn engine_light_visibility(light: EngineLight, world: vec3<f32>, n: vec3<f32>) -> f32 {
     return 1.0;
+}
+
+fn engine_cascade_index(light: EngineLight, world: vec3<f32>) -> i32 {
+    return -1;
+}
+
+fn engine_light_contribution(light: EngineLight, surface: EngineSurface, world: vec3<f32>, v: vec3<f32>, receive_shadows: bool) -> vec3<f32> {
+    return vec3<f32>(0.0);
+}
+
+fn engine_direct_lighting(surface: EngineSurface, world: vec3<f32>, v: vec3<f32>, frag: vec2<f32>, receive_shadows: bool) -> vec3<f32> {
+    return vec3<f32>(0.0);
 }

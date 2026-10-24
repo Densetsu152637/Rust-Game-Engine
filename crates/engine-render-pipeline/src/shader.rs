@@ -4,8 +4,10 @@
 //! A line of the form `#import a::b` (optionally ending in `;`) is replaced by
 //! the named module's source, each module at most once per composed shader;
 //! modules may import others. Engine modules: `engine::view` (group 0 view
-//! data, light list, shadows), `engine::mesh` (engine vertex input, group 3
-//! instance data), `engine::material` (material bindings, groups 1 and 2) and
+//! data, light list, shadows, light clusters), `engine::brdf` (shading
+//! math), `engine::lighting` (direct lighting of the light list),
+//! `engine::mesh` (engine vertex input, group 3 instance data),
+//! `engine::material` (material bindings, groups 1 and 2, plus lighting) and
 //! `engine::fullscreen`. Features register their own modules with
 //! [`ShaderComposer::register_module`] to keep shared code in separate files.
 
@@ -14,6 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const VIEW_WGSL: &str = include_str!("wgsl/view.wgsl");
 pub const MESH_WGSL: &str = include_str!("wgsl/mesh.wgsl");
+pub const BRDF_WGSL: &str = include_str!("wgsl/brdf.wgsl");
+pub const LIGHTING_WGSL: &str = include_str!("wgsl/lighting.wgsl");
 pub const MATERIAL_WGSL: &str = include_str!("wgsl/material.wgsl");
 pub const SPRITE_MATERIAL_WGSL: &str = include_str!("wgsl/material_sprite.wgsl");
 pub const FULLSCREEN_WGSL: &str = include_str!("wgsl/fullscreen.wgsl");
@@ -26,6 +30,7 @@ pub(crate) const NORMALS_WGSL: &str = include_str!("wgsl/normals.wgsl");
 pub(crate) const OUTPUT_WGSL: &str = include_str!("wgsl/output.wgsl");
 pub(crate) const UPSCALE_WGSL: &str = include_str!("wgsl/upscale.wgsl");
 pub(crate) const DEPTH_EXPORT_WGSL: &str = include_str!("wgsl/depth_export.wgsl");
+pub(crate) const CLUSTERS_WGSL: &str = include_str!("wgsl/clusters.wgsl");
 
 /// Longest composed shader accepted, in bytes.
 pub const MAX_COMPOSED_BYTES: usize = 4 * 1024 * 1024;
@@ -64,6 +69,8 @@ impl ShaderComposer {
         let mut modules = BTreeMap::new();
         modules.insert("engine::view".to_owned(), VIEW_WGSL.to_owned());
         modules.insert("engine::mesh".to_owned(), MESH_WGSL.to_owned());
+        modules.insert("engine::brdf".to_owned(), BRDF_WGSL.to_owned());
+        modules.insert("engine::lighting".to_owned(), LIGHTING_WGSL.to_owned());
         modules.insert("engine::fullscreen".to_owned(), FULLSCREEN_WGSL.to_owned());
         let material = match target {
             MaterialTarget::Mesh => MATERIAL_WGSL,
@@ -189,6 +196,9 @@ pub fn material_bindings(target: MaterialTarget) -> &'static [(u32, u32)] {
             (0, 1),
             (0, 2),
             (0, 3),
+            (0, 4),
+            (0, 5),
+            (0, 6),
             (1, 0),
             (1, 1),
             (1, 2),
@@ -296,6 +306,7 @@ mod tests {
             OUTPUT_WGSL,
             UPSCALE_WGSL,
             DEPTH_EXPORT_WGSL,
+            CLUSTERS_WGSL,
         ] {
             validate_wgsl(&composer.compose(source).unwrap()).unwrap();
         }

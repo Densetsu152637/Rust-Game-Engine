@@ -117,6 +117,10 @@ pub fn snapshot_entity(world: &World, entity: Entity) -> Result<SceneEntity> {
             sprite_renderer: e.get::<crate::SpriteRenderer>().cloned(),
             camera_2d: e.get::<crate::Camera2D>().cloned(),
             collider_2d: e.get::<Collider2D>().cloned(),
+            area_light: e.get::<crate::lights::AreaLight>().cloned(),
+            directional_light: e.get::<crate::lights::DirectionalLight>().cloned(),
+            point_light: e.get::<crate::lights::PointLight>().cloned(),
+            spot_light: e.get::<crate::lights::SpotLight>().cloned(),
         },
     })
 }
