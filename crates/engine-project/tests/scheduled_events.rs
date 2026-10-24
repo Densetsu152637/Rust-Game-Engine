@@ -165,3 +165,110 @@ fn schedule_rejects_malformed_unordered_oversized_or_out_of_run_inputs() {
     assert_eq!(schedule.at_tick(2).len(), 1);
     assert!(schedule.at_tick(3).is_empty());
 }
+
+#[test]
+fn delivered_trace_stops_allocating_at_byte_and_count_caps_but_counts_all_events() {
+    let (_dir, mut runtime) = fixture();
+    let mut trace = EventTrace::default();
+    for tick in 0..20 {
+        emit_event(
+            runtime.app_mut().world_mut(),
+            EngineEvent {
+                name: "large".into(),
+                source: None,
+                target: None,
+                payload: json!("x".repeat(60_000)),
+            },
+        )
+        .unwrap();
+        runtime.tick(1.0 / 60.0, Default::default()).unwrap();
+        trace.capture(&runtime, tick);
+    }
+    assert_eq!(trace.count, 20);
+    assert!(trace.truncated);
+    assert!(trace.events.len() < 20);
+    let retained = trace.events.len();
+    trace.capture(&runtime, 21);
+    assert_eq!(trace.count, 21);
+    assert_eq!(trace.events.len(), retained);
+    let mut trace = EventTrace::default();
+    emit_event(
+        runtime.app_mut().world_mut(),
+        EngineEvent {
+            name: "small".into(),
+            source: None,
+            target: None,
+            payload: json!(null),
+        },
+    )
+    .unwrap();
+    runtime.tick(1.0 / 60.0, Default::default()).unwrap();
+    for tick in 0..4097 {
+        trace.capture(&runtime, tick);
+    }
+    assert_eq!(trace.events.len(), 4096);
+    assert_eq!(trace.count, 4097);
+    assert!(trace.truncated);
+    trace.count = u64::MAX;
+    trace.capture(&runtime, 4098);
+    assert_eq!(trace.count, u64::MAX);
+}
+
+#[test]
+fn trace_retains_pre_transition_delivery_without_repeating_it_on_an_empty_tick() {
+    let (dir, runtime) = fixture();
+    drop(runtime);
+    let mut scene: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("scene.json")).unwrap()).unwrap();
+    scene["scene_id"] = json!("next");
+    std::fs::write(
+        dir.path().join("next.json"),
+        serde_json::to_vec(&scene).unwrap(),
+    )
+    .unwrap();
+    let mut project: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("project.json")).unwrap()).unwrap();
+    project["assets"] = json!([{"id":"next","kind":"scene","path":"next.json"}]);
+    std::fs::write(
+        dir.path().join("project.json"),
+        serde_json::to_vec(&project).unwrap(),
+    )
+    .unwrap();
+    let mut runtime =
+        Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    register_event_handler(runtime.app_mut(), "increment", |world, entity, event| {
+        world.get_mut::<Transform>(entity).unwrap().position[0] +=
+            event.payload["amount"].as_f64().unwrap() as f32;
+        Ok(())
+    })
+    .unwrap();
+    runtime.start().unwrap();
+    let schedule = make_schedule(json!([
+        {"tick":0,"name":"game.increment","target":"player","payload":{"amount":3}},
+        {"tick":2,"name":"game.increment","target":"player","payload":{"amount":7}}
+    ]));
+    runtime.request_scene("next", "", "").unwrap();
+    runtime.enqueue_scheduled_events(&schedule, 0).unwrap();
+    runtime.tick(1.0 / 60.0, Default::default()).unwrap();
+    let mut trace = EventTrace::default();
+    trace.capture(&runtime, 0);
+    assert_eq!(runtime.active_scene().id, "next");
+    assert!(runtime.try_snapshot().unwrap().events.is_empty());
+    assert_eq!(trace.count, 1);
+    assert_eq!(trace.events[0].payload["amount"], 3);
+    runtime.tick(1.0 / 60.0, Default::default()).unwrap();
+    trace.capture(&runtime, 1);
+    assert_eq!(
+        trace.count, 1,
+        "empty dispatch must replace the previous record"
+    );
+    runtime.enqueue_scheduled_events(&schedule, 2).unwrap();
+    runtime.tick(1.0 / 60.0, Default::default()).unwrap();
+    trace.capture(&runtime, 2);
+    assert_eq!(
+        runtime.position("player").unwrap()[0],
+        7.0,
+        "stable IDs resolve to the replacement scene entity"
+    );
+    assert_eq!(trace.count, 2);
+}

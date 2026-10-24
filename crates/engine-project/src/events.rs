@@ -4,7 +4,10 @@ use bevy_ecs::prelude::*;
 use engine_core::EngineApp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 #[derive(Clone, Debug)]
 pub struct EngineEvent {
@@ -23,11 +26,19 @@ pub struct EventRecord {
 pub(crate) fn records(world: &World) -> Vec<EventRecord> {
     world
         .get_resource::<DeliveredRecords>()
-        .map(|r| r.0.clone())
-        .unwrap_or_default()
+        .map_or_else(Vec::new, |r| r.0.to_vec())
+}
+pub(crate) fn delivered_records(world: &World) -> &[EventRecord] {
+    world
+        .get_resource::<LastDispatchRecords>()
+        .map_or(&[], |r| r.0.as_ref())
 }
 #[derive(Resource, Default)]
-struct DeliveredRecords(Vec<EventRecord>);
+struct DeliveredRecords(Arc<[EventRecord]>);
+/// Last dispatch survives scene replacement until the next (including empty)
+/// dispatch, so hosts can observe deliveries made before a transition.
+#[derive(Resource, Default)]
+struct LastDispatchRecords(Arc<[EventRecord]>);
 fn capture_records(world: &World, events: &[EngineEvent]) -> Vec<EventRecord> {
     let id = |entity: Entity| {
         world
@@ -165,7 +176,9 @@ pub(crate) fn take_events(world: &mut World) -> Vec<EngineEvent> {
         .into_iter()
         .filter(|e| e.target.is_none_or(|t| world.get_entity(t).is_ok()))
         .collect();
-    world.insert_resource(DeliveredRecords(capture_records(world, &events)));
+    let records: Arc<[EventRecord]> = capture_records(world, &events).into();
+    world.insert_resource(DeliveredRecords(records.clone()));
+    world.insert_resource(LastDispatchRecords(records));
     world.insert_resource(DeliveredEvents(events.clone()));
     events
 }

@@ -140,3 +140,101 @@ fn invalid_input_and_tick_limits_are_errors() {
         .is_err()
     );
 }
+
+#[test]
+fn scheduled_callbacks_execute_without_devices_and_remain_in_trace_after_later_ticks() {
+    use engine_project::{
+        EventBinding, EventBindings, EventSchedule, Transform, register_event_handler,
+    };
+    let mut runtime = runtime();
+    let id = runtime
+        .project()
+        .scene
+        .entities
+        .iter()
+        .find(|e| e.components.transform.is_some())
+        .unwrap()
+        .id
+        .clone();
+    let entity = runtime.entity(&id).unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(entity)
+        .insert(EventBindings {
+            bindings: vec![EventBinding {
+                event: "test.set".into(),
+                handler: "set".into(),
+            }],
+        });
+    register_event_handler(runtime.app_mut(), "set", |world, entity, event| {
+        world.get_mut::<Transform>(entity).unwrap().position[0] =
+            event.payload.as_f64().unwrap() as f32;
+        engine_project::emit_event(
+            world,
+            engine_project::EngineEvent {
+                name: "test.applied".into(),
+                source: Some(entity),
+                target: Some(entity),
+                payload: 12.into(),
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let events = EventSchedule::new(vec![engine_project::ScheduledEvent {
+        tick: 0,
+        name: "test.set".into(),
+        source: None,
+        target: Some(id.clone()),
+        payload: 12.into(),
+    }])
+    .unwrap();
+    let report = run(
+        runtime,
+        RunOptions {
+            headless: true,
+            ticks: 3,
+            events,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        report
+            .scene
+            .scene
+            .entities
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap()
+            .components
+            .transform
+            .as_ref()
+            .unwrap()
+            .position[0],
+        12.0
+    );
+    assert_eq!(report.event_trace.events[0].tick, 0);
+    assert_eq!(
+        report.event_trace.events[0].target.as_deref(),
+        Some(id.as_str())
+    );
+    assert_eq!(report.event_trace.events[0].payload.as_i64(), Some(12));
+    assert!(!report.event_trace.truncated);
+    assert!(
+        report
+            .event_trace
+            .events
+            .iter()
+            .any(|event| event.tick == 1 && event.name == "test.applied"),
+        "trace must include deferred callback output, not merely scheduled input"
+    );
+    assert!(
+        report
+            .scene
+            .events
+            .iter()
+            .all(|event| event.name != "test.set")
+    );
+}

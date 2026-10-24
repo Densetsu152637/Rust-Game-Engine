@@ -298,3 +298,51 @@ pub(super) fn timeout_properties() -> Vec<(&'static str, Value)> {
         ),
     ]
 }
+
+/// Optional bounded event input. Parsing happens before compilation or launch.
+pub(super) fn parse_events(
+    args: &Args<'_>,
+    ticks: u64,
+) -> Result<engine_project::EventSchedule, ToolFailure> {
+    let Some(value) = args.raw("events") else {
+        return Ok(Default::default());
+    };
+    let schedule = engine_project::EventSchedule::from_json(
+        &serde_json::to_vec(value).map_err(|e| schema::invalid("events", &e.to_string()))?,
+    )
+    .map_err(|e| schema::invalid("events", &e.to_string()))?;
+    schedule
+        .validate_run(ticks)
+        .map_err(|e| schema::invalid("events", &e.to_string()))?;
+    Ok(schedule)
+}
+pub(super) fn events_schema() -> Value {
+    schema::array_of(
+        "Ordered scheduled events, delivered before each zero-based tick. Stable source/target IDs resolve in the active scene. At most 1 MiB total, 1024 per tick, 64 KiB payload each.",
+        json!({"type":"object","properties":{
+            "tick":schema::integer("Delivery tick, zero-based.",0,MAX_TICKS as i64-1,None),
+            "name":schema::string("Registered event name, up to 128 bytes."),
+            "source":schema::string("Optional stable source entity ID."),
+            "target":schema::string("Optional stable target entity ID; absent broadcasts."),
+            "payload":{}
+        },"required":["tick","name"],"additionalProperties":false}),
+        engine_project::scheduled_events::MAX_SCHEDULE_EVENTS,
+    )
+}
+/// Ephemeral execution input lives with the run's disposable user data and does
+/// not modify authored project files or require authoring-write access.
+pub(super) fn stage_events(
+    schedule: &engine_project::EventSchedule,
+    directory: &Path,
+    arguments: &mut Vec<OsString>,
+) -> Result<(), ToolFailure> {
+    if !schedule.is_empty() {
+        let path = directory.join("scheduled-events.json");
+        let bytes = serde_json::to_vec(schedule)
+            .map_err(|e| ToolFailure::new("tooling_error", e.to_string()))?;
+        std::fs::write(&path, bytes)
+            .map_err(|e| ToolFailure::new("tooling_error", e.to_string()))?;
+        arguments.extend(["--events".into(), path.into_os_string()]);
+    }
+    Ok(())
+}

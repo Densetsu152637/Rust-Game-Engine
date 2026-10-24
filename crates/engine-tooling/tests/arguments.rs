@@ -249,3 +249,41 @@ fn injected_actions_must_be_declared_by_the_project() {
         "command.input.unknown"
     );
 }
+
+#[test]
+fn scheduled_event_files_are_bounded_ordered_and_checked_against_run_length() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.json");
+    fs::write(
+        &path,
+        r#"[{"tick":1,"name":"game.reset","target":"player","payload":{"value":3}}]"#,
+    )
+    .unwrap();
+    let values: Vec<OsString> = vec![
+        "project.json".into(),
+        "--events".into(),
+        path.clone().into(),
+        "--ticks".into(),
+        "2".into(),
+    ];
+    let parsed = parse_run(&values).unwrap();
+    assert_eq!(parsed.events.at_tick(1)[0].name, "game.reset");
+    assert!(parse_run(&values[..3]).is_ok());
+    let mut short = values.clone();
+    short[4] = "1".into();
+    assert!(
+        parse_run(&short)
+            .unwrap_err()
+            .to_string()
+            .contains("outside bounded run")
+    );
+    let mut duplicate = values.clone();
+    duplicate.extend(["--events".into(), path.clone().into()]);
+    assert!(parse_run(&duplicate).is_err());
+    fs::write(
+        &path,
+        vec![b' '; engine_project::scheduled_events::MAX_SCHEDULE_BYTES + 1],
+    )
+    .unwrap();
+    assert!(parse_run(&values).is_err());
+}

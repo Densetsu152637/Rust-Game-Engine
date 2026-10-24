@@ -87,6 +87,7 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Va
             headless: arguments.headless,
             ticks: arguments.ticks,
             inputs: arguments.inputs,
+            events: arguments.events,
             user_data: arguments.user_data,
             shutdown: Some(monitor.shutdown.clone()),
         },
@@ -134,6 +135,7 @@ fn screenshot_on(
     let mut audio = engine_audio::AudioEngine::offline(engine_audio::AudioConfig::default())?;
     runtime.set_audio(audio.control())?;
     runtime.start()?;
+    let mut event_trace = engine_project::EventTrace::default();
     let result = (|| -> Result<serde_json::Value> {
         let mut previous = std::collections::BTreeSet::new();
         let mut ticks = 0_u64;
@@ -144,7 +146,9 @@ fn screenshot_on(
             }
             let actions = arguments.inputs.get(&tick).cloned().unwrap_or_default();
             let input = merge_input(&Default::default(), &actions, &mut previous);
+            runtime.enqueue_scheduled_events(&arguments.events, tick)?;
             runtime.tick(FIXED_DELTA as f32, input)?;
+            event_trace.capture(&runtime, tick);
             audio.mix(&mut mixed)?;
             ticks += 1;
         }
@@ -197,6 +201,7 @@ fn screenshot_on(
     let shot = result?;
     cleanup?;
     Ok(json!({
+        "event_trace": event_trace,
         "ticks": shot["ticks"],
         "fixed_delta": FIXED_DELTA,
         "scene": runtime.try_snapshot()?,

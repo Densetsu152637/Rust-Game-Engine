@@ -27,6 +27,7 @@ impl Tool for RunTool {
                 ),
             ),
             ("inputs", inputs_schema()),
+            ("events", events_schema()),
             (
                 "scene",
                 schema::string("Project-relative scene to run instead of the startup scene."),
@@ -49,7 +50,7 @@ impl Tool for RunTool {
             name: "project_run_headless".into(),
             title: "Run headless".into(),
             description: "Build the project (unless rebuild is false) and run it headlessly for N \
-                fixed ticks with optional scripted input, without a window, GPU or audio device. \
+                fixed ticks with optional scripted input and stable-ID scheduled events, without a window, GPU or audio device. \
                 Returns a bounded summary: the final authored state of the entities (component \
                 values after scripts ran), script logs, trigger events and counters. Runs use a \
                 throw-away user-data directory, so saves are not touched. Executes the project's \
@@ -84,6 +85,9 @@ impl Tool for RunTool {
                     "triggers",
                     json!({"type": "array", "items": {"type": "object"}}),
                 ),
+                ("event_trace", json!({"type":"array","items":{"type":"object"}})),
+                ("event_count", json!({"type":"integer"})),
+                ("event_trace_truncated", json!({"type":"boolean"})),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
             ])),
@@ -101,6 +105,7 @@ impl Tool for RunTool {
         cx.require(AccessLevel::Exec)?;
         let a = Args(args);
         let ticks = a.integer("ticks", 1, MAX_TICKS, 60)?;
+        let events = parse_events(&a, ticks)?;
         let wanted = a.string_array("entities")?;
         let max_entities = a.integer("max_entities", 1, 200, 50)? as usize;
         let rebuild = a.boolean("rebuild", true)?;
@@ -112,6 +117,7 @@ impl Tool for RunTool {
         let user_data =
             tempfile::tempdir().map_err(|e| ToolFailure::new("tooling_error", e.to_string()))?;
         let mut arguments = base_arguments(cx, ticks, &inputs, user_data.path(), scene.as_ref());
+        stage_events(&events, user_data.path(), &mut arguments)?;
         arguments.push("--headless".into());
         let build = build_json(cx, &built);
         let started = Instant::now();
@@ -164,7 +170,26 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
         .as_array()
         .map(|t| t.iter().take(100).collect())
         .unwrap_or_default();
+    let mut event_trace = Vec::new();
+    let mut trace_bytes = 0;
+    let source_events = report["event_trace"]["events"].as_array();
+    if let Some(events) = source_events {
+        for event in events.iter().take(100) {
+            let size = event.to_string().len();
+            if trace_bytes + size > 64 * 1024 {
+                break;
+            }
+            trace_bytes += size;
+            event_trace.push(event);
+        }
+    }
+    let trace_truncated = report["event_trace"]["truncated"]
+        .as_bool()
+        .unwrap_or(false)
+        || source_events.is_some_and(|events| events.len() > event_trace.len());
     json!({
+        "event_trace":event_trace, "event_count":report["event_trace"]["count"].as_u64().unwrap_or(0),
+        "event_trace_truncated":trace_truncated,
         "ticks": report["ticks"], "fixed_delta": report["fixed_delta"],
         "scene_id": snapshot["scene"]["scene_id"],
         "scene_revision": snapshot["scene_revision"],

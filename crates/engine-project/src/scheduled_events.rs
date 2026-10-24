@@ -95,7 +95,7 @@ impl EventSchedule {
 fn invalid(message: &str) -> Error {
     Error::new("event.schedule.invalid", message)
 }
-fn check_size(value: &impl Serialize, limit: usize) -> Result<()> {
+fn check_size(value: &impl Serialize, limit: usize) -> Result<usize> {
     struct LimitWriter(usize);
     impl std::io::Write for LimitWriter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -109,8 +109,10 @@ fn check_size(value: &impl Serialize, limit: usize) -> Result<()> {
             Ok(())
         }
     }
-    serde_json::to_writer(LimitWriter(limit), value)
-        .map_err(|_| invalid("Event JSON size limit exceeded"))
+    let mut writer = LimitWriter(limit);
+    serde_json::to_writer(&mut writer, value)
+        .map_err(|_| invalid("Event JSON size limit exceeded"))?;
+    Ok(limit - writer.0)
 }
 impl Runtime {
     /// Enqueue one complete scheduled tick before calling `tick`. Resolution and
@@ -141,5 +143,60 @@ impl Runtime {
             });
         }
         emit_events(self.app_mut().world_mut(), events)
+    }
+}
+
+/// Bounded chronological history of actual deliveries, including script/collision
+/// events. After either cap is reached, collection stops but the saturating total
+/// count continues. Serialized record bytes are capped at 1 MiB and 4096 records.
+#[derive(Default, Serialize)]
+pub struct EventTrace {
+    pub events: Vec<ScheduledEvent>,
+    pub count: u64,
+    pub truncated: bool,
+    #[serde(skip)]
+    bytes: usize,
+}
+impl EventTrace {
+    pub fn capture(&mut self, runtime: &Runtime, tick: u64) {
+        #[derive(Serialize)]
+        struct Borrowed<'a> {
+            tick: u64,
+            #[serde(flatten)]
+            event: &'a crate::events::EventRecord,
+        }
+        for event in runtime.delivered_events() {
+            self.count = self.count.saturating_add(1);
+            if self.truncated {
+                continue;
+            }
+            if self.events.len() >= MAX_SCHEDULE_EVENTS {
+                self.truncated = true;
+                continue;
+            }
+            match check_size(
+                &Borrowed { tick, event },
+                MAX_SCHEDULE_BYTES.saturating_sub(self.bytes),
+            ) {
+                Ok(size) => {
+                    self.bytes += size;
+                    self.events.push(ScheduledEvent {
+                        tick,
+                        name: event.name.clone(),
+                        source: event.source.clone(),
+                        target: event.target.clone(),
+                        payload: event.payload.clone(),
+                    });
+                }
+                Err(_) => self.truncated = true,
+            }
+        }
+    }
+}
+impl Runtime {
+    /// Stable-ID delivery records for the most recently executed tick. Borrowing
+    /// avoids copying large payloads when a host's trace has already reached its cap.
+    pub fn delivered_events(&self) -> &[crate::events::EventRecord] {
+        crate::events::delivered_records(self.app().world())
     }
 }

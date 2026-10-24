@@ -10,6 +10,7 @@ pub struct RunArguments {
     pub headless: bool,
     pub ticks: u64,
     pub inputs: BTreeMap<u64, BTreeSet<String>>,
+    pub events: engine_project::EventSchedule,
     pub user_data: Option<PathBuf>,
     pub scene_override: Option<PathBuf>,
     /// Render the final frame offscreen to this PNG after the last tick.
@@ -45,6 +46,7 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
         headless: false,
         ticks: 120,
         inputs: BTreeMap::new(),
+        events: Default::default(),
         user_data: None,
         scene_override: None,
         screenshot: None,
@@ -98,6 +100,9 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
                     .map_err(|_| Error::new("command.arguments", "Invalid input tick"))?;
                 events.push((action.to_owned(), tick));
             }
+            "--events" => {
+                result.events = engine_project::EventSchedule::load(&PathBuf::from(value))?
+            }
             "--user-data" => result.user_data = Some(value.into()),
             "--scene-override" => result.scene_override = Some(value.into()),
             "--screenshot" => result.screenshot = Some(value.into()),
@@ -146,6 +151,7 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
         }
         result.inputs.entry(tick).or_default().insert(action);
     }
+    result.events.validate_run(result.ticks)?;
     Ok(result)
 }
 
