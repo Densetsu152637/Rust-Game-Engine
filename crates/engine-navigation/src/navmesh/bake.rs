@@ -1,24 +1,75 @@
 use super::*;
+use glam::DVec2;
 
 #[derive(Clone)]
 struct Fragment {
-    polygon: Vec<Vec2>,
+    polygon: Vec<DVec2>,
+    footprint: [DVec2; 3],
     plane: [f32; 3],
     walkable: bool,
 }
 fn height(plane: [f32; 3], p: Vec2) -> f32 {
     plane[0] * p.x + plane[1] * p.y + plane[2]
 }
-fn area(p: &[Vec2]) -> f32 {
-    let origin = p.first().copied().unwrap_or(Vec2::ZERO);
+fn height64(plane: [f32; 3], p: DVec2) -> f64 {
+    f64::from(plane[0]) * p.x + f64::from(plane[1]) * p.y + f64::from(plane[2])
+}
+/// Subtract floor fragments instead of accepting a relative area deficit. Even a
+/// tiny remaining positive-area polygon is unsupported. Roundoff can remove a
+/// usable cell, but never deliberately fills an unresolved hole.
+fn covered(square: &[DVec2; 4], floors: &[&Fragment], work: &mut usize) -> Result<bool> {
+    const MAX_REMAINDERS: usize = 1024;
+    const MAX_VERTICES: usize = 64;
+    let mut remaining = vec![square.to_vec()];
+    for floor in floors {
+        let mut next = Vec::new();
+        for mut inside in remaining {
+            for (&a, &b) in floor
+                .footprint
+                .iter()
+                .zip(floor.footprint.iter().cycle().skip(1))
+            {
+                if a == b {
+                    continue;
+                }
+                if inside.is_empty() {
+                    break;
+                }
+                // Each clip allocates at most twice its input vertices. Check the
+                // work and retained-fragment limits before those allocations.
+                spend(work, inside.len())?;
+                ensure!(
+                    next.len() < MAX_REMAINDERS && inside.len() <= MAX_VERTICES,
+                    "navigation coverage fragment capacity exceeded"
+                );
+                let outside = clip(&inside, b, a);
+                ensure!(
+                    outside.len() <= MAX_VERTICES,
+                    "navigation coverage vertex capacity exceeded"
+                );
+                if area(&outside) > 0. {
+                    next.push(outside);
+                }
+                inside = clip(&inside, a, b);
+            }
+        }
+        remaining = next;
+        if remaining.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+fn area(p: &[DVec2]) -> f64 {
+    let origin = p.first().copied().unwrap_or(DVec2::ZERO);
     p.iter()
         .zip(p.iter().cycle().skip(1))
         .map(|(a, b)| (*a - origin).perp_dot(*b - origin))
-        .sum::<f32>()
+        .sum::<f64>()
         .abs()
         * 0.5
 }
-fn clip(polygon: &[Vec2], a: Vec2, b: Vec2) -> Vec<Vec2> {
+fn clip(polygon: &[DVec2], a: DVec2, b: DVec2) -> Vec<DVec2> {
     let mut result = Vec::new();
     for (&p, &q) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {
         let dp = (b - a).perp_dot(p - a);
@@ -32,7 +83,7 @@ fn clip(polygon: &[Vec2], a: Vec2, b: Vec2) -> Vec<Vec2> {
     }
     result
 }
-fn intersection(mut polygon: Vec<Vec2>, boundary: &[Vec2]) -> Vec<Vec2> {
+fn intersection(mut polygon: Vec<DVec2>, boundary: &[DVec2]) -> Vec<DVec2> {
     for (&a, &b) in boundary.iter().zip(boundary.iter().cycle().skip(1)) {
         polygon = clip(&polygon, a, b);
     }
@@ -67,9 +118,10 @@ pub fn bake(input: &BakeInput) -> Result<NavMesh> {
     let fragments = rasterize(input, &mut work)?;
     let mut polygons = Vec::new();
     let mut cells: BTreeMap<[i32; 2], Vec<usize>> = BTreeMap::new();
-    let cell_area = settings.cell_size * settings.cell_size;
     for (cell, fragments) in &fragments {
         let square = corners(*cell, settings.cell_size);
+        let square64 = square.map(Vec2::as_dvec2);
+        let cell_area = area(&square64);
         let mut groups: Vec<Vec<&Fragment>> = Vec::new();
         for fragment in fragments.iter().filter(|f| f.walkable) {
             if let Some(group) = groups
@@ -83,18 +135,17 @@ pub fn bake(input: &BakeInput) -> Result<NavMesh> {
             }
         }
         for group in groups {
-            let coverage: f32 = group.iter().map(|f| area(&f.polygon)).sum();
             // Positive interior overlap is rejected instead of double-counting coverage.
             for (i, a) in group.iter().enumerate() {
                 for b in &group[i + 1..] {
                     spend(&mut work, 1)?;
                     ensure!(
-                        area(&intersection(a.polygon.clone(), &b.polygon)) <= cell_area * 1e-5,
+                        area(&intersection(a.polygon.clone(), &b.polygon)) <= cell_area * 1e-12,
                         "overlapping navigation floor triangles"
                     );
                 }
             }
-            if coverage < cell_area * (1. - 1e-5) {
+            if !covered(&square64, &group, &mut work)? {
                 continue;
             }
             let plane = group[0].plane;
@@ -107,6 +158,7 @@ pub fn bake(input: &BakeInput) -> Result<NavMesh> {
                 .map(|p| height(plane, *p))
                 .fold(f32::NEG_INFINITY, f32::max);
             let mut blocked = false;
+            let mut ceiling = f64::INFINITY;
             for other in fragments {
                 spend(&mut work, 1)?;
                 if same_plane(plane, other.plane, &square) {
@@ -114,8 +166,11 @@ pub fn bake(input: &BakeInput) -> Result<NavMesh> {
                 }
                 // A partial upper surface is also a ceiling, not only a complete layer.
                 for p in &other.polygon {
-                    let delta = height(other.plane, *p) - height(plane, *p);
-                    if delta > 0.0001 && delta < settings.agent_height {
+                    let delta = height64(other.plane, *p) - height64(plane, *p);
+                    if delta > 0.0001 {
+                        ceiling = ceiling.min(height64(other.plane, *p));
+                    }
+                    if delta > 0.0001 && delta < f64::from(settings.agent_height) {
                         blocked = true;
                     }
                 }
@@ -123,13 +178,13 @@ pub fn bake(input: &BakeInput) -> Result<NavMesh> {
                 let min = other
                     .polygon
                     .iter()
-                    .map(|p| height(other.plane, *p) - height(plane, *p))
-                    .fold(f32::INFINITY, f32::min);
+                    .map(|p| height64(other.plane, *p) - height64(plane, *p))
+                    .fold(f64::INFINITY, f64::min);
                 let max = other
                     .polygon
                     .iter()
-                    .map(|p| height(other.plane, *p) - height(plane, *p))
-                    .fold(f32::NEG_INFINITY, f32::max);
+                    .map(|p| height64(other.plane, *p) - height64(plane, *p))
+                    .fold(f64::NEG_INFINITY, f64::max);
                 if min <= 0.0001 && max > 0.0001 {
                     blocked = true;
                 }
@@ -140,10 +195,12 @@ pub fn bake(input: &BakeInput) -> Result<NavMesh> {
                     && obstacle.max[0] > square[0].x
                     && obstacle.min[2] < square[2].y
                     && obstacle.max[2] > square[0].y
-                    && obstacle.min[1] < high + settings.agent_height
                     && obstacle.max[1] > low
                 {
-                    blocked = true;
+                    ceiling = ceiling.min(f64::from(obstacle.min[1]));
+                    if obstacle.min[1] < high + settings.agent_height {
+                        blocked = true;
+                    }
                 }
             }
             if blocked {
@@ -157,6 +214,7 @@ pub fn bake(input: &BakeInput) -> Result<NavMesh> {
             polygons.push(Polygon {
                 cell: *cell,
                 plane,
+                ceiling,
                 links: Vec::new(),
             });
         }
@@ -220,6 +278,11 @@ fn erode(
     ensure!(radius <= 128, "navigation radius/cell ratio exceeds limit");
     let mut keep = vec![true; polygons.len()];
     for (index, polygon) in polygons.iter().enumerate() {
+        let top = corners(polygon.cell, settings.cell_size)
+            .iter()
+            .map(|p| height64(polygon.plane, p.as_dvec2()))
+            .fold(f64::NEG_INFINITY, f64::max)
+            + f64::from(settings.agent_height);
         'neighbors: for dz in -radius..=radius {
             for dx in -radius..=radius {
                 spend(work, 1)?;
@@ -227,10 +290,11 @@ fn erode(
                 let sample = corners(key, settings.cell_size);
                 if !cells.get(&key).is_some_and(|candidates| {
                     candidates.iter().any(|&n| {
-                        sample.iter().all(|p| {
-                            (height(polygons[n].plane, *p) - height(polygon.plane, *p)).abs()
-                                <= settings.max_step + 0.0001
-                        })
+                        polygons[n].ceiling >= top
+                            && sample.iter().all(|p| {
+                                (height(polygons[n].plane, *p) - height(polygon.plane, *p)).abs()
+                                    <= settings.max_step + 0.0001
+                            })
                     })
                 }) {
                     keep[index] = false;
@@ -268,10 +332,22 @@ fn connect(polygons: &mut [Polygon], settings: &BakeSettings, work: &mut usize) 
                 };
                 for &j in candidates {
                     spend(work, 1)?;
-                    if edge.iter().all(|p| {
-                        (polygons[i].height(*p) - polygons[j].height(*p)).abs()
-                            <= settings.max_step + 0.0001
-                    }) {
+                    let transition_top = edge
+                        .iter()
+                        .flat_map(|p| {
+                            [
+                                height64(polygons[i].plane, p.as_dvec2()),
+                                height64(polygons[j].plane, p.as_dvec2()),
+                            ]
+                        })
+                        .fold(f64::NEG_INFINITY, f64::max)
+                        + f64::from(settings.agent_height);
+                    if transition_top <= polygons[i].ceiling.min(polygons[j].ceiling)
+                        && edge.iter().all(|p| {
+                            (polygons[i].height(*p) - polygons[j].height(*p)).abs()
+                                <= settings.max_step + 0.0001
+                        })
+                    {
                         polygons[i].links.push(j);
                     }
                 }
@@ -309,20 +385,22 @@ fn rasterize(input: &BakeInput, work: &mut usize) -> Result<BTreeMap<[i32; 2], V
             -normal.z / normal.y,
             normal.dot(vertices[0]) / normal.y,
         ];
-        let mut footprint = vertices.map(|v| Vec2::new(v.x, v.z)).to_vec();
+        let mut footprint = vertices
+            .map(|v| DVec2::new(f64::from(v.x), f64::from(v.z)))
+            .to_vec();
         if (footprint[1] - footprint[0]).perp_dot(footprint[2] - footprint[0]) < 0. {
             footprint.reverse();
         }
         let min = footprint
             .iter()
             .copied()
-            .fold(Vec2::splat(f32::INFINITY), Vec2::min)
-            / size;
+            .fold(DVec2::splat(f64::INFINITY), DVec2::min)
+            / f64::from(size);
         let max = footprint
             .iter()
             .copied()
-            .fold(Vec2::splat(f32::NEG_INFINITY), Vec2::max)
-            / size;
+            .fold(DVec2::splat(f64::NEG_INFINITY), DVec2::max)
+            / f64::from(size);
         let x0 = min.x.floor() as i32;
         let z0 = min.y.floor() as i32;
         let x1 = max.x.ceil() as i32;
@@ -335,8 +413,9 @@ fn rasterize(input: &BakeInput, work: &mut usize) -> Result<BTreeMap<[i32; 2], V
             for x in x0..x1 {
                 spend(work, 1)?;
                 let cell = [x, z];
-                let polygon = intersection(footprint.clone(), &corners(cell, size));
-                if area(&polygon) <= size * size * 1e-7 {
+                let polygon =
+                    intersection(footprint.clone(), &corners(cell, size).map(Vec2::as_dvec2));
+                if area(&polygon) <= 0. {
                     continue;
                 }
                 ensure!(
@@ -355,6 +434,7 @@ fn rasterize(input: &BakeInput, work: &mut usize) -> Result<BTreeMap<[i32; 2], V
                 );
                 fragments.push(Fragment {
                     polygon,
+                    footprint: [footprint[0], footprint[1], footprint[2]],
                     plane,
                     walkable,
                 });

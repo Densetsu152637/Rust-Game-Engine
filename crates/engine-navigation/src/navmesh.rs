@@ -104,6 +104,8 @@ pub struct NavLocation {
 struct Polygon {
     cell: [i32; 2],
     plane: [f32; 3],
+    /// Lowest overhead surface over this cell, including partial ceilings.
+    ceiling: f64,
     links: Vec<usize>,
 }
 impl Polygon {

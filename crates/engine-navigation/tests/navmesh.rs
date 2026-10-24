@@ -282,3 +282,125 @@ fn funnel_weaves_through_multiple_turns_without_cutting_removed_polygons() {
         }
     }
 }
+
+#[test]
+fn radius_clearance_accounts_for_neighbor_ceiling_at_step_elevation() {
+    let mut input = base_input();
+    input.settings.agent_radius = 0.2;
+    floor(&mut input, [0., 0., 0.], [2., 0., 4.]);
+    floor(&mut input, [2., 0.25, 0.], [4., 0.25, 4.]);
+    input.obstacles.push(Obstacle {
+        min: [0., 2., 0.],
+        max: [2., 3., 4.],
+    });
+    let query = QuerySettings {
+        max_distance: 0.01,
+        ..Default::default()
+    };
+    let mesh = bake(&input).unwrap();
+    assert!(mesh.nearest([2.1, 0.25, 2.], query).unwrap().is_none());
+    assert_eq!(
+        mesh.find_path([1., 0., 2.], [3., 0.25, 2.], query).unwrap(),
+        NavPath::Unreachable
+    );
+    input.obstacles[0].min[1] = 2.3;
+    assert!(matches!(
+        bake(&input)
+            .unwrap()
+            .find_path([1., 0., 2.], [3., 0.25, 2.], query)
+            .unwrap(),
+        NavPath::Reached { .. }
+    ));
+    input.obstacles.clear();
+    floor(&mut input, [0., 2., 0.], [2., 2., 4.]);
+    assert_eq!(
+        bake(&input)
+            .unwrap()
+            .find_path([1., 0., 2.], [3., 0.25, 2.], query)
+            .unwrap(),
+        NavPath::Unreachable
+    );
+    let mut ramp = base_input();
+    ramp.settings.agent_radius = 0.2;
+    floor(&mut ramp, [0., 0., 0.], [4., 2., 4.]);
+    floor(&mut ramp, [0., 3., 0.], [4., 5., 4.]);
+    assert!(matches!(
+        bake(&ramp)
+            .unwrap()
+            .find_path([1., 0.5, 1.], [3., 1.5, 3.], query)
+            .unwrap(),
+        NavPath::Reached { .. }
+    ));
+}
+
+#[test]
+fn large_cells_and_translated_geometry_preserve_small_interior_holes() {
+    for offset in [0., 10_000.] {
+        let mut input = base_input();
+        input.settings.cell_size = 100.;
+        input.settings.agent_radius = 0.05;
+        floor(
+            &mut input,
+            [offset, 0., offset],
+            [offset + 149.9, 0., offset + 300.],
+        );
+        floor(
+            &mut input,
+            [offset + 150.1, 0., offset],
+            [offset + 300., 0., offset + 300.],
+        );
+        floor(
+            &mut input,
+            [offset + 149.9, 0., offset],
+            [offset + 150.1, 0., offset + 149.9],
+        );
+        floor(
+            &mut input,
+            [offset + 149.9, 0., offset + 150.1],
+            [offset + 150.1, 0., offset + 300.],
+        );
+        let mesh = bake(&input).unwrap();
+        let query = QuerySettings {
+            max_distance: 0.01,
+            ..Default::default()
+        };
+        assert!(
+            mesh.nearest([offset + 150., 0., offset + 150.], query)
+                .unwrap()
+                .is_none(),
+            "offset {offset}"
+        );
+        assert_eq!(
+            mesh.find_path(
+                [offset + 120., 0., offset + 150.],
+                [offset + 180., 0., offset + 150.],
+                query
+            )
+            .unwrap(),
+            NavPath::Unreachable
+        );
+    }
+}
+
+#[test]
+fn coverage_does_not_round_a_tiny_near_origin_hole_into_a_large_floor() {
+    let mut input = base_input();
+    input.settings.cell_size = 1.;
+    floor(&mut input, [-1., 0., -1.], [1e-6, 0., 2.]);
+    floor(&mut input, [2e-6, 0., -1.], [2., 0., 2.]);
+    floor(&mut input, [1e-6, 0., -1.], [2e-6, 0., 1e-6]);
+    floor(&mut input, [1e-6, 0., 2e-6], [2e-6, 0., 2.]);
+    assert!(
+        bake(&input)
+            .unwrap()
+            .nearest(
+                [1.5e-6, 0., 1.5e-6],
+                QuerySettings {
+                    max_distance: 1e-8,
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .is_none()
+    );
+}

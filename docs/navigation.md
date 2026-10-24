@@ -14,15 +14,23 @@ Run the obstacle-detour example with
 Coordinates are Y-up. Triangle winding does not matter. The bake clips triangles
 against a bounded XZ raster, groups coplanar fragments into layers, rejects
 positive-area duplicate/overlapping floor triangles, and retains only completely
-covered cells. Each retained cell becomes a convex quad on its source plane.
+covered cells. Coverage uses double-precision clipping and polygon subtraction,
+not an accepted percentage of missing area: any unresolved positive-area
+remainder blocks the cell. Subtraction uses original triangle boundaries to
+avoid creating cracks from repeatedly clipped shared edges. Each retained cell
+becomes a convex quad on its source plane.
 Quads connect only through shared cell edges whose endpoint height differences
 fit `max_step`. Disconnected floors never acquire arbitrary waypoint links.
 
 `BakeSettings` defaults are `cell_size: 0.25`, `agent_radius: 0.25`,
 `agent_height: 1.8`, `max_slope_degrees: 45`, `max_step: 0.3`.
 Steep surfaces cannot supply walkable floors. Upper triangle fragments and box
-obstacles remove floors without headroom. Radius clearance uses conservative
-square erosion, rounded **up** to whole cells. This guarantees at least the
+obstacles remove floors without headroom. Each candidate retains its lowest
+overhead elevation, including partial ceilings. Radius clearance checks the
+entire candidate cell's maximum agent-top elevation against neighboring overhead
+spans; step portals also check the highest transition elevation against both
+endpoint spans. Radius clearance uses conservative square erosion, rounded
+**up** to whole cells. This guarantees at least the
 requested horizontal radius against missing/blocked cells, but can reject a
 passage that would fit an exact circular agent. Choose resolution accordingly.
 
@@ -30,14 +38,18 @@ This is a layered, explicit-surface baker, not arbitrary-scene voxelization or
 Recast equivalence. Supply wall/solid geometry as obstacle boxes. Vertical input
 triangles have no floor footprint and do not become walls. Triangles meeting at
 different slopes inside a cell can leave a conservative hole; align surface
-changes/steps with the raster or use smaller cells. Coplanarity and area tests
-use small floating-point tolerances. Off-mesh jumps, swimming, dynamic carving,
-local crowd avoidance and automatic physics obstacle extraction are not supplied.
+changes/steps with the raster or use smaller cells. Coplanarity/overlap tests
+use small floating-point tolerances; coverage never deliberately fills an
+unresolved hole. Numerical ambiguity can conservatively reject usable cells.
+Off-mesh jumps, swimming, dynamic carving, local crowd avoidance and automatic
+physics obstacle extraction are not supplied.
 
 Limits are 65,536 vertices, 32,768 triangles, 4,096 obstacles, 65,536 occupied
-XZ cells/polygons, eight layers and 128 clipped fragments per cell (262,144 total), and four
-million bake operations. Coordinate magnitudes cannot exceed 100,000; all
-values must be finite. Oversized bounds are rejected before raster loops.
+XZ cells/polygons, eight layers and 128 clipped fragments per cell (262,144
+total), and four million bake operations. Coverage subtraction is charged to
+that work budget before clipping, with at most 1,024 remainder polygons per
+cell and 64 vertices per remainder. Coordinate magnitudes cannot exceed
+100,000; all values must be finite. Oversized bounds are rejected before raster loops.
 Radius/cell ratio is at most 128. Degenerate triangles, invalid indices,
 overlapping floors and invalid settings return errors; zero walkable polygons
 is a valid bake result.
