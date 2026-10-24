@@ -269,15 +269,13 @@ fn screenshot_on(
     audio.shutdown();
     let shot = result?;
     cleanup?;
+    let mut scene = runtime.try_snapshot()?;
+    scene.acoustics = acoustics;
     Ok(json!({
         "event_trace": event_trace,
         "ticks": shot["ticks"],
         "fixed_delta": FIXED_DELTA,
-        "scene": {
-            let mut scene = runtime.try_snapshot()?;
-            scene.acoustics = acoustics;
-            scene
-        },
+        "scene": scene,
         "presented_frames": 0,
         "screenshot": shot,
     }))
