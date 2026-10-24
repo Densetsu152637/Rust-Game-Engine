@@ -1,26 +1,15 @@
-# Native editor
+# Scene editor
 
-`engine-editor` provides the Windows authoring window and a platform-independent
-`EditorController`. It depends on the project model and core, not tooling or a
-second rendering backend. Win32 controls use `windows-sys`; required FFI is
-isolated in `native.rs`. The controller contains no unsafe code.
+`engine_editor::run(project_manifest, play_host)` opens the portable egui/eframe
+shell backed by the existing revision-aware `EditorController`. The hierarchy,
+transform inspector, validated component JSON editor, asset list and console share
+the authored scene model used by MCP. The embedded viewport uses the engine GPU
+renderer for 2D and 3D previews; camera navigation and translation gestures do not
+run gameplay callbacks. Play remains an isolated Cargo-built process.
 
-```rust,ignore
-engine_editor::run(project_manifest, Box::new(compiler_backed_play_host))?;
-```
-
-The UI provides a manifest path/open action, save/reload, undo/redo, entity
-hierarchy and selection, a position inspector, Rust-script/mesh/texture asset
-pickers, validation/log output, and play/stop. Picker values are stable asset IDs;
-the project model validates kinds and revisions. Unsaved replacement, reload and
-close show Save/Discard/Cancel. Failed loading retains the current document.
-
-Position values are committed with **Apply position**. A minimum window size
-keeps the native controls usable. This editor has no embedded game viewport;
-play opens the compiled runtime through the tooling host, matching the previous
-editor's separate-runtime boundary. Windows is the only native UI platform;
-other targets return an explicit unsupported-platform error.
-
+See [Portable editor](../../docs/portable-editor.md) for controls, supported
+contracts and performance limits. The legacy Windows-only controls remain available
+through `native_smoke` for structural regression coverage.
 ## Compiler and play ownership
 
 Tooling supplies the implementation of:

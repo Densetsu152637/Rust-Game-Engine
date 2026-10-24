@@ -10,14 +10,17 @@ pub mod input;
 pub mod model_import;
 pub mod networking;
 pub mod persistence;
+pub mod rendering3d;
 pub mod runtime;
 pub mod schema;
 pub mod services;
+pub mod simulation;
 pub mod transforms;
 pub mod ui;
 pub mod ui_tree;
 
 pub use catalog::{ComponentCatalog, ComponentDescriptor, CustomValue, register_component};
+pub use content::GeometryOverride;
 pub use document::{EditOperation, SceneDocument};
 pub use events::{
     EngineEvent, EventBinding, EventBindings, EventLimits, emit_event, register_event_handler,

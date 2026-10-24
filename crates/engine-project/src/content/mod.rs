@@ -12,6 +12,10 @@ pub use geometry::*;
 pub use loaders::*;
 pub use viewport::*;
 
+/// Evaluated mesh geometry, consumed in place of the immutable asset mesh.
+#[derive(bevy_ecs::prelude::Component, Clone, Debug)]
+pub struct GeometryOverride(pub std::sync::Arc<Mesh>);
+
 #[cfg(test)]
 mod tests {
     use super::*;

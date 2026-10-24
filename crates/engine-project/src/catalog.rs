@@ -36,8 +36,16 @@ impl ComponentCatalog {
         if descriptors.len() > 256 {
             return Err(invalid("At most 256 custom component types"));
         }
+        if descriptors.iter().any(|d| d.name.starts_with("engine.")) {
+            return Err(invalid(
+                "The engine namespace is reserved for built-in components",
+            ));
+        }
         let mut result = Self::default();
-        for d in descriptors {
+        for d in crate::simulation::component_descriptors()
+            .into_iter()
+            .chain(descriptors)
+        {
             if d.name.len() > 128
                 || !d.name.contains('.')
                 || d.name

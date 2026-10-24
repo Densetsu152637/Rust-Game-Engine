@@ -59,6 +59,7 @@ impl Default for RunOptions {
 
 #[derive(Serialize)]
 pub struct RunReport {
+    pub profile: engine_core::ProfileSnapshot,
     pub ticks: u64,
     pub fixed_delta: f64,
     pub scene: RuntimeSnapshot,
@@ -195,6 +196,7 @@ pub fn run_with_wgpu_backends(
         ),
     )?;
     Ok(RunReport {
+        profile: app.runtime.app().profile(),
         ticks: app.ticks,
         fixed_delta: FIXED_DELTA,
         scene: app.runtime.try_snapshot()?,
@@ -244,6 +246,7 @@ fn run_headless(
     audio.shutdown();
     combine(result, cleanup)?;
     Ok(RunReport {
+        profile: runtime.app().profile(),
         ticks,
         fixed_delta: FIXED_DELTA,
         scene: runtime.try_snapshot()?,
@@ -330,8 +333,19 @@ impl DesktopRunner {
         if !self.occluded
             && let (Some(host), Some(frame)) = (self.surface.as_mut(), self.history.frame_at(alpha))
         {
+            let mut scene = self.runtime.extract_scene_frame()?;
+            let mut overlay = frame.into_owned();
+            if scene.camera3d.is_some() {
+                let meshes: BTreeSet<_> = scene
+                    .meshes
+                    .iter()
+                    .map(|draw| format!("mesh:{}", draw.id))
+                    .collect();
+                overlay.draws.retain(|draw| !meshes.contains(&draw.id));
+            }
+            scene.sprites = overlay;
             let shown = host
-                .present(&frame, Some(self.runtime.app().render_world()))?
+                .present_scene(&scene, Some(self.runtime.app().render_world()))?
                 .is_some();
             self.present_skipped = !shown;
             if shown {
@@ -346,7 +360,7 @@ impl DesktopRunner {
 
     /// Extract the frame for the tick just run into the presentation history.
     fn record_frame(&mut self) -> Result<()> {
-        let frame = self.runtime.extract_frame()?;
+        let frame = self.runtime.extract_scene_frame()?.sprites;
         self.history.push(frame, self.runtime.scene_revision());
         Ok(())
     }
@@ -403,8 +417,8 @@ impl ApplicationHandler for DesktopRunner {
             return;
         }
         let result = (|| -> Result<()> {
-            let frame = self.runtime.extract_frame()?;
-            let [width, height] = frame.camera.logical_size;
+            let frame = self.runtime.extract_scene_frame()?;
+            let [width, height] = frame.sprites.camera.logical_size;
             let window = Arc::new(
                 event_loop
                     .create_window(
@@ -443,13 +457,14 @@ impl ApplicationHandler for DesktopRunner {
             // Failure to initialize the controller service is propagated. A
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);
-            host.present(&frame, Some(self.runtime.app().render_world()))?;
+            host.present_scene(&frame, Some(self.runtime.app().render_world()))?;
             host.window.set_visible(true);
             host.window.request_redraw();
             self.surface = Some(host);
             // Tick zero is the first frame to blend from. Startup time (device
             // creation, shader compilation) is not simulated.
-            self.history.push(frame, self.runtime.scene_revision());
+            self.history
+                .push(frame.sprites, self.runtime.scene_revision());
             self.pacer.reset();
             self.last_frame = Instant::now();
             Ok(())

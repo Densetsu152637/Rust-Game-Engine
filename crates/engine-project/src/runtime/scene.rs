@@ -189,6 +189,16 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
         name: authored.name.clone(),
     });
     let c = &authored.components;
+    if let Some(value) = &c.camera3d {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::rendering3d::Camera3D>();
+    }
+    if let Some(value) = &c.material {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::rendering3d::MeshMaterial>();
+    }
     if let Some(parent) = &authored.parent {
         e.insert(crate::Parent(parent.clone()));
     } else {

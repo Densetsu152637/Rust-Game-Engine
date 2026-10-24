@@ -40,6 +40,15 @@ impl Scene {
                 .at(&self.source, &entity.id));
             }
             let c = &entity.components;
+            if let Some(camera) = &c.camera3d {
+                camera.validate()?;
+                if c.transform.is_none() {
+                    return Err(bad("Camera3D requires Transform"));
+                }
+            }
+            if let Some(material) = &c.material {
+                material.validate()?;
+            }
             if let Some(t) = &c.transform
                 && (t.version != 1 || crate::transforms::local_matrix(t).is_err())
             {

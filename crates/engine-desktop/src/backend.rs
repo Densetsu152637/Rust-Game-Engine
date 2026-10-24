@@ -81,6 +81,15 @@ impl OffscreenSprites {
             .ok_or_else(|| anyhow!("the backend skipped an offscreen frame"))
     }
 
+    pub fn render_scene(
+        &mut self,
+        frame: &engine_project::rendering3d::SceneRenderFrame,
+    ) -> Result<RenderStats> {
+        self.renderer
+            .render_scene(frame, RenderTarget::Offscreen(self.target))?
+            .ok_or_else(|| anyhow!("the backend skipped an offscreen frame"))
+    }
+
     /// Wait for the GPU, then return tightly packed RGBA8 rows (top row first).
     pub fn read_rgba(&mut self) -> Result<Vec<u8>> {
         Ok(self.renderer.device_mut().read_target(self.target)?.rgba8)
