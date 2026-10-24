@@ -951,6 +951,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-network"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-physics"
 version = "0.1.0"
 dependencies = [
