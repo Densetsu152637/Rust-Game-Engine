@@ -46,7 +46,8 @@
   crate, SDK setup and feature scope.
 - [Hardware ray tracing core](rendering-raytracing.md): `engine-render-rt` tiers and
   status, the audited experimental token, BLAS/TLAS scenes, the WGSL ray-query library,
-  and the RT shadow-mask and reference path-tracer kernels.
+  RT shadow (hard/soft), ambient occlusion, reflection and diffuse-GI kernels, the
+  spatio-temporal denoiser, effect settings/status and the reference path tracer.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
   fingerprints, ownership and reload behavior.
 - [Authored simulation](simulation.md): 2D/3D rigid bodies, animation and navigation
