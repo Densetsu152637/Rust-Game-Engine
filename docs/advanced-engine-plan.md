@@ -21,6 +21,11 @@ to Windows, Linux and macOS; mobile, browser and console hosts are out of scope.
    unavailable hardware checks remain explicitly unverified.
 5. Integrated workspace/examples pass formatting, lint and behavior tests.
    Documentation and runnable examples describe the implemented boundaries.
+6. User-requested DLSS support is integrated against available official NVIDIA
+   interfaces, with runtime capability checks, explicit unsupported-feature errors,
+   configurable MCP/native controls and a non-NVIDIA rendering path. DLSS 5
+   availability and SDK access must be verified; a declared option or injected
+   mock is not evidence of an executing DLSS feature.
 
 ## Ownership and integration
 
@@ -36,6 +41,7 @@ schema/API changes before integration. No worker writes another checkout.
 | NavMesh | Navigation library, authored navigation runtime, navigation MCP tool module | Mesh bake/path/clearance tests and actual runtime/MCP behavior |
 | Secure networking | Network transport/authentication and project network adapter | Real encrypted loopback and adversarial authentication/authority/bounds tests |
 | Desktop portability | Windows/Linux/macOS hosts/platform reports, CI, packaging | Relevant local checks and hosted build/test results |
+| DLSS | Official SDK/API feasibility and optional native rendering adapter | Verified feature/runtime availability and GPU execution when SDK access permits |
 
 The work establishes concrete tested capabilities. It does not imply DDoS
 resistance, platform certification, perfect photorealism, or unmeasured production
