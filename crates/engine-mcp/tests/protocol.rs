@@ -879,7 +879,7 @@ fn tools() -> Vec<Value> {
 }
 
 /// The always-available tools, in listing order.
-const READ_TOOLS: [&str; 13] = [
+const READ_TOOLS: [&str; 15] = [
     "project_info",
     "project_validate",
     "input_actions",
@@ -893,6 +893,8 @@ const READ_TOOLS: [&str; 13] = [
     "file_read",
     "search_text",
     "navigation_query",
+    "tilemap_info",
+    "tilemap_query",
 ];
 
 #[test]

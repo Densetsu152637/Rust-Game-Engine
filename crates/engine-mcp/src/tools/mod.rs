@@ -9,6 +9,7 @@ mod model_import;
 mod navigation;
 mod project;
 mod scene;
+mod tilemap;
 
 pub use components::{COMPONENT_NAMES, ComponentDoc, component_docs};
 
@@ -75,6 +76,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(files::write_tools());
     tools.extend(model_import::tools());
     tools.extend(navigation::tools());
+    tools.extend(tilemap::tools());
     tools
 }
 

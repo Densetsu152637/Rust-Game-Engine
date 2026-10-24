@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 11] = [
+const KINDS: [&str; 13] = [
     "script",
     "mesh",
     "texture",
@@ -23,6 +23,8 @@ const KINDS: [&str; 11] = [
     "model",
     "animation",
     "navigation",
+    "tileset",
+    "tilemap",
 ];
 const MAX_USES: usize = 200;
 
@@ -191,6 +193,26 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
         "navigation" => {
             let mesh = engine_project::simulation::load_navmesh(project, &asset.id)?;
             json!({"polygons":mesh.polygon_count(),"settings":mesh.settings()})
+        }
+        "tileset" => {
+            let (tileset, size) = engine_project::world::tilemap::load_tileset(project, &asset.id)?;
+            let document = tileset.document();
+            json!({"texture":document.texture,"texture_size":size,"tiles":document.tiles.len(),
+                "rule_tiles":document.rule_tiles.len()})
+        }
+        "tilemap" => {
+            let map = engine_tilemap::Tilemap::from_json(
+                &paths::read_bounded(&file, 16 * 1024 * 1024)
+                    .map_err(|_| ToolFailure::new("file_too_large", "tilemap is too large"))?,
+                None,
+            )
+            .map_err(|e| ToolFailure::new(e.code, e.message))?;
+            let layers: Vec<_> = map
+                .layers()
+                .iter()
+                .map(|l| json!({"name":l.name,"cells":l.filled_cells()}))
+                .collect();
+            json!({"bounds":{"min":map.bounds().min,"max":map.bounds().max},"layers":layers})
         }
         "scene" | "prefab" => {
             let relative = file.strip_prefix(cx.root).expect("confined file");

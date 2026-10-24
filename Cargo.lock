@@ -1251,6 +1251,7 @@ dependencies = [
  "base64",
  "blake3",
  "engine-project",
+ "engine-tilemap",
  "regex",
  "serde",
  "serde_json",

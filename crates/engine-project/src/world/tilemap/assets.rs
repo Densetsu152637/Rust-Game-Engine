@@ -21,12 +21,16 @@ pub fn load_tileset(project: &Project, id: &str) -> Result<(Tileset, [u32; 2])> 
     Ok((tileset, size))
 }
 
-/// Pixel size of the project `texture` asset, read from the image header only.
+/// Pixel size of the project `texture` asset.
 pub fn texture_size(project: &Project, texture: &str) -> Result<[u32; 2]> {
     project.require_asset(texture, "texture")?;
     let path = project.resolve_asset(texture)?;
-    let (width, height) = image::image_dimensions(&path)
-        .map_err(|e| Error::new("tilemap.texture", format!("Cannot read {texture}: {e}")))?;
+    // PNG headers give the size without decoding; other supported formats (PPM) decode fully.
+    if let Ok((width, height)) = image::image_dimensions(&path) {
+        return Ok([width, height]);
+    }
+    let decoded = crate::content::load_texture(&path)?;
+    let (width, height) = (decoded.width, decoded.height);
     Ok([width, height])
 }
 
