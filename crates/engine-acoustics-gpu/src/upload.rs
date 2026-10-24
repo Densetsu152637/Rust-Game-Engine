@@ -215,11 +215,10 @@ impl AccelScene {
             update_mode: wgpu::AccelerationStructureUpdateMode::Build,
         });
         for (i, instance) in scene.instances.iter().enumerate() {
-            tlas[i] = Some(tlas_instance(
-                &blas[mesh_of_instance[i] as usize],
-                i,
-                instance,
-            ));
+            // Instances of meshes without triangles have no BLAS and stay empty.
+            tlas[i] = blas
+                .get(mesh_of_instance[i] as usize)
+                .map(|blas| tlas_instance(blas, i, instance));
         }
         let geometries: Vec<wgpu::BlasTriangleGeometry<'_>> = sizes
             .iter()
@@ -260,8 +259,10 @@ impl AccelScene {
     /// Rewrites the changed TLAS entries and rebuilds the TLAS.
     fn update(&mut self, gpu: &GpuDevice, scene: &FlatScene, changed: &[usize]) {
         for &i in changed {
-            let blas = &self.blas[self.mesh_of_instance[i] as usize];
-            self.tlas[i] = Some(tlas_instance(blas, i, &scene.instances[i]));
+            self.tlas[i] = self
+                .blas
+                .get(self.mesh_of_instance[i] as usize)
+                .map(|blas| tlas_instance(blas, i, &scene.instances[i]));
         }
         let mut encoder = gpu
             .device

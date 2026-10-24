@@ -111,8 +111,9 @@ fn pcg(v: u32) -> u32 {
     return (w >> 22u) ^ w;
 }
 
-fn ray_seed(job: Job, job_index: u32, ray: u32) -> u32 {
-    return pcg(pcg(pcg(job.seed_lo) ^ job.seed_hi) ^ pcg(job_index ^ pcg(ray)));
+// engine_acoustics::rng::ray_state: pcg(pcg(lo ^ pcg(hi)) ^ ray).
+fn ray_seed(job: Job, ray: u32) -> u32 {
+    return pcg(pcg(job.seed_lo ^ pcg(job.seed_hi)) ^ ray);
 }
 
 // Uniform in [0, 1) with 24 bits.
@@ -138,13 +139,11 @@ fn orthonormal_basis(n: vec3<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(t, bt, n);
 }
 
-fn sample_cosine(state: ptr<function, u32>, n: vec3<f32>) -> vec3<f32> {
-    let u1 = next_unit(state);
-    let u2 = next_unit(state);
+fn cosine_hemisphere(n: vec3<f32>, u1: f32, u2: f32) -> vec3<f32> {
     let r = sqrt(u1);
     let phi = 2.0 * PI * u2;
     let local = vec3<f32>(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - u1)));
-    return normalize(orthonormal_basis(n) * local);
+    return orthonormal_basis(n) * local;
 }
 
 // ---- Fixed-point atomics ----
@@ -257,7 +256,7 @@ fn trace_energy(@builtin(global_invocation_id) gid: vec3<u32>) {
     if ray >= job.rays {
         return;
     }
-    var state = ray_seed(job, job_index, ray);
+    var state = ray_seed(job, ray);
     var dir = sample_sphere(&state);
     var pos = job.emitter.xyz;
     let initial = 1.0 / f32(job.rays);
@@ -302,8 +301,12 @@ fn trace_energy(@builtin(global_invocation_id) gid: vec3<u32>) {
             n = -n;
         }
         let hit_point = pos + dir * hit.t;
-        if next_unit(&state) < m.scattering {
-            dir = sample_cosine(&state, n);
+        // Exactly three draws per reflection, used or not (rng.rs protocol).
+        let u_scatter = next_unit(&state);
+        let u1 = next_unit(&state);
+        let u2 = next_unit(&state);
+        if u_scatter < m.scattering {
+            dir = cosine_hemisphere(n, u1, u2);
         } else {
             dir = normalize(dir - 2.0 * dot(dir, n) * n);
         }

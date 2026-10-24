@@ -104,7 +104,7 @@ pub fn select_backend(
             }
             Err(e) => {
                 let name = format!("{kind:?}");
-                reasons.push(if e.message.starts_with(&name) {
+                reasons.push(if e.message.starts_with(&format!("{name} ")) {
                     e.message
                 } else {
                     format!("{name}: {}", e.message)

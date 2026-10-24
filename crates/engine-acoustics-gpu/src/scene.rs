@@ -1,14 +1,16 @@
 //! Owned copy of an `AcousticWorld`'s flat GPU layouts, validated before any of
 //! it reaches a shader.
 //!
-//! Index conventions (shared with the CPU BVH in engine-acoustics and with
+//! Index conventions (engine-acoustics `gpu_layout`, mirrored by
 //! `shaders/intersect_bvh.wgsl`):
 //!
-//! - `nodes` holds every mesh BVH back to back. A mesh's root is
-//!   `nodes[instance.node_offset]`; interior children and leaf triangle ranges
-//!   are relative to the instance's `node_offset` and `triangle_offset`.
-//! - `top_nodes` is the instance-level BVH (root at 0); its leaves index
-//!   `instances` directly.
+//! - BVH children are absolute indices into the array the tree lives in
+//!   (`nodes` for meshes, `top_nodes` for instances) and always follow their
+//!   parent. A mesh's root is `nodes[instance.node_offset]`; `u32::MAX` marks a
+//!   mesh without triangles, whose instances are not in `top_nodes`.
+//! - Mesh leaves index `triangles` absolutely; a mesh's triangles are contiguous
+//!   from `instance.triangle_offset`, in leaf order. Instance leaves index
+//!   `instances`.
 //! - Triangles are stored in object space; `GpuTriangle::v0[3]` holds the
 //!   material id as `f32` bits.
 
@@ -82,7 +84,7 @@ impl FlatScene {
                 return Err(error::invalid(format!("triangle {i} is not finite")));
             }
         }
-        check_bvh(&self.top_nodes, 0, self.instances.len(), "instance BVH")?;
+        check_bvh(&self.top_nodes, 0, 0..self.instances.len(), "instance BVH")?;
         let mut meshes: Vec<MeshRange> = Vec::new();
         let mut mesh_of_instance = Vec::with_capacity(self.instances.len());
         for (i, instance) in self.instances.iter().enumerate() {
@@ -96,6 +98,10 @@ impl FlatScene {
                     "instance {i} transform is not finite"
                 )));
             }
+            if instance.node_offset == NO_MESH {
+                mesh_of_instance.push(NO_MESH);
+                continue;
+            }
             let key = (instance.node_offset, instance.triangle_offset);
             let index = match meshes
                 .iter()
@@ -103,27 +109,17 @@ impl FlatScene {
             {
                 Some(index) => index,
                 None => {
-                    let node_offset = instance.node_offset as usize;
-                    if node_offset >= self.nodes.len() {
-                        return Err(error::invalid(format!(
-                            "instance {i} node_offset {node_offset} is outside {} nodes",
-                            self.nodes.len()
-                        )));
-                    }
-                    let available = self
-                        .triangles
-                        .len()
-                        .saturating_sub(instance.triangle_offset as usize);
-                    let count = check_bvh(
-                        &self.nodes[node_offset..],
-                        node_offset,
-                        available,
+                    let first = instance.triangle_offset as usize;
+                    let end = check_bvh(
+                        &self.nodes,
+                        instance.node_offset as usize,
+                        first..self.triangles.len(),
                         "mesh BVH",
                     )?;
                     meshes.push(MeshRange {
                         node_offset: instance.node_offset,
                         triangle_offset: instance.triangle_offset,
-                        triangle_count: count as u32,
+                        triangle_count: (end - first) as u32,
                     });
                     meshes.len() - 1
                 }
@@ -134,49 +130,44 @@ impl FlatScene {
     }
 }
 
-/// Walks a flat BVH rooted at `nodes[0]` and checks child and primitive ranges.
-/// Returns one past the largest primitive index a leaf references.
+/// `GpuInstance::node_offset` of a mesh without triangles.
+pub(crate) const NO_MESH: u32 = u32::MAX;
+
+/// Walks the tree rooted at `nodes[root]` (absolute child indices, each larger
+/// than its parent, so the walk terminates) and checks that every leaf stays in
+/// `primitives`. Returns one past the largest primitive a leaf references.
 fn check_bvh(
     nodes: &[BvhNode],
-    base: usize,
-    primitives: usize,
+    root: usize,
+    primitives: std::ops::Range<usize>,
     what: &str,
 ) -> Result<usize, BackendError> {
-    let mut end = 0usize;
-    let mut stack = vec![0usize];
-    let mut visited = 0usize;
+    let mut end = primitives.start;
+    let mut stack = vec![root];
     while let Some(index) = stack.pop() {
-        visited += 1;
-        if visited > nodes.len() {
-            return Err(error::invalid(format!("{what} at node {base} has a cycle")));
-        }
-        let node = nodes.get(index).ok_or_else(|| {
-            error::invalid(format!(
-                "{what} at node {base} child {index} is out of range"
-            ))
-        })?;
+        let node = nodes
+            .get(index)
+            .ok_or_else(|| error::invalid(format!("{what} node {index} is out of range")))?;
         if node.min.iter().chain(&node.max).any(|v| v.is_nan()) {
             return Err(error::invalid(format!(
-                "{what} node {} has NaN bounds",
-                base + index
+                "{what} node {index} has NaN bounds"
             )));
         }
         if node.count == 0 {
             let left = node.left_or_first as usize;
-            if left == 0 || left + 1 >= nodes.len() {
+            if left <= index || left + 1 >= nodes.len() {
                 return Err(error::invalid(format!(
-                    "{what} node {} has children {left} outside the BVH",
-                    base + index
+                    "{what} node {index} has invalid children {left}"
                 )));
             }
             stack.push(left);
             stack.push(left + 1);
         } else {
-            let last = node.left_or_first as usize + node.count as usize;
-            if last > primitives {
+            let first = node.left_or_first as usize;
+            let last = first + node.count as usize;
+            if first < primitives.start || last > primitives.end {
                 return Err(error::invalid(format!(
-                    "{what} node {} references primitives up to {last} of {primitives}",
-                    base + index
+                    "{what} node {index} references primitives {first}..{last} outside {primitives:?}"
                 )));
             }
             end = end.max(last);

@@ -1,7 +1,9 @@
 // Tier 2: software two-level BVH traversal in a compute shader. This is
 // GPU-accelerated BVH traversal, NOT hardware ray tracing. It walks the same
-// flat `BvhNode` arrays as the CPU tracer: mesh BVHs first, then the instance
-// BVH starting at `settings.top_base`. Prepended to common.wgsl.
+// flat `BvhNode` arrays as the CPU tracer (engine-acoustics `gpu_layout`): mesh
+// BVHs first, then the instance BVH starting at `settings.top_base`. Child and
+// leaf indices are absolute within their tree's array; children follow their
+// parent. Prepended to common.wgsl.
 
 struct BvhNode {
     min: vec3<f32>,
@@ -41,7 +43,7 @@ fn triangle_t(tri: Triangle, origin: vec3<f32>, dir: vec3<f32>, t_min: f32, t_ma
     let e2 = tri.v2.xyz - tri.v0.xyz;
     let p = cross(dir, e2);
     let det = dot(e1, p);
-    if abs(det) < 1e-12 {
+    if det == 0.0 {
         return -1.0;
     }
     let inv_det = 1.0 / det;
@@ -56,7 +58,7 @@ fn triangle_t(tri: Triangle, origin: vec3<f32>, dir: vec3<f32>, t_min: f32, t_ma
         return -1.0;
     }
     let t = dot(e2, q) * inv_det;
-    if t > t_min && t < t_max {
+    if t > t_min && t <= t_max {
         return t;
     }
     return -1.0;
@@ -98,15 +100,19 @@ fn intersect(origin: vec3<f32>, dir: vec3<f32>, t_min: f32, t_max: f32) -> Hit {
                 hit.kind = HIT_ABORTED;
                 return hit;
             }
-            top_stack[top_sp] = top.left_or_first;
-            top_stack[top_sp + 1u] = top.left_or_first + 1u;
+            // Near child on top of the stack.
+            let l = top.left_or_first;
+            let near_left = box_entry(nodes[settings.top_base + l], origin, inv, t_min, hit.t)
+                <= box_entry(nodes[settings.top_base + l + 1u], origin, inv, t_min, hit.t);
+            top_stack[top_sp] = select(l, l + 1u, near_left);
+            top_stack[top_sp + 1u] = select(l + 1u, l, near_left);
             top_sp += 2u;
             continue;
         }
         for (var k = 0u; k < top.count; k += 1u) {
             let instance_index = top.left_or_first + k;
             let instance = instances[instance_index];
-            if (instance.mask & 0xffu) == 0u {
+            if (instance.mask & 0xffu) == 0u || instance.node_offset == 0xffffffffu {
                 continue;
             }
             // Object-space ray with an unnormalized direction keeps t in world units.
@@ -115,10 +121,10 @@ fn intersect(origin: vec3<f32>, dir: vec3<f32>, t_min: f32, t_max: f32) -> Hit {
             let d_inv = safe_inverse(d);
             var stack: array<u32, 64>;
             var sp = 1u;
-            stack[0] = 0u;
+            stack[0] = instance.node_offset;
             while sp > 0u {
                 sp -= 1u;
-                let node = nodes[instance.node_offset + stack[sp]];
+                let node = nodes[stack[sp]];
                 visits += 1u;
                 if visits > MAX_VISITS {
                     hit.kind = HIT_ABORTED;
@@ -132,13 +138,16 @@ fn intersect(origin: vec3<f32>, dir: vec3<f32>, t_min: f32, t_max: f32) -> Hit {
                         hit.kind = HIT_ABORTED;
                         return hit;
                     }
-                    stack[sp] = node.left_or_first;
-                    stack[sp + 1u] = node.left_or_first + 1u;
+                    let l = node.left_or_first;
+                    let near_left = box_entry(nodes[l], o, d_inv, t_min, hit.t)
+                        <= box_entry(nodes[l + 1u], o, d_inv, t_min, hit.t);
+                    stack[sp] = select(l, l + 1u, near_left);
+                    stack[sp + 1u] = select(l + 1u, l, near_left);
                     sp += 2u;
                     continue;
                 }
                 for (var j = 0u; j < node.count; j += 1u) {
-                    let triangle = instance.triangle_offset + node.left_or_first + j;
+                    let triangle = node.left_or_first + j;
                     let t = triangle_t(triangles[triangle], o, d, t_min, hit.t);
                     if t > 0.0 {
                         hit.kind = HIT_TRIANGLE;
