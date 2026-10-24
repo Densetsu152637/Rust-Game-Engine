@@ -22,6 +22,7 @@ use tracing::{debug, error, info};
 pub enum Stage {
     Startup,
     Update,
+    PostUpdate,
     Extract,
     Render,
     Shutdown,
@@ -91,6 +92,7 @@ impl EngineApp {
         for stage in [
             Stage::Startup,
             Stage::Update,
+            Stage::PostUpdate,
             Stage::Extract,
             Stage::Render,
             Stage::Shutdown,
@@ -198,6 +200,16 @@ impl EngineApp {
     /// execution after the current phase and runs shutdown. Delta must be finite
     /// and positive. Graph errors mark the app failed; call shutdown for cleanup.
     pub fn tick(&mut self, dt: f32) -> Result<()> {
+        self.tick_with_post_update(dt, |_| Ok(()))
+    }
+
+    /// Runs a fallible host service boundary after native updates, before extraction.
+    /// A returned error marks this generation failed and prevents extraction/render.
+    pub fn tick_with_post_update(
+        &mut self,
+        dt: f32,
+        post_update: impl FnOnce(&mut World) -> Result<()>,
+    ) -> Result<()> {
         ensure!(
             dt.is_finite() && dt > 0.0,
             "dt must be finite and positive seconds"
@@ -217,7 +229,7 @@ impl EngineApp {
         }
         let started = Instant::now();
         self.profiler.begin_frame(self.time().tick);
-        let result = self.tick_stages();
+        let result = self.tick_stages(post_update);
         self.profiler.end_frame(
             started.elapsed(),
             self.world
@@ -236,8 +248,25 @@ impl EngineApp {
         result
     }
 
-    fn tick_stages(&mut self) -> Result<()> {
-        for stage in [Stage::Update, Stage::Extract, Stage::Render] {
+    fn tick_stages(&mut self, post_update: impl FnOnce(&mut World) -> Result<()>) -> Result<()> {
+        self.run_stage(Stage::Update)?;
+        if self.stop_requested() {
+            return self.shutdown();
+        }
+        let started = Instant::now();
+        let result = self
+            .execute_stage(Stage::PostUpdate)
+            .and_then(|_| post_update(&mut self.world));
+        self.profiler
+            .record_stage(Stage::PostUpdate, started.elapsed(), result.is_ok());
+        if result.is_err() {
+            self.state = AppState::Failed;
+        }
+        result?;
+        if self.stop_requested() {
+            return self.shutdown();
+        }
+        for stage in [Stage::Extract, Stage::Render] {
             self.run_stage(stage)?;
             if self.stop_requested() {
                 return self.shutdown();

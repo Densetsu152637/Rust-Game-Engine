@@ -55,7 +55,7 @@ pub(crate) struct Profiler {
     failed_frames: u64,
     frames: VecDeque<FrameProfile>,
     current: Option<FrameProfile>,
-    stages: [StageProfile; 5],
+    stages: [StageProfile; 6],
 }
 
 impl Default for Profiler {
@@ -70,6 +70,7 @@ impl Default for Profiler {
             stages: [
                 Stage::Startup,
                 Stage::Update,
+                Stage::PostUpdate,
                 Stage::Extract,
                 Stage::Render,
                 Stage::Shutdown,

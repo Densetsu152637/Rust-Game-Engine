@@ -30,7 +30,16 @@ impl Project {
                 ));
             }
             if ![
-                "script", "mesh", "texture", "font", "audio", "scene", "shader", "prefab",
+                "script",
+                "mesh",
+                "texture",
+                "font",
+                "audio",
+                "scene",
+                "shader",
+                "prefab",
+                "model",
+                "animation",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -84,7 +93,7 @@ impl Project {
                     1024 * 1024,
                 )?)?)?
             } else {
-                Default::default()
+                crate::catalog::ComponentCatalog::new(Vec::new())?
             },
             schema: 1,
             name: raw.name,
@@ -128,6 +137,14 @@ impl Project {
         for entity in &scene.entities {
             self.component_catalog.validate_entity(scene, entity)?;
             let c = &entity.components;
+            if let Some(material) = &c.material {
+                if let Some(shader) = &material.shader {
+                    self.require_asset(shader, "shader")?;
+                }
+                if let Some(texture) = &material.texture {
+                    self.require_asset(texture, "texture")?;
+                }
+            }
             if let Some(s) = &c.script {
                 self.require_asset(&s.asset, "script")?;
             }
@@ -149,7 +166,13 @@ impl Project {
         for asset in self.assets.values() {
             let file = self.resolve_asset(&asset.id)?;
             match asset.kind.as_str() {
-                "scene" => self.validate_scene(&load_scene(&self.root, &asset.path)?)?,
+                "scene" | "prefab" => self.validate_scene(&load_scene(&self.root, &asset.path)?)?,
+                "model" => {
+                    crate::model_import::load_model(&file)?;
+                }
+                "animation" => {
+                    crate::simulation::load_clip(self, &asset.id)?;
+                }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;
                 }

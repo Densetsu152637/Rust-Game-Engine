@@ -26,3 +26,10 @@ limits, dependency fingerprints, and reload semantics.
 
 Validation: `cargo test -p engine-assets`, `cargo fmt -p engine-assets --check`,
 and `cargo clippy -p engine-assets --all-targets -- -D warnings`.
+
+Project authoring integration is available through
+`engine_project::model_import::import_model`, the CLI's `project import-model`,
+and the write-gated MCP `asset_import_model` tool. The importer writes a
+versioned neutral model asset alongside renderable prefab/mesh/PNG and supported
+animation assets; see the pipeline document for transactional guarantees and
+explicit rendering limitations.

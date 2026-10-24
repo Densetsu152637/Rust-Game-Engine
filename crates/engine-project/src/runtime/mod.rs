@@ -19,6 +19,7 @@ use std::{
 
 mod events;
 mod render;
+mod render3d;
 mod resources;
 mod scene;
 mod scripts;
@@ -53,15 +54,24 @@ pub struct Runtime {
 impl Runtime {
     /// Prepare authored entities. Register native systems/scripts before start or first tick.
     pub fn new(project: Project) -> Result<Self> {
+        Self::new_with_simulation(
+            project,
+            Some(crate::simulation::SimulationConfig::default()),
+        )
+    }
+    /// Built-in schemas stay available when services are disabled; active writers then fail validation.
+    pub fn new_with_simulation(
+        project: Project,
+        simulation: Option<crate::simulation::SimulationConfig>,
+    ) -> Result<Self> {
         project.validate_scene(&project.scene)?;
         let content = Content::load(&project)?;
         let scene = project.scene.clone();
         let mut app = EngineApp::new();
-        app.schedule_mut(engine_core::Stage::Extract).add_systems(
-            crate::transforms::propagate_system.before(engine_core::ExtractionSet::Cleanup),
-        );
         app.world_mut()
             .insert_resource(ProjectResource(Arc::new(project.clone())));
+        crate::simulation::register_components(&mut app)?;
+        crate::simulation::install(app.world_mut(), simulation)?;
         app.world_mut().insert_resource(RuntimeLog::default());
         app.world_mut().insert_resource(EntityLookup::default());
         app.world_mut().insert_resource(ActionFrame::default());
@@ -181,6 +191,8 @@ impl Runtime {
             &self.project.component_catalog,
         )?;
         self.validate_event_bindings()?;
+        crate::simulation::prepare(self.app.world_mut())?;
+        crate::transforms::refresh_world_transforms(self.app.world_mut())?;
         self.sync_collision()?;
         if let Err(error) = self.app.startup() {
             let error = Error::new("runtime.startup", error.to_string());
@@ -245,7 +257,11 @@ impl Runtime {
         }
         refresh_gameplay_input(self.app.world_mut());
         self.app
-            .tick(dt)
+            .tick_with_post_update(dt, |world| {
+                crate::simulation::step(world, dt)?;
+                crate::transforms::refresh_world_transforms(world)?;
+                Ok(())
+            })
             .map_err(|e| Error::new("runtime.update", e.to_string()))?;
         self.sync_collision()?;
         crate::audio::synchronize(self.app.world_mut())?;

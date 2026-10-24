@@ -190,9 +190,9 @@ jobs:
           ls -l counts
           bash scripts/ci/test-count.sh gate "$MINIMUM_PASSED_TESTS" counts/*.count | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # Portable crates on Linux. engine-editor builds here through its explicit
-  # unsupported-platform fallback; the Win32 controls and their tests are
-  # cfg(windows). The apt packages provide the native audio (ALSA), gamepad
+  # Portable crates and editor logic on Linux. CI does not open the interactive
+  # editor; legacy Win32 controls and their tests remain cfg(windows).
+  # The apt packages provide the native audio (ALSA), gamepad
   # (udev) and window-system development libraries the desktop crates link.
   linux-tests:
     name: Workspace tests (Linux)

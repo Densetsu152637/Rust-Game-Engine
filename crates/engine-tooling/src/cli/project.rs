@@ -72,6 +72,21 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
                 json!({"index": path, "assets": index.assets}),
             ))
         }
+        "import-model" => {
+            let (args, flags) = options(arguments, &["--prefix"])?;
+            if args.len() != 2 || !flags.contains_key("--prefix") {
+                return Err(usage(
+                    "Usage: engine project import-model <manifest> <project-relative-source> --prefix <unique-name>",
+                ));
+            }
+            let project = Project::load(&args[0])?;
+            let imported = engine_project::model_import::import_model(
+                &project,
+                Path::new(&args[1]),
+                &flags["--prefix"],
+            )?;
+            Ok(Outcome::Json(serde_json::to_value(imported)?))
+        }
         "shaders" => {
             let project = single_manifest(arguments, "shaders")?;
             let imported = artifacts::import_shaders(&project)?;

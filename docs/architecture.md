@@ -7,30 +7,23 @@ engine is built this way.
 
 ## Layers
 
-```text
-engine-ecs       Bevy ECS re-export, buffered values, render-world extraction
-engine-log       stderr-only tracing subscriber with a queryable LogHistory
-   ^
-engine-core      EngineApp, stages, Time, run control (re-exports engine-ecs)
-   ^
-engine-audio     clips, mixer, sources, CPAL output   (no ECS dependency)
-   ^
-engine-render    GPU-free graphics adapter: RenderBackend, RenderDevice,
-                 RenderCommandBuffer, WGSL reflection, recording test backend
-   ^
-engine-render-wgpu  the GPU backend on wgpu (Vulkan/DX12/Metal/GL selection)
-   ^
-engine-project   authored schema + Runtime on top of engine-core
-   ^
-engine-desktop   winit window loop, sprite renderer over the adapter, input, headless runner
-engine-editor    native authoring editor (Windows) + EditorController
-engine-mcp       MCP server: read tools, gated write tools, resources, ToolProvider
-   ^
-engine-tooling   compiler/launcher, generations, assets, packaging, `engine` CLI
-```
+| Layer | Responsibility |
+| --- | --- |
+| `engine-ecs`, `engine-core` | ECS facade, worlds, schedules, simulation time, lifecycle and CPU profiles |
+| `engine-log`, `engine-platform` | Logging/history and explicit host capability contracts |
+| `engine-assets` | glTF/GLB import, fingerprints and typed asset ownership |
+| `engine-physics`, `engine-animation`, `engine-navigation` | Independent simulation libraries without ECS or window ownership |
+| `engine-network` | Owned network endpoints, validated input/state and bounded transport work |
+| `engine-audio` | Clips, mixer, spatial sources and native CPAL output |
+| `engine-render`, `engine-render-wgpu` | GPU-free rendering contract and real wgpu implementation |
+| `engine-project` | Authored schemas/catalog, runtime adapters, events, UI, content extraction and scene documents |
+| `engine-desktop` | Window/input/device lifecycle, 2D/3D rendering and headless execution |
+| `engine-editor`, `engine-mcp` | Human and agent interfaces over the same scene/document contracts |
+| `engine-tooling` | Cargo compilation, process/generation ownership, packaging and CLI/MCP execution tools |
 
-Lower layers never depend on higher ones. `engine-core` contains no project schema,
-window, renderer, audio device, compiler or editor. `engine-audio` has no ECS
+Foundation libraries do not depend on authoring or application hosts.
+`engine-core` contains no project schema, window, renderer, audio device, compiler
+or editor. `engine-audio` has no ECS
 dependency; `engine-project` owns entity attachments and listener lifecycle while the
 desktop host owns the `AudioEngine` and shares its cloneable `AudioControl`.
 
@@ -39,8 +32,9 @@ desktop host owns the `AudioEngine` and shares its cloneable `AudioControl`.
 A game is an external Cargo crate. The tooling compiler builds the game and the
 engine crates together into one executable (a "generation"). Public engine types,
 game components, resources, system sets and render passes therefore all live in the
-same Rust type universe, and gameplay calls are ordinary native calls. There is no
-shared-library Rust ABI, interpreter or serialized gameplay interface. Native game
+same Rust type universe, and gameplay calls are ordinary native calls. They do not
+cross a dynamic-library Rust ABI or interpreter boundary. Authored metadata and
+network snapshots remain serialized data, not executable Rust. Native game
 code runs with the user's normal process privileges; compilation is not a sandbox.
 Reloading means compiling and launching a new generation, which restarts game
 state. See [Native game crates](scripting.md) and [Project commands](commands.md).
@@ -54,8 +48,8 @@ and `glam`, and `engine-core` re-exports `engine-ecs` and `anyhow`, so the engin
 game code use one dependency identity.
 
 `EngineApp` owns two worlds: a simulation world and a separate render world. It
-exposes one schedule per `Stage`: `Startup`, `Update`, `Extract`, `Render` and
-`Shutdown`. Native code adds ordinary Bevy systems directly:
+exposes one schedule per `Stage`: `Startup`, `Update`, `PostUpdate`, `Extract`,
+`Render` and `Shutdown`. Native code adds ordinary Bevy systems directly:
 
 ```rust
 use engine_core::bevy_ecs; // the Component derive refers to `bevy_ecs` by name
@@ -94,13 +88,25 @@ Ordering is a dependency graph, not wall-time batching:
 ### Lifecycle
 
 `startup()` runs startup once. `tick(dt)` starts a new app automatically, advances
-time, then runs Update, Extract and Render. `run_fixed(ticks, dt)` runs without
-sleeping and attempts shutdown after success or a returned error. `shutdown()` is
+time, then runs Update, PostUpdate, Extract and Render. `run_fixed(ticks, dt)` runs
+without sleeping and attempts shutdown after success or a returned error. `shutdown()` is
 idempotent; a stopped or failed app cannot restart, so create a fresh generation.
 `RuntimeControl::request_stop()` (callable from simulation and render systems) and
 the app's `request_stop()` take effect after the current phase. System panics stay
 panics for the supervising process; the engine makes no recovery promise for
 arbitrary native code failure.
+
+`tick_with_post_update(dt, closure)` runs a fallible host closure after the
+PostUpdate schedule and before Extract. `tick(dt)` supplies a no-op closure.
+The authored runtime uses this boundary for animation, navigation, physics and
+world-transform refresh after native Update systems. A returned service error
+marks the generation failed and skips extraction/render. The measured PostUpdate
+sample includes both the schedule and closure. See [Authored simulation](simulation.md).
+
+`EngineApp::profile()` copies bounded CPU frame history and stage aggregates.
+Measurements use a monotonic native clock, while gameplay still uses fixed
+simulation time. They do not measure GPU execution or host work outside core
+ticks; see [CPU profiling](profiling.md).
 
 ### Buffered values
 
@@ -133,13 +139,27 @@ spawns scene entities as Bevy entities with native components (`Transform`,
 `Script`, `MeshRenderer`, `SpriteRenderer`, `Camera2D`, `Collider2D`) and drives
 registered `NativeScript` callbacks. It also provides:
 
+- local TRS hierarchies, a versioned component catalog with typed Rust adapters,
+  bounded callback events and prefab cloning ([Meta-programming](meta-programming.md));
 - deterministic 2D collision and triggers ([2D gameplay](gameplay2d.md));
-- action mapping and a modal UI model ([Input and UI](desktop-input-ui.md));
+- opt-in authored rigid-body, animation and navigation components over independent
+  libraries; dynamic bodies, remote replicas and native code have explicit pose
+  ownership constraints ([Authored simulation](simulation.md));
+- action mapping, modal UI, and retained game controls with shared input/callback
+  routing ([Input](desktop-input-ui.md), [Game UI](game-ui.md));
+- explicitly attached authoritative network sessions and allowlisted remote
+  replicas ([Multiplayer](networking.md));
 - audio attachment, durable saves and separate settings ([Audio and persistence](desktop-services.md));
 - CPU render extraction to a `RenderFrame` consumed by the desktop renderer
   ([Desktop rendering](desktop-2d-rendering.md));
 - `SceneDocument`, a revision-checked editable scene with undo/redo and isolated
   play clones, used by the editor and the MCP adapter.
+
+`engine-assets` imports bounded glTF/GLB data into a device-independent scene
+representation with dependency fingerprints. Its typed generational handles are
+process-local; project asset IDs remain stable authored identity. Import support
+does not imply that every retained glTF property is drawn by the renderer.
+See [Asset pipeline](asset-pipeline.md).
 
 ## Desktop host
 
@@ -149,9 +169,10 @@ audio device, which is how tests and the CLI's `--headless` mode run. Visible ru
 create a window, sample keyboard, mouse and gilrs gamepad input, open CPAL audio
 through `engine-audio`, and present real frames. Simulation and presentation are
 decoupled: the runtime always advances in fixed 1/60-second ticks (a capped
-accumulator runs zero, one or a few per redraw), while every display redraw
-presents the last two ticks blended by how far the clock is between them. The
-blend is presentation only and never feeds back into the simulation. See
+accumulator runs zero, one or a few per redraw), while each 2D redraw blends the
+last two ticks' translations by how far the clock is between them. That blend is
+presentation only and never feeds back into the
+simulation. The 3D path uses the latest simulation tick. See
 [Desktop rendering](desktop-2d-rendering.md) for the render contract and the
 native extension points.
 
@@ -168,6 +189,31 @@ abstracts Vulkan, DX12, Metal and GL, selected with `WgpuBackends` or
 `NativeRenderPass` remains wgpu-specific by design. See
 [Desktop rendering](desktop-2d-rendering.md).
 
+The desktop scene path combines a depth-tested 3D pass with the 2D/UI overlay in
+one submission. `Camera3D` provides perspective or orthographic projection;
+`MeshMaterial` selects textures, tint, unlit/lit behavior and custom WGSL. Opaque
+objects write depth; transparent objects test depth and sort by object origin.
+Built-in lighting uses geometric normals and simple directional light. This is
+not PBR, a shadow pipeline, or integrated skeletal mesh rendering. Supported
+shader bindings and validation are in [3D scene rendering](rendering3d.md).
+
+## Editor and agent authoring
+
+The egui/eframe desktop editor targets Windows, Linux and macOS. Its hierarchy,
+numeric TRS controls and validated JSON inspector use `EditorController` and
+`SceneDocument`; MCP edits use the same catalog, revisions, validation and
+transactional operations. Data descriptors describe serialized components;
+registered Rust adapters supply executable behavior. JSON schemas cannot execute
+arbitrary game code by themselves.
+
+The editor renders a real scene through the engine's offscreen GPU path and
+uploads the readback image to its UI. Orbit/pan/zoom, origin-based selection and
+translation gestures operate on that preview, with one undoable document command
+per completed drag. Preview does not tick gameplay. Play compiles and launches an
+isolated process generation. The readback viewport and origin-proximity picking
+are deliberate current limits; they are not a direct GPU texture bridge or
+object-ID picking system. See [Portable editor](portable-editor.md).
+
 ## Tooling
 
 `engine-tooling` compiles the game crate with Cargo, fingerprints generations,
@@ -177,6 +223,13 @@ validates WGSL and creates relocatable packages. The `engine` binary installs th
 tools (`project_build`, `project_run_headless`, `render_screenshot`) through
 `engine_mcp::ToolProvider` when `engine mcp` runs with `--allow-exec`. See [Project commands](commands.md),
 [Desktop packages](desktop-packaging.md), [Editor](editor.md) and [MCP](mcp.md).
+
+Cargo is the build system for every engine crate and generated game executable.
+The CLI also exposes `platform` capability reports. Packages record their native
+packaging host and launcher; they are directory deployments, not cross-platform
+binaries, signed installers or platform-store submissions. Mobile, browser and
+console application hosts remain unavailable. The portable-library WebAssembly
+job proves compilation only. See [Platforms](platforms.md).
 
 ## Design decisions
 
@@ -195,7 +248,21 @@ current design:
   build never destroys the last working generation.
 - **Identity:** authored asset/entity IDs stay separate from generation-aware ECS
   handles.
-- **Platforms:** mobile support was removed; desktop is the supported target.
+- **Platforms:** native desktop hosts target Windows/Linux/macOS, with Windows
+  local verification and Linux/macOS validation tracked separately. Mobile, web
+  and console require additional host/SDK integration; they are not inferred from
+  dependency portability.
 - **Libraries:** serde_json replaces picojson, `image` replaces stb_image, CPAL and
   Hound provide audio output and WAV decoding, and `tracing` (via `engine-log`)
   replaces the C++ logger.
+
+## Production scope
+
+The workspace supplies working feature foundations with explicit failure paths,
+not AAA readiness or full parity with a mature commercial engine. Important gaps
+include advanced rendering/shadows, animation graphs/IK/retargeting, NavMesh
+baking/crowd avoidance, authenticated Internet networking/prediction/matchmaking,
+text-input/accessibility UI, and platform-certified distribution. Domain docs
+state exact supported subsets. Passing unit tests, a local GPU test and compiling
+portable libraries establish different properties; none substitutes for platform
+deployment, content-scale profiling or interactive acceptance.

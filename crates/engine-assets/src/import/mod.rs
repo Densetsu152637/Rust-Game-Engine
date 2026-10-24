@@ -9,7 +9,7 @@ use std::{
 mod animation;
 mod geometry;
 
-pub const IMPORTER_VERSION: &str = "engine-gltf/1";
+pub const IMPORTER_VERSION: &str = "engine-gltf/2";
 #[derive(Clone, Debug)]
 pub struct ImportLimits {
     pub max_source_bytes: usize,
@@ -173,6 +173,21 @@ impl Context<'_> {
         let canonical = path.canonicalize()?;
         if !canonical.starts_with(&self.root) {
             return Err(AssetError::OutsideProject);
+        }
+        if canonical
+            .strip_prefix(&self.root)
+            .map_err(|_| AssetError::OutsideProject)?
+            .components()
+            .any(|part| {
+                let name = part.as_os_str().to_string_lossy();
+                [".git", ".derived", "target"]
+                    .iter()
+                    .any(|blocked| name.eq_ignore_ascii_case(blocked))
+            })
+        {
+            return Err(AssetError::Unsupported(
+                "references into protected project metadata/build directories".into(),
+            ));
         }
         let remaining = self
             .limits

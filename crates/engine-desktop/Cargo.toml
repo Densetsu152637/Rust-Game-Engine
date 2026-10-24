@@ -13,6 +13,7 @@ engine-project = { path = "../engine-project" }
 engine-render = { path = "../engine-render" }
 engine-render-wgpu = { path = "../engine-render-wgpu" }
 gilrs = "=0.11.2"
+glam.workspace = true
 pollster = "0.4"
 serde = { version = "1", features = ["derive"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }

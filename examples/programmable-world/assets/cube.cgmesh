@@ -1,0 +1,44 @@
+CGMESH 1
+# Unit cube, outward-wound triangle faces. Original example geometry.
+# Front (+Z)
+vertex -0.5 -0.5 0.5 0 0
+vertex 0.5 -0.5 0.5 1 0
+vertex 0.5 0.5 0.5 1 1
+vertex -0.5 -0.5 0.5 0 0
+vertex 0.5 0.5 0.5 1 1
+vertex -0.5 0.5 0.5 0 1
+# Back (-Z)
+vertex 0.5 -0.5 -0.5 0 0
+vertex -0.5 -0.5 -0.5 1 0
+vertex -0.5 0.5 -0.5 1 1
+vertex 0.5 -0.5 -0.5 0 0
+vertex -0.5 0.5 -0.5 1 1
+vertex 0.5 0.5 -0.5 0 1
+# Right (+X)
+vertex 0.5 -0.5 0.5 0 0
+vertex 0.5 -0.5 -0.5 1 0
+vertex 0.5 0.5 -0.5 1 1
+vertex 0.5 -0.5 0.5 0 0
+vertex 0.5 0.5 -0.5 1 1
+vertex 0.5 0.5 0.5 0 1
+# Left (-X)
+vertex -0.5 -0.5 -0.5 0 0
+vertex -0.5 -0.5 0.5 1 0
+vertex -0.5 0.5 0.5 1 1
+vertex -0.5 -0.5 -0.5 0 0
+vertex -0.5 0.5 0.5 1 1
+vertex -0.5 0.5 -0.5 0 1
+# Top (+Y)
+vertex -0.5 0.5 0.5 0 0
+vertex 0.5 0.5 0.5 1 0
+vertex 0.5 0.5 -0.5 1 1
+vertex -0.5 0.5 0.5 0 0
+vertex 0.5 0.5 -0.5 1 1
+vertex -0.5 0.5 -0.5 0 1
+# Bottom (-Y)
+vertex -0.5 -0.5 -0.5 0 0
+vertex 0.5 -0.5 -0.5 1 0
+vertex 0.5 -0.5 0.5 1 1
+vertex -0.5 -0.5 -0.5 0 0
+vertex 0.5 -0.5 0.5 1 1
+vertex -0.5 -0.5 0.5 0 1
