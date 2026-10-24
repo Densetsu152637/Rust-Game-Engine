@@ -25,7 +25,12 @@ to Windows, Linux and macOS; mobile, browser and console hosts are out of scope.
    interfaces, with runtime capability checks, explicit unsupported-feature errors,
    configurable MCP/native controls and a non-NVIDIA rendering path. DLSS 5
    availability and SDK access must be verified; a declared option or injected
-   mock is not evidence of an executing DLSS feature.
+   mock is not evidence of an executing DLSS feature. After SDK inspection the
+   user confirmed they have no DLSS 5 neural-rendering SDK access and requested
+   available features instead. Neural rendering is therefore deferred. Super
+   Resolution, Frame Generation and Ray Reconstruction are assessed separately
+   against their public interfaces and required renderer inputs; unsupported
+   features must report their concrete prerequisites.
 
 ## Ownership and integration
 
