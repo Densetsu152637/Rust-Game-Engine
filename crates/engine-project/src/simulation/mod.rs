@@ -8,6 +8,7 @@ mod descriptors;
 mod imported;
 mod navigation;
 mod physics;
+mod skinning;
 mod types;
 pub use animation::{
     ClipDocument, ClipTrack, Event, RotationChannel, Sampling, VectorChannel, load_clip,
@@ -34,6 +35,7 @@ struct Services {
     physics: physics::Physics,
     animations: animation::Animations,
     navigation: navigation::Navigation,
+    skins: skinning::Skins,
 }
 #[derive(Resource, Clone)]
 struct Settings(Option<SimulationConfig>);
@@ -43,11 +45,14 @@ pub fn install(world: &mut World, config: Option<SimulationConfig>) -> Result<()
             physics: physics::Physics::new(config)?,
             animations: Default::default(),
             navigation: Default::default(),
+            skins: Default::default(),
         })
     } else {
         None
     };
-    world.remove_resource::<Services>();
+    if let Some(previous) = world.remove_resource::<Services>() {
+        previous.skins.clear(world);
+    }
     if let Some(services) = services {
         world.insert_resource(services);
     }
@@ -69,7 +74,12 @@ fn validate(world: &World) -> Result<()> {
         let body3 = e.get::<PhysicsBody3D>();
         let nav = e.get::<NavigationAgent>();
         let animation = e.get::<AnimationPlayer>();
-        if body2.is_some() || body3.is_some() || nav.is_some() || animation.is_some() {
+        if body2.is_some()
+            || body3.is_some()
+            || nav.is_some()
+            || animation.is_some()
+            || e.contains::<SkinBinding>()
+        {
             if !enabled {
                 return Err(invalid(
                     "Simulation services disabled for an active component",
@@ -125,7 +135,9 @@ pub fn prepare(world: &mut World) -> Result<()> {
     let result = (|| {
         services.animations.sync(world)?;
         services.navigation.sync(world)?;
-        services.physics.sync(world)
+        services.physics.sync(world)?;
+        services.skins.sync(world)?;
+        services.skins.evaluate(world)
     })();
     world.insert_resource(services);
     result
@@ -141,7 +153,9 @@ pub fn step(world: &mut World, dt: f32) -> Result<()> {
         services.animations.step(world, dt)?;
         services.navigation.step(world, dt)?;
         services.physics.sync(world)?;
-        services.physics.step(world, dt)
+        services.physics.step(world, dt)?;
+        services.skins.sync(world)?;
+        services.skins.evaluate(world)
     })();
     world.insert_resource(services);
     result

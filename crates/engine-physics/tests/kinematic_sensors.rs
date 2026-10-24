@@ -30,6 +30,7 @@ fn fixed_sensors_report_kinematic_enter_and_exit_in_both_dimensions() {
     two.step(0.02).unwrap();
     assert!(two.drain_events().next().is_none());
     two.set_kinematic_target(2, [0.; 2], 0.).unwrap();
+    // Rapier's contact phase precedes integration of the kinematic target.
     two.step(0.02).unwrap();
     two.step(0.02).unwrap();
     assert!(two.drain_events().any(|e| e.started));
