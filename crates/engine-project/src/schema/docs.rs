@@ -1,7 +1,9 @@
 //! Shared built-in authoring component documentation.
 use serde_json::{Value, json};
 /// The component keys of an entity's `components` object, in schema order.
-pub const COMPONENT_NAMES: [&str; 7] = [
+pub const COMPONENT_NAMES: [&str; 9] = [
+    "Camera3D",
+    "MeshMaterial",
     "EventBindings",
     "Transform",
     "Script",
@@ -52,6 +54,29 @@ fn closed(properties: Value, required: &[&str]) -> Value {
 /// All authored component documents.
 pub fn component_docs() -> Vec<ComponentDoc> {
     vec![
+        ComponentDoc {
+            name: "Camera3D",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order.",
+            requires: &["Transform"],
+            schema: closed(
+                json!({"version":version(),"active":{"type":"boolean","default":true},"projection":{"oneOf":[
+                    closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
+                    closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])
+                ]}}),
+                &[],
+            ),
+            example: json!({"projection":{"kind":"perspective","fov_y_radians":std::f32::consts::FRAC_PI_3,"near":0.1,"far":1000.0}}),
+        },
+        ComponentDoc {
+            name: "MeshMaterial",
+            description: "Material for MeshRenderer or SpriteRenderer: custom WGSL shader, texture, tint and 3D transparency/lighting controls.",
+            requires: &[],
+            schema: closed(
+                json!({"version":version(),"shader":{"type":["string","null"]},"texture":{"type":["string","null"]},"tint":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":4,"maxItems":4,"default":[1,1,1,1]},"unlit":{"type":"boolean","default":false},"transparent":{"type":"boolean","default":false}}),
+                &[],
+            ),
+            example: json!({"tint":[0.4,0.8,1.0,1.0],"unlit":true}),
+        },
         ComponentDoc {
             name: "EventBindings",
             description: "Named native callbacks invoked by bounded next-tick events.",
@@ -181,7 +206,7 @@ pub fn component_docs() -> Vec<ComponentDoc> {
 pub const SCENE_RULES: [&str; 5] = [
     "Entity `id` is the stable authored identifier: unique within the scene, 1-256 characters, no control characters. It cannot be changed after creation.",
     "A scene may contain at most one Camera2D.",
-    "SpriteRenderer and Collider2D require a Transform on the same entity.",
+    "SpriteRenderer, Collider2D and Camera3D require a Transform on the same entity.",
     "Camera2D.follow must name an entity that has a Transform.",
-    "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture) must be catalog asset IDs of the right kind.",
+    "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture) must be catalog asset IDs of the right kind.",
 ];
