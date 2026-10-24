@@ -13,6 +13,8 @@
   validation contract.
 - [Testing and CI](testing.md): test commands, hardware-gated tests and the GitHub
   Actions workflow.
+- [Expansion validation](engine-expansion-validation.md): integrated 2D/3D,
+  authoring, simulation and input acceptance results and remaining limitations.
 - [Platforms](platforms.md): native host capabilities, package metadata and
   compile-only versus runtime support.
 

@@ -72,6 +72,9 @@ Internet service.
 
 ## Validation and remaining work
 
+The integrated baseline and its acceptance evidence are recorded in
+[Engine expansion validation](engine-expansion-validation.md).
+
 Implementation status and limitations must be updated from the final code and
 recorded command results. Features are not considered complete merely because
 they appear in this plan. Desktop, browser, mobile and console support each need
