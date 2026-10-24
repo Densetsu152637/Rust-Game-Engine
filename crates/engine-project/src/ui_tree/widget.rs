@@ -495,16 +495,14 @@ impl UiWidget {
                 title_height,
                 button_height,
                 ..
-            } => {
-                if !label(title)
-                    || buttons.len() > MAX_DIALOG_BUTTONS
-                    || !buttons.iter().all(label)
-                    || ![title_height, button_height]
-                        .iter()
-                        .all(|v| v.is_finite() && (0.0..=256.0).contains(*v))
-                {
-                    return fail("Dialog title, buttons or bar heights invalid");
-                }
+            } if !label(title)
+                || buttons.len() > MAX_DIALOG_BUTTONS
+                || !buttons.iter().all(label)
+                || ![title_height, button_height]
+                    .iter()
+                    .all(|v| v.is_finite() && (0.0..=256.0).contains(*v)) =>
+            {
+                return fail("Dialog title, buttons or bar heights invalid");
             }
             _ => {}
         }
@@ -545,7 +543,12 @@ pub fn virtual_range(
     viewport: f32,
     overscan: u32,
 ) -> std::ops::Range<u32> {
-    if item_count == 0 || !(item_extent > 0.0) || !viewport.is_finite() || viewport <= 0.0 {
+    if item_count == 0
+        || !item_extent.is_finite()
+        || item_extent <= 0.0
+        || !viewport.is_finite()
+        || viewport <= 0.0
+    {
         return 0..0;
     }
     let max = (item_count as f32 * item_extent - viewport).max(0.0);

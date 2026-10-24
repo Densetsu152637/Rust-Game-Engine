@@ -27,7 +27,7 @@ mod world;
 pub use interaction::{GameUi, UiInteraction, UiStateFlags, UiTickContext, UiWidgetEvent};
 pub use layout::{MAX_UI_BOXES, UiBox};
 pub use navigation::UiDirection;
-pub use render::UiRenderState;
+pub use render::{UI_DIALOG_LAYER, UI_POPUP_LAYER, UiRenderState};
 pub use schema::descriptor;
 pub use style::{
     MAX_GRID_TRACKS, MAX_UI_EXTENT, UiAlign, UiEdges, UiGridFlow, UiGridPlacement, UiInset,
@@ -48,8 +48,9 @@ pub use widget::{
 };
 pub use world::{extract_world, register, tick_world};
 
-/// Nodes per root. With default-omitting serialization a minimal node costs
-/// about 60 bytes, so 1024 nodes still fit the 64 KiB component limit.
+/// Nodes per root (natively built trees). Authored JSON is additionally bound
+/// by the 64 KiB component limit; serialization omits default values, so a
+/// minimal node costs about 30 bytes and a styled text button about 180.
 pub const MAX_UI_NODES: usize = 1024;
 pub const MAX_UI_DEPTH: usize = 64;
 /// Retained roots per world.
@@ -90,9 +91,13 @@ pub struct UiNode {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    #[serde(skip_serializing_if = "is_container")]
     pub widget: UiWidget,
+    #[serde(skip_serializing_if = "is_default_style")]
     pub style: UiStyle,
+    #[serde(skip_serializing_if = "is_true")]
     pub visible: bool,
+    #[serde(skip_serializing_if = "is_true")]
     pub enabled: bool,
     /// Reserved for the styling layer (stylesheet class selectors); validated
     /// but not interpreted by layout, interaction or rendering yet.
@@ -106,6 +111,15 @@ pub struct UiNode {
 
 fn is_default_nav(nav: &UiNavigation) -> bool {
     *nav == UiNavigation::default()
+}
+fn is_container(widget: &UiWidget) -> bool {
+    *widget == UiWidget::Container
+}
+fn is_default_style(style: &UiStyle) -> bool {
+    *style == UiStyle::DEFAULT
+}
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 impl Default for UiNode {
