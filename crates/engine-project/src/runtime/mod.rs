@@ -1,7 +1,7 @@
 use crate::{
     Error, Result,
     content::{self, FontAtlas, Mesh, Texture},
-    gameplay2d::{self, Body, TriggerEvent},
+    gameplay2d::{self, TriggerEvent},
     input::{ActionFrame, BindingMap, InputSnapshot},
     persistence::{PersistenceOptions, PersistenceStore},
     schema::*,
@@ -17,6 +17,7 @@ use std::{
     sync::Arc,
 };
 
+mod events;
 mod render;
 mod resources;
 mod scene;
@@ -31,7 +32,8 @@ use render::Content;
 pub use render::{BlendMode, Draw, DrawMotion, DrawSpace, DrawState, RenderFrame, snap_to_pixels};
 pub use resources::*;
 pub use scene::RuntimeSnapshot;
-use scene::{collision_from_scene, spawn};
+pub(crate) use scene::collision_from_scene;
+use scene::spawn;
 use scripts::{ActiveScript, destroy_script, invoke_owned};
 pub use scripts::{NativeScript, ScriptFactory, ScriptRegistry, register_script, spawn_owned};
 
@@ -55,6 +57,9 @@ impl Runtime {
         let content = Content::load(&project)?;
         let scene = project.scene.clone();
         let mut app = EngineApp::new();
+        app.schedule_mut(engine_core::Stage::Extract).add_systems(
+            crate::transforms::propagate_system.before(engine_core::ExtractionSet::Cleanup),
+        );
         app.world_mut()
             .insert_resource(ProjectResource(Arc::new(project.clone())));
         app.world_mut().insert_resource(RuntimeLog::default());
@@ -78,6 +83,7 @@ impl Runtime {
         app.world_mut().insert_resource(ControlLocks::default());
         app.world_mut().insert_resource(PendingScene::default());
         app.world_mut().insert_resource(ScriptRegistry::default());
+        crate::events::clear(app.world_mut());
         for entity in &scene.entities {
             spawn(app.world_mut(), entity);
         }
@@ -169,6 +175,13 @@ impl Runtime {
             return Ok(());
         }
         self.validate_script_bindings(&self.scene)?;
+        crate::catalog::hydrate(
+            self.app.world_mut(),
+            &self.scene,
+            &self.project.component_catalog,
+        )?;
+        self.validate_event_bindings()?;
+        self.sync_collision()?;
         if let Err(error) = self.app.startup() {
             let error = Error::new("runtime.startup", error.to_string());
             let _ = self.stop();
@@ -209,6 +222,7 @@ impl Runtime {
             world.insert_resource(gameplay);
         }
         self.attach_scripts()?;
+        self.dispatch_events()?;
         let mut scripts = std::mem::take(&mut self.scripts);
         let mut failure = None;
         for script in &mut scripts {
@@ -241,6 +255,7 @@ impl Runtime {
             .resource_mut::<gameplay2d::World>()
             .advance_triggers();
         self.app.world_mut().resource_mut::<TriggerEvents>().0 = triggers;
+        self.queue_trigger_events()?;
         crate::audio::notify_triggers(self.app.world_mut())?;
         let mut retained = Vec::new();
         let mut retirement_error = None;
@@ -322,6 +337,7 @@ impl Runtime {
             error = Some(Error::new("runtime.shutdown", e.to_string()));
         }
         self.stopped = true;
+        crate::events::discard_pending(self.app.world_mut());
         if let Some(error) = error {
             Err(error)
         } else {
@@ -332,24 +348,14 @@ impl Runtime {
         self.started && !self.stopped
     }
     pub fn position(&self, id: &str) -> Option<[f32; 3]> {
-        self.entity(id)
-            .and_then(|e| self.app.world().get::<Transform>(e).map(|t| t.position))
+        self.entity(id).and_then(|e| {
+            crate::world_transform(self.app.world(), e)
+                .ok()
+                .map(|t| t.position())
+        })
     }
     pub fn move_entity(&mut self, id: &str, delta: [f32; 2]) -> Result<gameplay2d::MoveResult> {
-        self.sync_collision()?;
-        let result = self
-            .app
-            .world_mut()
-            .resource_mut::<gameplay2d::World>()
-            .move_body(id, delta)?;
-        let entity = self
-            .entity(id)
-            .ok_or_else(|| Error::new("runtime.entity.unknown", "Unknown entity"))?;
-        if let Some(mut transform) = self.app.world_mut().get_mut::<Transform>(entity) {
-            transform.position[0] = result.position[0];
-            transform.position[1] = result.position[1];
-        }
-        Ok(result)
+        crate::services::move_entity(self.app.world_mut(), id, delta)
     }
     fn sync_collision(&mut self) -> Result<()> {
         crate::services::sync_collision(self.app.world_mut())

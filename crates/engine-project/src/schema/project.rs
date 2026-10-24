@@ -30,7 +30,7 @@ impl Project {
                 ));
             }
             if ![
-                "script", "mesh", "texture", "font", "audio", "scene", "shader",
+                "script", "mesh", "texture", "font", "audio", "scene", "shader", "prefab",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -78,6 +78,14 @@ impl Project {
             confined_file(&root, &rust_manifest)?;
         }
         let project = Self {
+            component_catalog: if let Some(path) = &raw.component_schemas {
+                crate::catalog::ComponentCatalog::new(serde_json::from_slice(&read_bounded(
+                    &confined_file(&root, path)?,
+                    1024 * 1024,
+                )?)?)?
+            } else {
+                Default::default()
+            },
             schema: 1,
             name: raw.name,
             root,
@@ -118,6 +126,7 @@ impl Project {
     pub fn validate_scene(&self, scene: &Scene) -> Result<()> {
         scene.validate()?;
         for entity in &scene.entities {
+            self.component_catalog.validate_entity(scene, entity)?;
             let c = &entity.components;
             if let Some(s) = &c.script {
                 self.require_asset(&s.asset, "script")?;

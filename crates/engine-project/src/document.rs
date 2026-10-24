@@ -1,7 +1,31 @@
 use crate::{Error, Result, schema::*};
 use std::path::Path;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EditOperation {
+    SetComponent {
+        entity_id: String,
+        component: String,
+        value: serde_json::Value,
+        #[serde(default)]
+        merge: bool,
+    },
+    RemoveComponent {
+        entity_id: String,
+        component: String,
+    },
+    Reparent {
+        entity_id: String,
+        parent: Option<String>,
+    },
+    InstantiatePrefab {
+        asset: String,
+        prefix: String,
+        parent: Option<String>,
+    },
+    Batch {
+        operations: Vec<EditOperation>,
+    },
     SetPosition {
         entity_id: String,
         position: [f32; 3],
@@ -15,11 +39,17 @@ pub enum EditOperation {
         value: Option<MeshRenderer>,
     },
     /// Append a new entity. Its ID must not already exist in the scene.
-    CreateEntity { entity: SceneEntity },
+    CreateEntity {
+        entity: SceneEntity,
+    },
     /// Replace the entity whose ID equals `entity.id` wholesale.
-    ReplaceEntity { entity: SceneEntity },
+    ReplaceEntity {
+        entity: SceneEntity,
+    },
     /// Remove an entity. Scene validation rejects dangling references to it.
-    DeleteEntity { entity_id: String },
+    DeleteEntity {
+        entity_id: String,
+    },
 }
 fn unknown_entity(id: &str) -> Error {
     Error::new("scene.entity.unknown", format!("Unknown entity {id}"))
@@ -93,12 +123,164 @@ impl SceneDocument {
     pub fn apply(&mut self, operation: EditOperation, expected: &str) -> Result<String> {
         self.check(expected)?;
         let mut candidate = self.scene.clone();
+        Self::apply_candidate(&self.project, &mut candidate, operation, 0, &mut 1024)?;
+        self.project.validate_scene(&candidate)?;
+        self.undo
+            .push(std::mem::replace(&mut self.scene, candidate));
+        if self.undo.len() > 1024 {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.revision = self.scene.revision();
+        Ok(self.revision.clone())
+    }
+    fn apply_candidate(
+        project: &Project,
+        candidate: &mut Scene,
+        operation: EditOperation,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Result<()> {
+        if *remaining == 0 {
+            return Err(Error::new(
+                "scene.batch.limit",
+                "Total batch exceeds 1024 operations",
+            ));
+        }
+        *remaining -= 1;
+        if depth > 16 {
+            return Err(Error::new("scene.batch.limit", "Batch nesting exceeds 16"));
+        }
         match operation {
+            EditOperation::Batch { operations } => {
+                if operations.len() > 1024 {
+                    return Err(Error::new(
+                        "scene.batch.limit",
+                        "At most 1024 edits per batch",
+                    ));
+                }
+                for operation in operations {
+                    Self::apply_candidate(project, candidate, operation, depth + 1, remaining)?;
+                }
+            }
+            EditOperation::SetComponent {
+                entity_id,
+                component,
+                value,
+                merge,
+            } => {
+                let entity = entity_mut(candidate, &entity_id)?;
+                let mut components = serde_json::to_value(&entity.components)?;
+                let custom = component.contains('.');
+                if custom && !components["custom"].is_object() {
+                    components["custom"] = serde_json::json!({});
+                }
+                let slot = if custom {
+                    &mut components["custom"][&component]
+                } else {
+                    &mut components[&component]
+                };
+                *slot = if merge {
+                    match (slot.as_object(), value.as_object()) {
+                        (Some(existing), Some(patch)) => {
+                            let mut merged = existing.clone();
+                            merged.extend(patch.clone());
+                            serde_json::Value::Object(merged)
+                        }
+                        _ => value,
+                    }
+                } else {
+                    value
+                };
+                entity.components = serde_json::from_value(components)?;
+            }
+            EditOperation::RemoveComponent {
+                entity_id,
+                component,
+            } => {
+                if !COMPONENT_NAMES.contains(&component.as_str())
+                    && !project.component_catalog.0.contains_key(&component)
+                {
+                    return Err(Error::new("scene.component.unknown", "Unknown component"));
+                }
+                let entity = entity_mut(candidate, &entity_id)?;
+                if component.contains('.') {
+                    entity.components.custom.remove(&component);
+                } else {
+                    let mut value = serde_json::to_value(&entity.components)?;
+                    value
+                        .as_object_mut()
+                        .ok_or_else(|| {
+                            Error::new("scene.component.invalid", "Expected component object")
+                        })?
+                        .remove(&component);
+                    entity.components = serde_json::from_value(value)?;
+                }
+            }
+            EditOperation::Reparent { entity_id, parent } => {
+                entity_mut(candidate, &entity_id)?.parent = parent;
+            }
+            EditOperation::InstantiatePrefab {
+                asset,
+                prefix,
+                parent,
+            } => {
+                if prefix.is_empty() || prefix.len() > 128 {
+                    return Err(Error::new(
+                        "scene.prefab.prefix",
+                        "Prefab requires a bounded nonempty ID prefix",
+                    ));
+                }
+                let asset = project.require_asset(&asset, "prefab")?;
+                let prefab = load_scene(&project.root, &asset.path)?;
+                if candidate
+                    .entities
+                    .len()
+                    .saturating_add(prefab.entities.len())
+                    > 65536
+                {
+                    return Err(Error::new(
+                        "scene.prefab.limit",
+                        "Prefab would exceed scene capacity",
+                    ));
+                }
+                let ids: std::collections::BTreeMap<_, _> = prefab
+                    .entities
+                    .iter()
+                    .map(|e| (e.id.clone(), format!("{prefix}{}", e.id)))
+                    .collect();
+                for mut entity in prefab.entities {
+                    entity.id = ids[&entity.id].clone();
+                    entity.parent = entity
+                        .parent
+                        .map(|p| ids.get(&p).cloned().unwrap_or(p))
+                        .or_else(|| parent.clone());
+                    if let Some(camera) = &mut entity.components.camera_2d
+                        && let Some(follow) = &mut camera.follow
+                        && let Some(mapped) = ids.get(follow)
+                    {
+                        *follow = mapped.clone();
+                    }
+                    for (name, value) in &mut entity.components.custom {
+                        if let Some(descriptor) = project.component_catalog.0.get(name) {
+                            for pointer in &descriptor.entity_references {
+                                if let Some(reference) = value.data.pointer_mut(pointer)
+                                    && let Some(mapped) =
+                                        reference.as_str().and_then(|id| ids.get(id))
+                                {
+                                    *reference = serde_json::Value::String(mapped.clone());
+                                }
+                            }
+                        }
+                    }
+                    candidate.entities.push(entity);
+                }
+            }
             EditOperation::SetPosition {
                 entity_id,
                 position,
             } => {
-                let transform = entity_mut(&mut candidate, &entity_id)?
+                let transform = entity_mut(candidate, &entity_id)?
                     .components
                     .transform
                     .as_mut()
@@ -108,13 +290,11 @@ impl SceneDocument {
                 transform.position = position;
             }
             EditOperation::SetScript { entity_id, asset } => {
-                entity_mut(&mut candidate, &entity_id)?.components.script =
+                entity_mut(candidate, &entity_id)?.components.script =
                     asset.map(|asset| Script { version: 1, asset });
             }
             EditOperation::SetMeshRenderer { entity_id, value } => {
-                entity_mut(&mut candidate, &entity_id)?
-                    .components
-                    .mesh_renderer = value;
+                entity_mut(candidate, &entity_id)?.components.mesh_renderer = value;
             }
             EditOperation::CreateEntity { entity } => {
                 if candidate.entities.iter().any(|e| e.id == entity.id) {
@@ -127,7 +307,7 @@ impl SceneDocument {
             }
             EditOperation::ReplaceEntity { entity } => {
                 let id = entity.id.clone();
-                *entity_mut(&mut candidate, &id)? = entity;
+                *entity_mut(candidate, &id)? = entity;
             }
             EditOperation::DeleteEntity { entity_id } => {
                 let index = candidate
@@ -138,15 +318,7 @@ impl SceneDocument {
                 candidate.entities.remove(index);
             }
         }
-        self.project.validate_scene(&candidate)?;
-        self.undo
-            .push(std::mem::replace(&mut self.scene, candidate));
-        if self.undo.len() > 1024 {
-            self.undo.remove(0);
-        }
-        self.redo.clear();
-        self.revision = self.scene.revision();
-        Ok(self.revision.clone())
+        Ok(())
     }
     pub fn undo(&mut self, expected: &str) -> Result<String> {
         self.check(expected)?;

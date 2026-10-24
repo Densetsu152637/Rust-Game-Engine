@@ -1,0 +1,18 @@
+[package]
+name = "engine-assets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gltf = { version = "=1.4.1", default-features = false, features = ["utils", "names"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64.workspace = true
+blake3 = "1"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

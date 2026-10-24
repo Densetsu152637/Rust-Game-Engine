@@ -2,6 +2,9 @@ use super::*;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RuntimeSnapshot {
+    /// Nonempty means the compatibility snapshot is incomplete; hosts use try_snapshot.
+    pub diagnostics: Vec<crate::Diagnostic>,
+    pub events: Vec<crate::events::EventRecord>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -97,6 +100,14 @@ impl Runtime {
         self.scene_revision += 1;
         self.geometry.borrow_mut().clear();
         self.app.world_mut().insert_resource(collision);
+        crate::catalog::hydrate(
+            self.app.world_mut(),
+            &self.scene,
+            &self.project.component_catalog,
+        )?;
+        crate::refresh_world_transforms(self.app.world_mut())?;
+        self.validate_event_bindings()?;
+        crate::events::clear(self.app.world_mut());
         self.app
             .world_mut()
             .resource_mut::<TriggerEvents>()
@@ -108,38 +119,29 @@ impl Runtime {
         Ok(())
     }
     pub(super) fn snapshot_entity(&self, entity: Entity) -> Result<SceneEntity> {
-        let e = self
-            .app
-            .world()
-            .get_entity(entity)
-            .map_err(|_| Error::new("runtime.entity.dead", "Entity no longer exists"))?;
-        let id = e.get::<AuthoredId>().ok_or_else(|| {
-            Error::new("runtime.entity.unauthored", "Entity has no persistent ID")
-        })?;
-        Ok(SceneEntity {
-            id: id.id.clone(),
-            name: id.name.clone(),
-            components: Components {
-                transform: e.get::<Transform>().cloned(),
-                script: e.get::<Script>().cloned(),
-                mesh_renderer: e.get::<MeshRenderer>().cloned(),
-                sprite_renderer: e.get::<SpriteRenderer>().cloned(),
-                camera_2d: e.get::<Camera2D>().cloned(),
-                collider_2d: e.get::<Collider2D>().cloned(),
-            },
-        })
+        crate::services::snapshot_entity(self.app.world(), entity)
     }
     pub fn snapshot(&self) -> RuntimeSnapshot {
         let mut scene = self.scene.clone();
+        let mut diagnostics = Vec::new();
         scene.entities = self
             .app
             .world()
             .resource::<EntityLookup>()
             .0
             .values()
-            .filter_map(|e| self.snapshot_entity(*e).ok())
+            .filter(|e| self.app.world().get_entity(**e).is_ok())
+            .filter_map(|e| match self.snapshot_entity(*e) {
+                Ok(entity) => Some(entity),
+                Err(error) => {
+                    diagnostics.extend(error.diagnostics);
+                    None
+                }
+            })
             .collect();
         RuntimeSnapshot {
+            diagnostics,
+            events: crate::events::records(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self
@@ -154,22 +156,28 @@ impl Runtime {
             logs: self.app.world().resource::<RuntimeLog>().0.clone(),
         }
     }
-}
-pub(super) fn body_from(t: &Transform, b: &Collider2D) -> Body {
-    Body {
-        position: [t.position[0], t.position[1]],
-        size: b.size,
-        offset: b.offset,
-        trigger: b.trigger,
-        layer: b.layer,
-        mask: b.mask,
+    pub fn try_snapshot(&self) -> Result<RuntimeSnapshot> {
+        let snapshot = self.snapshot();
+        if snapshot.diagnostics.is_empty() {
+            Ok(snapshot)
+        } else {
+            Err(Error {
+                diagnostics: snapshot.diagnostics,
+            })
+        }
     }
 }
-pub(super) fn collision_from_scene(scene: &Scene) -> Result<gameplay2d::World> {
+pub(crate) fn collision_from_scene(scene: &Scene) -> Result<gameplay2d::World> {
     let mut world = gameplay2d::World::default();
     for entity in &scene.entities {
-        if let (Some(t), Some(b)) = (&entity.components.transform, &entity.components.collider_2d) {
-            world.upsert(entity.id.clone(), body_from(t, b))?;
+        if let Some(collider) = &entity.components.collider_2d {
+            world.upsert(
+                entity.id.clone(),
+                crate::transforms::collider_body(
+                    crate::transforms::scene_world_transform(scene, &entity.id)?,
+                    collider,
+                ),
+            )?;
         }
     }
     Ok(world)
@@ -181,6 +189,17 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
         name: authored.name.clone(),
     });
     let c = &authored.components;
+    if let Some(parent) = &authored.parent {
+        e.insert(crate::Parent(parent.clone()));
+    } else {
+        e.remove::<crate::Parent>();
+    }
+    e.insert(crate::catalog::DynamicComponents(c.custom.clone()));
+    if let Some(bindings) = &c.event_bindings {
+        e.insert(bindings.clone());
+    } else {
+        e.remove::<crate::EventBindings>();
+    }
     if let Some(v) = &c.transform {
         e.insert(v.clone());
     }
