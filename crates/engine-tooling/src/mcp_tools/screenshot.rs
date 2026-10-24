@@ -81,6 +81,17 @@ impl Tool for ScreenshotTool {
                     json!({"type": ["object", "null"], "description":
                         "Temporal upscaler request and what the renderer did for this image."}),
                 ),
+                (
+                    "frame_generation",
+                    json!({"type": ["object", "null"], "description":
+                        "Frame generation request and status; with dlss_fg the previous tick is \
+                         rendered first so NGX can generate the frames before this image."}),
+                ),
+                (
+                    "generated_frames",
+                    json!({"type": "integer", "description":
+                        "NGX-generated frames produced before the returned real frame."}),
+                ),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
             ])),
@@ -151,6 +162,8 @@ impl Tool for ScreenshotTool {
             "png_bytes": png.len(), "adapter": shot["adapter"],
             "scene_id": report["scene"]["scene"]["scene_id"],
             "upscaler": report["scene"]["upscaler"],
+            "frame_generation": report["scene"]["frame_generation"],
+            "generated_frames": shot["generated_frames"].as_array().map_or(0, Vec::len),
             "build": build, "run_millis": started.elapsed().as_millis(),
         });
         Ok(ToolResult::new(result).with_content(Content::Image {

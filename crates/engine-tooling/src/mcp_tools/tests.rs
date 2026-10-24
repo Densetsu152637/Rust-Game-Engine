@@ -133,7 +133,9 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         "network":{"connected":true},
         "input_devices":{"devices":[{"descriptor":{"id":"switch"},"connected":true}]},
         "upscaler":{"requested":{"mode":"dlss_sr","quality":"quality"},"state":"not_rendered",
-            "evaluated_frames":0,"history_resets":0}
+            "evaluated_frames":0,"history_resets":0},
+        "frame_generation":{"requested":{"mode":"dlss_fg","multiplier":2},"state":"not_rendered",
+            "generated_frames":0,"presented_frames":0,"history_resets":0}
     }});
     let summary = summarize(&report, None, 50);
     assert_eq!(summary["profile"]["frames"].as_array().unwrap().len(), 32);
@@ -147,6 +149,8 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     );
     assert_eq!(summary["upscaler"]["state"], "not_rendered");
     assert_eq!(summary["upscaler"]["requested"]["mode"], "dlss_sr");
+    assert_eq!(summary["frame_generation"]["state"], "not_rendered");
+    assert_eq!(summary["frame_generation"]["requested"]["multiplier"], 2);
     assert_eq!(summary["telemetry_omitted"], json!([]));
     let oversized = summarize(
         &json!({"scene":{"input_devices":{"label":"x".repeat(65_536)}}}),
@@ -164,6 +168,17 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     assert_eq!(oversized_upscaler["telemetry_omitted"], json!(["upscaler"]));
     let absent = summarize(&json!({}), None, 50);
     assert!(absent["upscaler"].is_null());
+    assert!(absent["frame_generation"].is_null());
+    let oversized_generation = summarize(
+        &json!({"scene":{"frame_generation":{"fallback_reason":"x".repeat(65_536)}}}),
+        None,
+        50,
+    );
+    assert!(oversized_generation["frame_generation"].is_null());
+    assert_eq!(
+        oversized_generation["telemetry_omitted"],
+        json!(["frame_generation"])
+    );
     assert!(absent["profile"].is_null());
     assert!(absent["input_devices"].is_null());
     assert_eq!(absent["telemetry_omitted"], json!([]));

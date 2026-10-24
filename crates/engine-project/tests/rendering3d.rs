@@ -302,3 +302,105 @@ fn scenes_without_a_3d_camera_report_no_upscaler() {
         .state = UpscalerState::Native;
     assert!(runtime.upscaler_status().is_none());
 }
+#[test]
+fn authored_frame_generation_is_validated_documented_and_overridable() {
+    let camera: Camera3D =
+        serde_json::from_value(json!({"frame_generation":{"mode":"dlss_fg","multiplier":4}}))
+            .unwrap();
+    camera.validate().unwrap();
+    assert_eq!(camera.frame_generation.mode, FrameGenerationMode::DlssFg);
+    assert_eq!(
+        serde_json::to_value(&camera).unwrap()["frame_generation"],
+        json!({"mode":"dlss_fg","multiplier":4})
+    );
+    let defaulted: Camera3D = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(
+        defaulted.frame_generation,
+        FrameGenerationSettings::default()
+    );
+    assert_eq!(defaulted.frame_generation.multiplier, 2);
+    for multiplier in [0, 1, 5, 8] {
+        let camera: Camera3D = serde_json::from_value(
+            json!({"frame_generation":{"mode":"dlss_fg","multiplier":multiplier}}),
+        )
+        .unwrap();
+        assert!(camera.validate().is_err(), "{multiplier}");
+    }
+    for bad in [
+        json!({"frame_generation":{"mode":"dlss_mfg"}}),
+        json!({"frame_generation":{"multiplier":2.5}}),
+        json!({"frame_generation":{"mode":"off","pacing":1}}),
+    ] {
+        assert!(
+            serde_json::from_value::<Camera3D>(bad.clone()).is_err(),
+            "{bad}"
+        );
+    }
+    // The schema served by MCP component_schema documents the same bounds.
+    let doc = engine_project::schema::component_docs()
+        .into_iter()
+        .find(|d| d.name == "Camera3D")
+        .unwrap();
+    let schema = &doc.schema["properties"]["frame_generation"]["properties"];
+    assert_eq!(schema["mode"]["enum"], json!(["off", "dlss_fg"]));
+    assert_eq!(
+        (
+            schema["multiplier"]["minimum"].clone(),
+            schema["multiplier"]["maximum"].clone()
+        ),
+        (json!(2), json!(4))
+    );
+
+    let dir = fixture();
+    let mut project = Project::load(dir.path().join("project.json")).unwrap();
+    project.scene.entities[0]
+        .components
+        .camera3d
+        .as_mut()
+        .unwrap()
+        .frame_generation
+        .mode = FrameGenerationMode::DlssFg;
+    let mut bad_scene = project.scene.clone();
+    bad_scene.entities[0]
+        .components
+        .camera3d
+        .as_mut()
+        .unwrap()
+        .frame_generation
+        .multiplier = 9;
+    assert!(project.validate_scene(&bad_scene).is_err());
+    let mut runtime = Runtime::new(project).unwrap();
+    let status = runtime.try_snapshot().unwrap().frame_generation.unwrap();
+    assert_eq!(status.state, FrameGenerationState::NotRendered);
+    assert_eq!(status.requested.mode, FrameGenerationMode::DlssFg);
+    assert_eq!(status.generated_frames, 0);
+    let value = serde_json::to_value(&status).unwrap();
+    assert_eq!(value["state"], "not_rendered");
+    assert!(value.get("multiplier").is_none());
+    let world = runtime.app_mut().world_mut();
+    world
+        .resource_mut::<FrameGenerationControl>()
+        .override_settings = Some(FrameGenerationSettings {
+        mode: FrameGenerationMode::DlssFg,
+        multiplier: 3,
+    });
+    let frame = runtime.extract_scene_frame().unwrap();
+    assert_eq!(
+        frame.camera3d.unwrap().camera.frame_generation.multiplier,
+        3
+    );
+    // An invalid native override is ignored rather than reaching the renderer.
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<FrameGenerationControl>()
+        .override_settings = Some(FrameGenerationSettings {
+        mode: FrameGenerationMode::DlssFg,
+        multiplier: 7,
+    });
+    let frame = runtime.extract_scene_frame().unwrap();
+    assert_eq!(
+        frame.camera3d.unwrap().camera.frame_generation.multiplier,
+        2
+    );
+}

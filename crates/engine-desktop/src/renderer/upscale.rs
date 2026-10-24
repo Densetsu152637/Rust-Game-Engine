@@ -178,7 +178,7 @@ struct Split { @location(0) depth: vec4<f32>, @location(1) motion: vec4<f32> }
     /// Engine-owned GPU objects of the DLSS path plus the NGX session.
     pub(crate) struct DlssStage {
         paths: DlssPaths,
-        context: Option<engine_dlss::Context>,
+        context: Option<(engine_dlss::Context, engine_dlss::SessionOptions)>,
         pub session: Option<((UpscalerQuality, [u32; 2]), engine_dlss::Session)>,
         motion: Option<([u32; 2], wgpu::TextureView)>,
         split_layout: wgpu::BindGroupLayout,
@@ -325,28 +325,38 @@ struct Split { @location(0) depth: vec4<f32>, @location(1) motion: vec4<f32> }
             }
             // Release the previous SR feature before creating its replacement.
             self.session = None;
-            let context = match &self.context {
-                Some(context) => context.clone(),
-                None => {
-                    let options = engine_dlss::SessionOptions {
-                        project_id: self.paths.project_id.clone(),
-                        runtime_dir: self.paths.runtime_dir.clone(),
-                        log_dir: self.paths.log_dir.clone(),
-                        output_size: output,
-                        quality: quality(requested),
-                    };
-                    let context = engine_dlss::Context::new(device, queue, &options)
-                        .map_err(|e| format!("DLSS initialization failed: {e}"))?;
-                    self.context = Some(context.clone());
-                    context
-                }
-            };
+            let context = self.ensure_context(device, queue, output)?.0;
             let session =
                 engine_dlss::Session::with_context(context, output, quality(requested))
                     .map_err(|e| format!("DLSS Super Resolution feature creation failed: {e}"))?;
             self.session = Some((key, session));
             self.last_evaluation = None;
             Ok(true)
+        }
+
+        /// The shared NGX context (created on first use, for SR and frame
+        /// generation) and the session options it was created with.
+        #[allow(unreachable_code, unused_variables)] // uninhabited without the SDK
+        pub fn ensure_context(
+            &mut self,
+            device: &wgpu::Device,
+            queue: &wgpu::Queue,
+            output: [u32; 2],
+        ) -> Result<(engine_dlss::Context, engine_dlss::SessionOptions), String> {
+            if let Some(context) = &self.context {
+                return Ok(context.clone());
+            }
+            let options = engine_dlss::SessionOptions {
+                project_id: self.paths.project_id.clone(),
+                runtime_dir: self.paths.runtime_dir.clone(),
+                log_dir: self.paths.log_dir.clone(),
+                output_size: output,
+                quality: engine_dlss::Quality::Quality,
+            };
+            let context = engine_dlss::Context::new(device, queue, &options)
+                .map_err(|e| format!("DLSS initialization failed: {e}"))?;
+            self.context = Some((context.clone(), options.clone()));
+            Ok((context, options))
         }
 
         /// The `Rgba32Float` motion/depth intermediate at the render size.
@@ -535,6 +545,7 @@ mod tests {
                 project_id: "p".into(),
                 runtime_dir: ".".into(),
                 log_dir: ".".into(),
+                frame_generation: None,
             }));
             assert!(
                 upscaler

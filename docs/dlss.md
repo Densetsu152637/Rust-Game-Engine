@@ -14,7 +14,7 @@ success. Hosts retain their normal rendering path when setup fails.
 | Feature | This slice | Required renderer data |
 | --- | --- | --- |
 | Super Resolution / DLAA | Native NGX execution and desktop 3D renderer integration (`Camera3D.upscaler`), tested on Windows RTX 5080 | Jittered HDR color, clip depth, current-to-previous motion, temporal reset |
-| Frame Generation (2x and multi-frame) | Native NGX generation into a caller texture, tested offscreen on Windows RTX 5080; presentation pending renderer integration | Backbuffer and HUD-less color, depth/motion, unjittered camera constants, reset, presentation pacing |
+| Frame Generation (2x and multi-frame) | Native NGX generation and desktop renderer/window integration (`Camera3D.frame_generation`, with or without SR), generation tested offscreen on Windows RTX 5080; on-screen pacing is a simple baseline needing human review | Backbuffer and HUD-less color, depth/motion, unjittered camera constants, reset, presentation pacing |
 | Ray Reconstruction | Separate integration pending | Noisy ray-traced lighting, diffuse/specular albedo, normals/roughness, depth/motion, camera matrices |
 | DLSS 5 neural rendering | Deferred by user: no SDK access | Requires NVIDIA's neural-rendering SDK/runtime/model access; do not infer its ABI |
 
@@ -395,18 +395,25 @@ enabled with synchronization validation
 expecting no errors. Correct readback results do not establish correct
 synchronization.
 
+### Renderer integration
+
+The desktop renderer implements the HUD-less/UI split, `R32Float`/`Rg16Float`
+depth and motion, unjittered row-major camera constants with SR's jitter passed
+in render pixels, shared reset triggers plus a no-game-frames gap, and
+in-order window presentation with sleep-based even spacing. See
+[Frame generation](rendering3d.md#frame-generation-dlss-frame-generation) for
+the contract, evidence and limits. The jitter unit could not be confirmed:
+pixels, clip units, zero and negated jitter gave identical generated frames in
+the SR+FG test scene.
+
 ### Remaining for renderer integration
 
-To schedule after SR lands:
-
-- asynchronous presentation pacing and present ordering on the swapchain;
-- the HUD-less/UI split;
-- jittered camera constants for SR versus unjittered ones for FG, including
-  confirming the jitter unit;
-- depth and motion copies into `R32Float`/`Rg16Float`;
+- presentation pacing beyond the sleep/vsync baseline (a dedicated present
+  thread or swapchain timing) and human validation of on-screen pacing;
 - an asynchronous lifetime to replace the per-frame wait;
 - VSync and frame-rate-limit interaction, and latency reduction (Reflex);
 - a context that does not require the SR runtime for FG-only use;
+- native render passes with frame generation (they currently disable it);
 - `OutputReal`, UI-alpha recomposition, `NotRenderingGameFrames`, HDR and
   dynamic-resolution parameters;
 - Linux runtime packaging (`libnvidia-ngx-dlssg.so.<ver>`, unvalidated);

@@ -3,7 +3,9 @@
 `Runtime::extract_scene_frame` produces immutable `SceneRenderFrame` snapshots.
 The desktop path renders a directional shadow map, depth-tested 3D meshes
 (optionally through [DLSS Super Resolution](#temporal-upscaling-dlss-super-resolution)),
-then 2D sprites/UI. `RenderFrame`, `Draw`, `SpriteRenderer::render`, offscreen sprite
+then 2D sprites/UI, optionally with
+[DLSS Frame Generation](#frame-generation-dlss-frame-generation) between
+presented frames. `RenderFrame`, `Draw`, `SpriteRenderer::render`, offscreen sprite
 rendering, custom WGSL and native render callbacks remain available.
 
 ## Camera and lighting
@@ -152,15 +154,16 @@ quality/output size is not retried every frame; changing either retries.
 NGX requires Vulkan extensions at device creation, before the `GpuContext`
 exists. The desktop runner and `render_screenshot` prepare a DLSS-capable device
 when the first extracted frame requests `dlss_sr` or a `DlssConfig` resource
-inserted before launch sets `prepare_device` (for games that enable DLSS later).
+inserted before launch sets `prepare_device` (for games that enable DLSS later;
+it prepares Super Resolution and Frame Generation).
 Enabling DLSS at runtime on an unprepared device falls back with that reason.
 `DlssConfig` also holds the nonsecret NGX `project_id` (an engine default is
 used otherwise; ship your own) and optional `runtime_dir`/`log_dir`. Unset
 directories use `NGX_RUNTIME_DIR`/`NGX_LOG_DIR`, else the executable's directory
 and `<temp>/engine-ngx-logs` (created). Machine paths never belong in scenes.
 Custom hosts call `request_upscaler_gpu(instance, surface, options, &config,
-want_dlss)`, then `GpuRenderer::with_upscaler_device`; `upscaler_status()` and
-`reset_upscaler_history()` expose the same state. Any preparation failure
+request)` with a `DlssRequest`, then `GpuRenderer::with_upscaler_device`;
+`upscaler_status()` and `reset_temporal_history()` expose the same state. Any preparation failure
 creates the ordinary device and keeps the reason.
 
 Build with `--features engine-desktop/dlss` (forwarding to
@@ -213,6 +216,131 @@ the desktop runner, and any frame rendered without DLSS in between.
 - Editor viewports (`OffscreenSprites`) render natively. Only Windows x86_64 on
   an RTX 5080 has been validated.
 
+## Frame generation (DLSS Frame Generation)
+
+`Camera3D.frame_generation` requests generated frames between rendered frames:
+
+```json
+{"Camera3D":{"frame_generation":{"mode":"dlss_fg","multiplier":2},
+  "upscaler":{"mode":"dlss_sr","quality":"quality"}}}
+```
+
+`mode` is `off` (default) or `dlss_fg`; `multiplier` (2..=4, default 2) is the
+number of presented frames per rendered frame, so 2 inserts one generated
+frame and 4 inserts three. Scene validation rejects other multipliers, and
+`component_set` edits the field. At runtime the renderer also checks NGX's
+`MultiFrameCountMax` (5 on the tested RTX 5080 / driver 617.14); a larger
+request falls back with that limit in the reason. Frame generation works with
+or without Super Resolution: without SR, depth and motion are rendered at the
+3D viewport size; with SR they are the NGX SR inputs at the render size.
+
+### Control and status
+
+`FrameGenerationControl` is the sibling of `UpscalerControl`:
+`override_settings` (an invalid override is ignored), `reset_history`, and
+`status`. Either control's `reset_history` resets both histories.
+`FrameGenerationStatus` reports `requested`, `state` (`not_rendered`, `off`,
+`active`, `fallback`), `fallback_reason` (at most 512 bytes), `multiplier` and
+`multi_frame_max` when known, `generated_frames` (presentable frames NGX
+produced), `presented_frames` (generated frames a window host presented) and
+`history_resets`. Only frames returned by a successful NGX evaluation as
+presentable are counted. `RuntimeSnapshot.frame_generation`,
+`project_run_headless` (`frame_generation`, same 64 KiB bound) and
+`render_screenshot` (`frame_generation`, `generated_frames`) report it.
+
+Fallback reasons include those of Super Resolution plus: the device was
+prepared without Frame Generation extensions; FG device preparation failed;
+`FrameGenerator` creation failed (for example the FG runtime
+`nvngx_dlssg.dll` is missing next to `nvngx_dlss.dll`); a multiplier above
+NGX's maximum; native render passes are registered (they target the
+presentation format, while generated frames use the engine's `Rgba8Unorm`
+backbuffer); and an evaluation failure, after which only real frames are
+presented until the request or size changes.
+
+### Device and runtime
+
+`DlssRequest::for_frame` asks `request_upscaler_gpu` for Super Resolution
+and/or Frame Generation from the first frame, or both with
+`DlssConfig.prepare_device`. Frame generation devices come from
+`create_device_for_features(&[SuperResolution, FrameGeneration])`; if that
+fails an SR-only device is created and FG falls back with the reason.
+`FrameGenerator::with_context` shares the SR context. The shared context checks
+SR availability, so frame generation needs the SR runtime as well as the FG
+runtime even when `upscaler.mode` is `none`.
+
+### Frame structure
+
+For each real frame (sizes are those of the 3D viewport, the "output"):
+
+1. The 3D scene renders into the HUD-less color: an `Rgba8Unorm` texture
+   written through an sRGB view, so it holds the same encoded bytes as an sRGB
+   swapchain. With SR, the upscaled output is composited into it; without SR,
+   the scene renders at output size without jitter.
+2. The engine depth/motion pass writes `R32Float` depth and `Rg16Float`
+   current-to-previous pixel motion at the render size (SR inputs, or engine
+   textures without SR).
+3. The HUD-less color is copied into the backbuffer and 2D sprites/UI are drawn
+   over it. The two images differ only where UI is drawn.
+4. For indices `1..=multiplier-1`, `FrameGenerator::evaluate` generates the
+   frames between the previous and this real frame, with unjittered camera
+   constants in NVIDIA's row-major post-multiply convention
+   (`view_to_clip`, `clip_to_prev_clip` from this and the previous
+   view-projection, camera basis, near/far, FOV, aspect), motion scale 1 and
+   the SR jitter in render pixels. Only `Presentable` results are kept.
+5. Hosts present the generated frames in order, then the real frame.
+
+`GpuRenderer::render_generated(frame)` renders the real frame and generates;
+`generated_frame_count`, `present_generated(i, view)` and `present_real(view)`
+draw them into presentation views; `capture_generated()` reads back the
+generated frames followed by the real frame (sRGB RGBA8) for tests and tools.
+`render_scene` draws the real frame into its target and keeps the generated
+frames available for capture. `render_scene_without_generation` is the
+non-generated path. `render_screenshot` with `dlss_fg` renders the
+second-to-last tick first, then the final tick, and writes generated frames as
+`<name>-generated-<i>.png` beside the screenshot (this path is not exercised
+with an active generator by the automated tests, because tooling-built
+generations do not enable the `dlss` feature).
+
+History resets on SR's triggers (first frame, projection change, explicit
+`reset_temporal_history`, scene revision change, resize or quality change via a
+new generator), any frame without frame generation in between, window resume
+after suspension, and a gap of more than 250 ms between real frames (pause,
+menu, minimized window: no game frames). A reset frame generates nothing.
+
+### Presentation and pacing
+
+`WindowSurface::present_scene` presents each generated frame on its own
+swapchain image, then the real frame. The first generated frame is presented
+immediately; the rest and the real frame are spaced evenly over the recent
+real-frame interval (`presentation_offsets`, an exponential average from
+`PresentPacer`, each gap capped at 50 ms) with `thread::sleep` on the render
+thread. With the default FIFO (vsync) present mode, each present also waits
+for a swapchain image, so presents keep their order and real frames are
+limited to about `refresh / multiplier` (expected from FIFO semantics, not
+measured).
+
+This is a simple correctness baseline. Holding the real frame until its
+generated frames are shown adds at least one generated-frame interval of
+latency; NVIDIA Reflex and frame-rate limiting are not integrated, and the
+per-evaluation wait of the NGX adapter costs time. No frame rate or latency
+improvement is claimed. Automated tests verify generation and ordering
+offscreen; on-screen pacing needs a human check: run a moving scene with
+`dlss_fg` in a window at vsync and at `ENGINE_PRESENT_MODE=immediate`, watch
+for even motion without judder or a stuttering HUD, and compare the
+`presented_frames` and real frame counts in the run report.
+
+### Frame generation limitations
+
+- Native render passes disable frame generation (fallback with reason).
+- No UI alpha recomposition, `OutputReal`, `NotRenderingGameFrames`, HDR or
+  dynamic resolution parameters; SDR `Rgba8Unorm` only.
+- Generated frames inherit the motion limits above (transparent surfaces,
+  vertex displacement, CPU skinning).
+- Motion blur is not implemented, so the guide's motion-blur scaling does not
+  apply.
+- Only Windows x86_64 on an RTX 5080 has been validated; Linux FG runtime
+  packaging is unvalidated.
+
 ## Shader and native contracts
 
 Legacy vertex locations remain 0 position (`vec3<f32>`), 1 UV (`vec2<f32>`), and
@@ -249,6 +377,23 @@ switches, and shadow-map resizing. GPU tests fail if an adapter is unavailable.
 Set `ENGINE_PBR_CAPTURE` to an absolute PNG path to retain the shadow test image.
 Project rendering/import tests cover authored round trips, invalid settings and
 asset kinds, texture mappings, and normal-array boundary failures.
+
+`cargo test -p engine-desktop --test frame_generation -- --ignored --nocapture`
+checks on any adapter that frame generation without a prepared device presents
+real frames only with a reason. With `--features dlss`, the SDK and a runtime
+directory holding both `nvngx_dlss.dll` and `nvngx_dlssg.dll`, the NGX test
+renders a moving engine scene (640x384) through `GpuRenderer` and inspects the
+captured frames. On 2026-10-24 (RTX 5080, runtime 310.9.16, MultiFrameCountMax
+5) generated frames lay between consecutive real frames: maximum centroid error
+from even spacing 0.38 px for 2x object motion (step 12.5 px), 0.18 px for a
+2x camera pan, 0.36 px for 4x (three frames per 25 px step) and 0.16 px for
+SR (427x256 render) plus 2x. A generated SR+FG frame differed from a native
+render of the midpoint state by 0.28/255 on average. HUD pixels in generated
+frames matched the real HUD (within 2 levels at its edges). A cut and a 300 ms
+pause each produced a reset frame without generated frames. Passing pixels,
+clip units, zero or negated SR jitter as FG `JitterOffset` produced identical
+generated frames on this scene, so the jitter unit is not observable here; the
+renderer passes render pixels, the SR convention.
 
 `cargo test -p engine-desktop --test upscaler -- --ignored --nocapture` checks on
 any adapter that a DLSS request without a prepared device renders the native

@@ -26,8 +26,9 @@ pub struct DlssConfig {
     pub project_id: String,
     pub runtime_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
-    /// Prepare a DLSS-capable device even when the first frame does not
-    /// request DLSS, so callbacks can enable it later at runtime.
+    /// Prepare a device for DLSS Super Resolution and Frame Generation even
+    /// when the first frame requests neither, so callbacks can enable them
+    /// later at runtime.
     pub prepare_device: bool,
 }
 impl Default for DlssConfig {
@@ -89,6 +90,45 @@ pub(crate) struct DlssPaths {
     pub project_id: String,
     pub runtime_dir: PathBuf,
     pub log_dir: PathBuf,
+    /// `None` when the device carries NGX's Frame Generation extensions;
+    /// otherwise why frame generation cannot run on it.
+    pub frame_generation: Option<String>,
+}
+
+/// Which NGX features the host device should be prepared for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DlssRequest {
+    pub super_resolution: bool,
+    pub frame_generation: bool,
+}
+impl DlssRequest {
+    pub const NONE: Self = Self {
+        super_resolution: false,
+        frame_generation: false,
+    };
+    pub const ALL: Self = Self {
+        super_resolution: true,
+        frame_generation: true,
+    };
+    pub fn any(self) -> bool {
+        self.super_resolution || self.frame_generation
+    }
+    /// The request implied by a first frame and the host configuration.
+    pub fn for_frame(
+        frame: &engine_project::rendering3d::SceneRenderFrame,
+        config: &DlssConfig,
+    ) -> Self {
+        use engine_project::rendering3d::{FrameGenerationMode, UpscalerMode};
+        if config.prepare_device {
+            return Self::ALL;
+        }
+        let camera = frame.camera3d.as_ref().map(|c| &c.camera);
+        Self {
+            super_resolution: camera.is_some_and(|c| c.upscaler.mode == UpscalerMode::DlssSr),
+            frame_generation: camera
+                .is_some_and(|c| c.frame_generation.mode == FrameGenerationMode::DlssFg),
+        }
+    }
 }
 
 impl Default for UpscalerDevice {
@@ -111,6 +151,37 @@ impl UpscalerDevice {
             DeviceSupport::Ready(_) => None,
         }
     }
+
+    /// `None` when DLSS Frame Generation can run on this device.
+    pub fn frame_generation_unavailable_reason(&self) -> Option<String> {
+        match &self.0 {
+            DeviceSupport::NotPrepared => {
+                Some(fg_build_unavailable_reason().unwrap_or_else(|| {
+                    "the GPU device was created without DLSS extensions; request frame generation \
+                 before device creation (Camera3D.frame_generation in the first frame or \
+                 DlssConfig.prepare_device)"
+                        .into()
+                }))
+            }
+            DeviceSupport::Unavailable(reason) => Some(reason.clone()),
+            #[cfg(feature = "dlss")]
+            DeviceSupport::Ready(paths) => paths.frame_generation.clone(),
+        }
+    }
+}
+
+/// Why this build cannot run DLSS Frame Generation at all, if it cannot.
+pub fn fg_build_unavailable_reason() -> Option<String> {
+    #[cfg(not(feature = "dlss"))]
+    {
+        Some("engine-desktop was built without the `dlss` feature".into())
+    }
+    #[cfg(feature = "dlss")]
+    {
+        engine_dlss::build_support(engine_dlss::Feature::FrameGeneration)
+            .err()
+            .map(|e| e.to_string())
+    }
 }
 
 /// Why this build cannot run DLSS at all, if it cannot.
@@ -127,23 +198,25 @@ pub fn build_unavailable_reason() -> Option<String> {
     }
 }
 
-/// Create the host GPU. With `want_dlss`, a DLSS-capable Vulkan device is
-/// attempted first; any failure (no feature/SDK, non-Vulkan selection, non-NVIDIA
-/// adapter, missing runtime, unsupported extensions) creates the ordinary
-/// device instead and records the reason. `surface`, when given, must be usable
-/// by the chosen adapter.
+/// Create the host GPU. When `request` asks for any DLSS feature, a
+/// DLSS-capable Vulkan device is attempted first (with Frame Generation
+/// extensions when requested, else Super Resolution only); any failure (no
+/// feature/SDK, non-Vulkan selection, non-NVIDIA adapter, missing runtime,
+/// unsupported extensions) creates the ordinary device instead and records the
+/// reason. Frame generation shares the SR context, so it also needs the SR
+/// runtime. `surface`, when given, must be usable by the chosen adapter.
 pub async fn request_upscaler_gpu(
     instance: wgpu::Instance,
     surface: Option<&wgpu::Surface<'_>>,
     options: &WgpuOptions,
     config: &DlssConfig,
-    want_dlss: bool,
+    request: DlssRequest,
 ) -> Result<(GpuContext, UpscalerDevice)> {
-    if !want_dlss {
+    if !request.any() {
         let gpu = GpuContext::request_with_options(instance, surface, options).await?;
         return Ok((gpu, UpscalerDevice::default()));
     }
-    let reason = match try_dlss_device(&instance, surface, options, config).await {
+    let reason = match try_dlss_device(&instance, surface, options, config, request).await {
         Ok(ready) => return Ok(ready_gpu(instance, ready)),
         Err(reason) => reason,
     };
@@ -173,6 +246,7 @@ async fn try_dlss_device(
     _: Option<&wgpu::Surface<'_>>,
     _: &WgpuOptions,
     _: &DlssConfig,
+    _: DlssRequest,
 ) -> std::result::Result<Ready, String> {
     Err(build_unavailable_reason().unwrap_or_default())
 }
@@ -183,17 +257,18 @@ async fn try_dlss_device(
     surface: Option<&wgpu::Surface<'_>>,
     options: &WgpuOptions,
     config: &DlssConfig,
+    request: DlssRequest,
 ) -> std::result::Result<Ready, String> {
     if let Some(reason) = build_unavailable_reason() {
         return Err(reason);
     }
     if !options.backends.to_wgpu().contains(wgpu::Backends::VULKAN) {
         return Err(format!(
-            "DLSS Super Resolution requires the Vulkan backend; the {} graphics API was selected",
+            "DLSS requires the Vulkan backend; the {} graphics API was selected",
             options.backends.name()
         ));
     }
-    let paths = DlssPaths {
+    let mut paths = DlssPaths {
         project_id: config.project_id.clone(),
         runtime_dir: config
             .resolved_runtime_dir()
@@ -201,6 +276,12 @@ async fn try_dlss_device(
         log_dir: config
             .resolved_log_dir()
             .ok_or("cannot create a DLSS log directory (set DlssConfig.log_dir or NGX_LOG_DIR)")?,
+        frame_generation: Some(
+            "the GPU device was prepared without DLSS Frame Generation extensions; request \
+             frame generation before device creation (Camera3D.frame_generation in the first \
+             frame or DlssConfig.prepare_device)"
+                .into(),
+        ),
     };
     let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
     let adapter = adapters
@@ -224,13 +305,28 @@ async fn try_dlss_device(
         output_size: [1, 1],
         quality: engine_dlss::Quality::Quality,
     };
-    let (device, queue) =
-        engine_dlss::create_device(&adapter, &descriptor, &session).map_err(|e| {
-            format!(
-                "DLSS device preparation failed on {}: {e}",
-                adapter.get_info().name
-            )
-        })?;
+    let name = adapter.get_info().name;
+    if request.frame_generation {
+        use engine_dlss::Feature;
+        match engine_dlss::create_device_for_features(
+            &adapter,
+            &descriptor,
+            &session,
+            &[Feature::SuperResolution, Feature::FrameGeneration],
+        ) {
+            Ok((device, queue)) => {
+                paths.frame_generation = None;
+                return Ok((adapter, device, queue, paths));
+            }
+            Err(e) => {
+                paths.frame_generation = Some(format!(
+                    "DLSS Frame Generation device preparation failed on {name}: {e}"
+                ));
+            }
+        }
+    }
+    let (device, queue) = engine_dlss::create_device(&adapter, &descriptor, &session)
+        .map_err(|e| format!("DLSS device preparation failed on {name}: {e}"))?;
     Ok((adapter, device, queue, paths))
 }
 

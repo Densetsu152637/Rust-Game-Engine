@@ -12,6 +12,9 @@ pub struct RuntimeSnapshot {
     /// Renderer-reported temporal upscaler state; absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upscaler: Option<crate::rendering3d::UpscalerStatus>,
+    /// Renderer-reported frame generation state; absent without a 3D camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_generation: Option<crate::rendering3d::FrameGenerationStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -162,6 +165,7 @@ impl Runtime {
                 .get_resource::<crate::input::InputDevices>()
                 .map(crate::input::InputDevices::snapshot),
             upscaler: self.upscaler_status(),
+            frame_generation: self.frame_generation_status(),
             ticks: self.ticks,
             scene,
             live_entities: self

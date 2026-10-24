@@ -123,11 +123,13 @@ fn screenshot_on(
     backends: Result<engine_desktop::WgpuBackends>,
 ) -> Result<serde_json::Value> {
     use engine_desktop::{
-        DlssConfig, FIXED_DELTA, GpuContext, GpuRenderer, GpuRequirements, NativeRenderPasses,
-        OffscreenTarget, RenderLimits, WgpuOptions,
+        DlssConfig, DlssRequest, FIXED_DELTA, GpuContext, GpuRenderer, GpuRequirements,
+        NativeRenderPasses, OffscreenTarget, RenderLimits, WgpuOptions,
     };
     use engine_project::input::merge_input;
-    use engine_project::rendering3d::{UpscalerControl, UpscalerMode};
+    use engine_project::rendering3d::{
+        FrameGenerationControl, FrameGenerationMode, UpscalerControl,
+    };
     let backends = backends?;
     let [width, height] = arguments.screenshot_size;
     if let Some(root) = &arguments.user_data {
@@ -138,6 +140,9 @@ fn screenshot_on(
     runtime.start()?;
     let mut event_trace = engine_project::EventTrace::default();
     let result = (|| -> Result<serde_json::Value> {
+        // Frame generation needs the previous real frame to generate the
+        // frames before the final one.
+        let mut previous_frame = None;
         let mut previous = std::collections::BTreeSet::new();
         let mut ticks = 0_u64;
         let mut mixed = [0.0_f32; 1600];
@@ -152,6 +157,16 @@ fn screenshot_on(
             event_trace.capture(&runtime, tick);
             audio.mix(&mut mixed)?;
             ticks += 1;
+            if tick + 2 == arguments.ticks {
+                let frame = runtime.extract_scene_frame()?;
+                if frame
+                    .camera3d
+                    .as_ref()
+                    .is_some_and(|c| c.camera.frame_generation.mode == FrameGenerationMode::DlssFg)
+                {
+                    previous_frame = Some(frame);
+                }
+            }
         }
         let frame = runtime.extract_scene_frame()?;
         let requirements = runtime
@@ -169,11 +184,7 @@ fn screenshot_on(
             .world_mut()
             .remove_resource::<DlssConfig>()
             .unwrap_or_default();
-        let want_dlss = dlss.prepare_device
-            || frame
-                .camera3d
-                .as_ref()
-                .is_some_and(|c| c.camera.upscaler.mode == UpscalerMode::DlssSr);
+        let request = DlssRequest::for_frame(&frame, &dlss);
         let options = WgpuOptions {
             backends,
             requirements,
@@ -184,7 +195,7 @@ fn screenshot_on(
             None,
             &options,
             &dlss,
-            want_dlss,
+            request,
         ))
         .map_err(|error| {
             engine_project::Error::new(
@@ -202,13 +213,42 @@ fn screenshot_on(
         let mut renderer =
             GpuRenderer::with_upscaler_device(gpu, target.info, RenderLimits::default(), upscaler)?;
         renderer.set_passes(passes)?;
+        if let Some(previous) = &previous_frame {
+            renderer.render_scene(previous, &target.view, Some(runtime.app().render_world()))?;
+        }
         renderer.render_scene(&frame, &target.view, Some(runtime.app().render_world()))?;
-        if let Some(mut control) = runtime
-            .app_mut()
-            .world_mut()
-            .get_resource_mut::<UpscalerControl>()
-        {
+        let world = runtime.app_mut().world_mut();
+        if let Some(mut control) = world.get_resource_mut::<UpscalerControl>() {
             control.status = renderer.upscaler_status().clone();
+        }
+        if let Some(mut control) = world.get_resource_mut::<FrameGenerationControl>() {
+            control.status = renderer.frame_generation_status().clone();
+        }
+        // Generated frames before the final real frame, as sibling PNGs.
+        let mut generated = Vec::new();
+        for (index, captured) in renderer
+            .capture_generated()?
+            .into_iter()
+            .filter(|f| f.generated)
+            .enumerate()
+        {
+            let mut png = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut png).write_image(
+                &captured.rgba8,
+                captured.width,
+                captured.height,
+                image::ExtendedColorType::Rgba8,
+            )?;
+            let generated_path = path.with_file_name(format!(
+                "{}-generated-{}.png",
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("screenshot"),
+                index + 1
+            ));
+            std::fs::write(&generated_path, &png)?;
+            generated.push(json!({"path": generated_path, "width": captured.width,
+                "height": captured.height, "bytes": png.len()}));
         }
         let pixels = target.read_rgba(&renderer.gpu)?;
         let mut png = Vec::new();
@@ -220,7 +260,7 @@ fn screenshot_on(
         )?;
         std::fs::write(path, &png)?;
         Ok(json!({"width": width, "height": height, "bytes": png.len(),
-            "path": path, "adapter": adapter, "ticks": ticks}))
+            "path": path, "adapter": adapter, "ticks": ticks, "generated_frames": generated}))
     })();
     let cleanup = runtime.stop();
     audio.shutdown();

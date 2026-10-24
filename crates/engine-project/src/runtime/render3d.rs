@@ -52,6 +52,7 @@ impl Runtime {
         camera.validate()?;
         let mut camera = camera.clone();
         camera.upscaler = effective_upscaler(world, &camera);
+        camera.frame_generation = effective_frame_generation(world, &camera);
         frame.camera3d = Some(CameraInstance3D {
             camera,
             world: crate::world_transform(world, entity)?.matrix,
@@ -143,6 +144,22 @@ impl Runtime {
             ..status
         })
     }
+    /// The renderer-reported frame generation state, like [`Self::upscaler_status`].
+    pub fn frame_generation_status(&self) -> Option<FrameGenerationStatus> {
+        let world = self.app.world();
+        let (_, camera) = active_camera3d(world)?;
+        let status = world
+            .get_resource::<FrameGenerationControl>()?
+            .status
+            .clone();
+        if status.state != FrameGenerationState::NotRendered {
+            return Some(status);
+        }
+        Some(FrameGenerationStatus {
+            requested: effective_frame_generation(world, camera),
+            ..status
+        })
+    }
     fn material_shader(&self, material: &MeshMaterial) -> Result<Option<Arc<str>>> {
         material
             .shader
@@ -194,4 +211,13 @@ fn effective_upscaler(world: &World, camera: &Camera3D) -> UpscalerSettings {
         .get_resource::<UpscalerControl>()
         .and_then(|control| control.override_settings)
         .unwrap_or(camera.upscaler)
+}
+
+/// A valid native override wins over the camera's authored request.
+fn effective_frame_generation(world: &World, camera: &Camera3D) -> FrameGenerationSettings {
+    world
+        .get_resource::<FrameGenerationControl>()
+        .and_then(|control| control.override_settings)
+        .filter(|settings| settings.validate().is_ok())
+        .unwrap_or(camera.frame_generation)
 }
