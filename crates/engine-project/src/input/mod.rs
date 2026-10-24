@@ -4,15 +4,21 @@ use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod bindings;
+mod devices;
 mod mapper;
+mod sources;
 
 pub use bindings::*;
+pub use devices::*;
 pub use mapper::*;
+pub use sources::*;
 
 pub type BindingMap = BTreeMap<String, Vec<String>>;
 #[derive(Clone, Debug, Serialize, Deserialize, Resource, PartialEq)]
 #[serde(default)]
 pub struct ActionFrame {
+    /// Device or binding lifecycle cancellation, distinct from a normal release.
+    pub cancelled: BTreeSet<String>,
     pub pressed: BTreeSet<String>,
     pub held: BTreeSet<String>,
     pub released: BTreeSet<String>,
@@ -24,6 +30,7 @@ pub struct ActionFrame {
 impl Default for ActionFrame {
     fn default() -> Self {
         Self {
+            cancelled: BTreeSet::new(),
             pressed: BTreeSet::new(),
             held: BTreeSet::new(),
             released: BTreeSet::new(),

@@ -6,6 +6,9 @@ pub struct ActionMapper {
     frame: ActionFrame,
     blocked: BTreeSet<String>,
     blocked_gamepad: BTreeSet<String>,
+    blocked_tokens: BTreeSet<String>,
+    active_tokens: BTreeSet<String>,
+    cancelled: BTreeSet<String>,
     deadzone: f32,
     was_focused: bool,
     was_connected: bool,
@@ -25,6 +28,9 @@ impl ActionMapper {
             frame: ActionFrame::default(),
             blocked: BTreeSet::new(),
             blocked_gamepad: BTreeSet::new(),
+            blocked_tokens: BTreeSet::new(),
+            active_tokens: BTreeSet::new(),
+            cancelled: BTreeSet::new(),
             deadzone: 0.2,
             was_focused: true,
             was_connected: false,
@@ -50,8 +56,16 @@ impl ActionMapper {
     pub fn rebind(&mut self, bindings: BindingMap, strict: bool) -> BindingValidation {
         let result = validate_bindings(&bindings, strict);
         if result.errors.is_empty() {
+            self.cancelled.extend(
+                self.bindings
+                    .iter()
+                    .filter(|(action, tokens)| bindings.get(*action) != Some(*tokens))
+                    .map(|(action, _)| action.clone()),
+            );
             self.bindings = bindings;
             self.blocked.extend(self.frame.held.iter().cloned());
+            self.blocked_tokens
+                .extend(self.active_tokens.iter().cloned());
         }
         result
     }
@@ -59,6 +73,9 @@ impl ActionMapper {
         self.frame = ActionFrame::default();
         self.blocked.clear();
         self.blocked_gamepad.clear();
+        self.blocked_tokens.clear();
+        self.active_tokens.clear();
+        self.cancelled.clear();
         self.was_focused = true;
         self.was_connected = false;
         self.sampled = false;
@@ -66,6 +83,7 @@ impl ActionMapper {
     pub fn sample(&mut self, input: &RawInput) -> ActionFrame {
         let clean = |v: f32| if v.is_finite() { v } else { 0.0 };
         let mut next = ActionFrame {
+            cancelled: std::mem::take(&mut self.cancelled),
             focused: input.focused,
             pointer: input.pointer.map(clean),
             wheel: if input.focused {
@@ -75,11 +93,36 @@ impl ActionMapper {
             },
             ..Default::default()
         };
+        self.active_tokens = input.down.clone();
+        if input.gamepad_connected {
+            for (axis, value) in &input.axes {
+                if clean(*value).abs() > self.deadzone {
+                    let suffix = if axis.ends_with("Trigger") {
+                        ""
+                    } else if *value < 0.0 {
+                        "Negative"
+                    } else {
+                        "Positive"
+                    };
+                    self.active_tokens.insert(format!("Gamepad:{axis}{suffix}"));
+                }
+            }
+        }
+        // Neutral observations retire quarantine even while a token is unbound.
+        self.blocked_tokens
+            .retain(|token| self.active_tokens.contains(token));
+        self.blocked_gamepad
+            .retain(|token| self.active_tokens.contains(token));
+        self.blocked
+            .retain(|action| self.bindings.contains_key(action));
         for (action, tokens) in &self.bindings {
             let mut value = 0.0_f32;
             for token in tokens {
                 let pad = token.starts_with("Gamepad:");
                 if pad && !input.gamepad_connected {
+                    if self.was_connected {
+                        next.cancelled.insert(action.clone());
+                    }
                     continue;
                 }
                 let mut v = if let Some(wheel) = token.strip_prefix("Mouse:Wheel") {
@@ -119,6 +162,12 @@ impl ActionMapper {
                 } else {
                     0.0
                 };
+                if self.blocked_tokens.contains(token) {
+                    if v == 0.0 {
+                        self.blocked_tokens.remove(token);
+                    }
+                    v = 0.0;
+                }
                 if pad {
                     if self.sampled && !self.was_connected && v > 0.0 {
                         self.blocked_gamepad.insert(token.clone());

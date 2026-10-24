@@ -221,6 +221,7 @@ impl Runtime {
         result
     }
     fn tick_inner(&mut self, dt: f32, input: InputSnapshot) -> Result<()> {
+        let input = crate::input::poll_devices(self.app.world_mut(), input);
         {
             let world = self.app.world_mut();
             world.resource_mut::<UiModel>().tick(input);

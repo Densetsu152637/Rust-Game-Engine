@@ -118,6 +118,20 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_cancellation_survives_tick_latching_and_injected_merge() {
+        let mut rig = Rig::new();
+        rig.set("Key:Space", true);
+        assert!(rig.tick().held("jump"));
+        assert!(rig.mapper.rebind(BTreeMap::new(), false).errors.is_empty());
+        let frame = rig.tick();
+        assert!(frame.cancelled.contains("jump"));
+        assert!(frame.released("jump") && !frame.held("jump"));
+        assert!(
+            rig.tick().cancelled.is_empty(),
+            "cancellation is a one-tick signal"
+        );
+    }
+    #[test]
     fn a_press_seen_by_the_first_of_several_ticks_in_one_frame_is_not_duplicated() {
         let mut rig = Rig::new();
         rig.set("Key:Space", true);
