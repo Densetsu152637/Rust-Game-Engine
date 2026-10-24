@@ -86,7 +86,22 @@ fn access_flags_are_independent() {
             .count()
     };
     assert_eq!(count(ServerConfig::new()), 12);
-    assert_eq!(count(ServerConfig::new().allow_write(true)), 19);
+    assert_eq!(count(ServerConfig::new().allow_write(true)), 20);
+    for (config, exposed) in [
+        (ServerConfig::new(), false),
+        (ServerConfig::new().allow_exec(true), false),
+        (ServerConfig::new().allow_write(true), true),
+    ] {
+        let server = Server::new(dir.path(), config).unwrap();
+        assert_eq!(
+            server
+                .registry()
+                .definitions()
+                .any(|tool| tool.name == "asset_import_model"),
+            exposed,
+            "model import requires authoring write access"
+        );
+    }
     assert_eq!(
         count(ServerConfig::new().allow_exec(true)),
         12,
