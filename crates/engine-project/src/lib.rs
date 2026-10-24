@@ -11,10 +11,12 @@ pub mod persistence;
 pub mod runtime;
 pub mod schema;
 pub mod services;
+pub mod simulation;
 pub mod transforms;
 pub mod ui;
 
 pub use catalog::{ComponentCatalog, ComponentDescriptor, CustomValue, register_component};
+pub use content::GeometryOverride;
 pub use document::{EditOperation, SceneDocument};
 pub use events::{
     EngineEvent, EventBinding, EventBindings, EventLimits, emit_event, register_event_handler,

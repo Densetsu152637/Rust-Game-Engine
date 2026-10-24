@@ -30,7 +30,15 @@ impl Project {
                 ));
             }
             if ![
-                "script", "mesh", "texture", "font", "audio", "scene", "shader", "prefab",
+                "script",
+                "mesh",
+                "texture",
+                "font",
+                "audio",
+                "scene",
+                "shader",
+                "prefab",
+                "animation",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -84,7 +92,7 @@ impl Project {
                     1024 * 1024,
                 )?)?)?
             } else {
-                Default::default()
+                crate::catalog::ComponentCatalog::new(Vec::new())?
             },
             schema: 1,
             name: raw.name,
@@ -150,6 +158,9 @@ impl Project {
             let file = self.resolve_asset(&asset.id)?;
             match asset.kind.as_str() {
                 "scene" => self.validate_scene(&load_scene(&self.root, &asset.path)?)?,
+                "animation" => {
+                    crate::simulation::load_clip(self, &asset.id)?;
+                }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;
                 }
