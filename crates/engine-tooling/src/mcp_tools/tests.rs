@@ -135,7 +135,8 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         "upscaler":{"requested":{"mode":"dlss_sr","quality":"quality"},"state":"not_rendered",
             "evaluated_frames":0,"history_resets":0},
         "frame_generation":{"requested":{"mode":"dlss_fg","multiplier":2},"state":"not_rendered",
-            "generated_frames":0,"presented_frames":0,"history_resets":0}
+            "generated_frames":0,"presented_frames":0,"history_resets":0},
+        "acoustics":{"requested":"Auto","active":"Cpu","state":"Active","sources":[]}
     }});
     let summary = summarize(&report, None, 50);
     assert_eq!(summary["profile"]["frames"].as_array().unwrap().len(), 32);
@@ -151,7 +152,19 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     assert_eq!(summary["upscaler"]["requested"]["mode"], "dlss_sr");
     assert_eq!(summary["frame_generation"]["state"], "not_rendered");
     assert_eq!(summary["frame_generation"]["requested"]["multiplier"], 2);
+    assert_eq!(summary["acoustics"]["state"], "Active");
+    assert_eq!(summary["acoustics"]["active"], "Cpu");
     assert_eq!(summary["telemetry_omitted"], json!([]));
+    let oversized_acoustics = summarize(
+        &json!({"scene":{"acoustics":{"fallback_reason":"x".repeat(65_536)}}}),
+        None,
+        50,
+    );
+    assert!(oversized_acoustics["acoustics"].is_null());
+    assert_eq!(
+        oversized_acoustics["telemetry_omitted"],
+        json!(["acoustics"])
+    );
     let oversized = summarize(
         &json!({"scene":{"input_devices":{"label":"x".repeat(65_536)}}}),
         None,
@@ -169,6 +182,7 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     let absent = summarize(&json!({}), None, 50);
     assert!(absent["upscaler"].is_null());
     assert!(absent["frame_generation"].is_null());
+    assert!(absent["acoustics"].is_null());
     let oversized_generation = summarize(
         &json!({"scene":{"frame_generation":{"fallback_reason":"x".repeat(65_536)}}}),
         None,

@@ -89,6 +89,7 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Va
             inputs: arguments.inputs,
             events: arguments.events,
             user_data: arguments.user_data,
+            acoustics_backend: arguments.acoustics_backend,
             shutdown: Some(monitor.shutdown.clone()),
         },
         arguments.render_backend,
@@ -137,6 +138,7 @@ fn screenshot_on(
     }
     let mut audio = engine_audio::AudioEngine::offline(engine_audio::AudioConfig::default())?;
     runtime.set_audio(audio.control())?;
+    engine_desktop::configure_acoustics(&mut runtime, true, arguments.acoustics_backend)?;
     runtime.start()?;
     let mut event_trace = engine_project::EventTrace::default();
     let result = (|| -> Result<serde_json::Value> {
