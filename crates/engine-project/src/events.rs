@@ -99,28 +99,40 @@ pub(crate) fn validate_bindings(bindings: &EventBindings) -> Result<()> {
     Ok(())
 }
 pub fn emit_event(world: &mut World, event: EngineEvent) -> Result<()> {
+    emit_events(world, vec![event])
+}
+/// Validate and enqueue a complete batch, preserving FIFO order. A rejected batch
+/// leaves the existing queue unchanged; callbacks cannot run during insertion.
+pub fn emit_events(world: &mut World, events: Vec<EngineEvent>) -> Result<()> {
     let limits = world
         .get_resource::<EventLimits>()
         .copied()
         .unwrap_or_default();
-    if !valid_name(&event.name) || serde_json::to_vec(&event.payload)?.len() > limits.payload_bytes
-    {
-        return Err(Error::new(
-            "event.invalid",
-            "Invalid name or event payload exceeds limit",
-        ));
-    }
-    if !world.contains_resource::<EventQueue>() {
-        world.insert_resource(EventQueue::default());
-    }
-    let mut queue = world.resource_mut::<EventQueue>();
-    if queue.pending.len() >= limits.queued {
+    let pending = world
+        .get_resource::<EventQueue>()
+        .map_or(0, |q| q.pending.len());
+    if events.len() > limits.queued.saturating_sub(pending) {
         return Err(Error::new(
             "event.capacity",
             "Event queue capacity exceeded",
         ));
     }
-    queue.pending.push_back(event);
+    for event in &events {
+        if !valid_name(&event.name)
+            || serde_json::to_vec(&event.payload)?.len() > limits.payload_bytes
+        {
+            return Err(Error::new(
+                "event.invalid",
+                "Invalid name or event payload exceeds limit",
+            ));
+        }
+    }
+    if !events.is_empty() {
+        if !world.contains_resource::<EventQueue>() {
+            world.insert_resource(EventQueue::default());
+        }
+        world.resource_mut::<EventQueue>().pending.extend(events);
+    }
     Ok(())
 }
 pub fn register_event_handler(
