@@ -21,7 +21,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                     vec![
                         (
                             "meshes",
-                            json!({"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}}),
+                            json!({"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"},"description":"Mesh asset ids or project-relative mesh files forming the walkable floor."}),
                         ),
                         (
                             "output",
@@ -29,10 +29,16 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                                 "New project-relative .json file in an existing directory.",
                             ),
                         ),
-                        ("settings", bake_settings()),
+                        (
+                            "settings",
+                            described(
+                                bake_settings(),
+                                "Optional bake limits: cell size, agent radius/height, slope and step.",
+                            ),
+                        ),
                         (
                             "obstacles",
-                            json!({"type":"array","maxItems":4096,"items":schema::object(vec![("min",vector()),("max",vector())],&["min","max"])}),
+                            json!({"type":"array","maxItems":4096,"items":schema::object(vec![("min",vector("Minimum world-space corner [x, y, z]")),("max",vector("Maximum world-space corner [x, y, z]"))],&["min","max"]),"description":"Optional solid axis-aligned box obstacles in world space."}),
                         ),
                     ],
                     &["meshes", "output"],
@@ -59,9 +65,15 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                             "path",
                             schema::string("Project-relative navigation JSON document."),
                         ),
-                        ("start", vector()),
-                        ("goal", vector()),
-                        ("query", query_settings()),
+                        ("start", vector("World-space path start [x, y, z].")),
+                        ("goal", vector("World-space path goal [x, y, z].")),
+                        (
+                            "query",
+                            described(
+                                query_settings(),
+                                "Optional query limits: snap distance and search budgets.",
+                            ),
+                        ),
                     ],
                     &["path", "start", "goal"],
                 ),
@@ -77,8 +89,12 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
         ),
     ]
 }
-fn vector() -> Value {
-    json!({"type":"array","minItems":3,"maxItems":3,"items":{"type":"number"}})
+fn vector(description: &str) -> Value {
+    json!({"type":"array","minItems":3,"maxItems":3,"items":{"type":"number"},"description":description})
+}
+fn described(mut schema: Value, description: &str) -> Value {
+    schema["description"] = json!(description);
+    schema
 }
 fn bake_settings() -> Value {
     schema::object(

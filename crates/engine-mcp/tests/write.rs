@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 8] = [
+const WRITE_TOOLS: [&str; 9] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -29,6 +29,7 @@ const WRITE_TOOLS: [&str; 8] = [
     "component_remove",
     "file_write",
     "asset_import_model",
+    "navigation_bake",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -82,9 +83,17 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 20);
-    assert_eq!(names[12..], WRITE_TOOLS);
-    assert_eq!(names[..12], tool_names(dir.path(), read_only()));
+    assert_eq!(names.len(), 22);
+    // Registration order: the 12 original read tools, the 8 original write
+    // tools, then the navigation pair (bake writes, query only reads).
+    let read_only_names = tool_names(dir.path(), read_only());
+    assert_eq!(read_only_names.len(), 13);
+    assert_eq!(names[..12], read_only_names[..12]);
+    assert_eq!(names[12..20], WRITE_TOOLS[..8]);
+    assert_eq!(names[20], "navigation_bake");
+    assert_eq!(names[21], "navigation_query");
+    assert_eq!(read_only_names[12], "navigation_query");
+    assert_eq!(WRITE_TOOLS[8], "navigation_bake");
 }
 
 #[test]

@@ -59,7 +59,7 @@ fn a_server_can_be_reused_for_many_connections() {
             .serve(Cursor::new(request.into_bytes()), &mut out)
             .unwrap();
         let response: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 12);
+        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 13);
     }
     let names: Vec<_> = server
         .registry()
@@ -85,8 +85,25 @@ fn access_flags_are_independent() {
             .definitions()
             .count()
     };
-    assert_eq!(count(ServerConfig::new()), 12);
-    assert_eq!(count(ServerConfig::new().allow_write(true)), 20);
+    assert_eq!(count(ServerConfig::new()), 13);
+    let access = |config: ServerConfig, name: &str| {
+        Server::new(dir.path(), config)
+            .unwrap()
+            .registry()
+            .definitions()
+            .find(|tool| tool.name == name)
+            .map(|tool| tool.access)
+    };
+    assert_eq!(
+        access(ServerConfig::new(), "navigation_query"),
+        Some(AccessLevel::Read)
+    );
+    assert_eq!(access(ServerConfig::new(), "navigation_bake"), None);
+    assert_eq!(
+        access(ServerConfig::new().allow_write(true), "navigation_bake"),
+        Some(AccessLevel::Write)
+    );
+    assert_eq!(count(ServerConfig::new().allow_write(true)), 22);
     for (config, exposed) in [
         (ServerConfig::new(), false),
         (ServerConfig::new().allow_exec(true), false),
@@ -104,12 +121,12 @@ fn access_flags_are_independent() {
     }
     assert_eq!(
         count(ServerConfig::new().allow_exec(true)),
-        12,
+        13,
         "exec tools come from providers"
     );
     assert_eq!(
         count(ServerConfig::new().allow_write(true).allow_write(false)),
-        12
+        13
     );
 }
 
