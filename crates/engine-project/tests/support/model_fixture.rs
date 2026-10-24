@@ -60,3 +60,39 @@ pub fn write_source(root: &Path, animated: bool) {
     )
     .unwrap();
 }
+#[allow(dead_code)]
+pub fn write_skinned_source(root: &Path) {
+    write_source(root, true);
+    let directory = root.join("source");
+    let path = directory.join("model.gltf");
+    let mut source: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut bytes = fs::read(directory.join("geometry.bin")).unwrap();
+    let joints_offset = bytes.len();
+    bytes.extend([0_u8; 12]);
+    let weights_offset = bytes.len();
+    for _ in 0..3 {
+        for value in [1_f32, 0., 0., 0.] {
+            bytes.extend(value.to_le_bytes());
+        }
+    }
+    source["buffers"][0]["byteLength"] = json!(bytes.len());
+    let views = source["bufferViews"].as_array_mut().unwrap();
+    views.push(json!({"buffer":0,"byteOffset":joints_offset,"byteLength":12}));
+    views.push(json!({"buffer":0,"byteOffset":weights_offset,"byteLength":48}));
+    let accessors = source["accessors"].as_array_mut().unwrap();
+    accessors.push(json!({"bufferView":5,"componentType":5121,"count":3,"type":"VEC4"}));
+    accessors.push(json!({"bufferView":6,"componentType":5126,"count":3,"type":"VEC4"}));
+    source["meshes"][0]["primitives"][0]["attributes"]["JOINTS_0"] = json!(5);
+    source["meshes"][0]["primitives"][0]["attributes"]["WEIGHTS_0"] = json!(6);
+    source["nodes"][0]["children"] = json!([1, 2]);
+    source["nodes"][1]["scale"] = json!([1, 1, 1]);
+    source["nodes"][1]["skin"] = json!(0);
+    source["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name":"Joint"}));
+    source["skins"] = json!([{"joints":[2],"skeleton":2}]);
+    source["animations"][0]["channels"][0]["target"]["node"] = json!(2);
+    fs::write(path, source.to_string()).unwrap();
+    fs::write(directory.join("geometry.bin"), bytes).unwrap();
+}

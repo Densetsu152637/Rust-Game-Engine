@@ -155,15 +155,19 @@ references, numeric data, hierarchy and aggregate capacities. `node_entities[i]`
 is the prefab entity corresponding to source node `i`, before the instance prefix.
 This preserves richer vertex channels, full PBR properties, skin data, clips and
 original scene selections. Rendering currently uses base color and geometric
-lighting; it does not claim full glTF PBR or automatic skin deformation.
+lighting; full glTF PBR is preserved as metadata.
 
 Step/linear TRS clips become `animation` assets with per-channel key times. The
 first supported clip is attached to the prefab root as `engine.AnimationPlayer`,
 with bindings ordered by source node index. Prefab instantiation remaps those
 bindings. Cubic clips, clips with over 4096 nodes, or binding components too large
 for the 64 KiB authoring limit remain in model metadata and produce a warning.
-Generated meshes stay static; explicit skinning adapters can use the retained
-joint palette, inverse binds and original vertex weights.
+Skinned primitive entities receive `engine.SkinBinding` with the model asset ID,
+source mesh-node/primitive indices and the complete source-node binding table.
+Prefab instantiation remaps these entity references. The runtime skin adapter uses
+the retained joint palette, inverse binds and original vertex weights. Skinned
+imports require at most 4096 source nodes, 60 KiB per binding table and 8 MiB
+aggregate duplicated binding data; exceeding these limits fails the import.
 
 All content is staged in a temporary directory inside the project. Importers
 coordinate through `.model-import.lock`, and an optimistic byte comparison rejects

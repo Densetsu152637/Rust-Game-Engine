@@ -232,6 +232,14 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
             {
                 fields.push(("engine.AnimationPlayer", "clip", clip));
             }
+            if let Some(model) = c
+                .custom
+                .get("engine.SkinBinding")
+                .and_then(|v| v.data.get("model"))
+                .and_then(Value::as_str)
+            {
+                fields.push(("engine.SkinBinding", "model", model));
+            }
             for (component, field, id) in fields {
                 if id == asset.id {
                     uses.push(json!({"scene": path, "entity": entity.id,
