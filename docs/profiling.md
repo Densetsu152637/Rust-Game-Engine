@@ -27,7 +27,8 @@ The counts include ECS internal entities, not just authored game objects; they
 sum archetype lengths rather than allocated entity slots, so despawns reduce them.
 Counting and snapshot serialization happen outside the measured frame interval.
 Frame timing begins after startup and advancing simulation time, and covers
-Update, Extract, Render and tracker maintenance. If a stop request runs Shutdown
+Update, PostUpdate (including the fallible service hook), Extract, Render and
+tracker maintenance. If a stop request runs Shutdown
 inside that tick, that stage is included too.
 
 Stage aggregates include Startup and Shutdown even when they run outside a tick.
@@ -47,7 +48,9 @@ saturate at their integer limits. Retention is bounded independently of run leng
 These are **CPU stage measurements**, not GPU timestamps, per-system costs,
 allocator statistics, or presentation frame rates. A Render stage can submit GPU
 work that finishes later. Desktop input, image capture, host drawing, pacing and
-audio device callbacks outside `EngineApp::tick` are not measured here. Instrumented
+audio device callbacks outside `EngineApp::tick` are not measured here. Project
+`NativeScript` callbacks and event delivery run before the core tick and are also
+outside these stage measurements. Instrumented
 code has clock, counter and retention overhead; use comparable release builds for
 performance comparisons. The native `Instant` clock also does not provide a
 browser runtime; the WebAssembly CI job checks compilation only.

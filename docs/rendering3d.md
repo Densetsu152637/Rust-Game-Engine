@@ -20,7 +20,10 @@ existing 2D extraction behavior.
 shader. Materials also apply to 2D sprites and meshes; their default material is
 unlit and existing painter/depth settings remain authoritative. Lighting uses derivatives of world positions, so nonuniform scale affects
 the geometric normal correctly. This is simple two-sided directional lighting,
-not a physically based material, shadow system or skinned animation renderer.
+not a physically based material or shadow system. Authored `engine.SkinBinding`
+components use the simulation service's CPU skinning; extraction consumes the
+resulting per-entity `GeometryOverride` through the same material path. This is
+not GPU skinning or an animation state-machine editor.
 Opaque draws write depth; transparent draws test depth, do not write it, and sort
 back-to-front by object origin with stable IDs breaking ties.
 

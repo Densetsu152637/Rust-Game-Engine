@@ -98,16 +98,38 @@ fn runtime_deforms_mesh_before_extraction_preserving_uv_and_color() {
             < 0.001
     );
     runtime.tick(0.5, InputSnapshot::default()).unwrap();
-    let mesh = &runtime
+    let mesh = runtime
         .app()
         .world()
         .get::<GeometryOverride>(primitive)
         .unwrap()
-        .0;
+        .0
+        .clone();
     assert!((mesh.vertices[0].position[0] + 3.).abs() < 0.001);
     assert_eq!(mesh.vertices[0].uv, [0.25, 0.75]);
     assert_eq!(mesh.vertices[0].color, [0.2, 0.4, 0.6, 1.]);
     assert!((runtime.app().world().resource::<Extracted>().0 + 3.).abs() < 0.001);
+    let frame2d = runtime.extract_frame().unwrap();
+    let draw2d = frame2d
+        .draws
+        .iter()
+        .find(|draw| draw.id == "mesh:primitive")
+        .unwrap();
+    // The 2D path bakes the mesh-node translation into the deformed vertices.
+    assert!((draw2d.mesh.vertices[0].position[0] - 7.).abs() < 0.001);
+    assert_eq!(draw2d.mesh.vertices[0].uv, [0.25, 0.75]);
+    runtime.app_mut().world_mut().spawn((
+        engine_project::rendering3d::Camera3D::default(),
+        engine_project::Transform::default(),
+    ));
+    let frame3d = runtime.extract_scene_frame().unwrap();
+    let draw3d = frame3d
+        .meshes
+        .iter()
+        .find(|draw| draw.id == "primitive")
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&draw3d.mesh, &mesh));
+    assert!((draw3d.mesh.vertices[0].position[0] + 3.).abs() < 0.001);
     runtime
         .app_mut()
         .world_mut()

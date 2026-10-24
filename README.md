@@ -148,7 +148,7 @@ multiplayer sessions are explicit and use server-authoritative state.
 
 These are executable foundations, not a claim of Unity feature parity or AAA
 production readiness. The renderer has simple directional lighting and custom
-WGSL; it does not provide PBR, shadows or integrated skinned-mesh drawing.
+WGSL and CPU-deformed skinned meshes; it does not provide PBR, shadows or GPU skinning.
 Animation has no graph editor, IK or retargeting; navigation has no NavMesh baking
 or crowd avoidance. Networking is a bounded trusted-network baseline without
 authentication, encryption, prediction or matchmaking. Packages are host-native
