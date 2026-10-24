@@ -41,6 +41,8 @@ impl Project {
                 "model",
                 "animation",
                 "navigation",
+                "tileset",
+                "tilemap",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -183,6 +185,17 @@ impl Project {
                 }
                 "navigation" => {
                     crate::simulation::load_navmesh(self, &asset.id)?;
+                }
+                "tileset" => {
+                    crate::world::tilemap::load_tileset(self, &asset.id)?;
+                }
+                "tilemap" => {
+                    // A map is validated against the tileset of the entities that use it.
+                    engine_tilemap::Tilemap::from_json(
+                        &read_bounded(&file, 16 * 1024 * 1024)?,
+                        None,
+                    )
+                    .map_err(|e| Error::new(e.code, e.message))?;
                 }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;

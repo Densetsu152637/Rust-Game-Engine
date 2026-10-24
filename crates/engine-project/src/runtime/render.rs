@@ -235,17 +235,23 @@ impl Runtime {
                     })
                     .transpose()?;
                 let draw_id = format!("mesh:{id}");
+                // Generated tilemap chunks draw through the 2D path: alpha blended, ordered by layer.
+                let tile = entity.get::<crate::world::tilemap::TileChunkRender>();
                 draws.push(Draw {
                     id: draw_id.clone(),
                     mesh: self.cached_mesh(&draw_id, mesh),
                     texture,
-                    layer: 0,
+                    layer: tile.map_or(0, |t| t.draw_layer),
                     space: DrawSpace::World,
                     clip: None,
-                    state: DrawState {
-                        blend: BlendMode::Opaque,
-                        depth_test: true,
-                        depth_write: true,
+                    state: if tile.is_some() {
+                        DrawState::default()
+                    } else {
+                        DrawState {
+                            blend: BlendMode::Opaque,
+                            depth_test: true,
+                            depth_write: true,
+                        }
                     },
                     motion: Some(DrawMotion {
                         position: transform.position(),

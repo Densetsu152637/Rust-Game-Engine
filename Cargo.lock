@@ -1305,6 +1305,7 @@ dependencies = [
  "engine-navigation",
  "engine-network",
  "engine-physics",
+ "engine-tilemap",
  "fs2",
  "glam 0.34.1",
  "image",

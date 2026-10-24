@@ -10,7 +10,8 @@ pub struct Error {
     pub message: String,
 }
 impl Error {
-    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
+    /// Builds an error with a stable `code`.
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
