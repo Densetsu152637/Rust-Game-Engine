@@ -1,0 +1,15 @@
+[package]
+name = "engine-acoustics"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+description = "Acoustic world, CPU geometric propagation and the propagation backend contract (contract skeleton)"
+
+[dependencies]
+engine-audio = { path = "../engine-audio" }
+bytemuck = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

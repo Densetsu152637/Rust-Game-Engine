@@ -1,3 +1,4 @@
+use crate::acoustic::{AcousticConsumer, AcousticPublisher, DspEffect, MixerEnvironment, channel};
 use crate::{
     Attenuation, AudioConfig, AudioError, Bus, Clip, Listener, PlayOptions, Result, SpatialOptions,
     allocate_handle, gain,
@@ -38,6 +39,12 @@ pub(crate) struct Mixer {
     pub(crate) listener: Listener,
     pub(crate) running: bool,
     pub(crate) failure: Option<AudioError>,
+    // Held but not yet applied by the mixer DSP (Stream A).
+    #[allow(dead_code)]
+    environment: MixerEnvironment,
+    #[allow(dead_code)]
+    effects: [Option<Box<dyn DspEffect>>; 4],
+    acoustic: Option<AcousticConsumer>,
 }
 impl Mixer {
     pub(crate) fn new(config: AudioConfig) -> Self {
@@ -48,6 +55,9 @@ impl Mixer {
             listener: Listener::default(),
             running: true,
             failure: None,
+            environment: MixerEnvironment::default(),
+            effects: [None, None, None, None],
+            acoustic: None,
         }
     }
     pub(crate) fn ready(&self) -> Result<()> {
@@ -70,6 +80,10 @@ impl Mixer {
     }
     pub(crate) fn mix(&mut self, output: &mut [f32]) {
         output.fill(0.0);
+        if let Some(acoustic) = &mut self.acoustic {
+            // Adopt the newest published parameters; never waits for the writer.
+            acoustic.poll();
+        }
         if !self.running || self.failure.is_some() {
             return;
         }
@@ -253,6 +267,42 @@ impl AudioControl {
         m.ready()?;
         m.gains[bus.index()] = gain(value);
         Ok(())
+    }
+    /// Sets the mixer-wide acoustic environment after validating it.
+    pub fn set_environment(&self, environment: MixerEnvironment) -> Result<()> {
+        environment.validate()?;
+        let mut m = self.lock()?;
+        m.ready()?;
+        m.environment = environment;
+        Ok(())
+    }
+    pub fn environment(&self) -> Result<MixerEnvironment> {
+        Ok(self.lock()?.environment)
+    }
+    /// Installs or removes a bus effect and returns the previous one, which the
+    /// caller drops so the audio thread never frees it.
+    pub fn set_bus_effect(
+        &self,
+        bus: Bus,
+        effect: Option<Box<dyn DspEffect>>,
+    ) -> Result<Option<Box<dyn DspEffect>>> {
+        let mut m = self.lock()?;
+        m.ready()?;
+        Ok(std::mem::replace(&mut m.effects[bus.index()], effect))
+    }
+    /// Returns the single parameter writer. A second call is an error.
+    pub fn acoustic_publisher(&self) -> Result<AcousticPublisher> {
+        let mut m = self.lock()?;
+        m.ready()?;
+        if m.acoustic.is_some() {
+            return Err(AudioError::new(
+                "audio.acoustic.publisher_taken",
+                "The acoustic publisher was already obtained",
+            ));
+        }
+        let (publisher, consumer) = channel();
+        m.acoustic = Some(consumer);
+        Ok(publisher)
     }
     pub fn bus_gain(&self, bus: Bus) -> Result<f32> {
         Ok(self.lock()?.gains[bus.index()])
