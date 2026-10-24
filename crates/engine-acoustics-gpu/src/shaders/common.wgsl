@@ -221,6 +221,8 @@ fn material_of(hit: Hit) -> Material {
 }
 
 // Deposits the part of segment [p, p + d * len] inside the receiver sphere.
+// Mirrors engine_acoustics::trace_cpu (sphere_chord and the receiver deposit):
+// e * exp(-2 m t_mid) * 4 pi l / V_rcv / rays into bin floor((path + t_mid) / c / bin_s).
 fn receive(job_index: u32, job: Job, p: vec3<f32>, d: vec3<f32>, len: f32, travelled: f32, energy: vec4<f32>) {
     let r = job.receiver.w;
     let oc = p - job.receiver.xyz;
@@ -242,9 +244,11 @@ fn receive(job_index: u32, job: Job, p: vec3<f32>, d: vec3<f32>, len: f32, trave
     if bin_f >= f32(settings.bins) {
         return;
     }
-    let attenuated = energy * exp(-settings.air * (t0 + 0.5 * inside));
-    // e * 4 pi * l_in / V_rcv with V_rcv = 4/3 pi r^3.
-    deposit_energy(job_index, u32(bin_f), attenuated * (3.0 * inside / (r * r * r)));
+    let t_mid = t0 + 0.5 * inside;
+    let attenuated = energy * exp(-2.0 * settings.air * t_mid);
+    // 4 pi l / V_rcv with V_rcv = 4/3 pi r^3, per ray.
+    let weight = 3.0 * inside / (r * r * r) / f32(job.rays);
+    deposit_energy(job_index, u32(bin_f), attenuated * weight);
 }
 
 @compute @workgroup_size(64)
@@ -258,11 +262,14 @@ fn trace_energy(@builtin(global_invocation_id) gid: vec3<u32>) {
     if ray >= job.rays {
         return;
     }
+    // The loop mirrors engine_acoustics::trace_cpu::trace_chunk step for step:
+    // relative energy 1 per band (deposits carry 1 / rays), air absorption
+    // exp(-2 m t) on energy, `max_bounces` reflections, then the hit ends the ray.
     var state = ray_seed(job, ray);
     var dir = sample_sphere(&state);
     var pos = job.emitter.xyz;
-    let initial = 1.0 / f32(job.rays);
-    var energy = vec4<f32>(initial);
+    let inv_rays = 1.0 / f32(job.rays);
+    var energy = vec4<f32>(1.0);
     var travelled = 0.0;
     var bounces = 0u;
     var segments = 0u;
@@ -276,28 +283,27 @@ fn trace_energy(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         segments += 1u;
         let len = select(T_MAX, hit.t, hit.kind == HIT_TRIANGLE);
-        if bounces > 0u {
+        if bounces >= 1u {
             receive(job_index, job, pos, dir, len, travelled, energy);
         }
         if hit.kind == HIT_MISS {
             let escaped_base = job_index * STATS_WORDS + STAT_ESCAPED;
             for (var b = 0u; b < 4u; b += 1u) {
-                add_stat_fixed(escaped_base + b * 2u, energy[b] * ENERGY_SCALE_HI);
+                add_stat_fixed(escaped_base + b * 2u, energy[b] * inv_rays * ENERGY_SCALE_HI);
             }
             break;
         }
-        if bounces > 0u {
+        if bounces >= 1u {
             free_paths += 1u;
             free_length += hit.t;
         }
         travelled += hit.t;
-        energy *= exp(-settings.air * hit.t);
         let m = material_of(hit);
-        energy *= m.reflect;
-        bounces += 1u;
-        if bounces >= job.max_bounces || max(max(energy.x, energy.y), max(energy.z, energy.w)) < MIN_ENERGY * initial {
+        energy = energy * (exp(-2.0 * settings.air * hit.t) * m.reflect);
+        if bounces >= job.max_bounces || max(max(energy.x, energy.y), max(energy.z, energy.w)) < MIN_ENERGY {
             break;
         }
+        bounces += 1u;
         var n = world_normal(hit);
         if dot(n, dir) > 0.0 {
             n = -n;
@@ -310,7 +316,7 @@ fn trace_energy(@builtin(global_invocation_id) gid: vec3<u32>) {
         if u_scatter < m.scattering {
             dir = cosine_hemisphere(n, u1, u2);
         } else {
-            dir = normalize(dir - 2.0 * dot(dir, n) * n);
+            dir = dir - 2.0 * dot(dir, n) * n;
         }
         let a = abs(hit_point);
         pos = hit_point + n * (RAY_OFFSET_ABS_M + RAY_OFFSET_REL * max(a.x, max(a.y, a.z)));

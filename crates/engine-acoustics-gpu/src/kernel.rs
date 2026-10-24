@@ -395,8 +395,9 @@ pub(crate) fn validate_request(
             "histogram must have 1 or more bins and at most 4 s",
         ));
     }
-    if !(settings.speed_of_sound.is_finite() && settings.speed_of_sound > 0.0) {
-        return Err(error::invalid("speed of sound must be positive"));
+    if !(settings.speed_of_sound.is_finite() && (300.0..=400.0).contains(&settings.speed_of_sound))
+    {
+        return Err(error::invalid("speed of sound must be 300-400 m/s"));
     }
     if settings
         .air_np_per_m
