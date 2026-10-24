@@ -11,6 +11,7 @@
 
 mod bvh;
 pub mod direct;
+mod engine;
 mod error;
 mod estimate;
 mod fit;
@@ -30,22 +31,27 @@ mod volume;
 mod world;
 
 pub use bvh::{MAX_BVH_DEPTH, MESH_MAX_LEAF, SAH_BINS};
+pub use engine::{
+    DEMOTE_AFTER_FAILURES, GPU_MAX_RAYS, MAX_SUBMITTED_SOURCES, MAX_TRACED_SOURCES,
+    validate_request, validate_settings,
+};
 pub use engine_audio::acoustic::{BANDS, BandGains};
 pub use error::{AcousticsError, Result, unimplemented};
 pub use estimate::{SABINE_CONSTANT, eyring_rt60, sabine_rt60};
 pub use fit::{BandFit, DecayFit, fit_bands, fit_reverb, validate_histogram};
 pub use geometry::{
-    AcousticVolume, Enclosure, Footprint, Footprint2D, ListenerPose, Proxy2DSettings, ProxyMapping,
-    ProxyPlane, VolumeKind, VolumeShape,
+    AcousticVolume, Enclosure, Footprint, Footprint2D, ListenerPose, Proxy2DSettings, ProxyPlane,
+    VolumeKind, VolumeShape,
 };
 pub use ir::synthesize_ir;
 pub use material::{AcousticMaterial, MaterialId, MaterialPreset};
 pub use math::IDENTITY as IDENTITY_AFFINE;
 pub use planes::PlaneCluster;
+pub use proxy2d::{ProxyAir, ProxyMapping};
 pub use service::{
     AcousticState, AcousticStatus, AcousticsService, ParamHook, PropagationRequest,
-    PropagationResult, PropagationSettings, PropagationSummary, ServiceConfig, ServiceMode,
-    SourceRequest, SourceResult, SourceStatus, SourceSummary,
+    PropagationResult, PropagationSettings, PropagationSummary, ServiceConfig, ServiceEvent,
+    ServiceMode, SourceRequest, SourceResult, SourceStatus, SourceSummary,
 };
 pub use trace::{
     BackendError, BackendInfo, BackendKind, BackendPreference, CpuBackend, DirectPath,
