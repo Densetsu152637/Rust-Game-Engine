@@ -1,30 +1,19 @@
-# Native editor
+# Scene editor
 
-`engine-editor` provides a native Windows authoring window and a platform-independent
-`EditorController`. It depends on the project model and `engine-core`, not on
-tooling or a second rendering backend. Win32 controls use `windows-sys`, and the
-required FFI is isolated in `native.rs`; the controller contains no unsafe code. On
-other targets the window entry point returns an explicit unsupported-platform error,
-so the crate still builds and its controller tests run on any platform.
+`engine-editor` opens a portable egui/eframe authoring window around the
+platform-independent `EditorController`. Launch it with `engine editor <manifest>`
+or `engine_editor::run(project_manifest, play_host)`.
 
-Launch it with `engine editor <manifest>` (see [Project commands](commands.md)) or
-from Rust with `engine_editor::run(project_manifest, play_host)`.
+The window provides save, undo/redo, hierarchy selection, transform controls,
+validated entity/component JSON editing, an asset list, diagnostics, play/stop,
+and a real GPU scene preview with 2D/3D navigation and translation gestures.
+See [Portable editor](portable-editor.md) for controls and current limits.
+The legacy Windows controls remain available through `native_smoke` for existing
+structural regression tests; they are not the default authoring window.
 
-## What it edits
-
-The window offers a manifest path and open action, save and reload, undo and redo,
-the entity hierarchy with selection, a position inspector, Rust-script, mesh and
-texture asset pickers, a validation and log pane, and play/stop. Picker values are
-stable asset IDs and the project model validates kinds and revisions. Position
-values are committed with **Apply position**. Replacing, reloading or closing with
-unsaved edits shows Save/Discard/Cancel, and a failed load keeps the current
-document. There is no embedded game viewport: play launches the compiled runtime
-through the tooling host, matching the earlier editor's separate-runtime boundary.
-
-Edits go through `SceneDocument` in `engine-project`: every operation carries the
-expected revision and stale edits are rejected, history supports undo and redo, saves
-are atomic, and no arbitrary native ECS state is written into the authored scene.
-
+All changes use the same revision-checked `SceneDocument` model as MCP. Preview
+state never overwrites authored data. Play still runs an isolated Cargo-built
+process with an unsaved project snapshot. Dirty close offers Save/Discard/Cancel.
 ## Play host
 
 Tooling supplies the `PlayHost` implementation:

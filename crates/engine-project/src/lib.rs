@@ -6,6 +6,7 @@ pub mod document;
 pub mod gameplay2d;
 pub mod input;
 pub mod persistence;
+pub mod rendering3d;
 pub mod runtime;
 pub mod schema;
 pub mod services;

@@ -58,6 +58,7 @@ pub struct SpriteRenderer<B: RenderBackend = Box<dyn RenderBackend>> {
     limits: RenderLimits,
     shader: ShaderHandle,
     cache: ResourceCache,
+    scene: super::scene::SceneResources,
     surface_size: (u32, u32),
 }
 
@@ -81,6 +82,7 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             limits,
             shader,
             cache: ResourceCache::default(),
+            scene: super::scene::SceneResources::default(),
             surface_size: (0, 0),
         })
     }
@@ -147,8 +149,81 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         }
     }
 
+    /// Draw 3D geometry, then the existing sprite/UI overlay in one submission.
+    pub fn render_scene(
+        &mut self,
+        frame: &engine_project::rendering3d::SceneRenderFrame,
+        target: RenderTarget,
+    ) -> Result<Option<RenderStats>> {
+        let size = match target {
+            RenderTarget::Surface => self.surface_size,
+            RenderTarget::Offscreen(handle) => self
+                .device
+                .target_size(handle)
+                .context("render target was destroyed")?,
+        };
+        ensure!(size.0 > 0 && size.1 > 0, "render target must be nonzero");
+        ensure!(
+            frame.meshes.len() + frame.sprites.draws.len() <= self.limits.max_draws,
+            "frame draw limit exceeded"
+        );
+        // Reuse sprite validation for the mesh/texture data and its bounded budgets.
+        let proxies = engine_project::runtime::RenderFrame {
+            camera: frame.sprites.camera.clone(),
+            draws: frame
+                .sprites
+                .draws
+                .iter()
+                .cloned()
+                .chain(frame.meshes.iter().map(|d| Draw {
+                    id: d.id.clone(),
+                    mesh: d.mesh.clone(),
+                    texture: d.texture.clone(),
+                    layer: 0,
+                    space: DrawSpace::World,
+                    clip: None,
+                    state: Default::default(),
+                    motion: None,
+                    offset: [0.0; 3],
+                }))
+                .collect(),
+        };
+        let camera = CameraView::new(&frame.sprites.camera, size.0, size.1)?;
+        self.validate(&proxies, &camera)?;
+        let (mut commands, mut stats) = self.scene.build(
+            &mut self.device,
+            frame,
+            (camera.viewport.width, camera.viewport.height),
+        )?;
+        let overlay = self.build_with_materials(&frame.sprites, size, &frame.materials2d)?;
+        let desc = overlay.desc(target);
+        commands.merge(overlay.commands)?;
+        stats.draws += overlay.stats.draws;
+        stats.batches += overlay.stats.batches;
+        stats.mesh_uploads += overlay.stats.mesh_uploads;
+        stats.texture_uploads += overlay.stats.texture_uploads;
+        stats.cached_meshes += overlay.stats.cached_meshes;
+        stats.cached_textures += overlay.stats.cached_textures;
+        self.scene.retire_shaders(&mut self.device, frame)?;
+        match self.device.submit(desc, commands)? {
+            FrameOutcome::Rendered(_) => Ok(Some(stats)),
+            FrameOutcome::Skipped(_) => Ok(None),
+        }
+    }
+
     /// Validate, sync caches and convert `frame` for a target of `size`.
     pub(crate) fn build(&mut self, frame: &RenderFrame, size: (u32, u32)) -> Result<BuiltFrame> {
+        self.build_with_materials(frame, size, &Default::default())
+    }
+    fn build_with_materials(
+        &mut self,
+        frame: &RenderFrame,
+        size: (u32, u32),
+        materials: &std::collections::BTreeMap<
+            String,
+            engine_project::rendering3d::MaterialSnapshot,
+        >,
+    ) -> Result<BuiltFrame> {
         let camera = CameraView::new(&frame.camera, size.0, size.1)?;
         self.validate(frame, &camera)?;
         let uploads = self.cache.sync(&mut self.device, &frame.draws)?;
@@ -209,11 +284,36 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             let mut command = DrawCommand::new(self.shader, mesh)
                 .with_state(state)
                 .with_uniform(uniform);
+            if let Some(material) = materials.get(&draw.id) {
+                let snapshot = engine_project::rendering3d::MeshDraw3D {
+                    id: draw.id.clone(),
+                    mesh: draw.mesh.clone(),
+                    texture: draw.texture.clone(),
+                    model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    material: material.material.clone(),
+                    shader: material.shader.clone(),
+                };
+                let matrix = if camera_index == 0 {
+                    camera.world_with_offset(draw.offset)
+                } else {
+                    camera.ui
+                };
+                let (shader, uniforms) = self.scene.material(
+                    &mut self.device,
+                    &snapshot,
+                    glam::Mat4::from_cols_array(&matrix),
+                )?;
+                command.shader = shader;
+                command.uniforms = uniforms;
+            }
             command.texture = texture;
+            let shader = command.shader;
             commands.record(command)?;
             // A batch is a run of draws sharing pipeline state, texture, camera
             // and scissor; painter order is never changed to reduce them.
             let key = (
+                shader,
+                materials.contains_key(&draw.id).then_some(draw.id.as_str()),
                 state.pipeline_state(),
                 draw.texture.as_ref().map(address),
                 camera_index,

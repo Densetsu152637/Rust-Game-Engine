@@ -8,6 +8,10 @@ description = "Native Windows authoring editor and revision-aware controller"
 [dependencies]
 engine-core = { path = "../engine-core" }
 engine-project = { path = "../engine-project" }
+engine-desktop = { path = "../engine-desktop" }
+eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
+glam.workspace = true
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }

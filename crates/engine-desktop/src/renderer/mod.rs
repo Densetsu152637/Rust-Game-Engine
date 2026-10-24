@@ -9,9 +9,11 @@
 //! * `vertex.rs`: the 36-byte vertex record and its neutral layout.
 
 mod cache;
+mod scene;
 mod sprite;
 mod vertex;
 
+pub use scene::{LIT_WGSL, camera_matrix};
 pub use sprite::{SpriteRenderer, TEXTURED_WGSL};
 
 use crate::{GpuContext, NativeRenderPasses, RenderTargetInfo};
@@ -141,12 +143,21 @@ impl GpuRenderer {
         target: &wgpu::TextureView,
         world: Option<&World>,
     ) -> Result<RenderStats> {
+        self.render_scene(&frame.clone().into(), target, world)
+    }
+
+    pub fn render_scene(
+        &mut self,
+        frame: &engine_project::rendering3d::SceneRenderFrame,
+        target: &wgpu::TextureView,
+        world: Option<&World>,
+    ) -> Result<RenderStats> {
         self.gpu.check_errors()?;
         self.sprites
             .device_mut()
             .backend_mut()
             .set_external_target(target.clone(), self.info);
-        let stats = self.sprites.render(frame, RenderTarget::Surface);
+        let stats = self.sprites.render_scene(frame, RenderTarget::Surface);
         self.sprites
             .device_mut()
             .backend_mut()
