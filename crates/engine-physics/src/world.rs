@@ -6,6 +6,7 @@ macro_rules! world {
         pub struct World {
             inner: PhysicsWorld,
             bodies: BTreeMap<u64, (RigidBodyHandle, ColliderHandle)>,
+            joints: BTreeMap<u64, (ImpulseJointHandle, u64, u64)>,
             events: Vec<CollisionEvent>,
             contacts: BTreeSet<(u64, u64)>,
             capacity: usize,
@@ -22,6 +23,7 @@ macro_rules! world {
                 Ok(Self {
                     inner,
                     bodies: BTreeMap::new(),
+                    joints: BTreeMap::new(),
                     events: Vec::new(),
                     contacts: BTreeSet::new(),
                     capacity,
@@ -67,12 +69,16 @@ macro_rules! world {
                     ))
                     .active_events(ActiveEvents::COLLISION_EVENTS);
                 let handles = self.inner.insert(body, collider);
+                self.inner.bodies[handles.0]
+                    .recompute_mass_properties_from_colliders(&self.inner.colliders);
                 self.bodies.insert(id, handles);
                 Ok(())
             }
             pub fn remove(&mut self, id: u64) -> bool {
                 if let Some((body, _)) = self.bodies.remove(&id) {
                     self.inner.remove_body(body);
+                    self.joints
+                        .retain(|_, (_, first, second)| *first != id && *second != id);
                     true
                 } else {
                     false
@@ -87,6 +93,69 @@ macro_rules! world {
             pub fn pose(&self, id: u64) -> Option<BodyPose> {
                 let body = self.inner.bodies.get(self.bodies.get(&id)?.0)?;
                 Some(body_pose(body))
+            }
+            /// Joint IDs have a separate namespace from body IDs. At most four joints per
+            /// configured body-capacity slot may be allocated in the world.
+            pub fn insert_joint(
+                &mut self,
+                id: u64,
+                first: u64,
+                second: u64,
+                desc: JointDesc,
+            ) -> Result<()> {
+                if first == second {
+                    return Err(Error("joint requires distinct bodies"));
+                }
+                if self.joints.contains_key(&id) {
+                    return Err(Error("duplicate joint ID"));
+                }
+                if self.joints.len() >= self.capacity * 4 {
+                    return Err(Error("joint capacity exceeded"));
+                }
+                let a = self
+                    .bodies
+                    .get(&first)
+                    .ok_or(Error("unknown first joint body"))?
+                    .0;
+                let b = self
+                    .bodies
+                    .get(&second)
+                    .ok_or(Error("unknown second joint body"))?
+                    .0;
+                let joint = desc.build()?;
+                let handle = self.inner.insert_impulse_joint(a, b, joint);
+                self.joints.insert(id, (handle, first, second));
+                Ok(())
+            }
+            pub fn remove_joint(&mut self, id: u64) -> bool {
+                if let Some((handle, _, _)) = self.joints.remove(&id) {
+                    self.inner.remove_impulse_joint(handle);
+                    true
+                } else {
+                    false
+                }
+            }
+            pub fn joint_count(&self) -> usize {
+                self.joints.len()
+            }
+            pub fn has_joint(&self, id: u64) -> bool {
+                self.joints.contains_key(&id)
+            }
+            pub fn apply_angular_impulse(
+                &mut self,
+                id: u64,
+                impulse: AngularImpulse,
+            ) -> Result<()> {
+                if !valid_angular(impulse) {
+                    return Err(Error("invalid angular impulse"));
+                }
+                let handle = self.bodies.get(&id).ok_or(Error("unknown body"))?.0;
+                let body = &mut self.inner.bodies[handle];
+                if !body.is_dynamic() {
+                    return Err(Error("angular impulse requires dynamic body"));
+                }
+                body.apply_torque_impulse(angular(impulse), true);
+                Ok(())
             }
             pub fn apply_impulse(&mut self, id: u64, impulse: Position) -> Result<()> {
                 if !crate::finite(&impulse) {

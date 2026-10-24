@@ -72,3 +72,8 @@ fn finite(values: &[f32]) -> bool {
 fn dimension(value: f32) -> bool {
     value.is_finite() && (0.000001..=10000.).contains(&value)
 }
+fn valid_joint_limits(limits: Option<[f32; 2]>) -> bool {
+    limits.is_none_or(|v| {
+        finite(&v) && v[0] <= v[1] && v[0] >= -std::f32::consts::PI && v[1] <= std::f32::consts::PI
+    })
+}

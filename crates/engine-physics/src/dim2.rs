@@ -2,6 +2,10 @@ use rapier::prelude::*;
 use rapier2d as rapier;
 pub type Position = [f32; 2];
 pub type Orientation = f32;
+pub type AngularImpulse = f32;
+#[path = "joints2.rs"]
+mod joints;
+pub use joints::JointDesc;
 #[derive(Clone, Copy, Debug)]
 pub struct BodyDesc {
     pub kind: crate::BodyKind,
@@ -72,6 +76,9 @@ fn rotation(v: f32) -> Rotation {
 }
 fn angular(v: f32) -> f32 {
     v
+}
+fn valid_angular(v: AngularImpulse) -> bool {
+    crate::finite(&[v])
 }
 fn valid_rotation(v: f32) -> bool {
     crate::finite(&[v])

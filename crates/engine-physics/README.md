@@ -30,6 +30,18 @@ poses in the host for render interpolation. Valid timesteps satisfy 0 < dt <=
 100,000). Coordinates and velocities must be finite and bounded; dimensions
 and density have explicit bounds to reject pathological simulation inputs.
 
+`insert_joint(joint_id, body1_id, body2_id, JointDesc)` creates a real Rapier
+fixed or revolute constraint. Joint IDs are independent of body IDs. Fixed
+joints lock local anchors together and align the local rotation frames;
+revolute joints keep their local anchors together while allowing hinge rotation.
+The 2D hinge rotates about Z. The 3D hinge takes a nonzero axis, normalized and
+interpreted in both bodies' local frames. Optional hinge limits are ordered
+radians in [-pi, pi]. Connected-body contacts are disabled. `remove_joint`
+removes a constraint and wakes its bodies; removing a body automatically removes
+its joints and their ID mappings. Joint capacity is four times body capacity.
+`apply_angular_impulse` accepts a scalar in 2D or XYZ vector in 3D. Linear and
+angular impulses also work immediately after insertion, before the first step.
+
 `drain_events` reports sorted start/stop transitions for active solid contacts
 and sensor intersections between fixed steps. Initial overlaps are reported on
 the first step; removed bodies produce stop events on the next step. Events are
@@ -42,7 +54,7 @@ collider layers. Direction is normalized, distances are in world units, and
 equal-distance hits choose the lower application ID. No broad-phase performance
 claim is made for this query path.
 
-This foundation does not yet expose joints, mesh colliders, compound shapes,
+This foundation does not yet expose joint motors, arbitrary joint frames, mesh colliders, compound shapes,
 character controllers, save-state serialization, or ECS scheduling. It does not
 promise cross-platform bitwise determinism. New ECS adapters should preserve
 legacy kinematic gameplay behavior and make rigid-body authority opt-in.
@@ -50,3 +62,5 @@ legacy kinematic gameplay behavior and make rigid-body authority opt-in.
 Validation: `cargo test -p engine-physics` exercises real falling/settling bodies
 in both dimensions, angular motion, impulses, masks, sensors, removal, queries,
 kinematic targets, invalid inputs, and high-speed CCD against a thin wall.
+Joint tests verify gravity-resistant fixed constraints, torque-driven hinges,
+angle limits, explicit removal, and automatic cleanup in both dimensions.

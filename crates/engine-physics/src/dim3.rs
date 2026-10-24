@@ -3,6 +3,10 @@ use rapier3d as rapier;
 pub type Position = [f32; 3];
 /// Quaternion in x,y,z,w order.
 pub type Orientation = [f32; 4];
+pub type AngularImpulse = [f32; 3];
+#[path = "joints3.rs"]
+mod joints;
+pub use joints::JointDesc;
 #[derive(Clone, Copy, Debug)]
 pub struct BodyDesc {
     pub kind: crate::BodyKind,
@@ -73,6 +77,9 @@ fn rotation(v: Orientation) -> Rotation {
 }
 fn angular(v: Position) -> Vector {
     vector(v)
+}
+fn valid_angular(v: AngularImpulse) -> bool {
+    crate::finite(&v)
 }
 fn valid_rotation(v: Orientation) -> bool {
     crate::finite(&v) && (v.iter().map(|n| n * n).sum::<f32>() - 1.).abs() < 0.01
