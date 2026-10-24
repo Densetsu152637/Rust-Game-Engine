@@ -39,6 +39,7 @@ unimplemented. See [Platforms](docs/platforms.md) for exact capability boundarie
 | `examples/first-project` | Minimal authored project with a game crate and lifecycle fixtures |
 | `examples/desktop-2d` | 2D desktop synthetic lab: sprites, text, collision, rooms, audio, saves |
 | `examples/native-extension` | Custom components, systems and a custom wgpu render pass |
+| `examples/programmable-world` | Authored 3D scene, retained HUD, typed callbacks, physics, animation and navigation; GPU-free default and optional window |
 | `assets/scripts/moving_entity` | Smallest script crate: one entity advanced along +X |
 | `docs/` | Documentation, starting at [docs/README.md](docs/README.md) |
 | `scripts/ci/` | Helper scripts used by the CI workflow |
@@ -79,6 +80,7 @@ Tests that need real hardware are `#[ignore]` and are run explicitly; see
 cargo test --manifest-path examples/first-project/Cargo.toml
 cargo test --manifest-path examples/desktop-2d/Cargo.toml
 cargo test --manifest-path examples/native-extension/Cargo.toml
+cargo test --manifest-path examples/programmable-world/Cargo.toml
 cargo test --manifest-path assets/scripts/moving_entity/Cargo.toml
 ```
 
@@ -114,7 +116,17 @@ See [Native game crates](docs/scripting.md) for the full contract, and
 [examples/first-project](examples/first-project/README.md),
 [examples/desktop-2d](examples/desktop-2d/README.md),
 [examples/native-extension](examples/native-extension/README.md) and
+[examples/programmable-world](examples/programmable-world/README.md), plus
 [assets/scripts/moving_entity](assets/scripts/moving_entity/src/lib.rs) for real usage.
+
+The [programmable world](examples/programmable-world/README.md) connects the new
+systems in one authored scene. Its default executable runs fixed ticks without a
+GPU; the optional window requires `--features desktop`:
+
+```text
+cargo run --manifest-path examples/programmable-world/Cargo.toml
+cargo run --manifest-path examples/programmable-world/Cargo.toml --features desktop -- --window
+```
 
 ### Command line
 

@@ -51,20 +51,21 @@ jobs:
             examples/desktop-2d
             examples/first-project
             examples/native-extension
+            examples/programmable-world
             assets/scripts/moving_entity
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo fmt (workspace)
         run: cargo fmt --all --check
       - name: cargo fmt (standalone example crates)
         run: |
-          for crate in examples/desktop-2d examples/first-project examples/native-extension assets/scripts/moving_entity; do
+          for crate in examples/desktop-2d examples/first-project examples/native-extension examples/programmable-world assets/scripts/moving_entity; do
             cargo fmt --check --manifest-path "$crate/Cargo.toml"
           done
       - name: cargo clippy (workspace)
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: cargo clippy (standalone example crates)
         run: |
-          for crate in examples/desktop-2d examples/first-project examples/native-extension assets/scripts/moving_entity; do
+          for crate in examples/desktop-2d examples/first-project examples/native-extension examples/programmable-world assets/scripts/moving_entity; do
             cargo clippy --manifest-path "$crate/Cargo.toml" --all-targets -- -D warnings
           done
 
@@ -126,6 +127,9 @@ jobs:
             path: examples/first-project
           - name: native-extension
             path: examples/native-extension
+          # Default features exercise real simulation/UI/extraction without a GPU.
+          - name: programmable-world
+            path: examples/programmable-world
           - name: moving-entity
             path: assets/scripts/moving_entity
     env:
