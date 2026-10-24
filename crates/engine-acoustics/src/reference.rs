@@ -75,3 +75,80 @@ pub fn reference_shoebox(scattering: f32) -> Result<AcousticWorld> {
         },
     )
 }
+
+/// Trace settings of the parity fixtures: 1 ms bins over `length_s`, c = 343 m/s,
+/// no air absorption.
+pub fn reference_trace_settings(length_s: f32) -> crate::TraceSettings {
+    crate::TraceSettings {
+        bin_s: 0.001,
+        bins: (length_s / 0.001).round() as u32,
+        speed_of_sound: 343.0,
+        air_np_per_m: [0.0; 4],
+    }
+}
+
+/// The listener-centric late-field job of the parity fixtures (emitter and
+/// receiver at [`SHOEBOX_LISTENER`], 1 m receiver, 256 reflections).
+pub fn reference_job(rays: u32, seed: u64) -> crate::EnergyJob {
+    crate::EnergyJob {
+        emitter: SHOEBOX_LISTENER,
+        receiver: SHOEBOX_LISTENER,
+        receiver_radius_m: 1.0,
+        rays,
+        max_bounces: 256,
+        seed,
+    }
+}
+
+/// The CPU reference histogram for one job, for comparison with GPU tiers.
+pub fn cpu_reference_histogram(
+    world: &AcousticWorld,
+    settings: &crate::TraceSettings,
+    job: &crate::EnergyJob,
+    threads: u8,
+) -> std::result::Result<crate::EnergyHistogram, crate::BackendError> {
+    use crate::PropagationBackend;
+    let mut cpu = crate::CpuBackend::new(threads)?;
+    let mut out = Vec::new();
+    cpu.trace(world, settings, std::slice::from_ref(job), &mut out)?;
+    Ok(out.remove(0))
+}
+
+/// Energy per band summed over bins whose start time lies in `[start_s, end_s)`.
+pub fn window_energy(h: &crate::EnergyHistogram, start_s: f32, end_s: f32) -> BandGains {
+    let mut e = [0.0f64; 4];
+    for (i, bin) in h.bins.iter().enumerate() {
+        let t = i as f32 * h.bin_s;
+        if t >= start_s && t < end_s {
+            for b in 0..4 {
+                e[b] += f64::from(bin[b]);
+            }
+        }
+    }
+    e.map(|v| v as f32)
+}
+
+/// CSV dump: a header `time_s,e125,e500,e2000,e8000`, then one row per bin (start
+/// time, energies), then `#` comment lines with rays, escaped, aborted and the mean
+/// free path.
+pub fn histogram_csv(h: &crate::EnergyHistogram) -> String {
+    use std::fmt::Write;
+    let mut s = String::from("time_s,e125,e500,e2000,e8000\n");
+    for (i, b) in h.bins.iter().enumerate() {
+        let _ = writeln!(
+            s,
+            "{:.6},{:e},{:e},{:e},{:e}",
+            i as f32 * h.bin_s,
+            b[0],
+            b[1],
+            b[2],
+            b[3]
+        );
+    }
+    let _ = writeln!(
+        s,
+        "# rays={} escaped={:e} aborted={} mean_free_path_m={}",
+        h.rays, h.escaped, h.aborted, h.mean_free_path_m
+    );
+    s
+}

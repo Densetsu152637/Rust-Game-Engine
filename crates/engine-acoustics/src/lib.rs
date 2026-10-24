@@ -6,10 +6,17 @@
 //! a fabricated result. Types whose values only the implementation can produce
 //! (`AcousticWorld`, `ProxyMapping`, `AcousticsService`) cannot be constructed yet.
 
+// Per-band loops index several parallel arrays by band.
+#![allow(clippy::needless_range_loop)]
+
 mod bvh;
+pub mod direct;
 mod error;
 mod estimate;
+mod fit;
 mod geometry;
+pub mod image_source;
+mod ir;
 mod material;
 mod math;
 mod planes;
@@ -18,17 +25,20 @@ pub mod reference;
 pub mod rng;
 mod service;
 mod trace;
+pub mod trace_cpu;
 mod volume;
 mod world;
 
 pub use bvh::{MAX_BVH_DEPTH, MESH_MAX_LEAF, SAH_BINS};
 pub use engine_audio::acoustic::{BANDS, BandGains};
 pub use error::{AcousticsError, Result, unimplemented};
-pub use estimate::{eyring_rt60, fit_reverb, sabine_rt60, synthesize_ir};
+pub use estimate::{SABINE_CONSTANT, eyring_rt60, sabine_rt60};
+pub use fit::{BandFit, DecayFit, fit_bands, fit_reverb, validate_histogram};
 pub use geometry::{
     AcousticVolume, Enclosure, Footprint, Footprint2D, ListenerPose, Proxy2DSettings, ProxyMapping,
     ProxyPlane, VolumeKind, VolumeShape,
 };
+pub use ir::synthesize_ir;
 pub use material::{AcousticMaterial, MaterialId, MaterialPreset};
 pub use math::IDENTITY as IDENTITY_AFFINE;
 pub use planes::PlaneCluster;
