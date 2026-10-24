@@ -1,8 +1,23 @@
-use crate::{Error, Limits, Message, PollBudget, Result};
+use crate::{DataFrame, Delivery, Error, Lane, Limits, Message, PollBudget, Result};
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
 };
+
+/// First body byte of a binary data frame. JSON bodies always start with `{`, so the tag can
+/// never collide with a control message.
+const DATA_TAG: u8 = 0;
+/// Data frame body header: tag, lane, delivery.
+pub(crate) const DATA_HEADER_BYTES: usize = 3;
+
+/// Nonsecret per-connection framing counters (plaintext frame bytes, including length prefixes).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FrameStats {
+    pub(crate) sent_bytes: u64,
+    pub(crate) received_bytes: u64,
+    pub(crate) sent_frames: u64,
+    pub(crate) received_frames: u64,
+}
 
 /// Framing is transport-independent; production uses nonblocking TCP and tests inject partial I/O.
 pub(crate) struct Framed<T> {
@@ -13,6 +28,7 @@ pub(crate) struct Framed<T> {
     offset: usize,
     queued_bytes: usize,
     pending_error: Option<Error>,
+    stats: FrameStats,
 }
 impl<T: Read + Write> Framed<T> {
     pub(crate) fn transport_mut(&mut self) -> &mut T {
@@ -27,7 +43,38 @@ impl<T: Read + Write> Framed<T> {
             offset: 0,
             queued_bytes: 0,
             pending_error: None,
+            stats: FrameStats::default(),
         }
+    }
+    pub(crate) fn stats(&self) -> FrameStats {
+        self.stats
+    }
+    pub(crate) fn queued_bytes(&self) -> usize {
+        self.queued_bytes
+    }
+    /// Largest payload a data frame can carry under `limits`.
+    pub(crate) fn max_data_payload(limits: &Limits) -> usize {
+        limits.max_frame_bytes - DATA_HEADER_BYTES
+    }
+    /// Binary data frame: `u32` big-endian body length, then `[0, lane, delivery, payload...]`.
+    pub(crate) fn encode_data(
+        lane: Lane,
+        delivery: Delivery,
+        payload: &[u8],
+        limits: &Limits,
+    ) -> Result<Vec<u8>> {
+        if !lane.is_valid() {
+            return Err(Error::Invalid("lane exceeds Lane::MAX"));
+        }
+        if payload.len() > Self::max_data_payload(limits) {
+            return Err(Error::Invalid("payload exceeds max_payload"));
+        }
+        let body = payload.len() + DATA_HEADER_BYTES;
+        let mut frame = Vec::with_capacity(body + 4);
+        frame.extend_from_slice(&(body as u32).to_be_bytes());
+        frame.extend_from_slice(&[DATA_TAG, lane.0, delivery_code(delivery)]);
+        frame.extend_from_slice(payload);
+        Ok(frame)
     }
     pub(crate) fn encode(message: &Message, limits: &Limits) -> Result<Vec<u8>> {
         // Bounded writer avoids allocating an oversized JSON frame before checking the cap.
@@ -65,11 +112,12 @@ impl<T: Read + Write> Framed<T> {
                 Ok(count) => {
                     bytes -= count;
                     self.offset += count;
-
+                    self.stats.sent_bytes += count as u64;
                     if self.offset == frame.len() {
                         self.queued_bytes -= frame.len();
                         self.output.pop_front();
                         self.offset = 0;
+                        self.stats.sent_frames += 1;
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -104,13 +152,11 @@ impl<T: Read + Write> Framed<T> {
                     self.input.clear();
                     self.expected = Some(length);
                 } else {
-                    let message = match serde_json::from_slice(&self.input) {
-                        Ok(message) => message,
-                        Err(_) => {
-                            return self
-                                .finish_before_error(messages, Error::Protocol("malformed frame"));
-                        }
+                    let Some(message) = decode_body(&self.input) else {
+                        return self
+                            .finish_before_error(messages, Error::Protocol("malformed frame"));
                     };
+                    self.stats.received_frames += 1;
                     messages.push(message);
                     self.input.clear();
                     self.expected = None;
@@ -127,6 +173,7 @@ impl<T: Read + Write> Framed<T> {
                 Ok(count) => {
                     self.input.extend_from_slice(&buffer[..count]);
                     bytes -= count;
+                    self.stats.received_bytes += count as u64;
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
@@ -146,6 +193,40 @@ impl<T: Read + Write> Framed<T> {
         self.pending_error = Some(error);
         Ok(messages)
     }
+}
+fn decode_body(body: &[u8]) -> Option<Message> {
+    match body {
+        [DATA_TAG, lane, delivery, payload @ ..] => {
+            let lane = Lane(*lane);
+            if !lane.is_valid() {
+                return None;
+            }
+            Some(Message::Data(DataFrame {
+                lane,
+                delivery: delivery_from_code(*delivery)?,
+                payload: payload.to_vec(),
+            }))
+        }
+        [DATA_TAG, ..] => None,
+        _ => serde_json::from_slice(body).ok(),
+    }
+}
+pub(crate) fn delivery_code(delivery: Delivery) -> u8 {
+    match delivery {
+        Delivery::ReliableOrdered => 0,
+        Delivery::ReliableUnordered => 1,
+        Delivery::UnreliableSequenced => 2,
+        Delivery::Unreliable => 3,
+    }
+}
+pub(crate) fn delivery_from_code(code: u8) -> Option<Delivery> {
+    Some(match code {
+        0 => Delivery::ReliableOrdered,
+        1 => Delivery::ReliableUnordered,
+        2 => Delivery::UnreliableSequenced,
+        3 => Delivery::Unreliable,
+        _ => return None,
+    })
 }
 struct CappedWriter {
     bytes: Vec<u8>,
@@ -233,6 +314,54 @@ mod tests {
         ));
         assert_eq!(io.io.outgoing, frame);
         assert_eq!(io.queued_bytes, 0);
+    }
+    #[test]
+    fn binary_data_frames_round_trip_and_reject_bad_headers() {
+        let limits = Limits::default();
+        let frame = Framed::<Partial>::encode_data(Lane(9), Delivery::Unreliable, b"\0{x", &limits)
+            .unwrap();
+        assert_eq!(&frame[..7], &[0, 0, 0, 6, 0, 9, 3]);
+        let mut io = Framed::new(Partial {
+            incoming: frame.into(),
+            chunk: 2,
+            ..Default::default()
+        });
+        let mut messages = Vec::new();
+        for _ in 0..8 {
+            messages.extend(io.receive(PollBudget::default(), &limits).unwrap());
+        }
+        assert!(matches!(
+            messages.as_slice(),
+            [Message::Data(DataFrame { lane: Lane(9), delivery: Delivery::Unreliable, payload })]
+                if payload == b"\0{x"
+        ));
+        let max = Framed::<Partial>::max_data_payload(&limits);
+        let ok =
+            Framed::<Partial>::encode_data(Lane(0), Delivery::Unreliable, &vec![0; max], &limits);
+        assert_eq!(ok.unwrap().len(), limits.max_frame_bytes + 4);
+        let big = Framed::<Partial>::encode_data(
+            Lane(0),
+            Delivery::Unreliable,
+            &vec![0; max + 1],
+            &limits,
+        );
+        assert!(big.is_err());
+        assert!(
+            Framed::<Partial>::encode_data(Lane(16), Delivery::Unreliable, &[], &limits).is_err()
+        );
+        for body in [&[0_u8, 16, 0][..], &[0, 1, 4], &[0, 1]] {
+            let mut input = (body.len() as u32).to_be_bytes().to_vec();
+            input.extend_from_slice(body);
+            let mut io = Framed::new(Partial {
+                incoming: input.into(),
+                chunk: 64,
+                ..Default::default()
+            });
+            assert!(matches!(
+                io.receive(PollBudget::default(), &limits),
+                Err(Error::Protocol(_))
+            ));
+        }
     }
     #[test]
     fn rejects_huge_header_before_payload_allocation_and_caps_queues() {
