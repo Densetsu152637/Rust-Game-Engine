@@ -75,7 +75,7 @@ impl GpuMesh {
     ) -> Result<Arc<Self>> {
         ensure!(stride > 0, "vertex stride must be positive");
         ensure!(
-            !vertex_bytes.is_empty() && vertex_bytes.len() as u64 % stride == 0,
+            !vertex_bytes.is_empty() && (vertex_bytes.len() as u64).is_multiple_of(stride),
             "mesh vertex data must be a nonzero whole number of vertices"
         );
         let vertices = vertex_bytes.len() as u64 / stride;
@@ -89,7 +89,7 @@ impl GpuMesh {
             indices.len() as u64
         };
         ensure!(
-            count % 3 == 0 && count <= u64::from(u32::MAX),
+            count.is_multiple_of(3) && count <= u64::from(u32::MAX),
             "meshes are complete triangle lists"
         );
         let vertex = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

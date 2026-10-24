@@ -242,7 +242,8 @@ a long build blocks other requests on that connection.
 
 `render_screenshot` uses the engine's real renderer on an offscreen target (the same
 path as a window), so sprites, meshes and script-created UI panels appear as in the
-game; native render passes registered by the game run too. It needs a GPU adapter. A
+game; render features registered by the game run too, and `render_pipeline`
+reports their per-camera state. It needs a GPU adapter. A
 host without one gets the structured error `gpu_unavailable` (use
 `project_run_headless` instead). Images are returned inline, so the PNG must fit the
 1 MiB response limit after base64 encoding; otherwise the error `image_too_large`
@@ -400,7 +401,9 @@ commands as human controllers, with revision checks and dry runs. See
 
 `project_run_headless` also returns CPU `profile` aggregates and the newest 32
 retained frames (`profile_frames_truncated` indicates trimming), optional
-`network` status and `input_devices` descriptors, bindings and diagnostics.
+`network` status, `input_devices` descriptors, bindings and diagnostics, and
+`render_pipeline` (registered render features and their state in the active
+camera view, the camera's `render_features` overrides; `not_rendered` headless).
 Each telemetry field is capped at 64 KiB. Oversized fields become null and are
 named in `telemetry_omitted`; absent optional services are simply null.
 

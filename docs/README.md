@@ -37,9 +37,13 @@
 ## Engine interfaces
 
 - [Desktop rendering](desktop-2d-rendering.md): CPU content, the render contract,
-  wgpu host and native render-pass extensions.
+  wgpu host and native render-feature extensions.
 - [3D scene rendering](rendering3d.md): cameras, depth, metallic-roughness PBR
   materials, directional shadow maps, transparent draws and custom WGSL.
+- [Render architecture](rendering-architecture.md): the render extension API
+  (features, stages, per-view data, HDR targets, light list, instancing), WGSL
+  composition and the material shader contract, device feature composition,
+  XR eye targets and texture streams.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
