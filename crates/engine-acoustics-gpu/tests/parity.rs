@@ -270,15 +270,22 @@ fn readback_timeout_is_reported_and_not_fatal() {
     // The tier stays usable after a timeout.
     assert!(backend.info().adapter.is_some());
     let light = [job(SOURCE, LISTENER, 64, 4, 5)];
+    // Once the queued heavy work drains, a light trace completes within 1 ms.
     let mut ok = false;
-    for _ in 0..200 {
+    let mut timeouts = 0;
+    for _ in 0..100 {
         match backend.trace(&world, &settings(LENGTH_S), &light, &mut out) {
             Ok(_) => {
                 ok = true;
                 break;
             }
-            Err(e) => assert_eq!(e.code, "acoustics.backend.timeout", "{e}"),
+            Err(e) => {
+                assert_eq!(e.code, "acoustics.backend.timeout", "{e}");
+                timeouts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
     }
+    println!("recovered after {timeouts} further timeouts");
     assert!(ok, "the tier never recovered after a timeout");
 }

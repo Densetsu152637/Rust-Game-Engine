@@ -93,7 +93,7 @@ measurements are in `GpuBackend::self_test_report()`.
    = 5.106 m, no aborted rays, no escaped energy and a finite, non-zero histogram.
 
 Measured on the RTX 5080: both tiers 16/16 hits with t error 0; mean free path
-5.1064 m (compute) and 5.1072 m (ray query).
+5.1142 m (compute) and 5.1150 m (ray query) against 5.1064 m.
 
 ## Kernel
 
@@ -117,12 +117,15 @@ the ordinary `cargo test`, so a shader error fails on any machine.
   visits or a stack overflow terminates the ray and counts it in `aborted`.
 - **RNG and sampling:** identical to `engine_acoustics::rng` (PCG hash,
   `ray_state(seed, ray)`, two draws for emission, exactly three per reflection).
-- **Energy model:** see `common.wgsl`; it follows the CPU tracer of `engine-acoustics`
-  (section 5.4.4): per-band energy `1/rays`, `e *= reflect` per hit, air absorption
-  per segment, diffuse with probability `scattering` else specular, termination at
-  `max_bounces` or `max e < 1e-6 / rays`, receiver deposits `e * 3 l_in / r^3` at
-  time `(path to entry + l_in / 2) / c` for segments after at least one reflection,
-  surface offset `ray_offset(p)`.
+- **Energy model:** `common.wgsl` mirrors `engine_acoustics::trace_cpu` step for step
+  (section 5.4.4): relative energy 1 per band, `e *= exp(-2 m t) * reflect` per hit
+  (air coefficients are amplitude nepers per metre), diffuse with probability
+  `scattering` else unnormalized specular reflection, the ray ends at the hit after
+  `max_bounces` reflections or when `max e < 1e-6`, segments after at least one
+  reflection deposit `e * exp(-2 m t_mid) * 3 l / r^3 / rays` into bin
+  `floor((path + t_in + l/2) / c / bin_s)`, a miss adds `mean_b(e) / rays` to
+  `escaped`, reflected-to-hit segments feed the mean free path, and the outgoing
+  origin is offset by `ray_offset(p)`.
 - **Accumulation:** every histogram cell `[job][bin][band]` and every per-job counter
   is a 64-bit fixed-point value in two `atomic<u32>` words with carry (2^40 counts per
   unit of energy, 2^16 per metre of path). Integer addition is order-independent, so
@@ -163,8 +166,16 @@ cargo test -p engine-acoustics-gpu --test coexistence -- --ignored --nocapture
   an L-shaped room before and after moving a dynamic panel). Measured: no hit/miss
   disagreement, |dt| at most 4.4e-5 m, and at most 10 of 100,000 rays resolving a
   coplanar tie (panel base on the floor) to a different triangle.
-- `parity`: design tests 16-18 against the CPU tracer, the readback-timeout path and
-  throughput.
+- `parity`: design tests 16-18 against `CpuBackend` (65,536 rays x 256 bounces, 3 s
+  histogram, reference shoebox with scattering 1, and an L-shaped room before and
+  after moving a dynamic panel), the readback-timeout path and throughput. Measured:
+  T30 per band within 0.1% of the CPU, early (0-50 ms) and late window energies
+  within 0.001 dB, mean free path within 0.03%, no aborted rays, bitwise-identical
+  repeat runs; tier 2 against tier 1 per window at most 0.49% (1-3 s window).
+  Throughput (submit to decoded result): shoebox 65,536 x 256 in 1.9 ms (ray query,
+  8.7e9 segments/s) and 8.8 ms (compute); 1,048,576 x 64 on the 99,372-triangle
+  shoebox 2.5e9 segments/s (ray query) and 3.9e8 (compute). A 1 ms readback
+  timeout returns `acoustics.backend.timeout` and the tier recovers.
 - `coexistence`: design test 20 at library level, a separate wgpu device rendering
   1920 x 1080 offscreen frames in the same process while the ray-query tier traces.
   Measured over 3 s each: render only p95 8.76 ms; with the default tracer (4,096

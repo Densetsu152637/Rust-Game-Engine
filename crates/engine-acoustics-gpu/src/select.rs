@@ -104,11 +104,13 @@ pub fn select_backend(
             }
             Err(e) => {
                 let name = format!("{kind:?}");
-                reasons.push(if e.message.starts_with(&format!("{name} ")) {
-                    e.message
-                } else {
-                    format!("{name}: {}", e.message)
-                });
+                // "<tier>: <reason>", without repeating a leading tier name.
+                let message = e
+                    .message
+                    .strip_prefix(&format!("{name}: "))
+                    .or_else(|| e.message.strip_prefix(&format!("{name} ")))
+                    .unwrap_or(&e.message);
+                reasons.push(format!("{name}: {message}"));
             }
         }
     }
