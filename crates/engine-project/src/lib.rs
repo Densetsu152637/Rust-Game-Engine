@@ -13,6 +13,7 @@ pub mod schema;
 pub mod services;
 pub mod transforms;
 pub mod ui;
+pub mod ui_tree;
 
 pub use catalog::{ComponentCatalog, ComponentDescriptor, CustomValue, register_component};
 pub use document::{EditOperation, SceneDocument};
