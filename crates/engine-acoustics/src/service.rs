@@ -143,6 +143,32 @@ pub struct SourceStatus {
     pub occluded: bool,
     pub reflections: u8,
 }
+/// Mixer-side acoustic counters, a serializable copy of
+/// `engine_audio::acoustic::AcousticMixStats`. The service cannot read them (it
+/// only holds the publisher), so the ECS layer fills them from
+/// `AudioControl::acoustic_stats()`; they are zero when no mixer is attached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct MixerStats {
+    pub acoustic_voices: u32,
+    pub over_cap_fallbacks: u64,
+    pub frames_adopted: u64,
+    pub rejected_kernels: u64,
+    pub hero_voices: u32,
+    pub reverb_active: bool,
+}
+impl From<engine_audio::acoustic::AcousticMixStats> for MixerStats {
+    fn from(s: engine_audio::acoustic::AcousticMixStats) -> Self {
+        Self {
+            acoustic_voices: s.acoustic_voices,
+            over_cap_fallbacks: s.over_cap_fallbacks,
+            frames_adopted: s.frames_adopted,
+            rejected_kernels: s.rejected_kernels,
+            hero_voices: s.hero_voices,
+            reverb_active: s.reverb_active,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct AcousticStatus {
     pub requested: BackendPreference,
@@ -164,6 +190,8 @@ pub struct AcousticStatus {
     pub audio_try_lock_misses: u64,
     pub gpu_timeouts: u64,
     pub aborted_rays: u64,
+    /// Mixer counters (filled by the ECS layer; see [`MixerStats`]).
+    pub mixer: MixerStats,
     /// At most 32 entries.
     pub sources: Vec<SourceStatus>,
 }

@@ -20,7 +20,7 @@ use bevy_ecs::prelude::*;
 use engine_acoustics::{
     AcousticState, AcousticStatus, AcousticsService, BackendKind, BackendPreference, InstanceId,
     ListenerPose, ParamHook, PropagationBackend, PropagationRequest, PropagationSettings,
-    PropagationSummary, ProxyMapping, ServiceConfig, ServiceMode, SourceRequest,
+    PropagationSummary, ProxyMapping, ServiceConfig, ServiceEvent, ServiceMode, SourceRequest,
 };
 use engine_audio::acoustic::MixerEnvironment;
 use std::{
@@ -424,7 +424,14 @@ pub(crate) fn start(world: &mut World) -> Result<()> {
     Ok(())
 }
 
-fn set_status(world: &mut World, status: AcousticStatus) {
+fn set_status(world: &mut World, mut status: AcousticStatus) {
+    // The service only holds the publisher; the mixer counters come from the
+    // audio control (zero without a host mixer).
+    if let Some(audio) = world.get_resource::<RuntimeAudio>()
+        && let Ok(stats) = audio.control.acoustic_stats()
+    {
+        status.mixer = stats.into();
+    }
     if let Some(mut control) = world.get_resource_mut::<AcousticControl>() {
         control.status = status;
     }
@@ -713,7 +720,9 @@ impl RuntimeAcoustics {
                     });
                 }
                 ServiceEvent::Failed { code, message } => self.fail(code, &message, events),
-                ServiceEvent::Warning { code, message } => self.warnings.push(format!("{code}: {message}")),
+                ServiceEvent::Warning { code, message } => {
+                    self.warnings.push(format!("{code}: {message}"))
+                }
             }
         }
         self.warnings.truncate(MAX_WARNINGS);

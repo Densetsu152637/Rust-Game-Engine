@@ -8,6 +8,7 @@
 use crate::{Error, Project, Result, Scene};
 
 mod air;
+mod analysis;
 mod collect;
 mod components;
 mod descriptors;
@@ -15,17 +16,23 @@ mod service;
 mod volumes;
 
 pub use air::{air_np_per_m, iso9613_db_per_m};
+pub use analysis::{
+    MAX_BAKED_DOCUMENT_BYTES, MAX_CONTRIBUTORS, MAX_FINDINGS, MAX_QUERY_REFLECTIONS,
+    MAX_QUERY_REVERB_RAYS, MAX_QUERY_SOURCES, QueryListener, QueryQuality, QueryRequest,
+    QuerySource, SceneAcoustics, bake_scene, inspect_scene, load_scene, query_scene,
+    validate_document,
+};
 pub use collect::{
-    Collected, FootprintShape, FootprintSpec, InstanceSpec, MeshLookup, ProxySpec, VolumeGeometry,
-    VolumeSpec, WorldBuild, build_world, collect, find_environment,
+    BakeInclude, Collected, FootprintShape, FootprintSpec, InstanceSpec, MeshLookup, ProxySpec,
+    VolumeGeometry, VolumeSpec, WorldBuild, build_world, collect, find_environment, to_document,
 };
 pub use components::*;
 pub use descriptors::descriptors;
 pub use service::{
-    AcousticControl, AcousticHooks, AcousticHost, AcousticOutputRate, AcousticUnits, EVENT_BACKEND_CHANGED,
-    EVENT_FAILED, EVENT_OCCLUSION_CHANGED, EVENT_WORLD_REBUILT, MAX_EVENTS_PER_TICK,
-    OCCLUDED_BELOW, Occlusion, REBUILD_DEBOUNCE_S, VISIBLE_ABOVE, mixer_environment,
-    propagation_settings, set_bus_effect, set_param_hook, status, warnings,
+    AcousticControl, AcousticHooks, AcousticHost, AcousticOutputRate, AcousticUnits,
+    EVENT_BACKEND_CHANGED, EVENT_FAILED, EVENT_OCCLUSION_CHANGED, EVENT_WORLD_REBUILT,
+    MAX_EVENTS_PER_TICK, OCCLUDED_BELOW, Occlusion, REBUILD_DEBOUNCE_S, VISIBLE_ABOVE,
+    mixer_environment, propagation_settings, set_bus_effect, set_param_hook, status, warnings,
 };
 pub(crate) use service::{shutdown, start, tick};
 pub use volumes::{Room, RoomSet, rooms};

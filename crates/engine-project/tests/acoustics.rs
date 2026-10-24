@@ -2,9 +2,8 @@
 //! world extraction, authored emitters/listeners, lifecycle, status and hooks
 //! (design record tests 10, 15 and 21).
 //!
-//! Tests that need the real `engine-acoustics` world builder, material presets
-//! and service, or the `engine-audio` DSP, are `#[ignore]`d with the exact
-//! reason; the rest run against the frozen contract skeleton.
+//! They run against the real `engine-acoustics` world builder, material presets and
+//! CPU propagation service (synchronous mode, deterministic).
 use bevy_ecs::prelude::*;
 use engine_acoustics::{AcousticState, PropagationResult};
 use engine_audio::{AudioControl, AudioEngine, Bus, VoiceState};
@@ -462,6 +461,20 @@ fn acoustics_assets_are_a_validated_kind() {
         "acoustics.document.invalid"
     );
     assert!(load(&write("not json")).is_err());
+    // The document is replayed through the world builder, so its rules apply.
+    assert_eq!(
+        code(
+            load(&write(
+                r#"{"version":1,"materials":[{"absorption":[2,0,0,0],"scattering":0,"transmission":[0,0,0,0]}]}"#
+            ))
+            .unwrap_err()
+        ),
+        "acoustics.material.invalid"
+    );
+    assert_eq!(
+        code(load(&write(r#"{"version":2,"materials":[]}"#)).unwrap_err()),
+        "acoustics.world.invalid"
+    );
 }
 
 #[test]
@@ -1453,7 +1466,9 @@ fn room_entities(units_per_meter: f32, ceiling: bool, open_sky: bool) -> Vec<Val
         env_entity(json!({
             "backend":"cpu","seed":3,
             "quality":{"reverb_rays":16384,"max_bounces":64,"histogram_length_s":4.0},
-            "proxy2d":{"plane":"side_view","units_per_meter":units_per_meter,"depth_m":8,"open_sky":open_sky,
+            // `depth_m` is in metres and does not follow `units_per_meter`, so doubling
+            // the room (0.5 units per metre) doubles the depth as well.
+            "proxy2d":{"plane":"side_view","units_per_meter":units_per_meter,"depth_m":8.0 / units_per_meter,"open_sky":open_sky,
                        "enclosure":"none","material":"concrete","floor_material":"concrete",
                        "ceiling_material":"concrete","side_material":"concrete"},
         })),
@@ -1505,7 +1520,6 @@ fn run_room(units_per_meter: f32, ceiling: bool, open_sky: bool) -> PropagationR
 }
 
 #[test]
-#[ignore = "requires streams A/B: AcousticsService, world builder, proxy synthesizer and material presets are unimplemented in the Stream 0 skeleton"]
 fn proxy_room_scales_its_reverb_with_units_per_meter() {
     let near = run_room(1.0, true, false);
     let far = run_room(0.5, true, false);
@@ -1516,7 +1530,6 @@ fn proxy_room_scales_its_reverb_with_units_per_meter() {
 }
 
 #[test]
-#[ignore = "requires streams A/B: AcousticsService, world builder, proxy synthesizer and material presets are unimplemented in the Stream 0 skeleton"]
 fn an_open_sky_proxy_lets_rays_escape_and_lowers_the_late_level() {
     let closed = run_room(1.0, true, false);
     let open = run_room(1.0, false, true);
@@ -1528,7 +1541,6 @@ fn an_open_sky_proxy_lets_rays_escape_and_lowers_the_late_level() {
 }
 
 #[test]
-#[ignore = "requires streams A/B: AcousticsService, world builder, ray casting and the CPU backend are unimplemented in the Stream 0 skeleton"]
 fn a_moving_occluder_emits_one_event_per_crossing() {
     let mut listener = listening_entity();
     listener["components"]["Transform"]["position"] = json!([100., 100., 100.]);
@@ -1597,7 +1609,6 @@ fn a_moving_occluder_emits_one_event_per_crossing() {
 }
 
 #[test]
-#[ignore = "requires stream B: eyring_rt60 and material presets are unimplemented in the Stream 0 skeleton"]
 fn room_volumes_supply_the_late_reverb_when_the_source_is_volumes() {
     let dir = write_project(
         vec![

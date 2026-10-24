@@ -352,14 +352,14 @@ impl AcousticEnvironment {
         {
             return bad("update_hz 1-120, reverb_update_hz 0.1-60, speed_of_sound 300-400");
         }
-        if !finite_in(self.air.temperature_c, -50.0, 60.0)
+        if !finite_in(self.air.temperature_c, -20.0, 50.0)
             || !finite_in(self.air.humidity_percent, 0.0, 100.0)
             || self
                 .air
                 .absorption_db_per_m
                 .is_some_and(|a| a.iter().any(|v| !finite_in(*v, 0.0, 10.0)))
         {
-            return bad("air: temperature -50..60 C, humidity 0-100 %, absorption 0-10 dB/m");
+            return bad("air: temperature -20..50 C, humidity 0-100 %, absorption 0-10 dB/m");
         }
         if q.occlusion_rays > 256
             || q.reflection_order > 3

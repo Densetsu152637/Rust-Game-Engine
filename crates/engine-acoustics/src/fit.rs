@@ -136,7 +136,9 @@ fn regress(level: &[f64], bin_s: f32, hi: f64, lo: f64) -> Option<f64> {
 ///
 /// - `rt60_s`: T30, else T20, else EDT per band (0 for a band without decay).
 /// - `level`: the late energy (at or after `late_start_s`) relative to the direct
-///   sound at 1 m, as an amplitude (`sqrt`).
+///   sound at 1 m, as an energy. That is the mixer's convention for
+///   `ReverbParams::level` (stream A divides it by the FDN's own energy), so an
+///   amplitude here would make the late field quiet by the square root.
 /// - `predelay_s`: start time of the first non-empty bin.
 /// - `mean_free_path_m`: copied from the histogram.
 /// - `enabled`: at least one band produced an RT60.
@@ -153,7 +155,7 @@ pub fn fit_reverb(h: &EnergyHistogram, late_start_s: f32) -> Result<ReverbParams
     Ok(ReverbParams {
         enabled: bands.iter().any(|b| b.method != DecayFit::None),
         rt60_s: bands.map(|b| b.rt60_s),
-        level: bands.map(|b| b.late_energy.max(0.0).sqrt()),
+        level: bands.map(|b| b.late_energy.max(0.0)),
         predelay_s: predelay,
         mean_free_path_m: h.mean_free_path_m,
     })

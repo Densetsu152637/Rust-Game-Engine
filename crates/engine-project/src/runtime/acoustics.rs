@@ -55,6 +55,18 @@ impl Runtime {
     pub fn acoustics_warnings(&self) -> Vec<String> {
         crate::acoustics::warnings(self.app.world())
     }
+    /// Hydrate the scene and collect its acoustic geometry without starting
+    /// scripts, audio or the propagation service (offline analysis for tools).
+    pub(crate) fn collect_acoustics(&mut self) -> Result<Option<crate::acoustics::Collected>> {
+        crate::catalog::hydrate(
+            self.app.world_mut(),
+            &self.scene,
+            &self.project.component_catalog,
+        )?;
+        crate::transforms::refresh_world_transforms(self.app.world_mut())?;
+        let meshes = &self.content.meshes;
+        crate::acoustics::collect(self.app.world(), &|id| meshes.get(id).cloned())
+    }
     /// Bring acoustics and authored audio in line with the hydrated scene.
     pub(super) fn start_acoustics(&mut self) -> Result<()> {
         crate::acoustics::start(self.app.world_mut())?;

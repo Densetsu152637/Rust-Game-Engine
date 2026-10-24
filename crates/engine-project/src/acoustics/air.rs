@@ -1,10 +1,6 @@
 //! Air absorption: ISO 9613-1 pure-tone attenuation at the four band centres.
 use super::components::Air;
 use engine_acoustics::BandGains;
-use engine_audio::acoustic::BAND_CENTERS_HZ;
-
-/// Decibels per neper (`20 / ln 10`).
-const DB_PER_NP: f64 = 8.685_889_638;
 
 /// ISO 9613-1:1993 pure-tone atmospheric absorption in dB/m for frequency `f`
 /// (Hz), temperature (C), relative humidity (percent) and pressure (kPa).
@@ -34,25 +30,21 @@ pub fn iso9613_db_per_m(
                     + 0.1068 * (-3352.0 / t).exp() / (nitrogen + f2 / nitrogen)))
 }
 
-/// Per-band amplitude attenuation in Np/m for the mixer and tracer.
+/// Per-band amplitude attenuation in Np/m for the mixer and tracer (energy decays
+/// as `exp(-2 m d)`), using the mixer's own ISO 9613-1 at the exact midbands for
+/// the temperature/humidity form. Out-of-range values (which component
+/// validation rejects) give no attenuation instead of a made-up number.
 pub fn air_np_per_m(air: &Air) -> BandGains {
     if !air.enabled {
         return [0.0; 4];
     }
-    let mut result = [0.0; 4];
-    for (band, value) in result.iter_mut().enumerate() {
-        let db = air.absorption_db_per_m.map_or_else(
-            || {
-                iso9613_db_per_m(
-                    f64::from(BAND_CENTERS_HZ[band]),
-                    f64::from(air.temperature_c),
-                    f64::from(air.humidity_percent),
-                    101.325,
-                )
-            },
-            |explicit| f64::from(explicit[band]),
-        );
-        *value = (db / DB_PER_NP) as f32;
+    match air.absorption_db_per_m {
+        Some(explicit) => engine_audio::acoustic::db_per_m_to_np_per_m(explicit),
+        None => engine_audio::acoustic::iso9613_air_np_per_m(
+            air.temperature_c,
+            air.humidity_percent,
+            101.325,
+        )
+        .unwrap_or([0.0; 4]),
     }
-    result
 }

@@ -56,7 +56,7 @@ pub use math::IDENTITY as IDENTITY_AFFINE;
 pub use planes::PlaneCluster;
 pub use proxy2d::{ProxyAir, ProxyMapping};
 pub use service::{
-    AcousticState, AcousticStatus, AcousticsService, ParamHook, PropagationRequest,
+    AcousticState, AcousticStatus, AcousticsService, MixerStats, ParamHook, PropagationRequest,
     PropagationResult, PropagationSettings, PropagationSummary, ServiceConfig, ServiceEvent,
     ServiceMode, SourceRequest, SourceResult, SourceStatus, SourceSummary,
 };

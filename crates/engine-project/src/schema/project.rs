@@ -187,18 +187,9 @@ impl Project {
                     crate::simulation::load_navmesh(self, &asset.id)?;
                 }
                 "acoustics" => {
-                    let bytes = read_bounded(&file, 64 * 1024 * 1024)?;
-                    let document: serde_json::Value = serde_json::from_slice(&bytes)?;
-                    if document
-                        .get("version")
-                        .and_then(serde_json::Value::as_u64)
-                        .is_none()
-                    {
-                        return Err(Error::new(
-                            "acoustics.document.invalid",
-                            format!("Acoustics asset {} needs a numeric version", asset.id),
-                        ));
-                    }
+                    let bytes =
+                        read_bounded(&file, crate::acoustics::MAX_BAKED_DOCUMENT_BYTES as u64)?;
+                    crate::acoustics::validate_document(&asset.id, &bytes)?;
                 }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;

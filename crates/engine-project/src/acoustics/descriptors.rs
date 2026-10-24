@@ -67,7 +67,7 @@ fn environment_schema() -> Value {
             "speed_of_sound": number(300.0, 400.0, "Metres per second."),
             "air": object(json!({
                 "enabled": boolean("false disables air absorption."),
-                "temperature_c": number(-50.0, 60.0, "ISO 9613-1 temperature."),
+                "temperature_c": number(-20.0, 50.0, "ISO 9613-1 temperature."),
                 "humidity_percent": number(0.0, 100.0, "ISO 9613-1 relative humidity."),
                 "absorption_db_per_m": bands(0.0, 10.0, "Explicit per-band dB/m (125, 500, 2000, 8000 Hz); overrides the estimate.")
             }), "Air absorption."),

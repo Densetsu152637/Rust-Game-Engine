@@ -613,3 +613,104 @@ pub fn build_world(collected: &Collected) -> Result<WorldBuild> {
         dynamic,
     })
 }
+
+/// Which geometry families a baked document keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BakeInclude {
+    pub meshes: bool,
+    pub proxy2d: bool,
+    pub volumes: bool,
+}
+impl Default for BakeInclude {
+    fn default() -> Self {
+        Self {
+            meshes: true,
+            proxy2d: true,
+            volumes: true,
+        }
+    }
+}
+
+/// Source geometry of the collected world as an `AcousticWorldDocument` (the
+/// `"acoustics"` asset kind). It stores meshes, instances, volumes and proxy
+/// footprints, never a BVH; loading replays it through the builder. Dynamic
+/// instances keep their `dynamic` mobility. The result is sealed with its content
+/// hash.
+pub fn to_document(
+    collected: &Collected,
+    include: BakeInclude,
+    source_scene: Option<String>,
+) -> Result<ac::AcousticWorldDocument> {
+    let mut doc = ac::AcousticWorldDocument::new(source_scene);
+    let mut ids = Vec::with_capacity(collected.materials.len());
+    for (index, spec) in collected.materials.iter().enumerate() {
+        doc.materials.push(spec.resolve().map_err(from_engine)?);
+        ids.push(ac::MaterialId(
+            u16::try_from(index).map_err(|_| invalid("more than 65535 acoustic materials"))?,
+        ));
+    }
+    let mut meshes: BTreeMap<(&str, usize), ac::MeshId> = BTreeMap::new();
+    if include.meshes {
+        for i in &collected.instances {
+            let mesh = match meshes.get(&(i.mesh.as_str(), i.material)) {
+                Some(id) => *id,
+                None => {
+                    let id = ac::MeshId(doc.meshes.len() as u32);
+                    doc.meshes
+                        .push(acoustic_mesh(&collected.meshes[&i.mesh], ids[i.material]));
+                    meshes.insert((i.mesh.as_str(), i.material), id);
+                    id
+                }
+            };
+            doc.instances.push(ac::DocumentInstance {
+                mesh,
+                transform: i.transform,
+                mobility: i.mobility.into(),
+                mask: i.mask,
+            });
+        }
+    }
+    if include.volumes {
+        for v in &collected.volumes {
+            let shape = match &v.geometry {
+                VolumeGeometry::Box { half_extents } => ac::VolumeShape::Box {
+                    half_extents: *half_extents,
+                },
+                VolumeGeometry::Mesh(asset) => {
+                    let id = ac::MeshId(doc.meshes.len() as u32);
+                    doc.meshes
+                        .push(acoustic_mesh(&collected.meshes[asset], ids[v.material]));
+                    ac::VolumeShape::Mesh(id)
+                }
+            };
+            doc.volumes.push(ac::DocumentVolume {
+                volume: ac::AcousticVolume {
+                    shape,
+                    kind: match v.kind {
+                        VolumeKind::Solid => ac::VolumeKind::Solid,
+                        VolumeKind::Room => ac::VolumeKind::Room {
+                            open_faces: v.open_mask,
+                        },
+                    },
+                    material: ids[v.material],
+                    mobility: v.mobility.into(),
+                },
+                transform: v.transform,
+            });
+        }
+    }
+    if include.proxy2d
+        && let Some(spec) = &collected.proxy
+    {
+        doc.proxy = Some(ac::DocumentProxy {
+            footprints: collected
+                .footprints
+                .iter()
+                .map(|f| footprint(&f.shape, ids[f.material], Mobility::Static))
+                .collect(),
+            settings: proxy_settings(spec, &ids),
+        });
+    }
+    doc.seal();
+    Ok(doc)
+}

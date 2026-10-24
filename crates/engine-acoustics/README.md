@@ -144,7 +144,7 @@ transmission twice, so use single panels or author `sqrt(τ)` for thick walls.
 - **Fitting:** `fit_reverb` uses Schroeder backward integration, with T30, then T20,
   then EDT (ISO 3382-1 ranges).
   - `level` is the late (`≥ late_start_s`) energy relative to the direct sound at
-    1 m, as an amplitude.
+    1 m, as an energy (the mixer's `ReverbParams::level` convention).
   - `predelay_s` is the first non-empty bin.
 - **Estimates:** `sabine_rt60` and `eyring_rt60` use `4mV` with `m = 2 · air_np_per_m`.
 - **Impulse responses:** `synthesize_ir` produces deterministic LR4 band-noise IRs
