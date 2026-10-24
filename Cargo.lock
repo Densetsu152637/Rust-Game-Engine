@@ -1137,7 +1137,11 @@ dependencies = [
 name = "engine-acoustics-gpu"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "engine-acoustics",
+ "naga",
+ "pollster 0.4.0",
+ "wgpu",
 ]
 
 [[package]]
