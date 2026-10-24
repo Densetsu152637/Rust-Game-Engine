@@ -115,3 +115,57 @@ framing/partial writes. Tests own/drop all sockets and use no external service.
 `cargo clippy -p engine-network --all-targets -- -D warnings` and
 `cargo fmt -p engine-network --check` cover the crate's static gates. Workspace
 integration and platform-specific network deployment remain separate checks.
+
+## Runtime attachment and callbacks
+
+`engine_project::networking` adapts the transport to authored ECS entities.
+`engine.NetworkReplica` is version 1 with `{ "authority": "server" }` or
+`{ "authority": "remote" }` data. The descriptor requires `Transform`. Merely
+loading that metadata does not establish a session. Native game configuration
+explicitly creates a `Server` or `Client` and passes it to `attach_server` or
+`attach_client` with `NetworkSettings` before startup. `NetworkSession` owns the
+endpoint as an ECS resource; `status(world)` reports its role, peers, snapshot
+progress, accepted/rejected input counts and last failure. `NetworkVelocity` is
+optional native velocity metadata for the replicated pose.
+
+Server input polling emits targeted `network.input` events containing peer_id,
+tick, entity_id, movement and buttons. Registered game event callbacks determine
+how inputs affect authoritative state. Without a callback, an accepted input
+cannot move an entity. `assign_owner(world, id, peer_id)` is restricted to existing
+server-authoritative replicas. Call `revoke_owner(world, id)` before deleting or
+reassigning gameplay ownership. Connected/disconnected, rejected-input and client
+snapshot events use the same bounded engine event system and are available to
+headless/MCP event reporting. Callbacks can use `send_input(world, command)` on a
+client. Runtime polling automatically queues client heartbeats.
+
+The server captures only `server` replicas after simulation. Clients only apply
+IDs explicitly authored as `remote` in their initial scene. These local authored
+templates determine visual/custom components for respawn; the network carries no
+code, asset references, component definitions or arbitrary entity templates.
+Unknown incoming IDs are ignored. Full snapshots remove absent remote entities
+and recreate eligible templates when their IDs reappear. Local entities and their
+scripts are preserved. The allowlist is fixed at attachment; registering arbitrary
+dynamic prefab templates is not implemented. A remote ID taken over by a local
+entity causes a visible error instead of overwriting it.
+
+Replicas currently require root-level TRS; parenting is rejected rather than
+silently converting sheared hierarchy matrices. Remote replicas cannot have
+scripts, script ownership, local children, or any `engine.PhysicsBody2D`,
+`engine.PhysicsBody3D`, `engine.AnimationPlayer`, or `engine.NavigationAgent` pose
+writer. Guards run before applying poses and must run before startup callbacks.
+`NetworkSettings` sets per-peer poll budgets, simulation tick duration, and client
+interpolation delay. Invalid application poses or transport errors propagate as
+runtime errors; bounded queues are never silently dropped.
+
+The adapter's `validate`, `before_step`, `after_step` and `shutdown` functions are
+host lifecycle seams: validate after typed hydration before callbacks, poll before
+event dispatch/scripts, capture after simulation with increasing simulation ticks,
+and close on shutdown. Sessions are scoped to one scene because the wire protocol
+has no scene namespace. Hosts must reject active-session scene transitions until
+`detach(world)` closes the session. Detachment preserves the final status report.
+The current adapter tests invoke these lifecycle seams explicitly around real
+Runtime ticks; central lifecycle integration is separately verified by the host.
+
+`cargo test -p engine-project --test networking` exercises two real runtimes with
+loopback TCP, input callbacks, local script preservation, full-set remote
+spawn/despawn, unknown-ID filtering, script authority conflicts and opt-in loading.

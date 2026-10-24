@@ -995,6 +995,7 @@ dependencies = [
  "blake3",
  "engine-audio",
  "engine-core",
+ "engine-network",
  "fs2",
  "glam 0.34.1",
  "image",
