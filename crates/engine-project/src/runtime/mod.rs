@@ -33,7 +33,7 @@ pub use render::{BlendMode, Draw, DrawMotion, DrawSpace, DrawState, RenderFrame,
 pub use resources::*;
 pub use scene::RuntimeSnapshot;
 pub(crate) use scene::collision_from_scene;
-use scene::spawn;
+pub(crate) use scene::spawn;
 use scripts::{ActiveScript, destroy_script, invoke_owned};
 pub use scripts::{NativeScript, ScriptFactory, ScriptRegistry, register_script, spawn_owned};
 

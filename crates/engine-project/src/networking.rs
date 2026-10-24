@@ -147,7 +147,7 @@ pub struct NetworkStatus {
 }
 enum Endpoint {
     Server(Server),
-    Client(Client),
+    Client(Box<Client>),
 }
 #[derive(Resource)]
 pub struct NetworkSession {
@@ -192,7 +192,7 @@ pub fn attach_client(
     client: Client,
     settings: NetworkSettings,
 ) -> Result<()> {
-    attach(runtime, Endpoint::Client(client), settings)
+    attach(runtime, Endpoint::Client(Box::new(client)), settings)
 }
 fn attach(runtime: &mut Runtime, endpoint: Endpoint, settings: NetworkSettings) -> Result<()> {
     settings.validate()?;
@@ -279,6 +279,19 @@ pub fn assign_owner(world: &mut World, entity_id: &str, peer_id: PeerId) -> Resu
         _ => Err(error("Input ownership requires a server session")),
     }
 }
+/// Revoke a grant before deleting or reassigning a replicated gameplay object.
+pub fn revoke_owner(world: &mut World, entity_id: &str) -> Result<()> {
+    let mut session = world
+        .get_resource_mut::<NetworkSession>()
+        .ok_or_else(|| error("No network session"))?;
+    match session.endpoint.as_mut() {
+        Some(Endpoint::Server(server)) => {
+            server.revoke_owner(entity_id);
+            Ok(())
+        }
+        _ => Err(error("Input ownership requires a server session")),
+    }
+}
 pub fn send_input(world: &mut World, command: InputCommand) -> Result<()> {
     let mut session = world
         .get_resource_mut::<NetworkSession>()
@@ -320,7 +333,7 @@ fn with_session(
 }
 
 /// Validate before startup callbacks, as well as each tick after native changes.
-pub(crate) fn validate(world: &World) -> Result<()> {
+pub fn validate(world: &World) -> Result<()> {
     for entity in world
         .iter_entities()
         .filter(|e| e.contains::<NetworkReplica>())
@@ -330,7 +343,7 @@ pub(crate) fn validate(world: &World) -> Result<()> {
     Ok(())
 }
 /// Runtime calls this before event dispatch and scripts, after component hydration.
-pub(crate) fn before_step(world: &mut World, dt: f32) -> Result<()> {
+pub fn before_step(world: &mut World, dt: f32) -> Result<()> {
     with_session(world, |world, session| {
         validate(world)?;
         match session.endpoint.as_mut() {
@@ -525,7 +538,7 @@ fn apply_remote(
 }
 
 /// Runtime calls after simulation so snapshots contain the authoritative final poses.
-pub(crate) fn after_step(world: &mut World, tick: u64) -> Result<()> {
+pub fn after_step(world: &mut World, tick: u64) -> Result<()> {
     with_session(world, |world, session| {
         let Some(Endpoint::Server(server)) = session.endpoint.as_mut() else {
             return Ok(());
@@ -573,7 +586,7 @@ pub(crate) fn after_step(world: &mut World, tick: u64) -> Result<()> {
 }
 
 /// Close sockets while retaining a report for MCP/headless diagnostics.
-pub(crate) fn shutdown(world: &mut World) {
+pub fn shutdown(world: &mut World) {
     if let Some(mut session) = world.get_resource_mut::<NetworkSession>() {
         session.endpoint = None;
         session.report.connected = false;

@@ -219,7 +219,7 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
         e.insert(v.clone());
     }
 }
-pub(super) fn spawn(world: &mut World, authored: &SceneEntity) -> Entity {
+pub(crate) fn spawn(world: &mut World, authored: &SceneEntity) -> Entity {
     let entity = world.spawn_empty().id();
     apply_components(world, entity, authored);
     world
