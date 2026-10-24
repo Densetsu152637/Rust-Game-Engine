@@ -5,6 +5,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=NGX_SDK_DIR");
     println!("cargo:rerun-if-env-changed=VULKAN_HEADERS_DIR");
     println!("cargo:rerun-if-changed=native/ngx.cpp");
+    println!("cargo:rerun-if-changed=native/ngx_dlssg.cpp");
     println!("cargo:rerun-if-changed=native/ngx_bridge.h");
     if env::var_os("CARGO_FEATURE_NGX_VULKAN").is_none() {
         return;
@@ -51,6 +52,7 @@ fn main() {
         .include(sdk.join("include"))
         .include(headers)
         .file("native/ngx.cpp")
+        .file("native/ngx_dlssg.cpp")
         .compile("engine_ngx_bridge");
     println!("cargo:rustc-link-search=native={}", library.display());
     println!("cargo:rustc-link-lib=static={name}");

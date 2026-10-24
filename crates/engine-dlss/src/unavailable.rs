@@ -68,3 +68,40 @@ pub fn create_device_for_features(
 ) -> Result<(wgpu::Device, wgpu::Queue)> {
     Err(unavailable())
 }
+
+/// Unavailable FG adapter with the SDK-enabled generator's API.
+pub enum FrameGenerator {}
+impl FrameGenerator {
+    pub fn new(
+        _: &wgpu::Device,
+        _: &wgpu::Queue,
+        _: &SessionOptions,
+        _: crate::FrameGenerationOptions,
+    ) -> Result<Self> {
+        Err(frame_generation_unavailable())
+    }
+    pub fn with_context(context: Context, _: crate::FrameGenerationOptions) -> Result<Self> {
+        match context {}
+    }
+    pub fn context(&self) -> &Context {
+        match *self {}
+    }
+    pub fn status(&self) -> &crate::FrameGenerationStatus {
+        match *self {}
+    }
+    pub fn evaluate(
+        &mut self,
+        _: &crate::GenerationInputs<'_>,
+        _: &crate::GenerationFrame,
+        _: &wgpu::Texture,
+    ) -> Result<crate::Generated> {
+        match *self {}
+    }
+}
+fn frame_generation_unavailable() -> Error {
+    Error::Unavailable(
+        "NGX DLSS Frame Generation unavailable: this build has no official DLSS SDK \
+         (set NGX_SDK_DIR and VULKAN_HEADERS_DIR on Windows/Linux)"
+            .into(),
+    )
+}

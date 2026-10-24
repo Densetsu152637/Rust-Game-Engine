@@ -1,6 +1,8 @@
 //! DLSS capabilities are separate features, never inferred from a marketing version.
-//! The optional native adapter performs NGX super resolution only. Ordinary builds
-//! need no NVIDIA SDK and must continue using their normal render path.
+//! The optional native adapter performs NGX super resolution and contains an NGX
+//! frame-generation adapter whose GPU evaluation is not yet verified (see
+//! docs/dlss.md; presentation is the renderer's job). Ordinary builds need no
+//! NVIDIA SDK and must continue using their normal render path.
 
 use std::{fmt, path::PathBuf};
 
@@ -57,7 +59,8 @@ pub fn build_support(feature: Feature) -> Result<()> {
     match feature {
         Feature::SuperResolution if cfg!(ngx_available) => Ok(()),
         Feature::SuperResolution => Err(Error::Unavailable("NGX Vulkan adapter not built; enable ngx-vulkan with NGX_SDK_DIR and VULKAN_HEADERS_DIR on Windows/Linux".into())),
-        Feature::FrameGeneration => Err(Error::Unavailable("frame generation requires a separate presentation integration; this adapter does not implement it".into())),
+        Feature::FrameGeneration if cfg!(ngx_available) => Ok(()),
+        Feature::FrameGeneration => Err(Error::Unavailable("NGX DLSS Frame Generation adapter not built; enable ngx-vulkan with NGX_SDK_DIR and VULKAN_HEADERS_DIR on Windows/Linux. Generated frames still need the renderer's presentation integration".into())),
         Feature::RayReconstruction => Err(Error::Unavailable("ray reconstruction requires ray-traced lighting inputs and a separate NGX integration".into())),
         Feature::NeuralRendering => Err(Error::Unavailable("DLSS 5 neural rendering has no ABI in the inspected public SDK v310.9.16; NVIDIA developer SDK/runtime/model access is required".into())),
     }
@@ -125,6 +128,18 @@ pub struct Status {
     pub evaluated_frames: u64,
 }
 
+mod framegen;
+#[cfg(ngx_available)]
+pub use framegen::FrameGenerator;
+#[cfg(feature = "ngx-vulkan")]
+pub use framegen::GenerationInputs;
+pub use framegen::{
+    Camera, ColorFormat, FrameGenerationOptions, FrameGenerationStatus, Generated, GenerationFrame,
+    Interpolation,
+};
+#[cfg(all(feature = "ngx-vulkan", not(ngx_available)))]
+pub use unavailable::FrameGenerator;
+
 #[cfg(ngx_available)]
 mod native;
 #[cfg(ngx_available)]
@@ -139,12 +154,21 @@ mod tests {
     use super::*;
     #[test]
     fn version_does_not_enable_unimplemented_features() {
-        for feature in [
-            Feature::FrameGeneration,
-            Feature::RayReconstruction,
-            Feature::NeuralRendering,
-        ] {
+        for feature in [Feature::RayReconstruction, Feature::NeuralRendering] {
             assert!(build_support(feature).is_err());
+        }
+    }
+    #[test]
+    fn frame_generation_support_follows_the_native_build() {
+        let support = build_support(Feature::FrameGeneration);
+        if cfg!(ngx_available) {
+            assert!(support.is_ok());
+        } else {
+            let Err(Error::Unavailable(message)) = support else {
+                panic!("expected an unavailable FG build: {support:?}");
+            };
+            assert!(message.contains("Frame Generation adapter not built"));
+            assert!(message.contains("NGX_SDK_DIR"));
         }
     }
     #[test]
