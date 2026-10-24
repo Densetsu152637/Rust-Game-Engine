@@ -316,21 +316,24 @@ impl SceneUploads {
         for draw in &frame.meshes {
             let key = address(&draw.mesh);
             live_meshes.insert(key);
-            if !self.meshes.contains_key(&key) {
-                let uploaded = if draw.mesh.vertices.is_empty() {
-                    None
-                } else {
-                    Some(GpuMesh::from_engine_vertices(
-                        &gpu.device,
-                        "engine mesh",
-                        &engine_vertices(&draw.mesh),
-                        &draw.mesh.indices,
-                    )?)
-                };
-                self.meshes.insert(key, (draw.mesh.clone(), uploaded));
-                stats.mesh_uploads += 1;
-            }
-            let Some(mesh) = self.meshes[&key].1.clone() else {
+            let entry = match self.meshes.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    let uploaded = if draw.mesh.vertices.is_empty() {
+                        None
+                    } else {
+                        Some(GpuMesh::from_engine_vertices(
+                            &gpu.device,
+                            "engine mesh",
+                            &engine_vertices(&draw.mesh),
+                            &draw.mesh.indices,
+                        )?)
+                    };
+                    stats.mesh_uploads += 1;
+                    slot.insert((draw.mesh.clone(), uploaded))
+                }
+            };
+            let Some(mesh) = entry.1.clone() else {
                 continue;
             };
             let mut texture = |source: &Option<Arc<Texture>>| -> Result<Option<Arc<GpuTexture>>> {

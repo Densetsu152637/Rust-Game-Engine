@@ -1207,7 +1207,10 @@ fn component_set_adds_edits_and_validates_light_components() {
         merged["entity"]["components"]["SpotLight"]["outer_angle_radians"],
         0.8
     );
-    assert_eq!(merged["entity"]["components"]["SpotLight"]["lumens"], 1200.0);
+    assert_eq!(
+        merged["entity"]["components"]["SpotLight"]["lumens"],
+        1200.0
+    );
     let original = bytes(dir.path(), START);
     let bad = write(
         dir.path(),

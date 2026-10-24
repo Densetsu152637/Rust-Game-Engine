@@ -195,6 +195,16 @@ impl PortableEditor {
                 camera: Camera3D::default(),
                 world: self.navigation.camera_world().to_cols_array_2d(),
             });
+            if frame.lights.is_empty() {
+                // Unlit scenes preview with a default directional light.
+                frame
+                    .lights
+                    .push(engine_project::lights::LightInstance3D::directional_toward(
+                        "editor:preview-light",
+                        [0.4, 0.7, 1.0],
+                        Default::default(),
+                    )?);
+            }
         }
         if self.renderer.is_none() {
             self.renderer = Some(OffscreenSprites::wgpu(

@@ -580,7 +580,7 @@ mod tests {
             camera.world = Mat4::from_translation(Vec3::new(0.0, 1.0, 5.0)).to_cols_array_2d();
             vp
         };
-        let projection = super::super::scene::camera_projection(&camera, aspect).unwrap();
+        let projection = super::super::scene3d::camera_projection(&camera, aspect).unwrap();
         let constants = generation_camera(&camera, aspect, projection, current, previous);
         let from_rows = |rows: [[f32; 4]; 4]| Mat4::from_cols_array_2d(&rows).transpose();
         let point = Vec4::new(0.3, 0.2, 0.0, 1.0);
