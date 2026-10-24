@@ -2,7 +2,7 @@
 name = "engine-dlss"
 version = "0.1.0"
 edition = "2024"
-description = "Optional NVIDIA NGX super resolution for native Vulkan rendering"
+description = "Optional NVIDIA NGX super resolution and frame generation for native Vulkan rendering"
 
 [features]
 default = []

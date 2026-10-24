@@ -41,15 +41,22 @@ macOS and other unsupported platforms retain normal rendering.
 Without `NGX_SDK_DIR`, even a feature-enabled build compiles an unavailable
 adapter. `build_support(Feature::SuperResolution)` explains that state. It does
 not inspect a GPU or claim an active feature. Invalid explicitly supplied SDK
-build paths fail the build with a diagnostic.
+or Vulkan-Headers paths fail the build with a diagnostic. On Windows the
+official loader needs the MSVC toolchain: other Windows target environments
+(for example `gnu`) emit a cargo warning and build the unavailable adapter.
 
 At runtime, `SessionOptions` carries the application's nonsecret project ID,
 absolute existing official-plugin and log directories, output dimensions and
 quality. Never store developer machine paths or credentials in an authored
-scene. An NGX project ID is an application identity, not a secret key. The
-runtime directory contains `nvngx_dlss.dll` on Windows or
-`libnvidia-ngx-dlss.so.310.9.16` on Linux. Missing or malformed files fail before
-native loading. This header check is not a signature check; use only trusted
+scene. An NGX project ID is an application identity, not a secret key, and must
+be GUID-shaped (`8-4-4-4-12` hexadecimal digits); other values are rejected
+before NGX loads. The runtime directory contains `nvngx_dlss.dll` on Windows or
+`libnvidia-ngx-dlss.so.310.9.16` on Linux. The Linux name is deliberately pinned
+to the SDK version this bridge was built against; a different runtime version
+needs that name updated in `native.rs` after it is validated. Frame generation
+additionally needs `nvngx_dlssg.dll` (Windows only checked;
+`libnvidia-ngx-dlssg.so.<ver>` on Linux is unvalidated). Missing or malformed
+files fail before native loading. This header check is not a signature check; use only trusted
 NVIDIA packages. The tested Windows runtime's Authenticode signature was valid
 and belonged to NVIDIA Corporation.
 
@@ -64,11 +71,20 @@ device would be incorrect. `create_device_for_features` queries the union for
 explicit feature requests, but does not initialize those features. Unknown
 extension requirements fail explicitly pending review.
 
-`Context::new` is the sole unsafe construction boundary. Its device and queue
-must match, its Vulkan instance must remain alive, and callers must not destroy
-the device or exposed textures while context clones/features exist. Keep all
-queue submissions and NGX calls on the owning thread. One process runtime is
-allowed, and `Rc` makes context/features thread-confined. Feature adapters share
+`Context::new` and the feature constructors are safe functions that enforce
+their own invariants:
+
+- the device and queue must match;
+- the cloned device keeps the Vulkan device and instance alive;
+- destroyed exposed textures make later evaluations fail instead of reaching
+  native code;
+- `Rc` confines contexts and features to the owning thread, where NGX calls and
+  their submissions stay;
+- one NGX runtime per process is enforced for this crate.
+
+The constraint the crate cannot check is another NGX integration (for example
+Streamline, or a second copy of this bridge) initializing NGX in the same
+process or on the same device. That configuration is unsupported. Feature adapters share
 cloned contexts and own distinct parameter maps/feature handles. The final
 context releases NGX only after the last feature has released its resources.
 
@@ -130,10 +146,15 @@ must also contain `nvngx_dlssg.dll`. It renders a white 16-pixel bar that moves
 - 2x: each generated bar's brightness centroid lies within 1 pixel of the
   midpoint between the previous and current positions, and its brightness stays
   within 10% of one bar's.
+- Every pair, including the first one after the initial reset, is checked.
 - 4x: when NGX reports multi-frame support, indices 1..=3 lie within 1 pixel of
   the 1/4, 2/4 and 3/4 positions.
+- The static 8-pixel checkerboard background, away from the bar's path, is
+  reproduced exactly (mean and maximum channel error 0).
 - A reset returns `NoHistory` and outputs the current frame.
-- A destroyed output fails safely.
+- A wrong-size output, an out-of-order index and a backbuffer from another
+  device are rejected with `InvalidInput` before native work, without poisoning
+  the generator. A destroyed output fails safely.
 
 ```text
 cargo test -p engine-dlss --features ngx-vulkan --test framegen_gpu -- --ignored --nocapture
@@ -201,9 +222,15 @@ for FG, but the guide documents this direct NGX path.
 - `FrameGenerator::new(device, queue, &SessionOptions, FrameGenerationOptions)`
   initializes the shared NGX runtime. Its `runtime_dir` must contain both
   `nvngx_dlss.dll` and `nvngx_dlssg.dll`, because the shared `Context` checks SR
-  availability during initialization. `FrameGenerator::with_context` adds FG to
-  an existing SR context. Both are thread-confined (`Rc` context), and NGX is
-  not thread-safe. Both follow the context lifetime rules above.
+  availability during initialization.
+- `FrameGenerator::with_context(context, &SessionOptions, options)` adds FG to an
+  existing SR context. The session options must be the ones used for the
+  context. It queries NGX's FG Vulkan instance and device extension
+  requirements and fails with the missing extension's name when the context
+  device lacks one (create it with `create_device_for_features`).
+- Both create the NGX feature before returning, so `multi_frame_max` is final
+  before the first pair. Both are thread-confined (`Rc` context), NGX is not
+  thread-safe, and both follow the context lifetime rules above.
 - `FrameGenerationOptions` holds:
   - the output (backbuffer) size;
   - the render (depth/motion) size, no larger than the output;
@@ -218,16 +245,22 @@ for FG, but the guide documents this direct NGX path.
   size. It copies them into private textures and records NGX into a raw command
   buffer. It then copies the generated frame into the caller's `COPY_DST`
   output, submits and waits.
-  - The first call creates the NGX feature in its own submission.
-  - As with SR, native handles refer only to private resources. Destroyed or
-    mismatched caller textures are rejected with `InvalidInput` before native
-    work.
+  - Input copies run in their own validated submission, together with a copy
+    into the output (which generation then overwrites). Destroyed, mismatched or
+    other-device textures are rejected with `InvalidInput` before native work,
+    and the generator stays usable.
+  - As with SR, native handles refer only to private resources.
   - A native or GPU failure poisons the generator.
 - `Generated` reports how the frame should be used:
   - `Presentable`: a previous real frame exists and NGX's
     `OutputDisableInterpolation` byte was zero.
-  - `NoHistory` (reset or first frame) and `Disabled` (NGX disabled
-    interpolation and copied the backbuffer): present only the real frame.
+  - `NoHistory` (reset or first frame), `Disabled` (NGX disabled interpolation
+    and copied the backbuffer) and `Unreported`: present only the real frame.
+- The disable buffer is filled with `0xff` before every evaluation. An intact
+  sentinel means NGX did not report, which yields `Unreported` rather than
+  `Presentable`. With runtime 310.9.16, NGX wrote the flag on index 1 of a
+  multi-frame pair and left the sentinel on indices 2..=k, so later indices
+  inherit the pair's index-1 decision.
 - `FrameGenerationStatus` reports:
   - adapter and raw driver version;
   - NGX minimum FG driver;
@@ -260,7 +293,13 @@ with uneven 4x spacing. With pixel scale and guide-convention matrices, the
 positions were exact. The two changes were not isolated, but the test camera is
 static (`clip_to_prev_clip` is identity).
 
-Motion vectors must exclude jitter (`MvecJittered` is set to 0). The guide
+Motion vectors must exclude jitter (`MvecJittered` is set to 0). The bridge sets
+`motionVectorsInvalidValue` to `FLT_MAX` because the guide gives no default and
+the struct's zero would mark every static pixel invalid. `FLT_MAX` is not
+representable in the FP16 motion texture, so no stored motion is treated as
+invalid. On the synthetic scene, 0 and `FLT_MAX` produced identical output: the
+static textured background was exact either way. The setting is therefore a
+contract fix that this test does not observe. The guide
 describes `jitterOffset` only as a "clip space jitter offset" without a unit.
 The test uses zero jitter, so a jittered SR plus FG pipeline must confirm the
 unit during renderer integration.
@@ -270,9 +309,18 @@ Validation rejects:
 - non-finite values and zero motion scale;
 - `near <= 0`, `far <= near` and a non-positive aspect;
 - a perspective FOV outside (0, pi);
-- out-of-range or out-of-order interpolation indices.
+- out-of-range interpolation indices.
 
-`evaluate` reports a count above `multi_frame_max` as `Unavailable`.
+`evaluate` also enforces NVIDIA's sequencing rule (`check_sequence` in
+`src/framegen.rs`):
+
+- Each pair evaluates indices `1..=count` in order with one count, with no
+  skipped index and no count change mid-pair.
+- A new pair starts at index 1 once the previous pair is complete. An
+  unfinished pair can be abandoned only by a new index 1 with `reset`.
+- `reset` is accepted only on index 1.
+- Violations are `InvalidInput` and do not poison the generator.
+- A count above `multi_frame_max` is `Unavailable`.
 
 ### Presentation contract for the renderer
 
@@ -306,6 +354,26 @@ timing or presentation, and this crate owns no swapchain. For each real frame N:
 Holding frame N adds latency; the guide pairs FG with NVIDIA Reflex, which this
 crate does not provide. The synchronous submit-and-wait and the extra copies
 are a correctness baseline, not a performance claim.
+
+### Resource states and synchronization (unverified)
+
+The guide states resource states only for D3D12: inputs in
+`NON_PIXEL_SHADER_RESOURCE`, outputs (including the disable buffer) in
+`UNORDERED_ACCESS`. It specifies no Vulkan layouts and no post-evaluate state.
+
+The adapter uses the Vulkan equivalents through wgpu's tracked transitions:
+inputs as sampled resources (`RESOURCE`) and the output and disable buffer as
+storage (`STORAGE_READ_WRITE`). It assumes NGX leaves these states unchanged
+when it returns, then records wgpu copies after the raw command buffer in the
+same submission.
+
+No Vulkan validation layers are installed here, so these layouts, and the
+barriers between wgpu's and NGX's commands, have not been checked. The
+required check is a run of both GPU tests with `VK_LAYER_KHRONOS_validation`
+enabled with synchronization validation
+(`VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT`),
+expecting no errors. Correct readback results do not establish correct
+synchronization.
 
 ### Remaining for renderer integration
 

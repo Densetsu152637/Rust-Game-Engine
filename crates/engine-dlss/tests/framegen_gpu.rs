@@ -89,6 +89,24 @@ fn generates_real_dlss_interpolated_frame() {
         )
         .expect_err("index 2 without index 1");
     assert!(matches!(error, Error::InvalidInput(_)), "{error}");
+    // A texture from another device is rejected before native work.
+    let (other_device, _other_queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("second Vulkan device");
+    let foreign = texture(&other_device, wgpu::TextureFormat::Rgba8Unorm);
+    let error = generator
+        .evaluate(
+            &GenerationInputs {
+                backbuffer: &foreign,
+                ..inputs
+            },
+            &frame(true, Interpolation::default()),
+            &scene.output,
+        )
+        .expect_err("input from another device");
+    eprintln!("foreign-device input: {error}");
+    assert!(matches!(error, Error::InvalidInput(_)), "{error}");
+    assert_eq!(generator.status().evaluated_frames, 0);
 
     let mut centroids = Vec::new();
     for k in 0..5 {
@@ -100,17 +118,25 @@ fn generates_real_dlss_interpolated_frame() {
                 &scene.output,
             )
             .expect("actual NGX FG evaluation");
-        let generated = centroid(&read(&device, &queue, &scene.output));
+        let data = read(&device, &queue, &scene.output);
+        let generated = centroid(&data);
         eprintln!("frame {k}: {result:?}, generated bar centroid {generated:?}");
         if k == 0 {
             assert_eq!(result, Generated::NoHistory);
         } else {
             assert_eq!(result, Generated::Presentable);
+            // Static textured background, away from the bar's path in this pair.
+            let (mean, max) = background_error(&data, bar_x(k - 1) - 8, bar_x(k) + BAR + 8);
+            eprintln!("frame {k}: static background error mean {mean:.3}, max {max}");
+            assert!(
+                mean < 1. && max <= 8,
+                "static background must survive generation (mean {mean:.3}, max {max})"
+            );
             centroids.push((k, generated));
         }
     }
     assert_eq!(generator.status().evaluated_frames, 5);
-    for (k, generated) in centroids.iter().skip(1) {
+    for (k, generated) in &centroids {
         let (mass, x) = generated.expect("generated frame contains the bar");
         let (previous, current) = (center(k - 1), center(*k));
         eprintln!(
@@ -257,22 +283,44 @@ fn texture(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::Texture 
     device.create_texture(&descriptor_for(format))
 }
 
+/// Static 8-pixel checkerboard of two dark grays (zero motion).
+fn background(x: u32, y: u32) -> u8 {
+    if (x / 8 + y / 8).is_multiple_of(2) {
+        24
+    } else {
+        72
+    }
+}
+/// Mean and maximum channel error of non-bar columns outside `[lo, hi)`.
+fn background_error(rgba: &[u8], lo: u32, hi: u32) -> (f64, u8) {
+    let (mut sum, mut count, mut max) = (0f64, 0f64, 0u8);
+    for y in 0..H {
+        for x in (0..W).filter(|x| !(lo..hi).contains(x)) {
+            let i = ((y * W + x) * 4) as usize;
+            for c in 0..3 {
+                let error = rgba[i + c].abs_diff(background(x, y));
+                sum += f64::from(error);
+                count += 1.;
+                max = max.max(error);
+            }
+        }
+    }
+    (sum / count, max)
+}
+
 /// Bar pixels are white, at depth 0.4 and moved right by STEP since the
-/// previous frame (current-to-previous motion -STEP pixels); background is
-/// dark, static and at depth 0.9.
+/// previous frame (current-to-previous motion -STEP pixels); the textured
+/// background is static (zero motion) at depth 0.9.
 fn fill(queue: &wgpu::Queue, scene: &Scene, x0: u32) {
     let inside = |x: u32| (x0..x0 + BAR).contains(&x);
     let mut color = Vec::with_capacity((W * H * 4) as usize);
     let mut depth = Vec::with_capacity((W * H * 4) as usize);
     let mut motion = Vec::with_capacity((W * H * 4) as usize);
-    for _ in 0..H {
+    for y in 0..H {
         for x in 0..W {
             let bar = inside(x);
-            color.extend_from_slice(if bar {
-                &[255, 255, 255, 255]
-            } else {
-                &[16, 16, 16, 255]
-            });
+            let g = background(x, y);
+            color.extend_from_slice(&if bar { [255; 4] } else { [g, g, g, 255] });
             depth.extend_from_slice(&(if bar { 0.4f32 } else { 0.9 }).to_le_bytes());
             // FP16 -24.0 is 0xCE00; 0.0 is 0x0000.
             let dx: u16 = if bar { 0xce00 } else { 0 };
@@ -341,13 +389,14 @@ fn read(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> 
 }
 
 /// Brightness above the background, as (mass in bar-pixel units, x centroid).
+/// The background (at most 72) carries no weight.
 fn centroid(rgba: &[u8]) -> Option<(f64, f64)> {
     let (mut mass, mut moment) = (0f64, 0f64);
     for y in 0..H {
         for x in 0..W {
             let i = ((y * W + x) * 4) as usize;
             let luma = (f64::from(rgba[i]) + f64::from(rgba[i + 1]) + f64::from(rgba[i + 2])) / 3.;
-            let weight = ((luma - 16.) / (255. - 16.)).max(0.);
+            let weight = ((luma - 128.) / (255. - 128.)).max(0.);
             mass += weight;
             moment += weight * f64::from(x);
         }

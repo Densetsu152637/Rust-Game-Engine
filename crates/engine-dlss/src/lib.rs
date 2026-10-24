@@ -105,6 +105,16 @@ impl Frame {
     }
 }
 
+/// NGX project IDs are GUID-shaped (`8-4-4-4-12` hexadecimal digits).
+pub fn is_project_id(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(g, n)| g.len() == n && g.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Runtime and log paths must be explicit absolute directories. The runtime
 /// directory must contain the official NVIDIA DLSS SR plugin.
 #[derive(Clone, Debug)]
@@ -156,6 +166,21 @@ mod tests {
     fn version_does_not_enable_unimplemented_features() {
         for feature in [Feature::RayReconstruction, Feature::NeuralRendering] {
             assert!(build_support(feature).is_err());
+        }
+    }
+    #[test]
+    fn project_ids_must_be_guid_shaped() {
+        assert!(is_project_id("c8091997-e7fa-48f6-8ef7-bf2211936fb5"));
+        assert!(is_project_id("C8091997-E7FA-48F6-8EF7-BF2211936FB5"));
+        for bad in [
+            "",
+            "test",
+            "c8091997e7fa48f68ef7bf2211936fb5",
+            "c8091997-e7fa-48f6-8ef7-bf2211936fb",
+            "g8091997-e7fa-48f6-8ef7-bf2211936fb5",
+            "c8091997-e7fa-48f6-8ef7-bf2211936fb5-00",
+        ] {
+            assert!(!is_project_id(bad), "{bad}");
         }
     }
     #[test]

@@ -80,7 +80,11 @@ impl FrameGenerator {
     ) -> Result<Self> {
         Err(frame_generation_unavailable())
     }
-    pub fn with_context(context: Context, _: crate::FrameGenerationOptions) -> Result<Self> {
+    pub fn with_context(
+        context: Context,
+        _: &SessionOptions,
+        _: crate::FrameGenerationOptions,
+    ) -> Result<Self> {
         match context {}
     }
     pub fn context(&self) -> &Context {

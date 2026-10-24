@@ -7,7 +7,15 @@ use super::{
 };
 use crate::{Context, Error, Result, SessionOptions};
 use ash::vk::{self, Handle};
-use std::{ffi::c_void, ptr::NonNull};
+use std::{
+    ffi::{CString, c_char, c_void},
+    ptr::NonNull,
+};
+
+#[cfg(windows)]
+type Wide = u16;
+#[cfg(not(windows))]
+type Wide = u32;
 
 #[repr(C)]
 struct Image {
@@ -82,6 +90,19 @@ unsafe extern "C" {
         frame: *const NativeFrame,
     ) -> u32;
     fn engine_ngx_fg_multi_frame_max(generator: *mut c_void) -> u32;
+    fn engine_ngx_fg_missing_extension(
+        instance: u64,
+        physical: u64,
+        project: *const c_char,
+        logs: *const Wide,
+        plugins: *const Wide,
+        instance_extensions: *const *const c_char,
+        instance_count: u32,
+        device_extensions: *const *const c_char,
+        device_count: u32,
+        missing: *mut c_char,
+        missing_capacity: u32,
+    ) -> u32;
     fn engine_ngx_close_fg(generator: *mut c_void);
 }
 
@@ -163,6 +184,9 @@ const MOTION: usize = 2;
 const HUDLESS: usize = 3;
 const OUTPUT: usize = 4;
 const DISABLE_SIZE: u64 = 4;
+/// Written before every evaluation. NGX writes zero (interpolated) or a
+/// nonzero first byte (disabled); an intact sentinel means "not reported".
+const DISABLE_SENTINEL: [u8; DISABLE_SIZE as usize] = [0xff; DISABLE_SIZE as usize];
 
 /// A thread-confined NGX DLSS Frame Generation feature with private native
 /// resources. Every evaluation copies caller inputs into private textures,
@@ -179,11 +203,12 @@ pub struct FrameGenerator {
     options: FrameGenerationOptions,
     status: FrameGenerationStatus,
     failure: Option<Error>,
-    /// Whether the native feature exists (created on the first evaluation).
-    created: bool,
     history: bool,
     /// Reset decision of the current real-frame pair, shared by its indices.
     pair_reset: bool,
+    /// OutputDisableInterpolation decision of the current pair. NGX 310.9.16
+    /// was observed to write it only on index 1; later indices inherit it.
+    pair_disabled: Option<bool>,
     frame_id: u64,
     last: Option<super::Interpolation>,
     context: Context,
@@ -198,15 +223,22 @@ impl FrameGenerator {
         options: FrameGenerationOptions,
     ) -> Result<Self> {
         validate_runtime(&session.runtime_dir)?;
-        Self::with_context(Context::new(device, queue, session)?, options)
+        Self::with_context(Context::new(device, queue, session)?, session, options)
     }
-    /// Query the driver's FG capability and allocate private resources. The
-    /// native feature itself is created on the first evaluation, which has a
-    /// command buffer.
-    pub fn with_context(context: Context, options: FrameGenerationOptions) -> Result<Self> {
+    /// Check FG's Vulkan extension requirements against the context device,
+    /// query the driver's FG capability, allocate private resources and create
+    /// the NGX feature (so `multi_frame_max` is final before the first pair).
+    /// `session` must carry the project ID and directories used for `context`.
+    pub fn with_context(
+        context: Context,
+        session: &SessionOptions,
+        options: FrameGenerationOptions,
+    ) -> Result<Self> {
         let device = context.device().clone();
         let queue = context.queue().clone();
         options.validate(device.limits().max_texture_dimension_2d)?;
+        validate_runtime(&session.runtime_dir)?;
+        check_extensions(&context, session)?;
         let (color, native_color) = match options.color_format {
             ColorFormat::Rgba8Unorm => {
                 (wgpu::TextureFormat::Rgba8Unorm, vk::Format::R8G8B8A8_UNORM)
@@ -331,7 +363,7 @@ impl FrameGenerator {
             color_format: options.color_format,
             evaluated_frames: 0,
         };
-        Ok(Self {
+        let mut generator = Self {
             bridge,
             device,
             queue,
@@ -341,13 +373,15 @@ impl FrameGenerator {
             options,
             status,
             failure: None,
-            created: false,
             history: false,
             pair_reset: true,
+            pair_disabled: None,
             frame_id: 0,
             last: None,
             context,
-        })
+        };
+        generator.create_feature()?;
+        Ok(generator)
     }
     pub fn context(&self) -> &Context {
         &self.context
@@ -358,8 +392,9 @@ impl FrameGenerator {
     /// Generate the frame between the previous real frame and `inputs` (the
     /// current real frame) into `output`, which needs `COPY_DST`, the color
     /// format and the output size. Producers of `inputs` must be submitted to
-    /// this generator's queue first. A native or GPU failure poisons the
-    /// generator; recreate it before retrying.
+    /// this generator's queue first. Invalid inputs (including textures from
+    /// another device) are rejected before native work; a native or GPU
+    /// failure poisons the generator, so recreate it before retrying.
     pub fn evaluate(
         &mut self,
         inputs: &GenerationInputs<'_>,
@@ -370,10 +405,16 @@ impl FrameGenerator {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
-        self.check_order(frame.interpolation)?;
+        super::check_sequence(
+            self.last,
+            frame.interpolation,
+            frame.reset,
+            self.status.multi_frame_max,
+        )?;
         self.check_inputs(inputs, output)?;
+        self.stage_inputs(inputs, output)?;
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = self.evaluate_inner(inputs, frame, output);
+        let result = self.generate(frame, output);
         let result = match pollster::block_on(scope.pop()) {
             Some(error) => Err(Error::Gpu(format!("DLSS-G GPU validation: {error}"))),
             None => result,
@@ -390,26 +431,6 @@ impl FrameGenerator {
             Err(error) => self.failure = Some(error.clone()),
         }
         result
-    }
-    fn check_order(&self, interpolation: super::Interpolation) -> Result<()> {
-        let follows = |last: super::Interpolation| {
-            last.count == interpolation.count && last.index + 1 == interpolation.index
-        };
-        if interpolation.index > 1 && !self.last.is_some_and(follows) {
-            return Err(Error::InvalidInput(format!(
-                "generated frame {} of {} must follow frame {} of the same real-frame pair",
-                interpolation.index,
-                interpolation.count,
-                interpolation.index - 1
-            )));
-        }
-        if interpolation.count > self.status.multi_frame_max {
-            return Err(Error::Unavailable(format!(
-                "{} generated frames requested; NGX reports at most {}",
-                interpolation.count, self.status.multi_frame_max
-            )));
-        }
-        Ok(())
     }
     fn check_inputs(&self, inputs: &GenerationInputs<'_>, output: &wgpu::Texture) -> Result<()> {
         if inputs.hudless.is_some() != self.options.hudless {
@@ -464,18 +485,12 @@ impl FrameGenerator {
         }
         Ok(())
     }
-    fn evaluate_inner(
-        &mut self,
-        inputs: &GenerationInputs<'_>,
-        frame: &GenerationFrame,
-        output: &wgpu::Texture,
-    ) -> Result<Generated> {
-        let first = frame.interpolation.index == 1;
-        let reset = if first {
-            frame.reset || !self.history
-        } else {
-            self.pair_reset || frame.reset
-        };
+    /// Copy caller inputs into private textures in their own validated
+    /// submission. Also copies into `output`, which `generate` overwrites, so
+    /// wgpu validates it (for example a texture from another device) before
+    /// any native work. Failures here leave the generator usable.
+    fn stage_inputs(&self, inputs: &GenerationInputs<'_>, output: &wgpu::Texture) -> Result<()> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -497,6 +512,39 @@ impl FrameGenerator {
                 );
             }
         }
+        encoder.copy_texture_to_texture(
+            self.targets[OUTPUT].texture.as_image_copy(),
+            output.as_image_copy(),
+            output.size(),
+        );
+        let index = self.queue.submit([encoder.finish()]);
+        let completion = self.device.poll(wgpu::PollType::Wait {
+            submission_index: Some(index),
+            timeout: None,
+        });
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            return Err(Error::InvalidInput(format!(
+                "DLSS-G inputs rejected before native work (wrong device or invalid texture): {error}"
+            )));
+        }
+        completion
+            .map(|_| ())
+            .map_err(|e| Error::Gpu(format!("DLSS-G input copy completion: {e}")))
+    }
+    fn generate(&mut self, frame: &GenerationFrame, output: &wgpu::Texture) -> Result<Generated> {
+        let first = frame.interpolation.index == 1;
+        // check_sequence rejects reset after index 1, so later indices inherit
+        // the pair's decision.
+        let reset = if first {
+            frame.reset || !self.history
+        } else {
+            self.pair_reset
+        };
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("DLSS-G native preparation"),
+            });
         // Make the private destination initialized in wgpu's tracker before
         // native writes; otherwise a later copy could lazily zero NGX's result.
         // The HUD-less placeholder is cleared for the same reason when unused.
@@ -519,7 +567,8 @@ impl FrameGenerator {
                 ..Default::default()
             });
         }
-        encoder.clear_buffer(&self.disable, 0, None);
+        // Queue writes land before the next submission's command buffers.
+        self.queue.write_buffer(&self.disable, 0, &DISABLE_SENTINEL);
         encoder.transition_resources(
             std::iter::once(wgpu::BufferTransition {
                 buffer: &self.disable,
@@ -556,9 +605,6 @@ impl FrameGenerator {
             disable_buffer,
             disable_size: DISABLE_SIZE as u32,
         };
-        if !self.created {
-            self.create_feature()?;
-        }
         let frame_id = self.frame_id + u64::from(first);
         let native_frame = native_frame(frame, reset, frame_id);
         // wgpu 30 forbids mixing raw and wgpu commands in one encoder; the
@@ -606,18 +652,23 @@ impl FrameGenerator {
                 timeout: None,
             })
             .map_err(|e| Error::Gpu(format!("DLSS-G GPU completion: {e}")))?;
-        let disabled = self.read_disable_flag()?;
-        self.pair_reset = reset;
-        Ok(if reset {
-            Generated::NoHistory
-        } else if disabled {
-            Generated::Disabled
+        let written = self.read_disable_flag()?;
+        let disabled = if first {
+            written
         } else {
-            Generated::Presentable
+            written.or(self.pair_disabled)
+        };
+        self.pair_reset = reset;
+        self.pair_disabled = disabled;
+        Ok(match (reset, disabled) {
+            (true, _) => Generated::NoHistory,
+            (false, None) => Generated::Unreported,
+            (false, Some(true)) => Generated::Disabled,
+            (false, Some(false)) => Generated::Presentable,
         })
     }
-    /// Record NGX feature creation in its own submission and wait for it, so
-    /// the first evaluation sees a completed feature.
+    /// Record NGX feature creation in its own submission and wait for it, then
+    /// read the feature's MultiFrameCountMax before any pair can start.
     fn create_feature(&mut self) -> Result<()> {
         let mut encoder = self
             .device
@@ -643,13 +694,13 @@ impl FrameGenerator {
                 timeout: None,
             })
             .map_err(|e| Error::Gpu(format!("DLSS-G feature creation completion: {e}")))?;
-        self.created = true;
         // SAFETY: live, uniquely owned bridge; reads its own parameter map.
         self.status.multi_frame_max =
             unsafe { engine_ngx_fg_multi_frame_max(self.bridge.0.as_ptr()) };
         Ok(())
     }
-    fn read_disable_flag(&self) -> Result<bool> {
+    /// `None` when NGX left the sentinel untouched.
+    fn read_disable_flag(&self) -> Result<Option<bool>> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.readback
             .slice(..)
@@ -671,7 +722,7 @@ impl FrameGenerator {
                 .slice(..)
                 .get_mapped_range()
                 .map_err(|e| Error::Gpu(format!("DLSS-G flag range: {e}")))?;
-            data[0] != 0
+            (data[..] != DISABLE_SENTINEL).then_some(data[0] != 0)
         };
         self.readback.unmap();
         Ok(disabled)
@@ -716,6 +767,71 @@ fn validate_runtime(directory: &std::path::Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+/// Fail with the missing extension's name when the context device lacks a
+/// Vulkan instance/device extension NGX requires for frame generation.
+fn check_extensions(context: &Context, session: &SessionOptions) -> Result<()> {
+    let project = CString::new(session.project_id.as_str())
+        .map_err(|_| Error::InvalidInput("project ID contains NUL".into()))?;
+    let logs = wide(&session.log_dir)?;
+    let plugins = wide(&session.runtime_dir)?;
+    // SAFETY: borrowed HAL guard of the context's live device; no handle is
+    // destroyed or retained after the synchronous query below.
+    let hal = unsafe { context.device().as_hal::<wgpu::hal::api::Vulkan>() }
+        .ok_or_else(|| Error::Unavailable("DLSS-G requires the Vulkan backend".into()))?;
+    let instance = hal.shared_instance();
+    let instance_ext: Vec<_> = instance.extensions().iter().map(|s| s.as_ptr()).collect();
+    let device_ext: Vec<_> = hal
+        .enabled_device_extensions()
+        .iter()
+        .map(|s| s.as_ptr())
+        .collect();
+    let mut missing = [0 as c_char; 256];
+    // SAFETY: all strings/arrays and the output buffer outlive this synchronous
+    // call; signature and layout are defined in native/ngx_dlssg.cpp.
+    let code = unsafe {
+        engine_ngx_fg_missing_extension(
+            instance.raw_instance().handle().as_raw(),
+            hal.raw_physical_device().as_raw(),
+            project.as_ptr(),
+            logs.as_ptr(),
+            plugins.as_ptr(),
+            instance_ext.as_ptr(),
+            instance_ext.len() as u32,
+            device_ext.as_ptr(),
+            device_ext.len() as u32,
+            missing.as_mut_ptr(),
+            missing.len() as u32,
+        )
+    };
+    if missing[0] != 0 {
+        // SAFETY: the bridge always terminates the string it writes here.
+        let name = unsafe { std::ffi::CStr::from_ptr(missing.as_ptr()) }.to_string_lossy();
+        return Err(Error::Unavailable(format!(
+            "Vulkan device lacks DLSS Frame Generation extension {name}; create it with \
+             create_device_for_features(.., &[Feature::FrameGeneration, ..])"
+        )));
+    }
+    check("frame generation extension query", code)
+}
+fn wide(path: &std::path::Path) -> Result<Vec<Wide>> {
+    #[cfg(windows)]
+    let mut value: Vec<Wide> = {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str().encode_wide().collect()
+    };
+    #[cfg(not(windows))]
+    let mut value: Vec<Wide> = path
+        .to_str()
+        .ok_or_else(|| Error::InvalidInput("DLSS path is not valid UTF-8".into()))?
+        .chars()
+        .map(|c| c as u32)
+        .collect();
+    if value.contains(&0) {
+        return Err(Error::InvalidInput("DLSS path contains NUL".into()));
+    }
+    value.push(0);
+    Ok(value)
 }
 fn native_frame(frame: &GenerationFrame, reset: bool, frame_id: u64) -> NativeFrame {
     let c = &frame.camera;

@@ -19,9 +19,28 @@ fn main() {
     let Some(sdk) = env::var_os("NGX_SDK_DIR").map(PathBuf::from) else {
         return;
     };
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if os == "windows" && target_env != "msvc" {
+        // The official Windows loader is an MSVC static library.
+        println!(
+            "cargo:warning=engine-dlss: NGX needs the MSVC toolchain on Windows (target env `{target_env}`); building the unavailable adapter"
+        );
+        return;
+    }
     let headers = env::var_os("VULKAN_HEADERS_DIR")
         .map(PathBuf::from)
         .expect("VULKAN_HEADERS_DIR must name the official Vulkan-Headers include directory");
+    assert!(
+        headers.join("vulkan").join("vulkan.h").is_file(),
+        "VULKAN_HEADERS_DIR must name the official Vulkan-Headers include directory (missing vulkan/vulkan.h)"
+    );
+    let include = sdk.join("include");
+    assert!(
+        include.join("nvsdk_ngx_helpers_dlssg_vk.h").is_file(),
+        "NGX_SDK_DIR does not contain the official NGX headers (include/nvsdk_ngx_helpers_dlssg_vk.h)"
+    );
+    println!("cargo:rerun-if-changed={}", include.display());
+    println!("cargo:rerun-if-changed={}", headers.display());
     let platform = if os == "windows" { "Windows" } else { "Linux" };
     let arch_dir = if arch == "aarch64" {
         "aarch64"
@@ -43,13 +62,17 @@ fn main() {
         format!("lib{name}.a")
     };
     assert!(
-        library.join(filename).is_file(),
+        library.join(&filename).is_file(),
         "NGX_SDK_DIR does not contain the official NGX loader library"
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        library.join(&filename).display()
     );
     cc::Build::new()
         .cpp(true)
         .std("c++17")
-        .include(sdk.join("include"))
+        .include(&include)
         .include(headers)
         .file("native/ngx.cpp")
         .file("native/ngx_dlssg.cpp")

@@ -128,6 +128,7 @@ pub struct GenerationFrame {
     pub motion_scale: [f32; 2],
     /// History is unrelated to the previous real frame: camera cut, teleport,
     /// resize, first frame after FG was paused, or a scene/load transition.
+    /// Only valid on interpolation index 1; later indices inherit it.
     pub reset: bool,
     pub depth_inverted: bool,
     /// Motion vectors already include camera motion (not only object motion).
@@ -219,6 +220,52 @@ pub enum Generated {
     /// NGX's OutputDisableInterpolation hint: interpolation was disabled and the
     /// output is a copy of the backbuffer, so the generated frame is skipped.
     Disabled,
+    /// NGX did not write the OutputDisableInterpolation hint for this pair (the
+    /// sentinel survived on index 1, and later indices inherit index 1), so
+    /// whether the output was interpolated is unknown. Present only the real
+    /// frame.
+    Unreported,
+}
+
+/// NVIDIA's multi-frame sequencing rule (DLSS-FG guide 310.7.0, "Evaluating the
+/// Feature"): for each real-frame pair, evaluate indices `1..=count` in order
+/// with one count. A pair may only be abandoned by starting a new pair with
+/// `reset`, and `reset` belongs to the pair's first index. `last` is the
+/// previous successful interpolation; `maximum` is NGX's MultiFrameCountMax.
+#[cfg_attr(not(ngx_available), allow(dead_code))]
+pub(crate) fn check_sequence(
+    last: Option<Interpolation>,
+    next: Interpolation,
+    reset: bool,
+    maximum: u32,
+) -> Result<()> {
+    if next.count > maximum {
+        return Err(Error::Unavailable(format!(
+            "{} generated frames requested; NGX reports at most {maximum}",
+            next.count
+        )));
+    }
+    if reset && next.index > 1 {
+        return Err(Error::InvalidInput(format!(
+            "reset must be set on generated frame 1, not {} of {}",
+            next.index, next.count
+        )));
+    }
+    let open = last.filter(|l| l.index < l.count);
+    match (open, next.index) {
+        (Some(l), i) if i == l.index + 1 && next.count == l.count => Ok(()),
+        (Some(_), 1) if reset => Ok(()),
+        (Some(l), _) => Err(Error::InvalidInput(format!(
+            "generated frame {} of {} must follow frame {} of {}; finish the pair or start a new one with reset",
+            next.index, next.count, l.index, l.count
+        ))),
+        (None, 1) => Ok(()),
+        (None, i) => Err(Error::InvalidInput(format!(
+            "generated frame {i} of {} has no preceding frame {} in this pair",
+            next.count,
+            i - 1
+        ))),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -254,6 +301,64 @@ pub struct GenerationInputs<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(index: u32, count: u32) -> Interpolation {
+        Interpolation { index, count }
+    }
+
+    #[test]
+    fn multi_frame_pairs_run_in_order_with_one_count() {
+        assert!(check_sequence(None, at(1, 3), false, 3).is_ok());
+        assert!(check_sequence(Some(at(1, 3)), at(2, 3), false, 3).is_ok());
+        assert!(check_sequence(Some(at(2, 3)), at(3, 3), false, 3).is_ok());
+        // A finished pair allows the next pair, including a new multiplier.
+        assert!(check_sequence(Some(at(3, 3)), at(1, 3), false, 3).is_ok());
+        assert!(check_sequence(Some(at(3, 3)), at(1, 1), false, 3).is_ok());
+        assert!(check_sequence(Some(at(1, 1)), at(1, 1), false, 1).is_ok());
+    }
+
+    #[test]
+    fn broken_multi_frame_pairs_are_rejected() {
+        let invalid = |last, next, reset| {
+            matches!(
+                check_sequence(last, next, reset, 3),
+                Err(Error::InvalidInput(_))
+            )
+        };
+        assert!(
+            invalid(Some(at(1, 3)), at(1, 3), false),
+            "restart without reset"
+        );
+        assert!(
+            invalid(Some(at(1, 3)), at(1, 1), false),
+            "count change mid-pair"
+        );
+        assert!(invalid(Some(at(1, 3)), at(3, 3), false), "skipped index");
+        assert!(
+            invalid(Some(at(1, 3)), at(2, 2), false),
+            "count change mid-pair"
+        );
+        assert!(invalid(None, at(2, 3), false), "no index 1");
+        assert!(
+            invalid(Some(at(3, 3)), at(2, 3), false),
+            "index after finished pair"
+        );
+        assert!(
+            invalid(Some(at(1, 3)), at(2, 3), true),
+            "reset after index 1"
+        );
+        // An unfinished pair may be abandoned only by a reset at index 1.
+        assert!(check_sequence(Some(at(1, 3)), at(1, 3), true, 3).is_ok());
+        assert!(check_sequence(Some(at(2, 3)), at(1, 1), true, 3).is_ok());
+    }
+
+    #[test]
+    fn counts_above_the_reported_maximum_are_unavailable() {
+        assert!(matches!(
+            check_sequence(None, at(1, 4), false, 3),
+            Err(Error::Unavailable(_))
+        ));
+    }
 
     fn options() -> FrameGenerationOptions {
         FrameGenerationOptions {

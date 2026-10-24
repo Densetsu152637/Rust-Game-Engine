@@ -196,8 +196,11 @@ impl Context {
             .map_err(|_| {
                 Error::Unavailable("only one NGX session may own the process runtime".into())
             })?;
-        // SAFETY: caller guarantees device lifetime/exclusive NGX ownership;
-        // this guard borrows the backend and no handle is retained by Rust.
+        // SAFETY: the cloned device keeps the Vulkan device and instance alive,
+        // and SESSION_ACTIVE excludes a second NGX runtime from this crate. This
+        // guard only borrows the backend; no handle is retained by Rust. A
+        // different NGX integration in the process (e.g. Streamline) is not
+        // detectable here and is unsupported (docs/dlss.md).
         let hal = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }.ok_or_else(|| {
             Error::Unavailable("DLSS SR adapter requires the Vulkan backend".into())
         })?;
@@ -660,14 +663,14 @@ fn check(operation: &'static str, code: u32) -> Result<()> {
     }
 }
 fn validate_options(options: &SessionOptions, maximum: u32) -> Result<()> {
-    if options.project_id.trim().is_empty()
+    if !crate::is_project_id(&options.project_id)
         || options
             .output_size
             .into_iter()
             .any(|x| x == 0 || x > maximum)
     {
         return Err(Error::InvalidInput(
-            "DLSS needs a project ID and valid nonzero output dimensions".into(),
+            "DLSS needs a GUID-shaped NGX project ID and valid nonzero output dimensions".into(),
         ));
     }
     for path in [&options.runtime_dir, &options.log_dir] {
@@ -881,7 +884,7 @@ mod tests {
             std::env::temp_dir().join(format!("engine-dlss-options-{}", std::process::id()));
         std::fs::create_dir_all(&folder).expect("temporary directory");
         let mut options = SessionOptions {
-            project_id: "test".into(),
+            project_id: "c8091997-e7fa-48f6-8ef7-bf2211936fb5".into(),
             runtime_dir: folder.clone(),
             log_dir: folder.clone(),
             output_size: [0, 100],
