@@ -131,11 +131,13 @@ impl Renderer {
         start.elapsed()
     }
 
-    /// Frame times in ms for `frames` frames, sorted.
-    fn measure(&self, frames: usize) -> Vec<f64> {
-        let mut times: Vec<f64> = (0..frames)
-            .map(|_| self.frame().as_secs_f64() * 1e3)
-            .collect();
+    /// Sorted frame times in ms of back-to-back frames for `duration`.
+    fn measure(&self, duration: Duration) -> Vec<f64> {
+        let start = Instant::now();
+        let mut times = Vec::new();
+        while start.elapsed() < duration {
+            times.push(self.frame().as_secs_f64() * 1e3);
+        }
         times.sort_by(f64::total_cmp);
         times
     }
@@ -184,7 +186,7 @@ fn with_tracer(
     rays: u32,
     bounces: u16,
     period: Duration,
-    frames: usize,
+    duration: Duration,
 ) -> (Vec<f64>, u64) {
     let stop = Arc::new(AtomicBool::new(false));
     let updates = Arc::new(AtomicU64::new(0));
@@ -193,7 +195,7 @@ fn with_tracer(
     while updates.load(Ordering::Relaxed) == 0 {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let times = renderer.measure(frames);
+    let times = renderer.measure(duration);
     stop.store(true, Ordering::Relaxed);
     handle.join().expect("tracer thread");
     (times, updates.load(Ordering::Relaxed))
@@ -202,18 +204,20 @@ fn with_tracer(
 #[test]
 #[ignore = "requires a Vulkan adapter with ray query (verified on an RTX 5080)"]
 fn test20_tracing_beside_rendering_costs_at_most_1ms_p95() {
-    const FRAMES: usize = 300;
+    // Long enough for a dozen 4 Hz default updates.
+    const RUN: Duration = Duration::from_secs(3);
     let renderer = Renderer::new();
-    renderer.measure(30); // warm-up
-    let baseline = renderer.measure(FRAMES);
+    renderer.measure(Duration::from_millis(300)); // warm-up
+    let baseline = renderer.measure(RUN);
     // Defaults: 4,096 rays x 64 bounces, late field at 4 Hz.
     let (defaults, default_updates) =
-        with_tracer(&renderer, 4096, 64, Duration::from_millis(250), FRAMES);
+        with_tracer(&renderer, 4096, 64, Duration::from_millis(250), RUN);
     // Stress: 65,536 rays x 256 bounces back to back.
-    let (stress, stress_updates) = with_tracer(&renderer, 65_536, 256, Duration::ZERO, FRAMES);
+    let (stress, stress_updates) = with_tracer(&renderer, 65_536, 256, Duration::ZERO, RUN);
     let report = |label: &str, t: &[f64]| {
         println!(
-            "{label}: median {:.3} ms, p95 {:.3} ms, max {:.3} ms",
+            "{label}: {} frames, median {:.3} ms, p95 {:.3} ms, max {:.3} ms",
+            t.len(),
             percentile(t, 0.5),
             percentile(t, 0.95),
             t[t.len() - 1]
