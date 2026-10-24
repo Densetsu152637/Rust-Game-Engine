@@ -185,10 +185,12 @@ fn default_server_is_read_only_and_lists_no_write_or_exec_tools() {
     assert_eq!(names.len(), 15);
     assert!(names.contains(&"navigation_query".to_owned()));
     assert!(names.contains(&"tilemap_query".to_owned()));
-    for hidden in EXEC_TOOLS
-        .iter()
-        .chain(&["file_write", "entity_create", "navigation_bake", "tilemap_paint"])
-    {
+    for hidden in EXEC_TOOLS.iter().chain(&[
+        "file_write",
+        "entity_create",
+        "navigation_bake",
+        "tilemap_paint",
+    ]) {
         assert!(!names.contains(&(*hidden).to_owned()), "{hidden}");
     }
 }

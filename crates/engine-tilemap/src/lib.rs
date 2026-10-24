@@ -1,13 +1,4 @@
-//! 2D tilemap data model and authoring, independent of any renderer or ECS.
-//!
-//! * [`Tileset`]: atlas rectangles, per-tile collision and properties, rule tiles
-//!   ([`RuleTile`] with the [`RuleTile::blob47`] and [`RuleTile::four_neighbour16`] presets).
-//! * [`Tilemap`]: layers of sparse 16x16 chunks with `i32` cell coordinates inside fixed bounds,
-//!   painting ([`TileLayer::set`], [`TileLayer::fill_rect`], [`TileLayer::flood_fill`]) that
-//!   re-resolves only the affected neighbours.
-//! * [`collision`]: greedy rectangle merging and outline polygons.
-//! * [`geometry`]: per-chunk quad data for rendering.
-//! * Versioned, bounded JSON documents ([`TilesetDocument`], [`TilemapDocument`]).
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
 pub mod collision;
