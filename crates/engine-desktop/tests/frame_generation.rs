@@ -131,6 +131,7 @@ fn scene(x: f32, camera_x: f32, generation: FrameGenerationSettings) -> SceneRen
             ),
         ],
         materials2d: Default::default(),
+        streams: vec![],
     }
 }
 

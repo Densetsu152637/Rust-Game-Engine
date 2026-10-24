@@ -124,11 +124,11 @@ fn screenshot_on(
 ) -> Result<serde_json::Value> {
     use engine_desktop::{
         DlssConfig, DlssRequest, FIXED_DELTA, GpuContext, GpuRenderer, GpuRequirements,
-        NativeRenderPasses, OffscreenTarget, RenderLimits, WgpuOptions,
+        OffscreenTarget, PipelineFeatures, RenderLimits, WgpuOptions,
     };
     use engine_project::input::merge_input;
     use engine_project::rendering3d::{
-        FrameGenerationControl, FrameGenerationMode, UpscalerControl,
+        FrameGenerationControl, FrameGenerationMode, RenderPipelineControl, UpscalerControl,
     };
     let backends = backends?;
     let [width, height] = arguments.screenshot_size;
@@ -174,10 +174,10 @@ fn screenshot_on(
             .world_mut()
             .remove_resource::<GpuRequirements>()
             .unwrap_or_default();
-        let passes = runtime
+        let features = runtime
             .app_mut()
             .world_mut()
-            .remove_resource::<NativeRenderPasses>()
+            .remove_resource::<PipelineFeatures>()
             .unwrap_or_default();
         let dlss = runtime
             .app_mut()
@@ -212,7 +212,7 @@ fn screenshot_on(
         let target = OffscreenTarget::new(&gpu, width, height)?;
         let mut renderer =
             GpuRenderer::with_upscaler_device(gpu, target.info, RenderLimits::default(), upscaler)?;
-        renderer.set_passes(passes)?;
+        renderer.set_features(features)?;
         if let Some(previous) = &previous_frame {
             renderer.render_scene(previous, &target.view, Some(runtime.app().render_world()))?;
         }
@@ -223,6 +223,9 @@ fn screenshot_on(
         }
         if let Some(mut control) = world.get_resource_mut::<FrameGenerationControl>() {
             control.status = renderer.frame_generation_status().clone();
+        }
+        if let Some(mut control) = world.get_resource_mut::<RenderPipelineControl>() {
+            control.status = renderer.pipeline_status().clone();
         }
         // Generated frames before the final real frame, as sibling PNGs.
         let mut generated = Vec::new();

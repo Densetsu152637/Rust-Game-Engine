@@ -1,6 +1,6 @@
 use crate::{
     BACKEND_ENV_VAR, CameraView, DlssConfig, DlssRequest, FrameHistory, FramePacer,
-    GpuRequirements, NativeRenderPasses, RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
+    GpuRequirements, PipelineFeatures, RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
     input::{Gamepads, PressLatch, sample_tick, window_input},
 };
 use anyhow::{Context, Result, ensure};
@@ -8,7 +8,7 @@ use engine_audio::{AudioConfig, AudioEngine};
 use engine_project::{
     EventSchedule, EventTrace, Runtime,
     input::{ActionMapper, RawInput, merge_input},
-    rendering3d::{FrameGenerationControl, UpscalerControl},
+    rendering3d::{FrameGenerationControl, RenderPipelineControl, UpscalerControl},
     runtime::{InputSettings, RuntimeSnapshot},
 };
 use serde::Serialize;
@@ -252,7 +252,7 @@ fn run_headless(
             audio.mix(&mut audio_frame)?;
             ticks += 1;
         }
-        Ok(())
+        publish_preview_status(&mut runtime)
     })();
     let cleanup = runtime.stop().map_err(anyhow::Error::from);
     audio.shutdown();
@@ -276,6 +276,26 @@ fn publish_upscaler_status(runtime: &mut Runtime, renderer: &crate::GpuRenderer)
     if let Some(mut control) = world.get_resource_mut::<FrameGenerationControl>() {
         control.status = renderer.frame_generation_status().clone();
     }
+    if let Some(mut control) = world.get_resource_mut::<RenderPipelineControl>() {
+        control.status = renderer.pipeline_status().clone();
+    }
+}
+
+/// Publish the render feature state a renderer would resolve for the active
+/// camera; headless runs never render, so the state stays `not_rendered`.
+fn publish_preview_status(runtime: &mut Runtime) -> Result<()> {
+    let Some(requested) = runtime.render_pipeline_status() else {
+        return Ok(());
+    };
+    let world = runtime.app_mut().world_mut();
+    let status = crate::preview_pipeline_status(
+        world.get_resource::<PipelineFeatures>(),
+        &requested.overrides,
+    )?;
+    if let Some(mut control) = world.get_resource_mut::<RenderPipelineControl>() {
+        control.status = status;
+    }
+    Ok(())
 }
 
 fn stop_requested(runtime: &Runtime, options: &RunOptions) -> bool {
@@ -504,13 +524,13 @@ impl ApplicationHandler for DesktopRunner {
                 &dlss,
                 request,
             ))?;
-            let passes = self
+            let features = self
                 .runtime
                 .app_mut()
                 .world_mut()
-                .remove_resource::<NativeRenderPasses>()
+                .remove_resource::<PipelineFeatures>()
                 .unwrap_or_default();
-            host.renderer.set_passes(passes)?;
+            host.renderer.set_features(features)?;
             // Failure to initialize the controller service is propagated. A
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);

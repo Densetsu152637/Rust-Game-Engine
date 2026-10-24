@@ -7,8 +7,11 @@
 //!   GPU-free tests.
 //! * `engine-render-wgpu`: the wgpu backend and the native [`GpuContext`]; wgpu
 //!   itself selects Vulkan, DX12, Metal or GL ([`WgpuBackends`]).
+//! * `engine-render-pipeline`: the 3D frame graph and render extension API
+//!   (render features, view data, HDR targets, light list, instancing),
+//!   re-exported as [`render_pipeline`].
 //! * this crate: [`SpriteRenderer`] (adapter-based), [`GpuRenderer`] (shares a
-//!   [`GpuContext`], runs [`NativeRenderPass`]es), [`WindowSurface`], and the
+//!   [`GpuContext`], drives the render pipeline), [`WindowSurface`], and the
 //!   [`run`] loop. `ENGINE_RENDER_BACKEND=primary|vulkan|dx12|metal|gl|all`
 //!   picks the wgpu graphics API.
 //!
@@ -20,8 +23,9 @@
 //! 3D camera's `upscaler` request DLSS Super Resolution; see [`request_upscaler_gpu`].
 //!
 //! Games compile into the host executable and use this exact `wgpu` type universe.
-//! Register [`NativeRenderPass`] implementations in [`NativeRenderPasses`] before
-//! launching the runner, or construct [`GpuRenderer`] directly for another host.
+//! Register render features ([`render_pipeline::PipelineFeature`]) in a
+//! [`PipelineFeatures`] resource before launching the runner, or construct
+//! [`GpuRenderer`] directly for another host.
 
 mod backend;
 mod camera;
@@ -29,7 +33,6 @@ mod dlss;
 mod input;
 mod interpolation;
 mod pacing;
-mod passes;
 mod renderer;
 mod runner;
 mod shader;
@@ -42,14 +45,15 @@ pub use dlss::{
     UpscalerDevice, build_unavailable_reason, fg_build_unavailable_reason, request_upscaler_gpu,
 };
 pub use engine_render;
+pub use engine_render_pipeline as render_pipeline;
+pub use engine_render_pipeline::PipelineFeatures;
 pub use engine_render_wgpu::{
-    BACKEND_ENV_VAR, GpuContext, GpuRequirements, OffscreenTarget, RenderTargetInfo, WgpuBackend,
-    WgpuBackends, WgpuOptions,
+    BACKEND_ENV_VAR, DeviceFeatureReport, DeviceFeatureRequest, GpuContext, GpuRequirements,
+    OffscreenTarget, RenderTargetInfo, WgpuBackend, WgpuBackends, WgpuOptions,
 };
 pub use input::key_token;
 pub use interpolation::*;
 pub use pacing::*;
-pub use passes::*;
 pub use renderer::*;
 pub use runner::*;
 pub use shader::validate_wgsl;

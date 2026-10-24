@@ -72,7 +72,9 @@ pub struct FeatureContext<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub stage: Stage,
     pub view: &'a ViewData,
-    /// `engine::view` bind group of this view (group 0).
+    /// `engine::view` bind group of this view (group 0). In the Shadow stage
+    /// its `engine_shadow_atlas` is a 1x1 placeholder, because the atlas is
+    /// being rendered.
     pub view_bind_group: &'a wgpu::BindGroup,
     pub layouts: &'a PipelineLayouts,
     /// The extracted ECS world, when the host supplies one. Read only.

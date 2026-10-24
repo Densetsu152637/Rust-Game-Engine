@@ -299,7 +299,7 @@ fn limits_and_invalid_data_fail_before_anything_is_recorded() {
     }));
     assert!(sprites.render(&frame).is_err(), "invalid texture data");
     assert!(frames(&log).is_empty());
-    assert_eq!(sprites.renderer().device().counts().meshes, 0);
+    assert_eq!(sprites.sprite_resource_counts().meshes, 0);
 }
 
 // ----------------------------------------------------------- real GPUs

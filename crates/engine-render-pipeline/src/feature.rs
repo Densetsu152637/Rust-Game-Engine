@@ -188,7 +188,7 @@ pub fn validate_feature_name(name: &str) -> Result<()> {
 /// against [`FeatureSetup::view_layout`]); `encode` runs each frame for every
 /// view that has the feature enabled, in stage order. Implementations own
 /// their GPU objects. Errors stop the frame and name the feature.
-pub trait PipelineFeature: Send + 'static {
+pub trait PipelineFeature: Send + Sync + 'static {
     fn descriptor(&self) -> FeatureDescriptor;
 
     fn prepare(&mut self, _setup: &FeatureSetup<'_>) -> Result<()> {
@@ -206,6 +206,8 @@ pub(crate) enum FeatureBody {
     Host,
     /// Built-in work the pipeline performs inline (mesh passes, output).
     Builtin,
+    /// A descriptor without an implementation (status previews only).
+    Descriptor,
 }
 
 pub(crate) struct Registered {
@@ -339,6 +341,19 @@ impl FeatureRegistry {
         Ok(())
     }
 
+    /// The same descriptors without implementations, for status previews
+    /// (resolving per-view state without a device).
+    pub fn descriptor_copy(&self) -> Result<FeatureRegistry> {
+        let mut copy = FeatureRegistry::default();
+        for &index in &self.order {
+            copy.insert(
+                self.features[index].descriptor.clone(),
+                FeatureBody::Descriptor,
+            )?;
+        }
+        Ok(copy)
+    }
+
     /// Resolve which features are enabled for one view.
     pub fn resolve(&self, overrides: &FeatureOverrides) -> ResolvedFeatures {
         let mut states = Vec::with_capacity(self.features.len());
@@ -395,6 +410,17 @@ impl FeatureRegistry {
             .fold(FeatureNeeds::default(), |needs, s| {
                 needs.union(self.features[s.index].descriptor.needs)
             })
+    }
+}
+
+/// Features registered by game code or other crates before the host creates
+/// its renderer (a world resource the runner hands to the renderer).
+#[derive(bevy_ecs::prelude::Resource, Default)]
+pub struct PipelineFeatures(pub FeatureRegistry);
+
+impl PipelineFeatures {
+    pub fn register(&mut self, feature: impl PipelineFeature) -> Result<()> {
+        self.0.register(feature)
     }
 }
 

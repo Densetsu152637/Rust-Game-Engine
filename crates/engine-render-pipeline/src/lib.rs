@@ -45,14 +45,14 @@ pub use engine_render_wgpu::{
 };
 pub use feature::{
     Activity, EnableSource, FeatureDescriptor, FeatureNeeds, FeatureOverrides, FeatureRegistry,
-    FeatureState, MAX_FEATURE_NAME_BYTES, MAX_FEATURES, PipelineFeature, ResolvedFeatures, Stage,
-    StageRule, validate_feature_name,
+    FeatureState, MAX_FEATURE_NAME_BYTES, MAX_FEATURES, PipelineFeature, PipelineFeatures,
+    ResolvedFeatures, Stage, StageRule, validate_feature_name,
 };
 pub use instancing::{DrawStats, Grouping, InstanceBatcher, InstancedBatch, group_keys};
 pub use lights::{GpuLight, GpuShadow, LightKind, LightList, MAX_LIGHTS, MAX_SHADOWS, ShadowView};
 pub use pipeline::{
     HdrImage, HostStages, HostUpscale, NoHost, SceneFrame, ScenePipeline, SceneTextures,
-    ViewReport, names,
+    ViewReport, builtin_registry, names,
 };
 pub use resources::{ENGINE_VERTEX_LAYOUT, EngineVertex, GpuMesh, GpuTexture, TEXTURE_USAGES};
 pub use shader::{LIT_WGSL, MaterialTarget, ShaderComposer, compose_material, validate_wgsl};

@@ -1193,6 +1193,7 @@ dependencies = [
  "engine-dlss",
  "engine-project",
  "engine-render",
+ "engine-render-pipeline",
  "engine-render-wgpu",
  "gilrs",
  "glam 0.34.1",

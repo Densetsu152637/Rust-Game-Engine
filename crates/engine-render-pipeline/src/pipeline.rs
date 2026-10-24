@@ -197,6 +197,12 @@ struct ViewState {
     shadows: GrowBuffer,
     atlas: Atlas,
     bind_group: wgpu::BindGroup,
+    /// Placeholder atlas of `shadow_group`.
+    no_atlas: Atlas,
+    /// The view group with a placeholder atlas: bound while the Shadow stage
+    /// renders into the real atlas (a texture cannot be sampled and written
+    /// in one pass).
+    shadow_group: wgpu::BindGroup,
     report: ViewReport,
     final_hdr: Option<wgpu::Texture>,
 }
@@ -213,6 +219,8 @@ impl ViewState {
         let shadows = GrowBuffer::new(device, "engine shadows", 256, wgpu::BufferUsages::STORAGE);
         let atlas = Atlas::new(device, 64, 1);
         let bind_group = view_bind_group(device, layouts, &uniform, &lights, &shadows, &atlas);
+        let no_atlas = Atlas::new(device, 1, 1);
+        let shadow_group = view_bind_group(device, layouts, &uniform, &lights, &shadows, &no_atlas);
         Self {
             targets: None,
             history: ViewHistory::default(),
@@ -222,6 +230,8 @@ impl ViewState {
             shadows,
             atlas,
             bind_group,
+            no_atlas,
+            shadow_group,
             report: ViewReport::default(),
             final_hdr: None,
         }
@@ -342,6 +352,27 @@ fn layouts(device: &wgpu::Device) -> PipelineLayouts {
     }
 }
 
+/// The built-in features in registration order (no device needed).
+pub fn builtin_registry() -> Result<FeatureRegistry> {
+    let mut registry = FeatureRegistry::default();
+    for descriptor in [
+        FeatureDescriptor::new(names::SHADOWS, Stage::Shadow),
+        FeatureDescriptor::new(names::NORMALS, Stage::Prepass),
+        FeatureDescriptor::new(names::MOTION, Stage::Prepass),
+        FeatureDescriptor::new(names::OPAQUE, Stage::Opaque),
+        FeatureDescriptor::new(names::TRANSPARENT, Stage::Transparent),
+        FeatureDescriptor::new(names::UPSCALE, Stage::Upscale),
+        FeatureDescriptor::new(names::OUTPUT, Stage::Tonemap).required(),
+    ] {
+        registry.insert(descriptor, FeatureBody::Builtin)?;
+    }
+    registry.insert(
+        FeatureDescriptor::new(names::SPRITES, Stage::Overlay),
+        FeatureBody::Host,
+    )?;
+    Ok(registry)
+}
+
 /// View id of the overlay-only state used for frames without a 3D view.
 const OVERLAY_ONLY: ViewId = ViewId(u64::MAX);
 
@@ -367,22 +398,7 @@ impl ScenePipeline {
         let mesh = MeshRenderer::new(&gpu, &layouts).context("creating the built-in mesh path")?;
         let output = OutputPass::new(device)?;
         let upscale = UpscalePass::new(device)?;
-        let mut registry = FeatureRegistry::default();
-        for descriptor in [
-            FeatureDescriptor::new(names::SHADOWS, Stage::Shadow),
-            FeatureDescriptor::new(names::NORMALS, Stage::Prepass),
-            FeatureDescriptor::new(names::MOTION, Stage::Prepass),
-            FeatureDescriptor::new(names::OPAQUE, Stage::Opaque),
-            FeatureDescriptor::new(names::TRANSPARENT, Stage::Transparent),
-            FeatureDescriptor::new(names::UPSCALE, Stage::Upscale),
-            FeatureDescriptor::new(names::OUTPUT, Stage::Tonemap).required(),
-        ] {
-            registry.insert(descriptor, FeatureBody::Builtin)?;
-        }
-        registry.insert(
-            FeatureDescriptor::new(names::SPRITES, Stage::Overlay),
-            FeatureBody::Host,
-        )?;
+        let registry = builtin_registry()?;
         let shadow_alignment = device.limits().min_uniform_buffer_offset_alignment.max(16);
         Ok(Self {
             gpu,
@@ -448,6 +464,19 @@ impl ScenePipeline {
     /// The report of the last frame of `view`.
     pub fn view_report(&self, view: ViewId) -> Option<&ViewReport> {
         self.views.get(&view).map(|s| &s.report)
+    }
+
+    /// Last frame's unjittered view-projection of `view` as the next frame
+    /// will see it (`current` on the first frame or with `reset`).
+    pub fn previous_clip_from_world(
+        &self,
+        view: ViewId,
+        current: glam::Mat4,
+        reset: bool,
+    ) -> glam::Mat4 {
+        self.views
+            .get(&view)
+            .map_or(current, |state| state.history.previous(current, reset))
     }
 
     /// Drop a view's targets and history (for example a closed viewport).
@@ -543,6 +572,14 @@ impl ScenePipeline {
                 &state.lights,
                 &state.shadows,
                 &state.atlas,
+            );
+            state.shadow_group = view_bind_group(
+                &device,
+                layouts,
+                &state.uniform,
+                &state.lights,
+                &state.shadows,
+                &state.no_atlas,
             );
         }
         let current = view.clip_from_world();
@@ -919,7 +956,7 @@ fn run_stage(
         }
         let registered = &mut run.registry.features[index];
         match &mut registered.body {
-            FeatureBody::Builtin | FeatureBody::Host => {}
+            FeatureBody::Builtin | FeatureBody::Host | FeatureBody::Descriptor => {}
             FeatureBody::Owned(feature) => {
                 ensure!(
                     registered.prepared,
@@ -930,7 +967,11 @@ fn run_stage(
                     encoder,
                     stage,
                     view: run.view,
-                    view_bind_group: &run.state.bind_group,
+                    view_bind_group: if stage == Stage::Shadow {
+                        &run.state.shadow_group
+                    } else {
+                        &run.state.bind_group
+                    },
                     layouts: run.layouts,
                     world: run.frame.world,
                     io,
@@ -1005,7 +1046,7 @@ fn run_builtin(
                 if index < run.lights.shadows.len() {
                     *stats += run.mesh.draw_shadow(
                         &mut pass,
-                        view_group,
+                        &state.shadow_group,
                         &state.mesh,
                         index as u32,
                         run.shadow_alignment,
@@ -1141,7 +1182,7 @@ fn run_overlay(
                 host.overlay(&name, gpu, target)
                     .with_context(|| format!("host overlay {name}"))?;
             }
-            FeatureBody::Builtin => {}
+            FeatureBody::Builtin | FeatureBody::Descriptor => {}
             FeatureBody::Owned(feature) => {
                 let mut context = FeatureContext {
                     gpu,

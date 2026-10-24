@@ -122,6 +122,14 @@ impl WgpuBackend {
         self.core.as_ref().map(|core| &core.gpu)
     }
 
+    /// The GPU texture behind a live engine texture handle (for host copies
+    /// into sprite textures, such as external texture streams). `None` for
+    /// unknown handles or before `initialize`.
+    pub fn texture(&self, handle: engine_render::TextureHandle) -> Option<wgpu::Texture> {
+        let core = self.core.as_ref()?;
+        Some(core.textures.get(&handle.id())?.texture.clone())
+    }
+
     /// Live resource and cache counters; `None` before `initialize`.
     pub fn stats(&self) -> Option<WgpuStats> {
         self.core.as_ref().map(|core| WgpuStats {
