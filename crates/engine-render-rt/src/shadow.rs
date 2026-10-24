@@ -1,47 +1,18 @@
-//! RT shadow mask: per-pixel visibility of one directional light.
+//! RT shadow mask: per-pixel visibility of one directional light, hard or soft.
 
 use crate::device::{Core, RtDevice};
 use crate::error::{RtError, invalid};
+use crate::kernel::{self, RtScalarFormat};
 use crate::scene::RtScene;
+use crate::settings::{MAX_RAYS_PER_PIXEL, MAX_SUN_ANGULAR_RADIUS, RtShadowSettings};
 use crate::wgsl;
 use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;
-use wgpu::util::DeviceExt;
-
-/// Output format of [`ShadowMaskKernel`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ShadowMaskFormat {
-    /// Needs `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` and adapter support
-    /// (see [`RtDevice::supports_storage_format`]).
-    R8Unorm,
-    /// Same requirement as `R8Unorm`.
-    R16Float,
-    /// Always available.
-    R32Float,
-}
-
-impl ShadowMaskFormat {
-    pub fn texture_format(self) -> wgpu::TextureFormat {
-        match self {
-            Self::R8Unorm => wgpu::TextureFormat::R8Unorm,
-            Self::R16Float => wgpu::TextureFormat::R16Float,
-            Self::R32Float => wgpu::TextureFormat::R32Float,
-        }
-    }
-
-    fn wgsl(self) -> &'static str {
-        match self {
-            Self::R8Unorm => "r8unorm",
-            Self::R16Float => "r16float",
-            Self::R32Float => "r32float",
-        }
-    }
-}
 
 /// Per-dispatch parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShadowMaskParams {
-    /// Direction towards the light (normalized by the kernel).
+    /// Direction towards the light centre (normalized by the kernel).
     pub direction_to_light: [f32; 3],
     /// Offset of the ray origin along the surface normal, in world units.
     pub normal_bias: f32,
@@ -49,6 +20,15 @@ pub struct ShadowMaskParams {
     pub t_max: f32,
     /// Instance mask of occluders.
     pub mask: u8,
+    /// Angular radius of the light disc in radians, `[0, 0.2]`. `0` traces
+    /// one hard-shadow ray per pixel (visibility exactly 0 or 1); above `0`,
+    /// `samples` rays are spread uniformly over the disc's cone and the
+    /// visibility is the unoccluded fraction.
+    pub angular_radius: f32,
+    /// Rays per pixel for soft shadows, `[1, 64]`.
+    pub samples: u32,
+    /// Decorrelates soft-shadow noise between frames.
+    pub frame_index: u32,
 }
 
 impl Default for ShadowMaskParams {
@@ -59,6 +39,28 @@ impl Default for ShadowMaskParams {
             t_min: 0.0,
             t_max: 1e4,
             mask: 0xff,
+            angular_radius: 0.0,
+            samples: 1,
+            frame_index: 0,
+        }
+    }
+}
+
+impl ShadowMaskParams {
+    /// Parameters for `settings`, the light direction and the frame index.
+    pub fn from_settings(
+        settings: &RtShadowSettings,
+        direction_to_light: [f32; 3],
+        frame_index: u32,
+    ) -> Self {
+        Self {
+            direction_to_light,
+            normal_bias: settings.normal_bias,
+            t_max: settings.max_distance,
+            angular_radius: settings.sun_angular_radius,
+            samples: settings.samples_per_pixel,
+            frame_index,
+            ..Self::default()
         }
     }
 }
@@ -76,11 +78,57 @@ pub struct ShadowMaskTargets<'a> {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct GpuShadowParams {
     direction_to_light: [f32; 4],
     ray: [f32; 4],
     size_mask: [u32; 4],
+    frame: [u32; 4],
+}
+
+const SHADOW_SEED: u32 = 0x5ad0_3e11;
+
+fn gpu_params(
+    width: u32,
+    height: u32,
+    params: &ShadowMaskParams,
+) -> Result<GpuShadowParams, RtError> {
+    let l = kernel::unit_direction("direction_to_light", params.direction_to_light)?;
+    if !(params.normal_bias.is_finite()
+        && params.normal_bias >= 0.0
+        && params.t_min.is_finite()
+        && params.t_max.is_finite()
+        && params.t_min >= 0.0
+        && params.t_max > params.t_min)
+    {
+        return Err(invalid(
+            "normal_bias must be finite and >= 0, and 0 <= t_min < t_max finite",
+        ));
+    }
+    if !(params.angular_radius.is_finite()
+        && (0.0..=MAX_SUN_ANGULAR_RADIUS).contains(&params.angular_radius))
+    {
+        return Err(invalid(format!(
+            "angular_radius {} must be within [0, {MAX_SUN_ANGULAR_RADIUS}]",
+            params.angular_radius
+        )));
+    }
+    if !(1..=MAX_RAYS_PER_PIXEL).contains(&params.samples) {
+        return Err(invalid(format!(
+            "samples {} must be within [1, {MAX_RAYS_PER_PIXEL}]",
+            params.samples
+        )));
+    }
+    // The shader traces the hard path when cos_max >= 1. In f32, cos(r)
+    // rounds to 1 for r below about 3.5e-4 rad; such radii give penumbrae far
+    // below a texel and are traced as hard shadows.
+    let cos_max = params.angular_radius.cos();
+    Ok(GpuShadowParams {
+        direction_to_light: [l[0], l[1], l[2], cos_max],
+        ray: [params.normal_bias, params.t_min, params.t_max, 0.0],
+        size_mask: [width, height, u32::from(params.mask), params.samples],
+        frame: [params.frame_index, SHADOW_SEED, 0, 0],
+    })
 }
 
 /// Compute kernel `shadow_mask` (`src/shaders/shadow_mask.wgsl`), workgroup
@@ -89,81 +137,40 @@ struct GpuShadowParams {
 /// Bindings: group 0 = the scene ([`RtScene::bind_group`]); group 1 =
 /// 0 `texture_2d<f32>` world positions, 1 `texture_2d<f32>` world normals
 /// (both unfilterable float), 2 `texture_storage_2d<format, write>` visibility,
-/// 3 uniform parameters. Writes 1 (lit) or 0 (shadowed); background pixels are 1
-/// and surfaces facing away from the light are 0.
+/// 3 uniform parameters. Hard shadows write 1 (lit) or 0 (shadowed); soft
+/// shadows write the unoccluded fraction of `samples` rays in the light's
+/// cone. Background pixels are 1 and surfaces facing away from the light
+/// centre are 0.
 pub struct ShadowMaskKernel {
     core: Arc<Core>,
-    format: ShadowMaskFormat,
+    format: RtScalarFormat,
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
 }
 
 impl ShadowMaskKernel {
-    pub fn new(rt: &RtDevice, format: ShadowMaskFormat) -> Result<Self, RtError> {
+    pub fn new(rt: &RtDevice, format: RtScalarFormat) -> Result<Self, RtError> {
         let core = rt.core().clone();
         core.ensure_usable()?;
-        if !rt.supports_storage_format(format.texture_format()) {
-            return Err(invalid(format!(
-                "{format:?} is not a storage-write format on this device (needs \
-                 TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES); use R32Float"
-            )));
-        }
+        kernel::check_storage_format(rt.supports_storage_format(format.texture_format()), format)?;
         let device = &core.device;
-        let texture = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("engine-render-rt shadow mask"),
-            entries: &[
-                texture(0),
-                texture(1),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: format.texture_format(),
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("engine-render-rt shadow mask"),
-            bind_group_layouts: &[Some(&core.scene_layout), Some(&layout)],
-            immediate_size: 0,
-        });
-        let module = wgsl::module(
+        let layout = kernel::bind_group_layout(
             device,
             "engine-render-rt shadow mask",
-            wgsl::shadow_mask_source(format.wgsl()),
+            &[
+                kernel::texture_entry(0),
+                kernel::texture_entry(1),
+                kernel::storage_texture_entry(2, format.texture_format()),
+                kernel::uniform_entry(3),
+            ],
         );
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("engine-render-rt shadow mask"),
-            layout: Some(&pipeline_layout),
-            module: &module,
-            entry_point: Some("shadow_mask"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let pipeline = kernel::compute_pipeline(
+            device,
+            "engine-render-rt shadow mask",
+            &[&core.scene_layout, &layout],
+            wgsl::shadow_mask_source(format.wgsl()),
+            "shadow_mask",
+        );
         Ok(Self {
             core,
             format,
@@ -172,7 +179,7 @@ impl ShadowMaskKernel {
         })
     }
 
-    pub fn format(&self) -> ShadowMaskFormat {
+    pub fn format(&self) -> RtScalarFormat {
         self.format
     }
 
@@ -184,78 +191,90 @@ impl ShadowMaskKernel {
         targets: &ShadowMaskTargets<'_>,
         params: &ShadowMaskParams,
     ) -> Result<(), RtError> {
-        self.core.ensure_usable()?;
-        if !scene.is_from(&self.core) {
-            return Err(invalid("the scene belongs to another RtDevice"));
-        }
-        let max = self.core.limits.max_texture_dimension_2d;
-        if targets.width == 0 || targets.height == 0 || targets.width > max || targets.height > max
-        {
-            return Err(invalid(format!(
-                "shadow mask size {}x{} must be 1..={max} per side",
-                targets.width, targets.height
-            )));
-        }
-        let l = params.direction_to_light;
-        let length = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
-        if !(length.is_finite() && length > 1e-6) {
-            return Err(invalid(format!(
-                "direction_to_light {l:?} must be finite and non-zero"
-            )));
-        }
-        if !(params.normal_bias.is_finite()
-            && params.normal_bias >= 0.0
-            && params.t_min.is_finite()
-            && params.t_max.is_finite()
-            && params.t_min >= 0.0
-            && params.t_max > params.t_min)
-        {
-            return Err(invalid(
-                "normal_bias must be finite and >= 0, and 0 <= t_min < t_max finite",
-            ));
-        }
-        let scene_group = scene.committed_bind_group()?;
-        let uniform = GpuShadowParams {
-            direction_to_light: [l[0] / length, l[1] / length, l[2] / length, 0.0],
-            ray: [params.normal_bias, params.t_min, params.t_max, 0.0],
-            size_mask: [targets.width, targets.height, u32::from(params.mask), 0],
-        };
+        let scene_group = kernel::scene_group(&self.core, scene)?;
+        kernel::check_size(&self.core, "shadow mask", targets.width, targets.height)?;
+        let uniform = gpu_params(targets.width, targets.height, params)?;
         let device = &self.core.device;
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("engine-render-rt shadow params"),
-            contents: bytemuck::bytes_of(&uniform),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("engine-render-rt shadow mask"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(targets.world_position),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(targets.world_normal),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(targets.output),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: buffer.as_entire_binding(),
-                },
+        let buffer = kernel::uniform_buffer(
+            device,
+            "engine-render-rt shadow params",
+            bytemuck::bytes_of(&uniform),
+        );
+        let group = kernel::bind_group(
+            device,
+            "engine-render-rt shadow mask",
+            &self.layout,
+            &[
+                wgpu::BindingResource::TextureView(targets.world_position),
+                wgpu::BindingResource::TextureView(targets.world_normal),
+                wgpu::BindingResource::TextureView(targets.output),
+                buffer.as_entire_binding(),
             ],
-        });
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("engine-render-rt shadow mask"),
-            timestamp_writes: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, scene_group, &[]);
-        pass.set_bind_group(1, &group, &[]);
-        pass.dispatch_workgroups(targets.width.div_ceil(8), targets.height.div_ceil(8), 1);
+        );
+        kernel::dispatch(
+            encoder,
+            "engine-render-rt shadow mask",
+            &self.pipeline,
+            &[scene_group, &group],
+            targets.width,
+            targets.height,
+        );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parameters_are_validated_and_soft_shadows_encode_the_cone() {
+        assert_eq!(size_of::<GpuShadowParams>(), 64);
+        let hard = gpu_params(4, 2, &ShadowMaskParams::default()).unwrap();
+        assert_eq!(hard.direction_to_light, [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(hard.size_mask, [4, 2, 0xff, 1]);
+        let settings = RtShadowSettings {
+            sun_angular_radius: 0.1,
+            samples_per_pixel: 8,
+            ..Default::default()
+        };
+        let soft = gpu_params(
+            4,
+            2,
+            &ShadowMaskParams::from_settings(&settings, [0.0, 2.0, 0.0], 7),
+        )
+        .unwrap();
+        assert!((soft.direction_to_light[3] - 0.1f32.cos()).abs() < 1e-7);
+        assert_eq!(soft.size_mask[3], 8);
+        assert_eq!(soft.frame[0], 7);
+        let bad = |p: ShadowMaskParams| gpu_params(4, 2, &p).unwrap_err().to_string();
+        assert!(
+            bad(ShadowMaskParams {
+                angular_radius: 0.5,
+                ..Default::default()
+            })
+            .contains("angular_radius")
+        );
+        assert!(
+            bad(ShadowMaskParams {
+                samples: 0,
+                ..Default::default()
+            })
+            .contains("samples")
+        );
+        assert!(
+            bad(ShadowMaskParams {
+                direction_to_light: [0.0; 3],
+                ..Default::default()
+            })
+            .contains("direction_to_light")
+        );
+        assert!(
+            bad(ShadowMaskParams {
+                t_max: 0.0,
+                ..Default::default()
+            })
+            .contains("t_max")
+        );
     }
 }

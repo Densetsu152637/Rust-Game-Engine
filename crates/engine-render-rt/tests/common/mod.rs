@@ -298,3 +298,251 @@ pub fn half_to_f32(h: u16) -> f32 {
         e => (1.0 + mantissa / 1024.0) * 2f32.powi(i32::from(e) - 15),
     }
 }
+
+/// Quad `p0 p1 p2 p3` (two triangles, two-sided for rays).
+pub fn quad(p: [[f32; 3]; 4]) -> Mesh {
+    Mesh {
+        positions: p.to_vec(),
+        indices: vec![0, 1, 2, 0, 2, 3],
+    }
+}
+
+/// Uploads `bytes` (row-major, `bytes_per_texel` each) into the whole of `texture`.
+pub fn upload(rt: &RtDevice, texture: &wgpu::Texture, bytes: &[u8], bytes_per_texel: u32) {
+    let (width, height) = (texture.width(), texture.height());
+    assert_eq!(bytes.len() as u32, width * height * bytes_per_texel);
+    rt.queue().write_texture(
+        texture.as_image_copy(),
+        bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * bytes_per_texel),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+/// A sampled float texture of `format` holding `bytes`.
+pub fn input_texture(
+    rt: &RtDevice,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    bytes: &[u8],
+) -> wgpu::Texture {
+    let t = texture(
+        rt,
+        format,
+        width,
+        height,
+        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+    );
+    let bytes_per_texel = format.block_copy_size(None).expect("plain format");
+    upload(rt, &t, bytes, bytes_per_texel);
+    t
+}
+
+/// A kernel output: storage, sampled and readable.
+pub fn output_texture(
+    rt: &RtDevice,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::Texture {
+    texture(
+        rt,
+        format,
+        width,
+        height,
+        wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+    )
+}
+
+pub fn view(texture: &wgpu::Texture) -> wgpu::TextureView {
+    texture.create_view(&Default::default())
+}
+
+/// One G-buffer texel: world position, world normal, geometry present.
+#[derive(Clone, Copy, Debug)]
+pub struct Texel {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub geometry: bool,
+}
+
+impl Texel {
+    pub fn surface(position: [f32; 3], normal: [f32; 3]) -> Self {
+        Self {
+            position,
+            normal,
+            geometry: true,
+        }
+    }
+
+    pub const BACKGROUND: Self = Self {
+        position: [0.0; 3],
+        normal: [0.0; 3],
+        geometry: false,
+    };
+}
+
+/// `Rgba32Float` world positions and normals.
+pub struct GBuffer {
+    pub width: u32,
+    pub height: u32,
+    pub position: wgpu::Texture,
+    pub normal: wgpu::Texture,
+    pub position_view: wgpu::TextureView,
+    pub normal_view: wgpu::TextureView,
+}
+
+impl GBuffer {
+    pub fn new(rt: &RtDevice, width: u32, height: u32, texels: &[Texel]) -> Self {
+        assert_eq!(texels.len() as u32, width * height);
+        let positions: Vec<[f32; 4]> = texels
+            .iter()
+            .map(|t| {
+                let p = t.position;
+                [p[0], p[1], p[2], if t.geometry { 1.0 } else { 0.0 }]
+            })
+            .collect();
+        let normals: Vec<[f32; 4]> = texels
+            .iter()
+            .map(|t| [t.normal[0], t.normal[1], t.normal[2], 0.0])
+            .collect();
+        let position = rgba32f_texture(rt, width, height, &positions);
+        let normal = rgba32f_texture(rt, width, height, &normals);
+        Self {
+            width,
+            height,
+            position_view: view(&position),
+            normal_view: view(&normal),
+            position,
+            normal,
+        }
+    }
+
+    /// Rewrites every texel (same size).
+    pub fn update(&self, rt: &RtDevice, texels: &[Texel]) {
+        let positions: Vec<[f32; 4]> = texels
+            .iter()
+            .map(|t| {
+                let p = t.position;
+                [p[0], p[1], p[2], if t.geometry { 1.0 } else { 0.0 }]
+            })
+            .collect();
+        let normals: Vec<[f32; 4]> = texels
+            .iter()
+            .map(|t| [t.normal[0], t.normal[1], t.normal[2], 0.0])
+            .collect();
+        upload(rt, &self.position, bytemuck::cast_slice(&positions), 16);
+        upload(rt, &self.normal, bytemuck::cast_slice(&normals), 16);
+    }
+
+    pub fn views(&self) -> engine_render_rt::RtGBuffer<'_> {
+        engine_render_rt::RtGBuffer {
+            world_position: &self.position_view,
+            world_normal: &self.normal_view,
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
+/// Reads an `Rgba16Float` texture (width a multiple of 32).
+pub fn read_rgba16f(rt: &RtDevice, texture: &wgpu::Texture) -> Vec<[f32; 4]> {
+    bytemuck::cast_slice::<u8, [u16; 4]>(&read_texture(rt, texture, 8))
+        .iter()
+        .map(|c| c.map(half_to_f32))
+        .collect()
+}
+
+/// Reads a single-channel texture of `format` (`R8Unorm`, `R16Float` or `R32Float`).
+pub fn read_scalar(rt: &RtDevice, texture: &wgpu::Texture) -> Vec<f32> {
+    match texture.format() {
+        wgpu::TextureFormat::R8Unorm => read_texture(rt, texture, 1)
+            .iter()
+            .map(|&v| f32::from(v) / 255.0)
+            .collect(),
+        wgpu::TextureFormat::R16Float => {
+            bytemuck::cast_slice::<u8, u16>(&read_texture(rt, texture, 2))
+                .iter()
+                .map(|&h| half_to_f32(h))
+                .collect()
+        }
+        wgpu::TextureFormat::R32Float => {
+            bytemuck::cast_slice(&read_texture(rt, texture, 4)).to_vec()
+        }
+        other => panic!("not a scalar format: {other:?}"),
+    }
+}
+
+/// The best scalar storage format of the device: `R16Float` when supported.
+pub fn scalar_format(rt: &RtDevice) -> engine_render_rt::RtScalarFormat {
+    if rt.supports_storage_format(wgpu::TextureFormat::R16Float) {
+        engine_render_rt::RtScalarFormat::R16Float
+    } else {
+        engine_render_rt::RtScalarFormat::R32Float
+    }
+}
+
+pub fn rmse(a: &[f32], b: &[f32]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let sum: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| (f64::from(*x) - f64::from(*y)).powi(2))
+        .sum();
+    (sum / a.len() as f64).sqrt()
+}
+
+pub fn mean(values: &[f32]) -> f64 {
+    values.iter().map(|&v| f64::from(v)).sum::<f64>() / values.len() as f64
+}
+
+/// Deterministic xorshift generator for CPU-side noise.
+pub struct Rng(pub u64);
+
+impl Rng {
+    pub fn next_f32(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 40) as f32 / (1u64 << 24) as f32
+    }
+}
+
+/// Ray / axis-aligned box intersection (slab test): the entry distance in
+/// `[t_min, t_max]`, or `None`.
+pub fn ray_box(
+    origin: [f32; 3],
+    dir: [f32; 3],
+    min: [f32; 3],
+    max: [f32; 3],
+    t_max: f32,
+) -> Option<f32> {
+    let (mut near, mut far) = (0.0f32, t_max);
+    for a in 0..3 {
+        if dir[a].abs() < 1e-12 {
+            if origin[a] < min[a] || origin[a] > max[a] {
+                return None;
+            }
+            continue;
+        }
+        let t0 = (min[a] - origin[a]) / dir[a];
+        let t1 = (max[a] - origin[a]) / dir[a];
+        near = near.max(t0.min(t1));
+        far = far.min(t0.max(t1));
+        if near > far {
+            return None;
+        }
+    }
+    Some(near)
+}
