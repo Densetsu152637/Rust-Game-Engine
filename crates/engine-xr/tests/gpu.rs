@@ -66,9 +66,7 @@ fn read(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> 
         .expect("readback");
     rx.recv().unwrap().expect("map");
     let data = buffer.slice(..).get_mapped_range().expect("mapped range");
-    data.chunks_exact(4)
-        .map(|p| [p[0], p[1], p[2], p[3]])
-        .collect()
+    data.as_chunks::<4>().0.to_vec()
 }
 
 fn unorm(linear: [f32; 3]) -> [u8; 4] {
