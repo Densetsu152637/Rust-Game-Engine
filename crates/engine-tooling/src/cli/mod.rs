@@ -28,6 +28,7 @@ platform [--target windows|linux|macos|android|ios|web|unknown]\n  \
 project init <template-manifest> <new-directory>\n  \
 project validate <manifest> [--no-rust]\n  \
 project assets <manifest>\n  \
+project import-model <manifest> <project-relative-source> --prefix <unique-name>\n  \
 project shaders <manifest>\n  \
 project package <manifest> <new-directory> [--profile release|dev]\n  \
 scene inspect <scene> --project-root <project-directory>\n  \

@@ -3,7 +3,7 @@
 `engine-assets` imports glTF 2.0 JSON and GLB into `ImportedScene`, without a GPU,
 ECS world, or dependency on authoring tooling. Existing project manifests remain
 the authority for stable asset IDs. The crate does not add a second registry or
-write another manifest. Project integration maps those stable IDs to process-local
+write another manifest. Runtime consumers may map those stable IDs to process-local
 `AssetHandle<ImportedScene>` values. Existing CGMESH and PNG/PPM loaders remain in
 `engine-project`; this crate is an additional import path rather than a replacement
 for those formats.
@@ -112,3 +112,73 @@ source-relative external dependencies, checkout-stable fingerprints, dependency
 changes, malformed accessors, invalid skin/index/key data, unsupported required
 extensions, traversal/remote references, byte/entity/vertex/index/key/image limits,
 and transactional reload/stale handles. No hardware or editor is required.
+
+## Project, CLI and MCP import
+
+The shared authoring entry point is
+`engine_project::model_import::import_model(&project, source, prefix)`. Both the
+CLI and MCP call this API:
+
+```text
+engine project import-model path/to/project.json source/model.glb --prefix ship
+```
+
+`source/model.glb` is relative to the directory containing `project.json`, even
+when the CLI is run elsewhere. MCP exposes `asset_import_model` with `source`
+and `prefix` arguments only when the server starts with `--allow-write`.
+Neither path compiles or executes the project's Rust code. Source files and all
+external references must be inside the project, outside `.git`, `.derived` and
+`target`. Prefixes accept 1-64 ASCII letters, digits, hyphens and underscores.
+
+The importer creates `assets/imported-ship/` and appends stable manifest IDs:
+`ship:model`, `ship:prefab`, `ship:mesh:<mesh>:<primitive>`,
+`ship:texture:<image>`, and supported `ship:animation:<clip>` entries. Existing
+IDs and output directories are rejected; imports never overwrite generated files.
+The result lists asset IDs/paths, the source fingerprint, new manifest revision,
+and explicit conversion warnings. The startup scene is unchanged. Instantiate
+the prefab through the normal `InstantiatePrefab` scene edit operation, using
+an instance prefix.
+
+Generated JSON meshes preserve positions, UVs, vertex colors and indices in the
+existing runtime mesh contract. Both JSON meshes and legacy CGMESH files use
+`content::load_mesh`, with bounds, finite-value and triangle-index validation.
+PNG files retain decoded texture pixels. Prefabs retain local TRS and parent
+relationships, with identity child entities for individual primitives and
+`MeshMaterial` base-color texture/tint/transparency. Matrix-form transforms that
+cannot be represented faithfully as authored TRS fail the import. Every source
+node is included; multiple original scene selections remain in model metadata.
+
+The versioned `model` asset is self-contained JSON:
+`ModelDocument { version: 1, scene: ImportedScene, node_entities: Vec<String> }`.
+`model_import::load_model` reads and validates bounded model data, including
+references, numeric data, hierarchy and aggregate capacities. `node_entities[i]`
+is the prefab entity corresponding to source node `i`, before the instance prefix.
+This preserves richer vertex channels, full PBR properties, skin data, clips and
+original scene selections. Rendering currently uses base color and geometric
+lighting; it does not claim full glTF PBR or automatic skin deformation.
+
+Step/linear TRS clips become `animation` assets with per-channel key times. The
+first supported clip is attached to the prefab root as `engine.AnimationPlayer`,
+with bindings ordered by source node index. Prefab instantiation remaps those
+bindings. Cubic clips, clips with over 4096 nodes, or binding components too large
+for the 64 KiB authoring limit remain in model metadata and produce a warning.
+Generated meshes stay static; explicit skinning adapters can use the retained
+joint palette, inverse binds and original vertex weights.
+
+All content is staged in a temporary directory inside the project. Importers
+coordinate through `.model-import.lock`, and an optimistic byte comparison rejects
+manifest changes during preparation. New output files are created exclusively,
+then validated as a candidate project. Only then is the manifest atomically
+replaced; failures remove the files created by that import and leave the manifest
+unchanged. Cleanup failures are reported. These guards coordinate importer calls
+and detect ordinary concurrent edits; they are not an atomic compare-and-swap
+protocol for unrelated filesystem writers or hostile path replacement.
+Generated limits add 4096 assets per import, 512 MiB total output, 256 MiB model
+JSON, 64 MiB per mesh JSON and 16 MiB per prefab/animation JSON. JSON serialization
+stops at its per-file limit. `.model-import.lock` is an empty coordination file,
+not another asset catalog.
+
+Project tests exercise import/reload, prefab instantiation, material/PNG/mesh
+association, animation binding remapping, conflicts, traversal and rollback.
+MCP tests exercise write gating and actual import; a CLI test launches the
+`engine` executable, imports a real source fixture, and reloads generated assets.

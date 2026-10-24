@@ -31,7 +31,12 @@ fn measures_real_cpu_work_and_counts_both_worlds() {
             .iter()
             .map(|stage| stage.stage)
             .collect::<Vec<_>>(),
-        [Stage::Update, Stage::Extract, Stage::Render]
+        [
+            Stage::Update,
+            Stage::PostUpdate,
+            Stage::Extract,
+            Stage::Render
+        ]
     );
     assert!(frame.stages[0].duration_ns >= 2_000_000);
     assert!(frame.duration_ns >= frame.stages.iter().map(|stage| stage.duration_ns).sum());
@@ -121,8 +126,8 @@ fn records_failed_stage_and_partial_frame_without_masking_failure() {
     let snapshot = app.profile();
     assert_eq!(snapshot.failed_frames, 1);
     assert!(!snapshot.frames[0].succeeded);
-    assert_eq!(snapshot.frames[0].stages.len(), 2);
-    assert!(!snapshot.frames[0].stages[1].succeeded);
+    assert_eq!(snapshot.frames[0].stages.len(), 3);
+    assert!(!snapshot.frames[0].stages[2].succeeded);
     assert_eq!(
         snapshot
             .stages
