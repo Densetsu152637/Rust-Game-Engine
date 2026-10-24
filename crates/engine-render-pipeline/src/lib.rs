@@ -34,7 +34,9 @@ mod streams;
 mod targets;
 mod view;
 
-pub use builtin::mesh::{GpuInstance, MAX_SCENE_MESHES, MaterialParams, SceneMesh, id_hash, validate_params};
+pub use builtin::mesh::{
+    GpuInstance, MAX_SCENE_MESHES, MaterialParams, SceneMesh, id_hash, validate_params,
+};
 pub use builtin::passes::DepthExport;
 pub use context::{FeatureContext, FeatureSetup, OutputTarget, PipelineLayouts};
 pub use engine_render_wgpu::{
@@ -56,7 +58,9 @@ pub use resources::{ENGINE_VERTEX_LAYOUT, EngineVertex, GpuMesh, GpuTexture, TEX
 pub use shader::{LIT_WGSL, MaterialTarget, ShaderComposer, compose_material, validate_wgsl};
 pub use streams::{MAX_STREAMS, StreamMode, TextureStreams};
 pub use targets::{DEPTH_FORMAT, FrameTargets, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT, Target};
-pub use view::{VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, ViewKind, ViewUniform, Viewport, project};
+pub use view::{
+    VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, ViewKind, ViewUniform, Viewport, project,
+};
 
 use anyhow::{Result, bail};
 

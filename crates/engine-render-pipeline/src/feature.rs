@@ -242,7 +242,11 @@ impl FeatureRegistry {
         self.insert(descriptor, FeatureBody::Owned(feature))
     }
 
-    pub(crate) fn insert(&mut self, descriptor: FeatureDescriptor, body: FeatureBody) -> Result<()> {
+    pub(crate) fn insert(
+        &mut self,
+        descriptor: FeatureDescriptor,
+        body: FeatureBody,
+    ) -> Result<()> {
         validate_feature_name(&descriptor.name)?;
         ensure!(
             self.features.len() < MAX_FEATURES,
@@ -604,7 +608,7 @@ mod tests {
         FeatureDescriptor::new(name, stage)
     }
 
-    fn registry(features: impl IntoIterator<Item = FeatureDescriptor>) -> FeatureRegistry {
+    fn build(features: impl IntoIterator<Item = FeatureDescriptor>) -> FeatureRegistry {
         let mut registry = FeatureRegistry::default();
         for descriptor in features {
             registry.register(Stub(descriptor)).unwrap();
@@ -614,7 +618,7 @@ mod tests {
 
     #[test]
     fn stages_order_first_then_registration_order() {
-        let registry = registry([
+        let registry = build([
             feature("a.overlay", Stage::Overlay),
             feature("a.post", Stage::PostProcess),
             feature("a.opaque", Stage::Opaque),
@@ -629,7 +633,7 @@ mod tests {
 
     #[test]
     fn before_and_after_constraints_are_respected_deterministically() {
-        let registry = registry([
+        let registry = build([
             feature("post.bloom", Stage::PostProcess).after("post.exposure"),
             feature("post.exposure", Stage::PostProcess),
             feature("post.grain", Stage::PostProcess).before("post.bloom"),
@@ -643,7 +647,7 @@ mod tests {
         );
         // Same set registered in another order: constraints still hold and
         // ties follow registration order.
-        let other = registry([
+        let other = build([
             feature("post.vignette", Stage::PostProcess).after("post.bloom"),
             feature("post.exposure", Stage::PostProcess),
             feature("post.bloom", Stage::PostProcess).after("post.exposure"),
@@ -656,7 +660,7 @@ mod tests {
 
     #[test]
     fn cycles_cross_stage_constraints_and_bad_names_are_rejected_without_changes() {
-        let mut registry = registry([feature("a.x", Stage::Opaque).after("a.y")]);
+        let mut registry = build([feature("a.x", Stage::Opaque).after("a.y")]);
         let error = registry
             .register(Stub(feature("a.y", Stage::Opaque).after("a.x")))
             .unwrap_err();
@@ -667,7 +671,11 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("within one stage"), "{error}");
         for bad in ["", "Upper", "white space", &"x".repeat(65)] {
-            assert!(registry.register(Stub(feature(bad, Stage::Opaque))).is_err());
+            assert!(
+                registry
+                    .register(Stub(feature(bad, Stage::Opaque)))
+                    .is_err()
+            );
         }
         assert!(
             registry
@@ -729,7 +737,7 @@ mod tests {
 
     #[test]
     fn needs_are_the_union_of_running_features() {
-        let registry = registry([
+        let registry = build([
             feature("a.ssao", Stage::PostProcess).needs(FeatureNeeds {
                 normals: true,
                 motion: false,
@@ -753,11 +761,11 @@ mod tests {
 
     #[test]
     fn absorb_merges_registries_or_fails_without_changes() {
-        let mut base = registry([feature("a.one", Stage::Opaque)]);
-        let extra = registry([feature("b.two", Stage::Opaque).before("a.one")]);
+        let mut base = build([feature("a.one", Stage::Opaque)]);
+        let extra = build([feature("b.two", Stage::Opaque).before("a.one")]);
         base.absorb(extra).unwrap();
         assert_eq!(base.names(), ["b.two", "a.one"]);
-        let duplicate = registry([feature("a.one", Stage::Sky)]);
+        let duplicate = build([feature("a.one", Stage::Sky)]);
         assert!(base.absorb(duplicate).is_err());
         assert_eq!(base.len(), 2);
     }

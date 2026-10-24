@@ -5,7 +5,7 @@ use crate::feature::Stage;
 use crate::instancing::DrawStats;
 use crate::shader::ShaderComposer;
 use crate::targets::{FrameTargets, Target};
-use crate::view::{Viewport, ViewData};
+use crate::view::{ViewData, Viewport};
 use anyhow::{Result, bail, ensure};
 use bevy_ecs::world::World;
 use engine_render_wgpu::GpuContext;

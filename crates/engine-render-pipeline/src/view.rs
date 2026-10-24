@@ -115,7 +115,10 @@ impl ViewData {
 
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.render_size.iter().chain(&self.output_size).all(|&n| n > 0),
+            self.render_size
+                .iter()
+                .chain(&self.output_size)
+                .all(|&n| n > 0),
             "view sizes must be nonzero"
         );
         ensure!(
@@ -312,7 +315,10 @@ mod tests {
         assert!(close(uniform.view_from_clip, perspective().inverse()));
         assert!(close(uniform.world_from_clip, clip_from_world.inverse()));
         assert_eq!(uniform.camera_position, [1.0, 2.0, 3.0, 1.0]);
-        assert_eq!(uniform.render_size, [320.0, 180.0, 1.0 / 320.0, 1.0 / 180.0]);
+        assert_eq!(
+            uniform.render_size,
+            [320.0, 180.0, 1.0 / 320.0, 1.0 / 180.0]
+        );
         assert_eq!(uniform.output_size[..2], [640.0, 360.0]);
         assert_eq!(uniform.counts, [7, 2, 0, 0]);
 
@@ -323,11 +329,15 @@ mod tests {
         // Jitter moves a projected point by exactly the requested pixels.
         let point = Vec3::new(0.0, 0.0, -10.0);
         let pixel = |m: [[f32; 4]; 4]| {
-            let p = Mat4::from_cols_array_2d(&m) * world_from_view.transform_point3(point).extend(1.0);
+            let p =
+                Mat4::from_cols_array_2d(&m) * world_from_view.transform_point3(point).extend(1.0);
             let ndc = p.truncate() / p.w;
             [(ndc.x + 1.0) * 160.0, (1.0 - ndc.y) * 90.0]
         };
-        let (a, b) = (pixel(jittered.clip_from_world), pixel(jittered.unjittered_clip_from_world));
+        let (a, b) = (
+            pixel(jittered.clip_from_world),
+            pixel(jittered.unjittered_clip_from_world),
+        );
         assert!((a[0] - b[0] - 0.25).abs() < 1e-3 && (a[1] - b[1] + 0.5).abs() < 1e-3);
         assert_eq!(std::mem::size_of::<ViewUniform>(), 688);
     }
@@ -353,7 +363,8 @@ mod tests {
         assert!(!ok(Mat4::IDENTITY, perspective(), [0, 1], [1, 1]));
         assert!(!ok(Mat4::ZERO, perspective(), [1, 1], [1, 1]));
         assert!(!ok(Mat4::IDENTITY, Mat4::ZERO, [1, 1], [1, 1]));
-        let mut view = ViewData::new(ViewId::MAIN, Mat4::IDENTITY, perspective(), [4, 4], [4, 4]).unwrap();
+        let mut view =
+            ViewData::new(ViewId::MAIN, Mat4::IDENTITY, perspective(), [4, 4], [4, 4]).unwrap();
         view.jitter = [2.0, 0.0];
         assert!(view.validate().is_err());
     }

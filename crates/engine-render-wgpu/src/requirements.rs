@@ -357,7 +357,9 @@ mod tests {
                 .request(DeviceFeatureRequest::new("x".repeat(65)))
                 .is_err()
         );
-        requirements.request(DeviceFeatureRequest::new("a")).unwrap();
+        requirements
+            .request(DeviceFeatureRequest::new("a"))
+            .unwrap();
         let error = requirements
             .request(DeviceFeatureRequest::new("a"))
             .unwrap_err();

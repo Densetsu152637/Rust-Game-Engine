@@ -25,7 +25,8 @@ pub fn read_rgba16f(gpu: &GpuContext, texture: &wgpu::Texture) -> Result<HdrImag
     );
     let (width, height) = (texture.width(), texture.height());
     let row = width * 8;
-    let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded =
+        row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("engine HDR readback"),
         size: u64::from(padded) * u64::from(height),
@@ -56,7 +57,9 @@ pub fn read_rgba16f(gpu: &GpuContext, texture: &wgpu::Texture) -> Result<HdrImag
         .recv()
         .context("HDR readback was not mapped")?
         .context("mapping the HDR readback")?;
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .map_err(|error| anyhow::anyhow!("reading the HDR readback: {error:?}"))?;
     let mut pixels = Vec::with_capacity((width * height) as usize);
     for y in 0..height as usize {
         let start = y * padded as usize;

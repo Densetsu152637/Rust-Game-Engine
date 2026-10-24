@@ -2,7 +2,9 @@
 
 use crate::builtin::mesh::{MeshRenderer, MeshViewState, SceneMesh};
 use crate::builtin::passes::{OutputPass, UpscalePass};
-use crate::context::{FeatureContext, FeatureSetup, FrameIo, HdrSource, OutputTarget, PipelineLayouts};
+use crate::context::{
+    FeatureContext, FeatureSetup, FrameIo, HdrSource, OutputTarget, PipelineLayouts,
+};
 use crate::feature::{
     Activity, FeatureBody, FeatureDescriptor, FeatureRegistry, PipelineFeature, ResolvedFeatures,
     Stage,
@@ -165,7 +167,13 @@ impl GrowBuffer {
     }
 
     /// Write `bytes`, growing first; `true` when the buffer was replaced.
-    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, label: &str, bytes: &[u8]) -> bool {
+    fn write(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        bytes: &[u8],
+    ) -> bool {
         let grown = self.capacity < bytes.len() as u64;
         if grown {
             *self = Self::new(
@@ -516,7 +524,10 @@ impl ScenePipeline {
             }
         }
         let (resolution, layers) = lights.atlas();
-        let mut rebind = state.lights.write(&device, &queue, "engine lights", &lights.light_bytes());
+        let mut rebind =
+            state
+                .lights
+                .write(&device, &queue, "engine lights", &lights.light_bytes());
         rebind |= state
             .shadows
             .write(&device, &queue, "engine shadows", &lights.shadow_bytes());
@@ -536,7 +547,11 @@ impl ScenePipeline {
         }
         let current = view.clip_from_world();
         let previous = state.history.previous(current, view.reset_history);
-        let uniform = view.uniform(previous, state.history.frame_index(), lights.lights.len() as u32);
+        let uniform = view.uniform(
+            previous,
+            state.history.frame_index(),
+            lights.lights.len() as u32,
+        );
         queue.write_buffer(&state.uniform, 0, bytemuck::bytes_of(&uniform));
 
         let mut stats = DrawStats::default();
@@ -549,7 +564,10 @@ impl ScenePipeline {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("engine scene stages"),
         });
-        clear_scene(&mut encoder, io.targets.as_ref().expect("targets set above"));
+        clear_scene(
+            &mut encoder,
+            io.targets.as_ref().expect("targets set above"),
+        );
         let result = (|| -> Result<Option<HostUpscale>> {
             for stage in [
                 Stage::Prepare,
@@ -621,7 +639,11 @@ impl ScenePipeline {
         if let Some(HostUpscale::Upscaled(upscaled)) = decision {
             io.current_hdr = Some(upscaled);
             io.source = HdrSource::Host;
-            for state in resolved.states.iter_mut().filter(|s| s.stage == Stage::Upscale && s.enabled) {
+            for state in resolved
+                .states
+                .iter_mut()
+                .filter(|s| s.stage == Stage::Upscale && s.enabled)
+            {
                 state.activity = Activity::ReplacedByHost;
             }
         }
@@ -629,7 +651,12 @@ impl ScenePipeline {
             let stages: &[Stage] = if io.source == HdrSource::Host {
                 &[Stage::PostProcess, Stage::Tonemap, Stage::Overlay]
             } else {
-                &[Stage::Upscale, Stage::PostProcess, Stage::Tonemap, Stage::Overlay]
+                &[
+                    Stage::Upscale,
+                    Stage::PostProcess,
+                    Stage::Tonemap,
+                    Stage::Overlay,
+                ]
             };
             for &stage in stages {
                 if stage == Stage::Overlay {
@@ -778,7 +805,10 @@ impl ScenePipeline {
     /// Read back the final HDR colour (after post-processing, output size)
     /// of `view`'s last frame as linear RGBA `f32`, top row first.
     pub fn read_hdr(&self, view: ViewId) -> Result<HdrImage> {
-        let state = self.views.get(&view).context("no frame was rendered for this view")?;
+        let state = self
+            .views
+            .get(&view)
+            .context("no frame was rendered for this view")?;
         let texture = state
             .final_hdr
             .as_ref()
@@ -788,7 +818,9 @@ impl ScenePipeline {
 
     /// Read back render-size scene HDR colour (before upscale/post).
     pub fn read_scene_hdr(&self, view: ViewId) -> Result<HdrImage> {
-        let targets = self.targets(view).context("no frame was rendered for this view")?;
+        let targets = self
+            .targets(view)
+            .context("no frame was rendered for this view")?;
         crate::readback::read_rgba16f(&self.gpu, &targets.hdr.texture)
     }
 }
@@ -807,7 +839,10 @@ impl HdrImage {
 }
 
 fn clear_scene(encoder: &mut wgpu::CommandEncoder, targets: &FrameTargets) {
-    let clear = |view: &wgpu::TextureView, color: wgpu::Color| {
+    fn clear(
+        view: &wgpu::TextureView,
+        color: wgpu::Color,
+    ) -> Option<wgpu::RenderPassColorAttachment<'_>> {
         Some(wgpu::RenderPassColorAttachment {
             view,
             depth_slice: None,
@@ -817,7 +852,7 @@ fn clear_scene(encoder: &mut wgpu::CommandEncoder, targets: &FrameTargets) {
                 store: wgpu::StoreOp::Store,
             },
         })
-    };
+    }
     let mut colors = vec![clear(&targets.hdr.view, wgpu::Color::BLACK)];
     if let Some(normals) = &targets.normals {
         colors.push(clear(&normals.view, wgpu::Color::TRANSPARENT));
@@ -886,7 +921,10 @@ fn run_stage(
         match &mut registered.body {
             FeatureBody::Builtin | FeatureBody::Host => {}
             FeatureBody::Owned(feature) => {
-                ensure!(registered.prepared, "render feature {name} was not prepared");
+                ensure!(
+                    registered.prepared,
+                    "render feature {name} was not prepared"
+                );
                 let mut context = FeatureContext {
                     gpu: run.gpu,
                     encoder,
@@ -1010,7 +1048,9 @@ fn run_builtin(
                 }),
                 ..Default::default()
             });
-            *stats += run.mesh.draw_prepass(&mut pass, view_group, &state.mesh, normals);
+            *stats += run
+                .mesh
+                .draw_prepass(&mut pass, view_group, &state.mesh, normals);
             Ok(true)
         }
         names::OPAQUE => {
@@ -1020,7 +1060,9 @@ fn run_builtin(
         }
         names::TRANSPARENT => {
             let mut pass = scene_pass(encoder, targets, "engine transparent");
-            *stats += run.mesh.draw_transparent(&mut pass, view_group, &state.mesh);
+            *stats += run
+                .mesh
+                .draw_transparent(&mut pass, view_group, &state.mesh);
             Ok(true)
         }
         names::UPSCALE => {

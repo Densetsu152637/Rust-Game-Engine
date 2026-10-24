@@ -53,7 +53,11 @@ pub struct GpuContext {
     pub queue: wgpu::Queue,
     errors: Arc<Mutex<Vec<GpuFailure>>>,
     features: Arc<DeviceFeatureReport>,
+    lost_listeners: Arc<Mutex<Vec<LostListener>>>,
 }
+
+/// Called with the loss message when the device is lost.
+type LostListener = Box<dyn Fn(&str) + Send + Sync>;
 
 impl GpuContext {
     /// Instance over the primary graphics APIs (Vulkan, DX12, Metal).
@@ -129,7 +133,10 @@ impl GpuContext {
     /// Merge `options.requirements` against `adapter`. Use
     /// [`ComposedDevice::descriptor`] when creating the device yourself (for
     /// example with vendor extensions), then [`Self::adopt`] it.
-    pub fn compose_device(options: &WgpuOptions, adapter: &wgpu::Adapter) -> Result<ComposedDevice> {
+    pub fn compose_device(
+        options: &WgpuOptions,
+        adapter: &wgpu::Adapter,
+    ) -> Result<ComposedDevice> {
         options
             .requirements
             .compose(adapter.features(), &adapter.limits())
@@ -198,15 +205,25 @@ impl GpuContext {
             }
         }));
         let sink = errors.clone();
+        let lost_listeners: Arc<Mutex<Vec<LostListener>>> = Arc::default();
+        let listeners = lost_listeners.clone();
         device.set_device_lost_callback(move |reason, message| {
-            if reason != wgpu::DeviceLostReason::Destroyed
-                && let Ok(mut errors) = sink.lock()
+            if reason == wgpu::DeviceLostReason::Destroyed {
+                return;
+            }
+            let message = format!("GPU device lost ({reason:?}): {message}");
+            if let Ok(mut errors) = sink.lock()
                 && errors.len() < MAX_RECORDED_FAILURES
             {
                 errors.push(GpuFailure {
                     lost: true,
-                    message: format!("GPU device lost ({reason:?}): {message}"),
+                    message: message.clone(),
                 });
+            }
+            if let Ok(listeners) = listeners.lock() {
+                for listener in listeners.iter() {
+                    listener(&message);
+                }
             }
         });
         let features = Arc::new(DeviceFeatureReport {
@@ -223,6 +240,17 @@ impl GpuContext {
             queue,
             errors,
             features,
+            lost_listeners,
+        }
+    }
+
+    /// Also notify `listener` when the device is lost (the engine records the
+    /// loss for [`Self::check_errors`] either way). Lets subsystems that own
+    /// device-derived state (for example `engine-render-rt`'s `RtDevice`)
+    /// demote themselves. Destroying the device on purpose is not a loss.
+    pub fn on_device_lost(&self, listener: impl Fn(&str) + Send + Sync + 'static) {
+        if let Ok(mut listeners) = self.lost_listeners.lock() {
+            listeners.push(Box::new(listener));
         }
     }
 

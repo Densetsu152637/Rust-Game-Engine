@@ -252,7 +252,8 @@ mod tests {
         assert_eq!(empty.shadow_bytes().len(), 80);
         assert_eq!(empty.atlas(), (64, 1));
         let mut list = LightList::default();
-        list.lights.push(GpuLight::directional(Vec3::Z, Vec3::ONE, 3.0));
+        list.lights
+            .push(GpuLight::directional(Vec3::Z, Vec3::ONE, 3.0));
         list.lights.push(GpuLight {
             kind: LightKind::Point as u32,
             ..GpuLight::directional(Vec3::Z, Vec3::ONE, 1.0)

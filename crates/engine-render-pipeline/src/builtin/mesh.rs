@@ -4,9 +4,12 @@
 use crate::context::PipelineLayouts;
 use crate::instancing::{DrawStats, Grouping, group_keys};
 use crate::resources::{ENGINE_VERTEX_LAYOUT, GpuMesh, GpuTexture};
-use crate::shader::{LIT_WGSL, MOTION_WGSL, MaterialTarget, NORMALS_WGSL, SHADOW_WGSL, ShaderComposer, compose_material};
-use crate::targets::{DEPTH_FORMAT, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT};
 use crate::scoped;
+use crate::shader::{
+    LIT_WGSL, MOTION_WGSL, MaterialTarget, NORMALS_WGSL, SHADOW_WGSL, ShaderComposer,
+    compose_material,
+};
+use crate::targets::{DEPTH_FORMAT, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT};
 use anyhow::{Context, Result, ensure};
 use engine_render_wgpu::GpuContext;
 use glam::Mat4;
@@ -107,15 +110,8 @@ pub(crate) struct MeshViewState {
     pub draws: usize,
 }
 
-impl MeshViewState {
-    pub fn has_shadow_casters(&self) -> bool {
-        self.opaque.iter().any(|b| b.casts)
-    }
-}
-
 /// Shared programs and pipelines of the mesh path.
 pub(crate) struct MeshRenderer {
-    composer: ShaderComposer,
     pipeline_layout: wgpu::PipelineLayout,
     programs: HashMap<String, Program>,
     next_program: u64,
@@ -241,16 +237,17 @@ impl MeshRenderer {
                 }),
             }],
         });
-        let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("engine shadow layout"),
-            bind_group_layouts: &[
-                Some(&layouts.view),
-                Some(&shadow_layout),
-                None,
-                Some(&layouts.instances),
-            ],
-            immediate_size: 0,
-        });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("engine shadow layout"),
+                bind_group_layouts: &[
+                    Some(&layouts.view),
+                    Some(&shadow_layout),
+                    None,
+                    Some(&layouts.instances),
+                ],
+                immediate_size: 0,
+            });
         let prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("engine prepass layout"),
             bind_group_layouts: &[Some(&layouts.view), None, None, Some(&layouts.instances)],
@@ -259,10 +256,16 @@ impl MeshRenderer {
         let (shadow, motion, normals) = scoped(device, || {
             let shadow_module = module(device, "engine shadow", &composer.compose(SHADOW_WGSL)?);
             let motion_module = module(device, "engine motion", &composer.compose(MOTION_WGSL)?);
-            let normals_module =
-                module(device, "engine normals", &composer.compose(NORMALS_WGSL)?);
+            let normals_module = module(device, "engine normals", &composer.compose(NORMALS_WGSL)?);
             Ok((
-                mesh_pipeline(device, "engine shadow", &shadow_pipeline_layout, &shadow_module, None, true),
+                mesh_pipeline(
+                    device,
+                    "engine shadow",
+                    &shadow_pipeline_layout,
+                    &shadow_module,
+                    None,
+                    true,
+                ),
                 mesh_pipeline(
                     device,
                     "engine motion",
@@ -289,7 +292,6 @@ impl MeshRenderer {
         });
         let white = GpuTexture::rgba8(device, &gpu.queue, "engine white", [1, 1], &[255; 4])?;
         Ok(Self {
-            composer,
             pipeline_layout,
             programs: HashMap::new(),
             next_program: 1,
@@ -319,7 +321,14 @@ impl MeshRenderer {
         let (opaque, transparent) = scoped(device, || {
             let module = module(device, "engine material", &composed);
             Ok((
-                mesh_pipeline(device, "engine opaque material", layout, &module, Some((HDR_FORMAT, None)), true),
+                mesh_pipeline(
+                    device,
+                    "engine opaque material",
+                    layout,
+                    &module,
+                    Some((HDR_FORMAT, None)),
+                    true,
+                ),
                 mesh_pipeline(
                     device,
                     "engine transparent material",
@@ -346,10 +355,13 @@ impl MeshRenderer {
     }
 
     fn pipeline(&self, program: u64, transparent: bool) -> Option<&wgpu::RenderPipeline> {
-        self.programs
-            .values()
-            .find(|p| p.id == program)
-            .map(|p| if transparent { &p.transparent } else { &p.opaque })
+        self.programs.values().find(|p| p.id == program).map(|p| {
+            if transparent {
+                &p.transparent
+            } else {
+                &p.opaque
+            }
+        })
     }
 
     /// Validate every mesh, compile programs, sort, instance and upload one
@@ -439,17 +451,26 @@ impl MeshRenderer {
                 .or_insert_with(|| {
                     let start = material_bytes.len();
                     material_bytes.resize(start + MATERIAL_STRIDE as usize, 0);
-                    material_bytes[start..start + 32].copy_from_slice(bytemuck::cast_slice(&material));
+                    material_bytes[start..start + 32]
+                        .copy_from_slice(bytemuck::cast_slice(&material));
                     material_bytes[start + 256..start + 272]
                         .copy_from_slice(bytemuck::cast_slice(&maps));
                     next
                 });
-            keys.push((mesh.mesh.id(), u64::from(index), mesh.params.transparent, textures));
+            keys.push((
+                mesh.mesh.id(),
+                u64::from(index),
+                mesh.params.transparent,
+                textures,
+            ));
         }
 
         // Instances: opaque groups by (mesh, material); transparent keeps
         // its sorted order and merges only neighbours.
-        let split = order.iter().position(|&i| meshes[i].params.transparent).unwrap_or(order.len());
+        let split = order
+            .iter()
+            .position(|&i| meshes[i].params.transparent)
+            .unwrap_or(order.len());
         let mut instances: Vec<GpuInstance> = Vec::with_capacity(meshes.len());
         let mut current_models = HashMap::with_capacity(meshes.len());
         state.opaque.clear();
@@ -458,7 +479,8 @@ impl MeshRenderer {
             (0..split, Grouping::ByKey, false),
             (split..order.len(), Grouping::Consecutive, true),
         ] {
-            let group_input: Vec<(u64, u64)> = range.clone().map(|k| (keys[k].0, keys[k].1)).collect();
+            let group_input: Vec<(u64, u64)> =
+                range.clone().map(|k| (keys[k].0, keys[k].1)).collect();
             for (members, _) in group_keys(&group_input, grouping) {
                 let first = members[0] + range.start;
                 let start = instances.len() as u32;
@@ -504,7 +526,11 @@ impl MeshRenderer {
             instances.push(GpuInstance::zeroed_instance());
         }
         let bytes: &[u8] = bytemuck::cast_slice(&instances);
-        if state.instances.as_ref().is_none_or(|(_, cap, _)| *cap < bytes.len() as u64) {
+        if state
+            .instances
+            .as_ref()
+            .is_none_or(|(_, cap, _)| *cap < bytes.len() as u64)
+        {
             let capacity = (bytes.len() as u64).next_power_of_two();
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("engine instances"),
@@ -528,7 +554,11 @@ impl MeshRenderer {
         if material_bytes.is_empty() {
             material_bytes.resize(MATERIAL_STRIDE as usize, 0);
         }
-        if state.params.as_ref().is_none_or(|(_, cap, _)| *cap < material_bytes.len() as u64) {
+        if state
+            .params
+            .as_ref()
+            .is_none_or(|(_, cap, _)| *cap < material_bytes.len() as u64)
+        {
             let capacity = (material_bytes.len() as u64).next_power_of_two();
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("engine material uniforms"),
@@ -636,11 +666,21 @@ impl MeshRenderer {
         stats
     }
 
-    pub fn draw_opaque(&self, pass: &mut wgpu::RenderPass<'_>, view: &wgpu::BindGroup, state: &MeshViewState) -> DrawStats {
+    pub fn draw_opaque(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        view: &wgpu::BindGroup,
+        state: &MeshViewState,
+    ) -> DrawStats {
         self.draw_batches(pass, view, state, &state.opaque, false)
     }
 
-    pub fn draw_transparent(&self, pass: &mut wgpu::RenderPass<'_>, view: &wgpu::BindGroup, state: &MeshViewState) -> DrawStats {
+    pub fn draw_transparent(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        view: &wgpu::BindGroup,
+        state: &MeshViewState,
+    ) -> DrawStats {
         self.draw_batches(pass, view, state, &state.transparent, true)
     }
 
@@ -731,7 +771,10 @@ fn material_values(mesh: &SceneMesh<'_>) -> ([f32; 8], [f32; 4]) {
 /// Range checks of the built-in material values.
 pub fn validate_params(params: &MaterialParams) -> Result<()> {
     ensure!(
-        params.tint.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        params
+            .tint
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
             && (0.0..=1.0).contains(&params.metallic)
             && (0.0..=1.0).contains(&params.roughness)
             && params.normal_scale.is_finite()
@@ -743,6 +786,7 @@ pub fn validate_params(params: &MaterialParams) -> Result<()> {
 
 /// FNV-1a of a draw id (the `EngineInstance.params.x` picking id).
 pub fn id_hash(id: &str) -> u32 {
-    id.bytes()
-        .fold(0x811c_9dc5u32, |hash, byte| (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193))
+    id.bytes().fold(0x811c_9dc5u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    })
 }

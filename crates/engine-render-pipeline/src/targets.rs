@@ -81,7 +81,13 @@ impl FrameTargets {
         Self {
             render_size,
             output_size,
-            hdr: Target::new(device, "engine HDR scene colour", render_size, HDR_FORMAT, COLOR_USAGE),
+            hdr: Target::new(
+                device,
+                "engine HDR scene colour",
+                render_size,
+                HDR_FORMAT,
+                COLOR_USAGE,
+            ),
             depth: Target::new(
                 device,
                 "engine scene depth",
@@ -146,7 +152,13 @@ impl FrameTargets {
     pub(crate) fn ensure_post(&mut self, device: &wgpu::Device, index: usize) -> &Target {
         let size = self.output_size;
         self.post[index].get_or_insert_with(|| {
-            Target::new(device, "engine HDR post-process", size, HDR_FORMAT, COLOR_USAGE)
+            Target::new(
+                device,
+                "engine HDR post-process",
+                size,
+                HDR_FORMAT,
+                COLOR_USAGE,
+            )
         })
     }
 }

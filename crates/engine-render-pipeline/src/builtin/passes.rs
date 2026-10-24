@@ -129,7 +129,13 @@ impl OutputPass {
             Some(pipeline) => pipeline.clone(),
             None => {
                 let pipeline = scoped(device, || {
-                    Ok(fullscreen_pipeline(device, "engine output", &self.layout, &self.module, format))
+                    Ok(fullscreen_pipeline(
+                        device,
+                        "engine output",
+                        &self.layout,
+                        &self.module,
+                        format,
+                    ))
                 })?;
                 self.pipelines.insert(format, pipeline.clone());
                 pipeline
@@ -207,7 +213,13 @@ impl UpscalePass {
         });
         let pipeline = scoped(device, || {
             let module = module(device, "engine upscale", UPSCALE_WGSL)?;
-            Ok(fullscreen_pipeline(device, "engine upscale", &layout, &module, HDR_FORMAT))
+            Ok(fullscreen_pipeline(
+                device,
+                "engine upscale",
+                &layout,
+                &module,
+                HDR_FORMAT,
+            ))
         })?;
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("engine upscale sampler"),

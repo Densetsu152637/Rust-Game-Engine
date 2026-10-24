@@ -128,10 +128,7 @@ impl ShaderComposer {
             };
             let import = import.with_context(|| format!("{name}:{}", line_index + 1))?;
             if stack.iter().any(|entry| entry == import) {
-                bail!(
-                    "WGSL import cycle: {} -> {import}",
-                    stack.join(" -> ")
-                );
+                bail!("WGSL import cycle: {} -> {import}", stack.join(" -> "));
             }
             if !included.insert(import.to_owned()) {
                 continue;
@@ -163,7 +160,8 @@ fn validate_module_name(name: &str) -> Result<()> {
         segments.len() >= 2
             && segments.iter().all(|s| {
                 !s.is_empty()
-                    && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                    && s.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
             }),
         "WGSL module names are `a::b` lowercase identifier paths: {name:?}"
     );
@@ -179,12 +177,7 @@ pub fn validate_wgsl(source: &str) -> Result<naga::Module> {
         naga::valid::Capabilities::all(),
     )
     .validate(&module)
-    .map_err(|error| {
-        anyhow::anyhow!(
-            "invalid WGSL: {}",
-            error.emit_to_string(source)
-        )
-    })?;
+    .map_err(|error| anyhow::anyhow!("invalid WGSL: {}", error.emit_to_string(source)))?;
     Ok(module)
 }
 
@@ -262,10 +255,15 @@ mod tests {
     fn imports_resolve_recursively_once_each() {
         let mut composer = ShaderComposer::new();
         composer
-            .register_module("game::common", "#import engine::view\nconst GAME_SCALE: f32 = 2.0;")
+            .register_module(
+                "game::common",
+                "#import engine::view\nconst GAME_SCALE: f32 = 2.0;",
+            )
             .unwrap();
         let composed = composer
-            .compose("#import engine::view\n#import game::common;\nfn f() -> f32 { return GAME_SCALE; }")
+            .compose(
+                "#import engine::view\n#import game::common;\nfn f() -> f32 { return GAME_SCALE; }",
+            )
             .unwrap();
         assert_eq!(composed.matches("struct EngineView").count(), 1);
         assert!(composed.contains("const GAME_SCALE"));
@@ -314,7 +312,9 @@ mod tests {
         let extra = format!("{LIT_WGSL}\n@group(3) @binding(1) var<uniform> extra: vec4<f32>;");
         let error = compose_material(&extra, MaterialTarget::Mesh).unwrap_err();
         assert!(
-            error.to_string().contains("unsupported material binding (group 3, binding 1)"),
+            error
+                .to_string()
+                .contains("unsupported material binding (group 3, binding 1)"),
             "{error}"
         );
         let renamed = LIT_WGSL.replace("fn fs_main", "fn fs_other");
@@ -326,7 +326,8 @@ mod tests {
         );
         assert!(compose_material("not wgsl", MaterialTarget::Sprite).is_err());
         // A legacy shader that declares the engine bindings itself.
-        let legacy = "#import engine::material\n@group(2) @binding(0) var<uniform> mine: vec4<f32>;";
+        let legacy =
+            "#import engine::material\n@group(2) @binding(0) var<uniform> mine: vec4<f32>;";
         assert!(compose_material(legacy, MaterialTarget::Sprite).is_err());
     }
 }
