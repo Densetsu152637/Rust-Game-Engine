@@ -355,7 +355,17 @@ fn component_schema_lists_all_components_and_rules() {
         .iter()
         .map(|c| c["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, engine_mcp::COMPONENT_NAMES);
+    let mut expected = engine_mcp::COMPONENT_NAMES.to_vec();
+    expected.extend([
+        "engine.AnimationPlayer",
+        "engine.NavigationAgent",
+        "engine.NetworkReplica",
+        "engine.PhysicsBody2D",
+        "engine.PhysicsBody3D",
+        "engine.SkinBinding",
+        "engine.UiRoot",
+    ]);
+    assert_eq!(names, expected);
     assert!(result["scene_rules"].as_array().unwrap().len() >= 4);
     assert_eq!(
         result["entity"]["required"],

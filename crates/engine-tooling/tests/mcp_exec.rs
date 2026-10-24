@@ -222,8 +222,10 @@ fn allow_write_adds_only_the_write_tools() {
         &[request(1, "tools/list", json!({}))],
     );
     let names = tool_names(&session);
-    assert_eq!(names.len(), 18);
+    assert_eq!(names.len(), 20);
     assert!(names.contains(&"entity_create".to_owned()));
+    assert!(names.contains(&"scene_edit".to_owned()));
+    assert!(names.contains(&"asset_import_model".to_owned()));
     assert!(EXEC_TOOLS.iter().all(|t| !names.contains(&(*t).to_owned())));
 }
 
@@ -263,7 +265,7 @@ fn both_flags_list_everything() {
         &[],
         &[request(1, "tools/list", json!({}))],
     );
-    assert_eq!(tool_names(&session).len(), 21);
+    assert_eq!(tool_names(&session).len(), 23);
 }
 
 #[test]
