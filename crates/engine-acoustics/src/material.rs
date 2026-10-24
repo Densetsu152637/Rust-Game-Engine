@@ -32,14 +32,15 @@ use crate::{AcousticsError, BANDS, BandGains, Result, unimplemented};
 use engine_audio::acoustic::BAND_CENTERS_HZ;
 
 /// Energy coefficients in `[0, 1]` per band; `transmission[b] <= absorption[b]`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AcousticMaterial {
     pub absorption: BandGains,
     pub scattering: f32,
     pub transmission: BandGains,
 }
 /// Preset table entries; each shipped row cites its published source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MaterialPreset {
     Default,
     Concrete,
@@ -214,7 +215,9 @@ impl AcousticMaterial {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct MaterialId(pub u16);
 
 #[cfg(test)]

@@ -9,11 +9,16 @@ use crate::volume::{RoomInfo, RoomSeed};
 use crate::{AcousticMaterial, AcousticsError, BandGains, MaterialId, ProxyMapping, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct MeshId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct InstanceId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Mobility {
     Static,
     Dynamic,
@@ -22,7 +27,7 @@ pub enum Mobility {
 pub type Affine3 = [f32; 12];
 
 /// `materials` has length 1 (uniform) or `triangles.len()`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AcousticMesh {
     pub positions: Vec<[f32; 3]>,
     pub triangles: Vec<[u32; 3]>,
@@ -837,16 +842,13 @@ impl AcousticWorld {
     pub(crate) fn hit_material(&self, hit: &RawHit) -> MaterialId {
         MaterialId(self.triangles[hit.triangle as usize].v0[3].to_bits() as u16)
     }
-    #[allow(dead_code)] // Used by the tracers.
     pub(crate) fn gpu_material(&self, id: MaterialId) -> &gpu_layout::GpuMaterial {
         &self.gpu_materials[usize::from(id.0)]
     }
-    #[allow(dead_code)] // Used by the tracers.
     pub(crate) fn transmission(&self, id: MaterialId) -> BandGains {
         self.materials[usize::from(id.0)].transmission
     }
     /// Plane cluster of a hit, when it is on a static instance.
-    #[allow(dead_code)] // Used by the tracers.
     pub(crate) fn hit_cluster(&self, hit: &RawHit) -> Option<u32> {
         let offset = *self.cluster_offsets.get(hit.instance as usize)?;
         if offset == u32::MAX {

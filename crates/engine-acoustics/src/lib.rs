@@ -1,16 +1,19 @@
 //! Acoustic world, geometric propagation and the propagation backend contract.
 //!
-//! This crate currently holds the frozen public contract from
-//! `docs/spatial-audio-design.md` section 7.2 as a compiling skeleton. Everything
-//! that is not implemented yet returns an `acoustics.unimplemented` error and never
-//! a fabricated result. Types whose values only the implementation can produce
-//! (`AcousticWorld`, `ProxyMapping`, `AcousticsService`) cannot be constructed yet.
+//! Stream B of `docs/spatial-audio-design.md`: the two-level acoustic triangle world
+//! (`AcousticWorldBuilder`, `AcousticWorld`, `gpu_layout`), cited materials, the 2D
+//! proxy synthesizer, volumes, the CPU propagation backend (`CpuBackend`,
+//! [`trace_cpu`], [`direct`], [`image_source`]), Schroeder fitting, analytic
+//! estimates, IR synthesis, the world document and the `AcousticsService` worker.
+//! [`rng`] and [`trace_cpu`] specify the energy model the GPU tiers mirror, and
+//! [`reference`] holds the parity fixtures. See the crate README.
 
 // Per-band loops index several parallel arrays by band.
 #![allow(clippy::needless_range_loop)]
 
 mod bvh;
 pub mod direct;
+mod document;
 mod engine;
 mod error;
 mod estimate;
@@ -31,6 +34,10 @@ mod volume;
 mod world;
 
 pub use bvh::{MAX_BVH_DEPTH, MESH_MAX_LEAF, SAH_BINS};
+pub use document::{
+    AcousticWorldDocument, DOCUMENT_VERSION, DocumentInstance, DocumentProxy, DocumentVolume,
+    MAX_DOCUMENT_BYTES,
+};
 pub use engine::{
     DEMOTE_AFTER_FAILURES, GPU_MAX_RAYS, MAX_SUBMITTED_SOURCES, MAX_TRACED_SOURCES,
     validate_request, validate_settings,
@@ -44,7 +51,7 @@ pub use geometry::{
     VolumeKind, VolumeShape,
 };
 pub use ir::synthesize_ir;
-pub use material::{AcousticMaterial, MaterialId, MaterialPreset};
+pub use material::{AcousticMaterial, MaterialId, MaterialPreset, mass_law_transmission};
 pub use math::IDENTITY as IDENTITY_AFFINE;
 pub use planes::PlaneCluster;
 pub use proxy2d::{ProxyAir, ProxyMapping};
