@@ -36,7 +36,8 @@ impl Transport {
         limits: SecurityLimits,
     ) -> Result<Self> {
         limits.validate()?;
-        // Additional to the framed queue: a 64 KiB limit on each outgoing rustls buffer.
+        // Bound application data queued through rustls's writer; TLS record overhead and
+        // handshake/control records are additional to this 64 KiB limit and the framed queue.
         connection.set_buffer_limit(Some(64 * 1024));
         Ok(Self::Tls(Box::new(TlsTransport {
             socket,

@@ -151,8 +151,9 @@ deployment choices. Fixed one-second windows allow two adjacent bursts at the
 boundary. Exceeding a cap closes the peer, including a valid but overactive
 participant. Budgets count ciphertext socket bytes separately from bounded
 plaintext framing work; each direction stays within `PollBudget.max_bytes`.
-TLS uses a 64 KiB limit on each outgoing plaintext/ciphertext buffer per peer,
-plus rustls's bounded incoming record and handshake buffers. TLS cryptographic
+TLS sets a 64 KiB application-data buffering limit through rustls's writer per
+peer. TLS record overhead and handshake/control records are additional, as are
+rustls's bounded incoming record and handshake buffers. TLS cryptographic
 steps have bounded input/iteration counts, not a hard wall-clock deadline.
 Even with zero I/O budgets, handshake and idle deadlines expire. Valid complete
 messages refresh idle time, never partial byte trickles. Large frames drain over
