@@ -1,0 +1,13 @@
+[package]
+name = "engine-net-voice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Voice-chat transport: pluggable codec trait, bounded packet format, server routing, jitter buffer and loss concealment hooks"
+
+[dependencies]
+engine-network = { path = "../engine-network" }
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

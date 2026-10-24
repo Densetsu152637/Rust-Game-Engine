@@ -1267,6 +1267,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-net-voice"
+version = "0.1.0"
+dependencies = [
+ "engine-network",
+ "serde",
+]
+
+[[package]]
 name = "engine-network"
 version = "0.1.0"
 dependencies = [
