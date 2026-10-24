@@ -15,6 +15,9 @@ pub struct RuntimeSnapshot {
     /// Renderer-reported frame generation state; absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_generation: Option<crate::rendering3d::FrameGenerationStatus>,
+    /// Acoustic propagation state; absent without an `engine.AcousticEnvironment`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acoustics: Option<engine_acoustics::AcousticStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -130,7 +133,9 @@ impl Runtime {
             .world_mut()
             .resource_mut::<crate::ui_tree::GameUi>()
             .clear();
+        self.start_acoustics()?;
         crate::audio::synchronize(self.app.world_mut())?;
+        self.tick_acoustics(0.0)?;
         self.attach_scripts()?;
         Ok(())
     }
@@ -166,6 +171,7 @@ impl Runtime {
                 .map(crate::input::InputDevices::snapshot),
             upscaler: self.upscaler_status(),
             frame_generation: self.frame_generation_status(),
+            acoustics: self.acoustics_status(),
             ticks: self.ticks,
             scene,
             live_entities: self

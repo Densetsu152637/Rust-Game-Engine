@@ -48,6 +48,7 @@ impl ComponentCatalog {
                 crate::ui_tree::descriptor(),
                 crate::networking::descriptor(),
             ])
+            .chain(crate::acoustics::descriptors())
             .chain(descriptors)
         {
             if d.name.len() > 128
@@ -89,6 +90,7 @@ impl ComponentCatalog {
         if name == "engine.UiRoot" {
             serde_json::from_value::<crate::ui_tree::UiRoot>(value.data.clone())?.validate()?;
         }
+        crate::acoustics::validate_component(name, &value.data)?;
         Ok(())
     }
     pub fn validate_entity(&self, scene: &crate::Scene, entity: &crate::SceneEntity) -> Result<()> {

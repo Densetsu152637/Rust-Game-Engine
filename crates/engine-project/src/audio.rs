@@ -1,4 +1,5 @@
 //! ECS adapters for the independent mixer. Entity removal drops scoped source voices.
+use crate::acoustics::{AcousticSource, AcousticUnits, AudioEmitter, AudioListener};
 use crate::{
     Error, Project, Result,
     runtime::{ProjectResource, TriggerEvents},
@@ -6,9 +7,12 @@ use crate::{
 use bevy_ecs::prelude::*;
 use engine_audio::{
     AudioControl, AudioSources, Clip, Listener, ObserverHandle, PlayOptions, SourceAction,
-    SourceHandle,
+    SourceHandle, VoiceHandle, VoiceState,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 fn audio_error(error: engine_audio::AudioError) -> Error {
     Error::new(error.code, error.message)
 }
@@ -22,6 +26,8 @@ struct AttachedListener {
     owner: Entity,
     attachment: Option<Entity>,
     value: Listener,
+    /// Forward and up follow the attachment's world rotation (authored listener).
+    oriented: bool,
 }
 impl RuntimeAudio {
     pub fn new(control: AudioControl, project: &Project) -> Result<Self> {
@@ -43,6 +49,25 @@ impl RuntimeAudio {
 pub struct EntityAudio {
     pub sources: AudioSources,
     attachments: BTreeMap<SourceHandle, (Entity, PlayOptions)>,
+    /// Every source created through this module, attached or not.
+    handles: BTreeSet<SourceHandle>,
+}
+/// Marks an entity whose `engine.AudioEmitter` already created its source.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct AuthoredEmitter {
+    pub source: SourceHandle,
+}
+
+/// While an enabled `engine.AcousticEnvironment` exists, an `engine.AcousticSource`
+/// on the owner dictates the voice's acoustic options; otherwise the native
+/// options are used as given.
+fn merge_acoustics(world: &World, owner: Entity, options: &mut PlayOptions) {
+    if let (Some(units), Some(source)) = (
+        world.get_resource::<AcousticUnits>(),
+        world.get::<AcousticSource>(owner),
+    ) {
+        options.acoustics = source.voice_acoustics(units.0);
+    }
 }
 pub fn source(
     world: &mut World,
@@ -68,6 +93,7 @@ pub fn source(
             .position();
         options.spatial.enabled = true;
     }
+    merge_acoustics(world, owner, &mut options);
     options.validate().map_err(audio_error)?;
     let audio = world
         .get_resource::<RuntimeAudio>()
@@ -83,6 +109,7 @@ pub fn source(
             sources: AudioSources::new(control, format!("entity:{}", owner.to_bits()))
                 .map_err(audio_error)?,
             attachments: BTreeMap::new(),
+            handles: BTreeSet::new(),
         });
     }
     let mut audio = world
@@ -92,6 +119,7 @@ pub fn source(
         .sources
         .create(clip, options.clone())
         .map_err(audio_error)?;
+    audio.handles.insert(handle);
     if let Some(entity) = attachment {
         audio.attachments.insert(handle, (entity, options));
     }
@@ -115,6 +143,7 @@ pub fn configure(
             .position();
         options.spatial.enabled = true;
     }
+    merge_acoustics(world, owner, &mut options);
     options.validate().map_err(audio_error)?;
     let mut audio = world
         .get_mut::<EntityAudio>(owner)
@@ -196,8 +225,153 @@ pub fn listener(
         owner,
         attachment,
         value,
+        oriented: false,
     });
     Ok(())
+}
+/// Listener pose of an entity: world position, forward (-Z) and up (+Y) rotated
+/// by the entity's world transform.
+fn entity_listener(world: &World, entity: Entity) -> Result<Listener> {
+    let matrix = glam::Mat4::from_cols_array_2d(
+        &crate::world_transform(world, entity)
+            .map_err(|_| {
+                Error::new(
+                    "audio.attachment.invalid",
+                    "Listener requires a live transformed entity",
+                )
+            })?
+            .matrix,
+    );
+    let direction = |axis: glam::Vec3| matrix.transform_vector3(axis).normalize_or_zero();
+    Ok(Listener {
+        position: matrix.w_axis.truncate().to_array(),
+        forward: direction(glam::Vec3::NEG_Z).to_array(),
+        up: direction(glam::Vec3::Y).to_array(),
+    })
+}
+/// Make `entity`'s world pose the listener; it follows position and rotation each tick.
+pub fn listener_from_entity(world: &mut World, entity: Entity) -> Result<()> {
+    let value = entity_listener(world, entity)?;
+    value.validate().map_err(audio_error)?;
+    let mut audio = world
+        .get_resource_mut::<RuntimeAudio>()
+        .ok_or_else(|| Error::new("audio.unavailable", "Host did not configure audio"))?;
+    audio.control.set_listener(value).map_err(audio_error)?;
+    audio.listener = Some(AttachedListener {
+        owner: entity,
+        attachment: Some(entity),
+        value,
+        oriented: true,
+    });
+    Ok(())
+}
+/// Create the sources and listener that `engine.AudioEmitter` and
+/// `engine.AudioListener` components author. Idempotent: emitters that already
+/// have a source and an existing listener are left alone. A no-op without audio.
+pub fn instantiate_authored(world: &mut World) -> Result<()> {
+    if !world.contains_resource::<RuntimeAudio>() {
+        return Ok(());
+    }
+    let key = |world: &World, entity: Entity| {
+        world
+            .get::<crate::runtime::AuthoredId>(entity)
+            .map_or_else(|| entity.to_bits().to_string(), |a| a.id.clone())
+    };
+    let mut emitters: Vec<_> = world
+        .iter_entities()
+        .filter(|e| e.contains::<AudioEmitter>() && !e.contains::<AuthoredEmitter>())
+        .map(|e| e.id())
+        .collect();
+    emitters.sort_by_key(|e| key(world, *e));
+    for entity in emitters {
+        let emitter = world
+            .get::<AudioEmitter>(entity)
+            .expect("filtered emitter")
+            .clone();
+        let owner = format!("emitter:{}", key(world, entity));
+        let attachment = emitter.spatial.is_some().then_some(entity);
+        let handle = source(
+            world,
+            entity,
+            &emitter.clip,
+            emitter.play_options(&owner),
+            attachment,
+        )?;
+        for (event, action) in [
+            (&emitter.play_on, SourceAction::Play),
+            (&emitter.stop_on, SourceAction::Stop),
+        ] {
+            if let Some(event) = event {
+                observe(world, entity, event.clone(), handle, action)?;
+            }
+        }
+        if emitter.autoplay {
+            control(world, entity, handle, SourceAction::Play)?;
+        }
+        world
+            .entity_mut(entity)
+            .insert(AuthoredEmitter { source: handle });
+    }
+    if world.resource::<RuntimeAudio>().listener.is_none() {
+        let mut listeners: Vec<_> = world
+            .iter_entities()
+            .filter(|e| e.get::<AudioListener>().is_some_and(|l| l.active))
+            .map(|e| e.id())
+            .collect();
+        listeners.sort_by_key(|e| key(world, *e));
+        if let Some(entity) = listeners.first() {
+            listener_from_entity(world, *entity)?;
+        }
+    }
+    Ok(())
+}
+/// A playing spatial voice with acoustics enabled, for the propagation service.
+pub(crate) struct AcousticVoice {
+    pub owner: Entity,
+    pub voice: VoiceHandle,
+    /// World position in mixer units.
+    pub position: [f32; 3],
+    /// The owner's `engine.AcousticSource`, if any.
+    pub component: Option<AcousticSource>,
+}
+pub(crate) fn acoustic_voices(world: &World) -> Vec<AcousticVoice> {
+    let Some(audio) = world.get_resource::<RuntimeAudio>() else {
+        return vec![];
+    };
+    let mut voices = vec![];
+    for entity in world.iter_entities() {
+        let Some(owned) = entity.get::<EntityAudio>() else {
+            continue;
+        };
+        for handle in &owned.handles {
+            let (Some(options), Some(voice)) =
+                (owned.sources.options(*handle), owned.sources.voice(*handle))
+            else {
+                continue;
+            };
+            if options.acoustics.enabled
+                && options.spatial.enabled
+                && audio.control.voice_state(voice) != VoiceState::Stopped
+            {
+                voices.push(AcousticVoice {
+                    owner: entity.id(),
+                    voice,
+                    position: options.spatial.position,
+                    component: entity.get::<AcousticSource>().cloned(),
+                });
+            }
+        }
+    }
+    voices.sort_by_key(|v| v.voice);
+    voices
+}
+/// The mixer's current listener, for the propagation service.
+pub(crate) fn current_listener(world: &World) -> Option<Listener> {
+    world
+        .get_resource::<RuntimeAudio>()?
+        .control
+        .listener()
+        .ok()
 }
 pub fn synchronize(world: &mut World) -> Result<()> {
     if !world.contains_resource::<RuntimeAudio>() {
@@ -215,6 +389,9 @@ pub fn synchronize(world: &mut World) -> Result<()> {
             let position = crate::world_transform(world, attachment)
                 .ok()
                 .map(|t| t.position());
+            if position.is_some() {
+                merge_acoustics(world, owner, &mut options);
+            }
             let mut audio = world.get_mut::<EntityAudio>(owner).expect("queried owner");
             if let Some(position) = position {
                 options.spatial.position = position;
@@ -226,6 +403,7 @@ pub fn synchronize(world: &mut World) -> Result<()> {
             } else {
                 audio.sources.remove(source);
                 audio.attachments.remove(&source);
+                audio.handles.remove(&source);
             }
         }
     }
@@ -236,7 +414,14 @@ pub fn synchronize(world: &mut World) -> Result<()> {
             } else {
                 let mut value = attached.value;
                 if let Some(entity) = attached.attachment {
-                    if let Ok(t) = crate::world_transform(world, entity) {
+                    if attached.oriented {
+                        if let Ok(pose) = entity_listener(world, entity) {
+                            value = pose;
+                        } else {
+                            audio.control.reset_listener().map_err(audio_error)?;
+                            return Ok(());
+                        }
+                    } else if let Ok(t) = crate::world_transform(world, entity) {
                         value.position = t.position();
                     } else {
                         audio.control.reset_listener().map_err(audio_error)?;

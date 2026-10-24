@@ -1302,6 +1302,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "blake3",
+ "engine-acoustics",
  "engine-animation",
  "engine-assets",
  "engine-audio",
