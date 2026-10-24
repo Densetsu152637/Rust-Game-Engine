@@ -23,6 +23,7 @@ struct Runtime {
 /// The world as last uploaded.
 struct WorldState {
     revision: u64,
+    dynamic_generation: u64,
     scene: FlatScene,
     gpu: GpuScene,
 }
@@ -167,6 +168,7 @@ impl GpuBackend {
         }
         self.world = Some(WorldState {
             revision: world.revision(),
+            dynamic_generation: world.dynamic_generation(),
             scene,
             gpu: uploaded,
         });
@@ -183,6 +185,7 @@ impl GpuBackend {
         let Some(state) = self.world.as_mut() else {
             return Ok(());
         };
+        state.dynamic_generation = world.dynamic_generation();
         if view.instances.len() != state.scene.instances.len()
             || view.top_nodes.len() != state.scene.top_nodes.len()
         {
@@ -235,6 +238,58 @@ impl GpuBackend {
     }
 }
 
+/// Nearest hit of one [`GpuBackend::raycast_batch`] ray.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuHit {
+    pub t: f32,
+    pub instance: u32,
+    /// Index into `GpuWorldView::triangles` (its `v1[3]` bits hold the
+    /// original triangle index).
+    pub triangle: u32,
+}
+
+impl GpuBackend {
+    /// Nearest hits of `(origin, dir, t_max)` rays through this tier's
+    /// intersection routine (all instance masks). For parity tests against the
+    /// CPU BVH; not part of the propagation contract.
+    #[doc(hidden)]
+    pub fn raycast_batch(
+        &mut self,
+        world: &AcousticWorld,
+        rays: &[([f32; 3], [f32; 3], f32)],
+    ) -> Result<Vec<Option<GpuHit>>, BackendError> {
+        self.sync_world(world)?;
+        let timeout = self.timeout();
+        let runtime = self.runtime()?;
+        let state = self
+            .world
+            .as_ref()
+            .ok_or_else(|| error::failed("world was not uploaded"))?;
+        let mut hits = Vec::with_capacity(rays.len());
+        for chunk in rays.chunks(65_536) {
+            let slots: Vec<kernel::ProbeSlot> = chunk
+                .iter()
+                .map(|(o, d, t)| kernel::ProbeSlot::new(*o, *d, *t))
+                .collect();
+            let results =
+                kernel::cast_rays(&runtime.gpu, &runtime.kernel, &state.gpu, &slots, timeout)?;
+            for r in results {
+                if r.aborted() {
+                    return Err(error::failed("a probe ray aborted"));
+                }
+                hits.push(r.hit().map(|(t, triangle, instance)| GpuHit {
+                    t,
+                    instance,
+                    triangle,
+                }));
+            }
+        }
+        self.check_device()?;
+        Ok(hits)
+    }
+}
+
 impl PropagationBackend for GpuBackend {
     fn info(&self) -> BackendInfo {
         // Hardware RT and the adapter are only claimed once the self-test passed.
@@ -275,6 +330,12 @@ impl PropagationBackend for GpuBackend {
     fn sync_world(&mut self, world: &AcousticWorld) -> Result<(), BackendError> {
         self.runtime()?;
         let result = match &self.world {
+            Some(state)
+                if state.revision == world.revision()
+                    && state.dynamic_generation == world.dynamic_generation() =>
+            {
+                Ok(())
+            }
             Some(state) if state.revision == world.revision() => self.update_dynamic(world),
             _ => self.upload_world(world),
         };

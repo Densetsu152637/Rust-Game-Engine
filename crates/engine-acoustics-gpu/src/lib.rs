@@ -32,7 +32,7 @@ mod select;
 mod selftest;
 mod upload;
 
-pub use backend::GpuBackend;
+pub use backend::{GpuBackend, GpuHit};
 pub use capability::probe_capabilities;
 pub use device::wgpu_instances_created;
 pub use select::{MAX_REASON_BYTES, TierSelection, bounded_reason, select_backend, tier_order};

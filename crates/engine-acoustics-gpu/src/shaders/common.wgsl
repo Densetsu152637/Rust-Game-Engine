@@ -100,7 +100,9 @@ const LENGTH_SCALE_HI: f32 = 1.52587890625e-5; // 2^16 / 2^32: 2^16 per metre
 
 const PI: f32 = 3.14159265358979;
 const T_MAX: f32 = 1e30;
-const SURFACE_OFFSET: f32 = 1e-4;
+// engine_acoustics::ray_offset: RAY_OFFSET_ABS_M + RAY_OFFSET_REL * max |p|.
+const RAY_OFFSET_ABS_M: f32 = 1e-4;
+const RAY_OFFSET_REL: f32 = 4e-6;
 const MIN_ENERGY: f32 = 1e-6;
 
 // ---- RNG: PCG hash on wrapping u32 (identical to the CPU tracer) ----
@@ -310,7 +312,8 @@ fn trace_energy(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else {
             dir = normalize(dir - 2.0 * dot(dir, n) * n);
         }
-        pos = hit_point + n * SURFACE_OFFSET;
+        let a = abs(hit_point);
+        pos = hit_point + n * (RAY_OFFSET_ABS_M + RAY_OFFSET_REL * max(a.x, max(a.y, a.z)));
     }
     add_count(job_index, STAT_SEGMENTS, segments);
     add_count(job_index, STAT_FREE_PATHS, free_paths);
