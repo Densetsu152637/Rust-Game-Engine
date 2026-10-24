@@ -7,6 +7,8 @@ pub mod document;
 pub mod events;
 pub mod gameplay2d;
 pub mod input;
+pub mod model_import;
+pub mod networking;
 pub mod persistence;
 pub mod runtime;
 pub mod schema;
@@ -14,6 +16,7 @@ pub mod services;
 pub mod simulation;
 pub mod transforms;
 pub mod ui;
+pub mod ui_tree;
 
 pub use catalog::{ComponentCatalog, ComponentDescriptor, CustomValue, register_component};
 pub use content::GeometryOverride;

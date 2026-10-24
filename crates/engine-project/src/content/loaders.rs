@@ -19,6 +19,32 @@ pub struct Texture {
 }
 pub fn load_mesh(path: &Path) -> Result<Mesh> {
     let bytes = read_bounded(path, 64 * 1024 * 1024)?;
+    if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') {
+        let mesh: Mesh = serde_json::from_slice(&bytes)?;
+        if mesh.vertices.is_empty()
+            || mesh.vertices.len() > 1_000_000
+            || mesh.indices.is_empty()
+            || mesh.indices.len() > 3_000_000
+            || !mesh.indices.len().is_multiple_of(3)
+            || mesh
+                .indices
+                .iter()
+                .any(|&i| i as usize >= mesh.vertices.len())
+            || mesh.vertices.iter().any(|v| {
+                v.position
+                    .iter()
+                    .chain(&v.uv)
+                    .chain(&v.color)
+                    .any(|n| !n.is_finite())
+            })
+        {
+            return Err(Error::new(
+                "asset.mesh.invalid",
+                "JSON mesh requires bounded finite vertices and valid triangle indices",
+            ));
+        }
+        return Ok(mesh);
+    }
     let source =
         std::str::from_utf8(&bytes).map_err(|e| Error::new("asset.mesh.invalid", e.to_string()))?;
     let mut tokens = source

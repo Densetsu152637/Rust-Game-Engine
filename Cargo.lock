@@ -871,6 +871,7 @@ dependencies = [
  "blake3",
  "gltf",
  "image",
+ "serde",
  "serde_json",
  "tempfile",
 ]
@@ -998,6 +999,7 @@ dependencies = [
  "engine-audio",
  "engine-core",
  "engine-navigation",
+ "engine-network",
  "engine-physics",
  "fs2",
  "glam 0.34.1",
