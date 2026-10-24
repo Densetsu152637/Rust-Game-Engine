@@ -131,7 +131,9 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         "frames_recorded": 100, "stages": []
     }, "scene": {
         "network":{"connected":true},
-        "input_devices":{"devices":[{"descriptor":{"id":"switch"},"connected":true}]}
+        "input_devices":{"devices":[{"descriptor":{"id":"switch"},"connected":true}]},
+        "upscaler":{"requested":{"mode":"dlss_sr","quality":"quality"},"state":"not_rendered",
+            "evaluated_frames":0,"history_resets":0}
     }});
     let summary = summarize(&report, None, 50);
     assert_eq!(summary["profile"]["frames"].as_array().unwrap().len(), 32);
@@ -143,6 +145,8 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         summary["input_devices"]["devices"][0]["descriptor"]["id"],
         "switch"
     );
+    assert_eq!(summary["upscaler"]["state"], "not_rendered");
+    assert_eq!(summary["upscaler"]["requested"]["mode"], "dlss_sr");
     assert_eq!(summary["telemetry_omitted"], json!([]));
     let oversized = summarize(
         &json!({"scene":{"input_devices":{"label":"x".repeat(65_536)}}}),
@@ -151,7 +155,15 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     );
     assert!(oversized["input_devices"].is_null());
     assert_eq!(oversized["telemetry_omitted"], json!(["input_devices"]));
+    let oversized_upscaler = summarize(
+        &json!({"scene":{"upscaler":{"fallback_reason":"x".repeat(65_536)}}}),
+        None,
+        50,
+    );
+    assert!(oversized_upscaler["upscaler"].is_null());
+    assert_eq!(oversized_upscaler["telemetry_omitted"], json!(["upscaler"]));
     let absent = summarize(&json!({}), None, 50);
+    assert!(absent["upscaler"].is_null());
     assert!(absent["profile"].is_null());
     assert!(absent["input_devices"].is_null());
     assert_eq!(absent["telemetry_omitted"], json!([]));

@@ -13,7 +13,7 @@ success. Hosts retain their normal rendering path when setup fails.
 
 | Feature | This slice | Required renderer data |
 | --- | --- | --- |
-| Super Resolution / DLAA | Native NGX execution, tested on Windows RTX 5080 | Jittered HDR color, clip depth, current-to-previous motion, temporal reset |
+| Super Resolution / DLAA | Native NGX execution and desktop 3D renderer integration (`Camera3D.upscaler`), tested on Windows RTX 5080 | Jittered HDR color, clip depth, current-to-previous motion, temporal reset |
 | Frame Generation (2x and multi-frame) | Native NGX generation into a caller texture, tested offscreen on Windows RTX 5080; presentation pending renderer integration | Backbuffer and HUD-less color, depth/motion, unjittered camera constants, reset, presentation pacing |
 | Ray Reconstruction | Separate integration pending | Noisy ray-traced lighting, diffuse/specular albedo, normals/roughness, depth/motion, camera matrices |
 | DLSS 5 neural rendering | Deferred by user: no SDK access | Requires NVIDIA's neural-rendering SDK/runtime/model access; do not infer its ABI |
@@ -119,14 +119,22 @@ Supply projection jitter in render pixels, motion scale, positive elapsed
 milliseconds, and reset after a camera cut, resize, quality change, or history
 invalidation. First evaluation resets automatically. Submit producers before
 `evaluate`. Its output is display-size `Rgba16Float`; composite/tonemap it before
-rendering HUD/UI at display resolution. The native evaluation is real, but the
-scene split/history/MRT integration belongs to the renderer's subsequent slice.
+rendering HUD/UI at display resolution.
+
+The desktop renderer implements this handoff behind the `engine-desktop/dlss`
+feature: Halton jitter, an engine depth/motion pass, history resets, a pre-HUD
+composite, device preparation before the GPU context, authored/MCP/native
+configuration and a reported native fallback. See
+[Temporal upscaling](rendering3d.md#temporal-upscaling-dlss-super-resolution)
+for its contract and limits. It uses the public `Session` API unchanged.
 
 `Status` reports adapter identity, raw Vulkan driver version, NGX minimum driver,
 compiled NGX API version, render/output sizes and successfully evaluated frame
 count. A zero count means initialized, not evaluated. Runtime plugin version is
 `None` when unqueried; no marketing generation is inferred from hardware or API
-version. Shared scene/runtime/MCP status should preserve these distinctions.
+version. The engine's `UpscalerStatus` (runtime snapshot and MCP run reports)
+preserves these distinctions: it reports `active` only for a frame whose
+evaluation succeeded and counts successful evaluations.
 
 ## Validation
 
@@ -173,6 +181,18 @@ second feature sharing the context after the first feature is dropped, then
 destroys an exposed staging input and confirms a controlled error without
 another successful native evaluation. Linux/macOS execution and
 full authored-game temporal behavior require their own validation.
+
+The engine renderer tests run with the same environment:
+
+```text
+cargo test -p engine-desktop --features dlss --test upscaler -- --ignored --nocapture
+```
+
+They render engine 3D scenes through `GpuRenderer`, check `active` status,
+evaluated-frame and reset counts, DLAA render size, agreement with the native
+image, an unchanged HUD, and that temporal accumulation through the engine's
+motion vectors beats per-frame resets on a panning scene. Results are in
+[Scene rendering](rendering3d.md#verification-and-example).
 
 ## Frame Generation
 

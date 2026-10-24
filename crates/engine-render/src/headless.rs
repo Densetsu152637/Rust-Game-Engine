@@ -423,6 +423,7 @@ impl RenderBackend for RecordingBackend {
             }
         }
         if let RenderTarget::Offscreen(target) = frame.target
+            && !frame.preserve_color
             && let Some(image) = inner.targets.get_mut(&target)
         {
             let color = frame.clear_color.map(srgb_encode);

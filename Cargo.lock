@@ -1174,6 +1174,7 @@ dependencies = [
  "bytemuck",
  "engine-audio",
  "engine-core",
+ "engine-dlss",
  "engine-project",
  "engine-render",
  "engine-render-wgpu",

@@ -169,12 +169,16 @@ impl Core {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear[0],
-                            g: clear[1],
-                            b: clear[2],
-                            a: clear[3],
-                        }),
+                        load: if frame.preserve_color {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color {
+                                r: clear[0],
+                                g: clear[1],
+                                b: clear[2],
+                                a: clear[3],
+                            })
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],

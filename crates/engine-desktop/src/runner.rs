@@ -1,6 +1,6 @@
 use crate::{
-    BACKEND_ENV_VAR, CameraView, FrameHistory, FramePacer, GpuRequirements, NativeRenderPasses,
-    RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
+    BACKEND_ENV_VAR, CameraView, DlssConfig, FrameHistory, FramePacer, GpuRequirements,
+    NativeRenderPasses, RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
     input::{Gamepads, PressLatch, sample_tick, window_input},
 };
 use anyhow::{Context, Result, ensure};
@@ -8,6 +8,7 @@ use engine_audio::{AudioConfig, AudioEngine};
 use engine_project::{
     EventSchedule, EventTrace, Runtime,
     input::{ActionMapper, RawInput, merge_input},
+    rendering3d::{UpscalerControl, UpscalerMode},
     runtime::{InputSettings, RuntimeSnapshot},
 };
 use serde::Serialize;
@@ -183,6 +184,7 @@ pub fn run_with_wgpu_backends(
         last_frame: Instant::now(),
         ticks: 0,
         presented_frames: 0,
+        scene_revision: 0,
         error: None,
         event_trace: EventTrace::default(),
     };
@@ -265,6 +267,17 @@ fn run_headless(
     })
 }
 
+/// Make the renderer's upscaler status visible to native callbacks and reports.
+fn publish_upscaler_status(runtime: &mut Runtime, renderer: &crate::GpuRenderer) {
+    if let Some(mut control) = runtime
+        .app_mut()
+        .world_mut()
+        .get_resource_mut::<UpscalerControl>()
+    {
+        control.status = renderer.upscaler_status().clone();
+    }
+}
+
 fn stop_requested(runtime: &Runtime, options: &RunOptions) -> bool {
     options
         .shutdown
@@ -297,6 +310,8 @@ struct DesktopRunner {
     last_frame: Instant,
     ticks: u64,
     presented_frames: u64,
+    /// Scene revision of the last presented frame; a change resets temporal history.
+    scene_revision: u64,
     error: Option<anyhow::Error>,
 }
 impl DesktopRunner {
@@ -356,9 +371,23 @@ impl DesktopRunner {
                 overlay.draws.retain(|draw| !meshes.contains(&draw.id));
             }
             scene.sprites = overlay;
+            let revision = self.runtime.scene_revision();
+            let cut = self
+                .runtime
+                .app_mut()
+                .world_mut()
+                .get_resource_mut::<UpscalerControl>()
+                .is_some_and(|mut control| std::mem::take(&mut control.reset_history));
+            if cut || revision != self.scene_revision {
+                host.renderer.reset_upscaler_history();
+                self.scene_revision = revision;
+            }
             let shown = host
                 .present_scene(&scene, Some(self.runtime.app().render_world()))?
                 .is_some();
+            if shown {
+                publish_upscaler_status(&mut self.runtime, &host.renderer);
+            }
             self.present_skipped = !shown;
             if shown {
                 self.presented_frames += 1;
@@ -453,7 +482,19 @@ impl ApplicationHandler for DesktopRunner {
                 .world_mut()
                 .remove_resource::<GpuRequirements>()
                 .unwrap_or_default();
-            let mut host = pollster::block_on(WindowSurface::with_options(
+            let dlss = self
+                .runtime
+                .app_mut()
+                .world_mut()
+                .remove_resource::<DlssConfig>()
+                .unwrap_or_default();
+            // NGX extensions must be requested at device creation.
+            let want_dlss = dlss.prepare_device
+                || frame
+                    .camera3d
+                    .as_ref()
+                    .is_some_and(|c| c.camera.upscaler.mode == UpscalerMode::DlssSr);
+            let mut host = pollster::block_on(WindowSurface::with_upscaler(
                 window,
                 RenderLimits::default(),
                 WgpuOptions {
@@ -461,6 +502,8 @@ impl ApplicationHandler for DesktopRunner {
                     requirements,
                     ..Default::default()
                 },
+                &dlss,
+                want_dlss,
             ))?;
             let passes = self
                 .runtime
@@ -473,6 +516,8 @@ impl ApplicationHandler for DesktopRunner {
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);
             host.present_scene(&frame, Some(self.runtime.app().render_world()))?;
+            publish_upscaler_status(&mut self.runtime, &host.renderer);
+            self.scene_revision = self.runtime.scene_revision();
             host.window.set_visible(true);
             host.window.request_redraw();
             self.surface = Some(host);

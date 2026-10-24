@@ -71,15 +71,27 @@ fn lighting_schema() -> Value {
     )
 }
 
+fn upscaler_schema() -> Value {
+    closed(
+        json!({
+            "mode":{"type":"string","enum":["none","dlss_sr"],"default":"none",
+                "description":"Temporal upscaler for the 3D scene. dlss_sr requests NVIDIA DLSS Super Resolution (Vulkan, desktop `dlss` build feature, official NGX runtime, supported NVIDIA GPU); otherwise the scene renders natively and the run report states the fallback reason."},
+            "quality":{"type":"string","enum":["ultra_performance","performance","balanced","quality","dlaa"],"default":"quality",
+                "description":"DLSS preset. dlaa renders at output resolution (anti-aliasing only); the others let NGX choose a smaller render size."}
+        }),
+        &[],
+    )
+}
+
 /// All authored component documents.
 pub fn component_docs() -> Vec<ComponentDoc> {
     vec![
         ComponentDoc {
             name: "Camera3D",
-            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order.",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution; unsupported requests render natively with a reported reason.",
             requires: &["Transform"],
             schema: closed(
-                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"projection":{"oneOf":[
+                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"projection":{"oneOf":[
                     closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
                     closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])
                 ]}}),

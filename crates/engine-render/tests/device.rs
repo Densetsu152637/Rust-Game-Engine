@@ -536,6 +536,22 @@ fn offscreen_frames_render_and_read_back_the_srgb_clear_color() {
 }
 
 #[test]
+fn preserved_color_frames_keep_the_existing_image() {
+    let (mut device, _log) = device(2);
+    let target = device.create_target(2, 2).unwrap();
+    let mut desc = FrameDesc::new(RenderTarget::Offscreen(target));
+    desc.clear_color = [0.0, 0.5, 1.0, 1.0];
+    device.submit(desc, RenderCommandBuffer::new()).unwrap();
+    let mut overlay = FrameDesc::new(RenderTarget::Offscreen(target));
+    assert!(!overlay.preserve_color, "frames clear by default");
+    overlay.clear_color = [1.0, 0.0, 0.0, 1.0];
+    overlay.preserve_color = true;
+    device.submit(overlay, RenderCommandBuffer::new()).unwrap();
+    let image = device.read_target(target).unwrap();
+    assert_eq!(image.pixel(1, 1), Some([0, 188, 255, 255]));
+}
+
+#[test]
 fn updates_validate_handles_and_forward_to_the_backend() {
     let (mut device, log) = device(2);
     let mesh = device.create_mesh(&triangle()).unwrap();

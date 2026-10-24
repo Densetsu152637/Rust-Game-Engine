@@ -123,10 +123,11 @@ fn screenshot_on(
     backends: Result<engine_desktop::WgpuBackends>,
 ) -> Result<serde_json::Value> {
     use engine_desktop::{
-        FIXED_DELTA, GpuContext, GpuRenderer, GpuRequirements, NativeRenderPasses, OffscreenTarget,
-        RenderLimits,
+        DlssConfig, FIXED_DELTA, GpuContext, GpuRenderer, GpuRequirements, NativeRenderPasses,
+        OffscreenTarget, RenderLimits, WgpuOptions,
     };
     use engine_project::input::merge_input;
+    use engine_project::rendering3d::{UpscalerControl, UpscalerMode};
     let backends = backends?;
     let [width, height] = arguments.screenshot_size;
     if let Some(root) = &arguments.user_data {
@@ -163,10 +164,27 @@ fn screenshot_on(
             .world_mut()
             .remove_resource::<NativeRenderPasses>()
             .unwrap_or_default();
-        let gpu = pollster::block_on(GpuContext::request_with_requirements(
+        let dlss = runtime
+            .app_mut()
+            .world_mut()
+            .remove_resource::<DlssConfig>()
+            .unwrap_or_default();
+        let want_dlss = dlss.prepare_device
+            || frame
+                .camera3d
+                .as_ref()
+                .is_some_and(|c| c.camera.upscaler.mode == UpscalerMode::DlssSr);
+        let options = WgpuOptions {
+            backends,
+            requirements,
+            ..Default::default()
+        };
+        let (gpu, upscaler) = pollster::block_on(engine_desktop::request_upscaler_gpu(
             GpuContext::instance_with(backends),
             None,
-            requirements,
+            &options,
+            &dlss,
+            want_dlss,
         ))
         .map_err(|error| {
             engine_project::Error::new(
@@ -181,9 +199,17 @@ fn screenshot_on(
             "device_type": format!("{:?}", info.device_type),
         });
         let target = OffscreenTarget::new(&gpu, width, height)?;
-        let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default())?;
+        let mut renderer =
+            GpuRenderer::with_upscaler_device(gpu, target.info, RenderLimits::default(), upscaler)?;
         renderer.set_passes(passes)?;
         renderer.render_scene(&frame, &target.view, Some(runtime.app().render_world()))?;
+        if let Some(mut control) = runtime
+            .app_mut()
+            .world_mut()
+            .get_resource_mut::<UpscalerControl>()
+        {
+            control.status = renderer.upscaler_status().clone();
+        }
         let pixels = target.read_rgba(&renderer.gpu)?;
         let mut png = Vec::new();
         image::codecs::png::PngEncoder::new(&mut png).write_image(

@@ -372,7 +372,7 @@ fn every_documented_property_is_accepted_by_the_strict_deserializer() {
 
 #[test]
 fn serialized_defaults_only_use_documented_properties() {
-    use engine_project::{Camera2D, SpriteRenderer, Transform};
+    use engine_project::{Camera2D, SpriteRenderer, Transform, rendering3d::Camera3D};
     let defaults = [
         (
             "Transform",
@@ -385,6 +385,10 @@ fn serialized_defaults_only_use_documented_properties() {
         (
             "Camera2D",
             serde_json::to_value(Camera2D::default()).unwrap(),
+        ),
+        (
+            "Camera3D",
+            serde_json::to_value(Camera3D::default()).unwrap(),
         ),
     ];
     for (name, value) in defaults {

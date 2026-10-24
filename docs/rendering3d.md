@@ -1,8 +1,9 @@
 # Scene rendering
 
 `Runtime::extract_scene_frame` produces immutable `SceneRenderFrame` snapshots.
-The desktop path renders a directional shadow map, depth-tested 3D meshes, then
-2D sprites/UI. `RenderFrame`, `Draw`, `SpriteRenderer::render`, offscreen sprite
+The desktop path renders a directional shadow map, depth-tested 3D meshes
+(optionally through [DLSS Super Resolution](#temporal-upscaling-dlss-super-resolution)),
+then 2D sprites/UI. `RenderFrame`, `Draw`, `SpriteRenderer::render`, offscreen sprite
 rendering, custom WGSL and native render callbacks remain available.
 
 ## Camera and lighting
@@ -96,8 +97,121 @@ translucent shadow transmission. Transparent draws do not cast shadows.
 `MeshMaterial.cast_shadows` and `receive_shadows` default to true. Custom vertex
 shader displacement is not replayed in the shadow pass; such materials should
 opt out of casting or provide a native implementation. Native render passes
-still receive the shared device/queue and run after engine draws; the renderer
-does not replace or claim DLSS/temporal reconstruction support.
+still receive the shared device/queue and run after engine draws, including the
+2D overlay of an upscaled frame.
+
+## Temporal upscaling (DLSS Super Resolution)
+
+`Camera3D.upscaler` requests a temporal upscaler for the 3D scene:
+
+```json
+{"Camera3D":{"upscaler":{"mode":"dlss_sr","quality":"quality"}}}
+```
+
+`mode` is `none` (default) or `dlss_sr`; `quality` is `ultra_performance`,
+`performance`, `balanced`, `quality` (default) or `dlaa`. DLAA keeps the render
+size equal to the output size; the other presets use the render size NGX
+chooses. Unknown values and fields are rejected. `component_schema` documents
+the object and `component_set` edits it like any other `Camera3D` field. A
+request is never a claim: the scene renders natively unless an evaluation
+succeeds.
+
+### Runtime control and status
+
+The runtime always holds an `UpscalerControl` ECS resource. Native callbacks may
+set `override_settings` (it replaces the active camera's authored request while
+`Some`) and `reset_history` (a one-shot request to discard temporal history,
+for example after a camera cut; the desktop runner consumes it). After every
+presented frame the host writes `status`:
+
+| Field | Meaning |
+| --- | --- |
+| `requested` | Effective mode/quality of that frame |
+| `state` | `not_rendered` (no renderer presented a 3D frame, for example headless runs), `native`, `active` (this frame's DLSS evaluation succeeded) or `fallback` |
+| `fallback_reason` | Why a request rendered natively; at most 512 bytes |
+| `render_size`, `output_size` | NGX input and 3D viewport sizes of an active frame |
+| `evaluated_frames` | Successful evaluations by this renderer |
+| `history_resets` | Evaluations submitted with reset |
+| `adapter` | GPU name reported by the NGX context |
+
+`Runtime::upscaler_status()` and `RuntimeSnapshot.upscaler` report it (absent
+without an active `Camera3D`); before any presented frame the state is
+`not_rendered` with the current request. `project_run_headless` returns it as
+`upscaler` within the same 64 KiB bound as other telemetry, and
+`render_screenshot` returns the status of its rendered image.
+
+Fallback reasons are specific, for example: engine built without the `dlss`
+feature; NGX adapter not built (no SDK at build time); a non-Vulkan graphics API
+selected; DLSS device preparation failed (non-NVIDIA adapter, missing runtime
+library, missing extension); the device was created without DLSS extensions;
+NGX initialization, feature creation or evaluation failed. A failure for one
+quality/output size is not retried every frame; changing either retries.
+
+### Device preparation and host configuration
+
+NGX requires Vulkan extensions at device creation, before the `GpuContext`
+exists. The desktop runner and `render_screenshot` prepare a DLSS-capable device
+when the first extracted frame requests `dlss_sr` or a `DlssConfig` resource
+inserted before launch sets `prepare_device` (for games that enable DLSS later).
+Enabling DLSS at runtime on an unprepared device falls back with that reason.
+`DlssConfig` also holds the nonsecret NGX `project_id` (an engine default is
+used otherwise; ship your own) and optional `runtime_dir`/`log_dir`. Unset
+directories use `NGX_RUNTIME_DIR`/`NGX_LOG_DIR`, else the executable's directory
+and `<temp>/engine-ngx-logs` (created). Machine paths never belong in scenes.
+Custom hosts call `request_upscaler_gpu(instance, surface, options, &config,
+want_dlss)`, then `GpuRenderer::with_upscaler_device`; `upscaler_status()` and
+`reset_upscaler_history()` expose the same state. Any preparation failure
+creates the ordinary device and keeps the reason.
+
+Build with `--features engine-desktop/dlss` (forwarding to
+`engine-dlss/ngx-vulkan`) plus the SDK variables of [DLSS](dlss.md). Ordinary
+builds need neither the feature nor the SDK. Only Vulkan is supported; other
+graphics APIs, macOS and non-NVIDIA GPUs fall back. The tooling does not add
+the feature to generated project builds.
+
+### Frame structure
+
+An active frame, in queue order:
+
+1. **Color**: the 3D scene (shadow pass, opaque and transparent draws, custom
+   WGSL) renders into the NGX `Rgba16Float` input at the render size. The view
+   projection is premultiplied by a clip-space translation of
+   `(2*jx/w, -2*jy/h)` for a Halton(2,3) jitter `(jx, jy)` in render pixels
+   (x right, y down), with `ceil(8 * scale^2)` phases clamped to 8..256. The
+   projection aspect is that of the 3D viewport (output) size.
+2. **Depth and motion**: opaque meshes are re-rasterized with the same jittered
+   matrix by the engine motion shader into an `Rgba32Float` intermediate: clip
+   depth (0..1, not inverted) and current-to-previous motion in render pixels,
+   from unjittered current and previous camera matrices and each mesh's
+   previous model matrix (matched by stable draw ID; a new ID has camera
+   motion only). A native pass splits it into the NGX `R32Float` depth and
+   `Rg16Float` motion inputs (motion scale 1, render-resolution vectors).
+3. **Evaluate**: `Session::evaluate` with the jitter, measured frame time and
+   reset flag; it waits for GPU completion.
+4. **Composite**: the display-size output is written into the 3D viewport. As
+   in the native path there is no tone mapper; values above the target range
+   clip.
+5. **Overlay**: 2D sprites and UI render at output resolution over the
+   composite (`FrameDesc.preserve_color`), then native render passes.
+
+History resets on the first frame of a session, quality or output-size change,
+any projection change, an explicit reset request, a scene revision change in
+the desktop runner, and any frame rendered without DLSS in between.
+
+### Limitations
+
+- Transparent meshes write neither depth nor motion; they inherit the motion of
+  the opaque surface behind them.
+- Custom vertex displacement and CPU-skinned or geometry-override deformation
+  are not in the motion vectors: such meshes report camera and model-matrix
+  motion only.
+- In an upscaled frame, 2D world-space sprites are drawn after upscaling and no
+  longer depth-test against 3D geometry.
+- One NGX runtime may exist per process; a second DLSS renderer falls back.
+- The NGX adapter copies inputs/outputs and waits for each evaluation. No frame
+  rate improvement is claimed; measure before relying on one.
+- Editor viewports (`OffscreenSprites`) render natively. Only Windows x86_64 on
+  an RTX 5080 has been validated.
 
 ## Shader and native contracts
 
@@ -135,3 +249,18 @@ switches, and shadow-map resizing. GPU tests fail if an adapter is unavailable.
 Set `ENGINE_PBR_CAPTURE` to an absolute PNG path to retain the shadow test image.
 Project rendering/import tests cover authored round trips, invalid settings and
 asset kinds, texture mappings, and normal-array boundary failures.
+
+`cargo test -p engine-desktop --test upscaler -- --ignored --nocapture` checks on
+any adapter that a DLSS request without a prepared device renders the native
+image with a reported reason, and that a non-Vulkan selection says so. With
+`--features dlss`, the SDK at build time and `NGX_RUNTIME_DIR`/`NGX_LOG_DIR`, two
+more tests render engine scenes through NGX. On 2026-10-24 (RTX 5080, Windows,
+640x384 output) quality mode rendered at 427x256: after eight frames the mean
+absolute channel difference from the native image was 0.26/255, the red
+triangle centroid was within 0.9 px, HUD pixels were identical, and DLAA rendered
+at 640x384. On a panning, moving one-texel checker scene, temporal accumulation
+reached about half the error of resetting history every frame (10.99 vs 21.58,
+ratio 0.51). In manual experiments zero motion vectors measured a ratio of 0.63
+and sign-flipped vectors 0.96, and flipping either jitter axis increased the
+static error, supporting the jitter and motion sign conventions. These checks
+are not an image-quality study.

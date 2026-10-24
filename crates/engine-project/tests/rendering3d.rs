@@ -194,3 +194,111 @@ fn invalid_pbr_light_and_shadow_values_are_rejected_at_boundary() {
             .contains("must be texture")
     );
 }
+#[test]
+fn authored_upscaler_round_trips_and_rejects_unknown_values() {
+    let camera: Camera3D = serde_json::from_value(
+        json!({"upscaler":{"mode":"dlss_sr","quality":"ultra_performance"}}),
+    )
+    .unwrap();
+    assert_eq!(camera.upscaler.mode, UpscalerMode::DlssSr);
+    assert_eq!(camera.upscaler.quality, UpscalerQuality::UltraPerformance);
+    camera.validate().unwrap();
+    let value = serde_json::to_value(&camera).unwrap();
+    assert_eq!(
+        value["upscaler"],
+        json!({"mode":"dlss_sr","quality":"ultra_performance"})
+    );
+    let defaulted: Camera3D = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(defaulted.upscaler, UpscalerSettings::default());
+    assert_eq!(defaulted.upscaler.mode, UpscalerMode::None);
+    assert_eq!(defaulted.upscaler.quality, UpscalerQuality::Quality);
+    let dlaa: UpscalerSettings = serde_json::from_value(json!({"quality":"dlaa"})).unwrap();
+    assert_eq!(dlaa.quality, UpscalerQuality::Dlaa);
+    for bad in [
+        json!({"upscaler":{"mode":"dlss5"}}),
+        json!({"upscaler":{"mode":"DLSS_SR"}}),
+        json!({"upscaler":{"quality":"ultra"}}),
+        json!({"upscaler":{"mode":"none","sharpness":1}}),
+        json!({"upscaler":"dlss_sr"}),
+    ] {
+        assert!(
+            serde_json::from_value::<Camera3D>(bad.clone()).is_err(),
+            "{bad}"
+        );
+    }
+}
+#[test]
+fn native_override_wins_over_the_authored_request_and_is_reported() {
+    let dir = fixture();
+    let mut project = Project::load(dir.path().join("project.json")).unwrap();
+    project.scene.entities[0]
+        .components
+        .camera3d
+        .as_mut()
+        .unwrap()
+        .upscaler
+        .mode = UpscalerMode::DlssSr;
+    let mut runtime = Runtime::new(project).unwrap();
+    let frame = runtime.extract_scene_frame().unwrap();
+    let authored = frame.camera3d.unwrap().camera.upscaler;
+    assert_eq!(authored.mode, UpscalerMode::DlssSr);
+    // Before any renderer presents, the request is visible but not claimed.
+    let status = runtime.try_snapshot().unwrap().upscaler.unwrap();
+    assert_eq!(status.state, UpscalerState::NotRendered);
+    assert_eq!(status.requested, authored);
+    assert_eq!(status.evaluated_frames, 0);
+    let value = serde_json::to_value(&status).unwrap();
+    assert_eq!(value["state"], "not_rendered");
+    assert_eq!(value["requested"]["mode"], "dlss_sr");
+    assert!(value.get("fallback_reason").is_none());
+    let override_settings = UpscalerSettings {
+        mode: UpscalerMode::DlssSr,
+        quality: UpscalerQuality::Dlaa,
+    };
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<UpscalerControl>()
+        .override_settings = Some(override_settings);
+    let frame = runtime.extract_scene_frame().unwrap();
+    assert_eq!(frame.camera3d.unwrap().camera.upscaler, override_settings);
+    assert_eq!(
+        runtime.try_snapshot().unwrap().upscaler.unwrap().requested,
+        override_settings
+    );
+    // A host-written status is reported as-is.
+    let mut written = UpscalerStatus {
+        requested: override_settings,
+        state: UpscalerState::Fallback,
+        fallback_reason: Some(bounded_upscaler_reason(&"x".repeat(2000))),
+        ..Default::default()
+    };
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<UpscalerControl>()
+        .status = written.clone();
+    let reported = runtime.try_snapshot().unwrap().upscaler.unwrap();
+    assert_eq!(
+        reported.fallback_reason.as_ref().unwrap().len(),
+        MAX_UPSCALER_REASON_BYTES
+    );
+    written.fallback_reason = reported.fallback_reason.clone();
+    assert_eq!(reported, written);
+}
+#[test]
+fn scenes_without_a_3d_camera_report_no_upscaler() {
+    let dir = fixture();
+    let mut project = Project::load(dir.path().join("project.json")).unwrap();
+    project.scene.entities[0].components.camera3d = None;
+    let mut runtime = Runtime::new(project).unwrap();
+    assert!(runtime.try_snapshot().unwrap().upscaler.is_none());
+    // A host writes a native status for 2D-only frames; it is still not reported.
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<UpscalerControl>()
+        .status
+        .state = UpscalerState::Native;
+    assert!(runtime.upscaler_status().is_none());
+}

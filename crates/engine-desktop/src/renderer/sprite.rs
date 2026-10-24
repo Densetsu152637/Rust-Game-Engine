@@ -33,6 +33,27 @@ pub(crate) fn validate_limits(limits: &RenderLimits) -> Result<()> {
     Ok(())
 }
 
+/// The parts of a temporal frame, submitted to different targets in order.
+#[cfg_attr(not(feature = "dlss"), allow(dead_code))]
+pub(crate) struct TemporalBuild {
+    /// 3D color for the upscaler's HDR input.
+    pub color: RenderCommandBuffer,
+    /// Engine depth/motion pass for the opaque meshes.
+    pub motion: RenderCommandBuffer,
+    /// 2D sprites/UI at output resolution, drawn over the composited scene.
+    pub overlay: BuiltFrame,
+    pub stats: RenderStats,
+}
+
+fn add_stats(stats: &mut RenderStats, overlay: RenderStats) {
+    stats.draws += overlay.draws;
+    stats.batches += overlay.batches;
+    stats.mesh_uploads += overlay.mesh_uploads;
+    stats.texture_uploads += overlay.texture_uploads;
+    stats.cached_meshes += overlay.cached_meshes;
+    stats.cached_textures += overlay.cached_textures;
+}
+
 /// A frame converted into neutral commands, ready to submit.
 pub(crate) struct BuiltFrame {
     pub commands: RenderCommandBuffer,
@@ -155,6 +176,79 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         frame: &engine_project::rendering3d::SceneRenderFrame,
         target: RenderTarget,
     ) -> Result<Option<RenderStats>> {
+        let size = self.target_size(target)?;
+        let camera = self.validate_scene(frame, size)?;
+        let (mut commands, mut stats) = self.scene.build(
+            &mut self.device,
+            frame,
+            (camera.viewport.width, camera.viewport.height),
+            glam::Mat4::IDENTITY,
+        )?;
+        let overlay = self.build_with_materials(&frame.sprites, size, &frame.materials2d)?;
+        let desc = overlay.desc(target);
+        commands.merge(overlay.commands)?;
+        add_stats(&mut stats, overlay.stats);
+        self.scene.retire_shaders(&mut self.device, frame)?;
+        match self.device.submit(desc, commands)? {
+            FrameOutcome::Rendered(_) => Ok(Some(stats)),
+            FrameOutcome::Skipped(_) => Ok(None),
+        }
+    }
+
+    /// The 3D viewport of `frame` on a target of `size` (the 2D camera fit).
+    #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
+    pub(crate) fn scene_viewport(
+        &self,
+        frame: &engine_project::rendering3d::SceneRenderFrame,
+        size: (u32, u32),
+    ) -> Result<CameraRect> {
+        Ok(CameraView::new(&frame.sprites.camera, size.0, size.1)?.viewport)
+    }
+
+    /// Build the temporal frame for an output target of `size`: jittered 3D
+    /// color (projection aspect of the 3D viewport), the engine depth/motion
+    /// pass, and the 2D overlay. Everything is validated and built before the
+    /// caller submits any part.
+    #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
+    pub(crate) fn build_temporal(
+        &mut self,
+        frame: &engine_project::rendering3d::SceneRenderFrame,
+        size: (u32, u32),
+        temporal: &super::temporal::TemporalFrame<'_>,
+    ) -> Result<TemporalBuild> {
+        let camera = self.validate_scene(frame, size)?;
+        let (color, mut stats) = self.scene.build(
+            &mut self.device,
+            frame,
+            (camera.viewport.width, camera.viewport.height),
+            temporal.jitter,
+        )?;
+        let motion = self.scene.build_motion(&mut self.device, frame, temporal)?;
+        let overlay = self.build_with_materials(&frame.sprites, size, &frame.materials2d)?;
+        add_stats(&mut stats, overlay.stats);
+        self.scene.retire_shaders(&mut self.device, frame)?;
+        Ok(TemporalBuild {
+            color,
+            motion,
+            overlay,
+            stats,
+        })
+    }
+
+    /// Submit one part of a temporal frame. `false` when the backend skipped it.
+    #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
+    pub(crate) fn submit(
+        &mut self,
+        desc: FrameDesc,
+        commands: RenderCommandBuffer,
+    ) -> Result<bool> {
+        Ok(matches!(
+            self.device.submit(desc, commands)?,
+            FrameOutcome::Rendered(_)
+        ))
+    }
+
+    fn target_size(&self, target: RenderTarget) -> Result<(u32, u32)> {
         let size = match target {
             RenderTarget::Surface => self.surface_size,
             RenderTarget::Offscreen(handle) => self
@@ -163,6 +257,16 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 .context("render target was destroyed")?,
         };
         ensure!(size.0 > 0 && size.1 > 0, "render target must be nonzero");
+        Ok(size)
+    }
+
+    /// Check a whole scene frame (limits, mesh/texture data, 2D materials)
+    /// before any cache or GPU state changes.
+    fn validate_scene(
+        &self,
+        frame: &engine_project::rendering3d::SceneRenderFrame,
+        size: (u32, u32),
+    ) -> Result<CameraView> {
         ensure!(
             frame.meshes.len() + frame.sprites.draws.len() <= self.limits.max_draws,
             "frame draw limit exceeded"
@@ -206,25 +310,7 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 )?;
             }
         }
-        let (mut commands, mut stats) = self.scene.build(
-            &mut self.device,
-            frame,
-            (camera.viewport.width, camera.viewport.height),
-        )?;
-        let overlay = self.build_with_materials(&frame.sprites, size, &frame.materials2d)?;
-        let desc = overlay.desc(target);
-        commands.merge(overlay.commands)?;
-        stats.draws += overlay.stats.draws;
-        stats.batches += overlay.stats.batches;
-        stats.mesh_uploads += overlay.stats.mesh_uploads;
-        stats.texture_uploads += overlay.stats.texture_uploads;
-        stats.cached_meshes += overlay.stats.cached_meshes;
-        stats.cached_textures += overlay.stats.cached_textures;
-        self.scene.retire_shaders(&mut self.device, frame)?;
-        match self.device.submit(desc, commands)? {
-            FrameOutcome::Rendered(_) => Ok(Some(stats)),
-            FrameOutcome::Skipped(_) => Ok(None),
-        }
+        Ok(camera)
     }
 
     /// Validate, sync caches and convert `frame` for a target of `size`.

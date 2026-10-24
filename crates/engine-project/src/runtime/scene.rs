@@ -9,6 +9,9 @@ pub struct RuntimeSnapshot {
     pub network: Option<crate::networking::NetworkStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_devices: Option<crate::input::InputDevicesSnapshot>,
+    /// Renderer-reported temporal upscaler state; absent without a 3D camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upscaler: Option<crate::rendering3d::UpscalerStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -158,6 +161,7 @@ impl Runtime {
                 .world()
                 .get_resource::<crate::input::InputDevices>()
                 .map(crate::input::InputDevices::snapshot),
+            upscaler: self.upscaler_status(),
             ticks: self.ticks,
             scene,
             live_entities: self

@@ -104,7 +104,21 @@ impl GpuContext {
         surface: Option<&wgpu::Surface<'_>>,
         options: &WgpuOptions,
     ) -> Result<Self> {
-        let adapter = instance
+        let adapter = Self::request_adapter(&instance, surface, options).await?;
+        let (device, queue) = adapter
+            .request_device(&Self::device_descriptor(options))
+            .await
+            .context("GPU device creation failed")?;
+        Ok(Self::from_device(instance, adapter, device, queue))
+    }
+
+    /// The adapter [`Self::request_with_options`] would use.
+    pub async fn request_adapter(
+        instance: &wgpu::Instance,
+        surface: Option<&wgpu::Surface<'_>>,
+        options: &WgpuOptions,
+    ) -> Result<wgpu::Adapter> {
+        instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 compatible_surface: surface,
                 power_preference: options.power_preference,
@@ -112,16 +126,29 @@ impl GpuContext {
                 apply_limit_buckets: false,
             })
             .await
-            .context("no compatible GPU adapter")?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("engine desktop device"),
-                required_features: options.requirements.features,
-                required_limits: options.requirements.limits.clone(),
-                ..Default::default()
-            })
-            .await
-            .context("GPU device creation failed")?;
+            .context("no compatible GPU adapter")
+    }
+
+    /// The device descriptor carrying `options.requirements`.
+    pub fn device_descriptor(options: &WgpuOptions) -> wgpu::DeviceDescriptor<'static> {
+        wgpu::DeviceDescriptor {
+            label: Some("engine desktop device"),
+            required_features: options.requirements.features,
+            required_limits: options.requirements.limits.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Wrap a device created by the host from `adapter` (for example one with
+    /// extra native extensions) and install the engine's error and device-loss
+    /// recording. `device` and `queue` must come from `adapter`, which must come
+    /// from `instance`.
+    pub fn from_device(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Self {
         let errors = Arc::new(Mutex::new(Vec::new()));
         let sink = errors.clone();
         // Validation errors of engine calls are caught per call by
@@ -156,13 +183,13 @@ impl GpuContext {
                 });
             }
         });
-        Ok(Self {
+        Self {
             instance,
             adapter,
             device,
             queue,
             errors,
-        })
+        }
     }
 
     pub async fn headless() -> Result<Self> {

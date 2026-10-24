@@ -95,6 +95,8 @@ impl Runtime {
         app.world_mut().insert_resource(ControlLocks::default());
         app.world_mut().insert_resource(PendingScene::default());
         app.world_mut().insert_resource(ScriptRegistry::default());
+        app.world_mut()
+            .insert_resource(crate::rendering3d::UpscalerControl::default());
         crate::events::clear(app.world_mut());
         for entity in &scene.entities {
             spawn(app.world_mut(), entity);

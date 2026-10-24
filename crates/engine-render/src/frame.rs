@@ -38,6 +38,10 @@ pub struct FrameDesc {
     pub target: RenderTarget,
     /// Linear RGBA clear color applied before drawing.
     pub clear_color: [f32; 4],
+    /// Keep the target's existing color instead of clearing it to
+    /// `clear_color`, to draw over a host-composited image (for example 2D
+    /// UI over an upscaled 3D scene). Depth is still cleared.
+    pub preserve_color: bool,
     /// Depth is cleared to this value; the target always has a depth attachment.
     pub clear_depth: f32,
     /// Viewport in target pixels; `None` covers the whole target.
@@ -50,6 +54,7 @@ impl FrameDesc {
             frame: 0,
             target,
             clear_color: [0.0, 0.0, 0.0, 1.0],
+            preserve_color: false,
             clear_depth: 1.0,
             viewport: None,
         }

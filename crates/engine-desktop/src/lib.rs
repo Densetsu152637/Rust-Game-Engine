@@ -16,12 +16,16 @@
 //! once per redraw at the display rate, blending the last two ticks
 //! ([`FramePacer`], [`FrameHistory`], [`interpolate_frame`]).
 //!
+//! The optional `dlss` feature (forwarding to `engine-dlss/ngx-vulkan`) lets a
+//! 3D camera's `upscaler` request DLSS Super Resolution; see [`request_upscaler_gpu`].
+//!
 //! Games compile into the host executable and use this exact `wgpu` type universe.
 //! Register [`NativeRenderPass`] implementations in [`NativeRenderPasses`] before
 //! launching the runner, or construct [`GpuRenderer`] directly for another host.
 
 mod backend;
 mod camera;
+mod dlss;
 mod input;
 mod interpolation;
 mod pacing;
@@ -33,6 +37,10 @@ mod window;
 
 pub use backend::*;
 pub use camera::*;
+pub use dlss::{
+    DEFAULT_NGX_PROJECT_ID, DlssConfig, NGX_LOG_DIR_ENV_VAR, NGX_RUNTIME_DIR_ENV_VAR,
+    UpscalerDevice, build_unavailable_reason, request_upscaler_gpu,
+};
 pub use engine_render;
 pub use engine_render_wgpu::{
     BACKEND_ENV_VAR, GpuContext, GpuRequirements, OffscreenTarget, RenderTargetInfo, WgpuBackend,

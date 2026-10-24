@@ -1091,3 +1091,71 @@ fn custom_schema_discovery_set_validation_and_transactional_parent_edit_share_mo
     );
     assert_eq!(got["entity"]["parent"], "camera");
 }
+
+// ---- upscaler setting -------------------------------------------------------------------
+
+#[test]
+fn component_set_edits_the_camera_upscaler_request() {
+    let dir = fixture();
+    let schema = data(
+        dir.path(),
+        "component_schema",
+        json!({"component":"Camera3D"}),
+    );
+    let upscaler = &schema["components"][0]["schema"]["properties"]["upscaler"];
+    assert_eq!(
+        upscaler["properties"]["mode"]["enum"],
+        json!(["none", "dlss_sr"])
+    );
+    assert_eq!(
+        upscaler["properties"]["quality"]["enum"],
+        json!([
+            "ultra_performance",
+            "performance",
+            "balanced",
+            "quality",
+            "dlaa"
+        ])
+    );
+    let set = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"Camera3D","value":{"upscaler":{"mode":"dlss_sr"}}}),
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    assert_eq!(
+        set["entity"]["components"]["Camera3D"]["upscaler"],
+        json!({"mode":"dlss_sr","quality":"quality"})
+    );
+    let merged = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"Camera3D","value":{"upscaler":{"mode":"dlss_sr","quality":"dlaa"}},
+            "merge":true}),
+    );
+    assert_eq!(
+        merged["entity"]["components"]["Camera3D"]["upscaler"]["quality"],
+        "dlaa"
+    );
+    let saved: Value = serde_json::from_slice(&bytes(dir.path(), START)).unwrap();
+    let camera = saved["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == "camera")
+        .unwrap();
+    assert_eq!(
+        camera["components"]["Camera3D"]["upscaler"],
+        json!({"mode":"dlss_sr","quality":"dlaa"})
+    );
+    let original = bytes(dir.path(), START);
+    let bad = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"Camera3D","value":{"upscaler":{"mode":"dlss5"}}}),
+    );
+    rejected(dir.path(), &bad, "component_invalid", &original);
+}

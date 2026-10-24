@@ -9,6 +9,7 @@ bevy_ecs.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 engine-core = { path = "../engine-core" }
 engine-audio = { path = "../engine-audio" }
+engine-dlss = { path = "../engine-dlss", optional = true }
 engine-project = { path = "../engine-project" }
 engine-render = { path = "../engine-render" }
 engine-render-wgpu = { path = "../engine-render-wgpu" }
@@ -18,6 +19,13 @@ pollster = "0.4"
 serde = { version = "1", features = ["derive"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 winit = "=0.30.13"
+
+[features]
+default = []
+# DLSS Super Resolution through NGX on Vulkan. Needs NGX_SDK_DIR and
+# VULKAN_HEADERS_DIR at build time; without them the build still succeeds and
+# DLSS requests report the missing SDK.
+dlss = ["dep:engine-dlss", "engine-dlss/ngx-vulkan"]
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }

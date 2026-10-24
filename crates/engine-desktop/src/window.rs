@@ -1,6 +1,6 @@
 use crate::{
-    GpuContext, GpuRenderer, GpuRequirements, RenderLimits, RenderStats, RenderTargetInfo,
-    WgpuOptions,
+    DlssConfig, GpuContext, GpuRenderer, GpuRequirements, RenderLimits, RenderStats,
+    RenderTargetInfo, WgpuOptions,
 };
 use anyhow::{Context, Result, bail};
 use engine_core::bevy_ecs::world::World;
@@ -76,14 +76,29 @@ impl WindowSurface {
     pub async fn with_options(
         window: Arc<Window>,
         limits: RenderLimits,
+        options: WgpuOptions,
+    ) -> Result<Self> {
+        Self::with_upscaler(window, limits, options, &DlssConfig::default(), false).await
+    }
+
+    /// [`Self::with_options`] that, with `want_dlss`, first attempts a
+    /// DLSS-capable device ([`crate::request_upscaler_gpu`]). The renderer
+    /// records whether DLSS can run and why not.
+    pub async fn with_upscaler(
+        window: Arc<Window>,
+        limits: RenderLimits,
         mut options: WgpuOptions,
+        dlss: &DlssConfig,
+        want_dlss: bool,
     ) -> Result<Self> {
         options.frames_in_flight = limits.max_frames_in_flight as u32;
         let instance = GpuContext::instance_with(options.backends);
         let surface = instance
             .create_surface(window.clone())
             .context("creating window surface")?;
-        let gpu = GpuContext::request_with_options(instance, Some(&surface), &options).await?;
+        let (gpu, upscaler) =
+            crate::request_upscaler_gpu(instance, Some(&surface), &options, dlss, want_dlss)
+                .await?;
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
@@ -98,7 +113,7 @@ impl WindowSurface {
         )?;
         config.desired_maximum_frame_latency = limits.max_frames_in_flight as u32;
         surface.configure(&gpu.device, &config);
-        let renderer = GpuRenderer::new(
+        let renderer = GpuRenderer::with_upscaler_device(
             gpu,
             RenderTargetInfo {
                 width: config.width,
@@ -106,6 +121,7 @@ impl WindowSurface {
                 format: config.format,
             },
             limits,
+            upscaler,
         )?;
         Ok(Self {
             window,

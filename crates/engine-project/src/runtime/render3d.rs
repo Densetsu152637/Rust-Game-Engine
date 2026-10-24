@@ -46,28 +46,15 @@ impl Runtime {
                 }
             }
         }
-        let mut cameras: Vec<_> = world
-            .iter_entities()
-            .filter_map(|entity| {
-                entity
-                    .get::<Camera3D>()
-                    .filter(|camera| camera.active)
-                    .map(|camera| (entity, camera))
-            })
-            .collect();
-        cameras.sort_by_key(|(entity, _)| {
-            entity
-                .get::<AuthoredId>()
-                .map(|id| id.id.clone())
-                .unwrap_or_else(|| entity.id().to_bits().to_string())
-        });
-        let Some((entity, camera)) = cameras.first() else {
+        let Some((entity, camera)) = active_camera3d(world) else {
             return Ok(frame);
         };
         camera.validate()?;
+        let mut camera = camera.clone();
+        camera.upscaler = effective_upscaler(world, &camera);
         frame.camera3d = Some(CameraInstance3D {
-            camera: (*camera).clone(),
-            world: crate::world_transform(world, entity.id())?.matrix,
+            camera,
+            world: crate::world_transform(world, entity)?.matrix,
         });
         let mut mesh_ids = BTreeSet::new();
         for entity in world.iter_entities() {
@@ -141,6 +128,21 @@ impl Runtime {
         frame.materials2d.retain(|id, _| !mesh_ids.contains(id));
         Ok(frame)
     }
+    /// The renderer-reported upscaler state. Before any 3D frame was presented
+    /// (for example in headless runs) the request of the active camera is
+    /// reported with state `not_rendered`; `None` without either.
+    pub fn upscaler_status(&self) -> Option<UpscalerStatus> {
+        let world = self.app.world();
+        let (_, camera) = active_camera3d(world)?;
+        let status = world.get_resource::<UpscalerControl>()?.status.clone();
+        if status.state != UpscalerState::NotRendered {
+            return Some(status);
+        }
+        Some(UpscalerStatus {
+            requested: effective_upscaler(world, camera),
+            ..status
+        })
+    }
     fn material_shader(&self, material: &MeshMaterial) -> Result<Option<Arc<str>>> {
         material
             .shader
@@ -164,4 +166,32 @@ impl Runtime {
             })
             .transpose()
     }
+}
+
+/// The first active camera in stable authored-ID order.
+fn active_camera3d(world: &World) -> Option<(Entity, &Camera3D)> {
+    world
+        .iter_entities()
+        .filter_map(|entity| {
+            entity
+                .get::<Camera3D>()
+                .filter(|camera| camera.active)
+                .map(|camera| {
+                    let key = entity
+                        .get::<AuthoredId>()
+                        .map(|id| id.id.clone())
+                        .unwrap_or_else(|| entity.id().to_bits().to_string());
+                    (key, entity.id(), camera)
+                })
+        })
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, entity, camera)| (entity, camera))
+}
+
+/// A native override wins over the camera's authored request.
+fn effective_upscaler(world: &World, camera: &Camera3D) -> UpscalerSettings {
+    world
+        .get_resource::<UpscalerControl>()
+        .and_then(|control| control.override_settings)
+        .unwrap_or(camera.upscaler)
 }

@@ -119,6 +119,16 @@ another host. It exposes `window`, `renderer`, `resize` and `present`.
 same renderer and supports real RGBA readback, including row-alignment removal.
 Custom hosts must call runtime cleanup and `gpu.wait_idle()` before teardown.
 
+## DLSS Super Resolution
+
+The optional `dlss` feature (forwarding to `engine-dlss/ngx-vulkan`) lets a
+`Camera3D.upscaler` request render the 3D scene through NVIDIA DLSS Super
+Resolution before 2D/UI. `request_upscaler_gpu` prepares the Vulkan device NGX
+needs, `GpuRenderer::with_upscaler_device` uses it, and `upscaler_status()`
+reports what happened. Without the feature, SDK, Vulkan or a supported NVIDIA
+GPU the frame renders natively and the status states the reason. Contract,
+configuration and limits: [Scene rendering](../../docs/rendering3d.md#temporal-upscaling-dlss-super-resolution).
+
 `validate_wgsl(source)` performs bounded CPU-only Naga parsing and semantic
 validation with source diagnostics. It requires a shader entry point. Native
 capabilities are admitted at this stage; actual device feature and limit checks
@@ -131,6 +141,7 @@ cargo test -p engine-desktop
 cargo test -p engine-desktop --test gpu_pixels -- --ignored --nocapture
 cargo test -p engine-desktop --test backend_parity -- --ignored --nocapture
 cargo test -p engine-render-wgpu -- --ignored --nocapture
+cargo test -p engine-desktop --test upscaler -- --ignored --nocapture
 cargo clippy -p engine-desktop --all-targets -- -D warnings
 cargo run -p engine-desktop --example desktop_smoke -- --headless
 cargo run -p engine-desktop --example desktop_smoke

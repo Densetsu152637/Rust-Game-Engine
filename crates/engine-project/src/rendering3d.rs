@@ -39,6 +39,9 @@ pub struct Camera3D {
     pub projection: Projection3D,
     pub active: bool,
     pub lighting: SceneLighting,
+    /// Temporal upscaling request for this camera's 3D scene. A request is not a
+    /// claim: [`UpscalerStatus`] reports what the renderer actually did.
+    pub upscaler: UpscalerSettings,
 }
 impl Default for Camera3D {
     fn default() -> Self {
@@ -47,8 +50,101 @@ impl Default for Camera3D {
             projection: Projection3D::default(),
             active: true,
             lighting: SceneLighting::default(),
+            upscaler: UpscalerSettings::default(),
         }
     }
+}
+
+/// Which temporal upscaler renders the 3D scene before 2D sprites/UI.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum UpscalerMode {
+    /// Render the 3D scene at output resolution (the default).
+    #[default]
+    None,
+    /// NVIDIA DLSS Super Resolution through NGX on Vulkan. Requires an engine
+    /// build with the desktop `dlss` feature, the official SDK and runtime, and
+    /// a supported NVIDIA GPU; otherwise the scene renders natively and the
+    /// status reports why.
+    DlssSr,
+}
+
+/// DLSS quality preset. `dlaa` keeps the render size equal to the output size
+/// (anti-aliasing only); the others let NGX choose a smaller render size.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum UpscalerQuality {
+    UltraPerformance,
+    Performance,
+    Balanced,
+    #[default]
+    Quality,
+    Dlaa,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpscalerSettings {
+    pub mode: UpscalerMode,
+    pub quality: UpscalerQuality,
+}
+
+/// What the renderer did with the upscaler request of the last presented 3D frame.
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpscalerState {
+    /// No renderer has presented a 3D frame (for example a headless run).
+    #[default]
+    NotRendered,
+    /// No upscaler was requested; the scene rendered at output resolution.
+    Native,
+    /// DLSS evaluated this frame's scene; `render_size` is the NGX input size.
+    Active,
+    /// An upscaler was requested but the scene rendered natively; see `fallback_reason`.
+    Fallback,
+}
+
+/// Longest fallback reason kept in [`UpscalerStatus`], in bytes.
+pub const MAX_UPSCALER_REASON_BYTES: usize = 512;
+
+/// Renderer-reported upscaler state. `Active` is reported only for a frame whose
+/// DLSS evaluation succeeded; `evaluated_frames` counts successful evaluations.
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+pub struct UpscalerStatus {
+    pub requested: UpscalerSettings,
+    pub state: UpscalerState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render_size: Option<[u32; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_size: Option<[u32; 2]>,
+    pub evaluated_frames: u64,
+    /// Temporal history discards (first frame, cuts, resizes, quality changes).
+    pub history_resets: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+}
+
+/// `reason` truncated to [`MAX_UPSCALER_REASON_BYTES`] on a character boundary.
+pub fn bounded_upscaler_reason(reason: &str) -> String {
+    let mut end = reason.len().min(MAX_UPSCALER_REASON_BYTES);
+    while !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    reason[..end].to_owned()
+}
+
+/// Runtime upscaler control shared by native callbacks and the host renderer.
+/// Callbacks may set `override_settings` (replacing the active camera's authored
+/// `upscaler` while set) and `reset_history` (discard temporal history on the
+/// next presented frame, for example after a camera cut). The host writes
+/// `status` after each presented frame; callbacks should treat it as read-only.
+#[derive(bevy_ecs::prelude::Resource, Clone, Debug, Default)]
+pub struct UpscalerControl {
+    pub override_settings: Option<UpscalerSettings>,
+    pub reset_history: bool,
+    pub status: UpscalerStatus,
 }
 impl Camera3D {
     pub fn validate(&self) -> Result<()> {

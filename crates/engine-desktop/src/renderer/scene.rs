@@ -77,6 +77,9 @@ pub(super) struct SceneResources {
     cache: ResourceCache,
     shaders: HashMap<String, (ShaderHandle, ShaderInterface)>,
     lighting: LightingUniform,
+    /// Engine depth/motion shader for temporal upscaling, created on first use.
+    #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
+    motion: Option<ShaderHandle>,
 }
 
 #[repr(C)]
@@ -125,11 +128,14 @@ impl LightingUniform {
     }
 }
 impl SceneResources {
+    /// 3D color commands. `size` gives the projection aspect; `jitter` is a
+    /// clip-space matrix premultiplied onto the camera (identity when native).
     pub fn build<B: RenderBackend>(
         &mut self,
         device: &mut RenderDevice<B>,
         frame: &SceneRenderFrame,
         size: (u32, u32),
+        jitter: Mat4,
     ) -> Result<(RenderCommandBuffer, RenderStats)> {
         let mut commands = device.make_frame();
         if frame.meshes.is_empty() {
@@ -140,7 +146,7 @@ impl SceneResources {
             .camera3d
             .as_ref()
             .context("3D meshes require an active Camera3D")?;
-        let vp = camera_matrix(camera, size.0 as f32 / size.1 as f32)?;
+        let vp = jitter * camera_matrix(camera, size.0 as f32 / size.1 as f32)?;
         self.lighting = LightingUniform::new(
             &camera.camera.lighting,
             Mat4::from_cols_array_2d(&camera.world).w_axis.truncate(),
@@ -253,6 +259,54 @@ impl SceneResources {
         stats.cached_meshes = self.cache.mesh_count();
         stats.cached_textures = self.cache.texture_count();
         Ok((commands, stats))
+    }
+    /// Depth/motion commands for the opaque meshes of a frame already passed
+    /// to [`Self::build`] (whose cache sync and validation they rely on).
+    /// Transparent meshes write neither depth nor motion, matching the color
+    /// pass's depth writes. Custom vertex displacement is not replayed.
+    #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
+    pub fn build_motion<B: RenderBackend>(
+        &mut self,
+        device: &mut RenderDevice<B>,
+        frame: &SceneRenderFrame,
+        temporal: &super::temporal::TemporalFrame<'_>,
+    ) -> Result<RenderCommandBuffer> {
+        let shader = match self.motion {
+            Some(shader) => shader,
+            None => {
+                let resource = ShaderResource::new(
+                    "temporal depth and motion",
+                    ShaderSource::wgsl(super::temporal::MOTION_WGSL),
+                );
+                ShaderInterface::reflect(&resource)?.check_vertex_layout(&vertex_layout())?;
+                let shader = device.create_shader(resource)?;
+                self.motion = Some(shader);
+                shader
+            }
+        };
+        let mut commands = device.make_frame();
+        let mut draws: Vec<_> = frame
+            .meshes
+            .iter()
+            .filter(|d| !d.material.transparent)
+            .collect();
+        draws.sort_by(|a, b| a.id.cmp(&b.id));
+        for draw in draws {
+            let Some(mesh) = self.cache.mesh_handle(&draw.mesh) else {
+                continue;
+            };
+            let mut command = DrawCommand::new(shader, mesh);
+            command.uniforms = vec![DrawUniform::from_pod(
+                "motion",
+                UniformSlot::new(0, 0),
+                &temporal.uniform(draw),
+            )];
+            command.state.depth_test = true;
+            command.state.depth_write = true;
+            command.state.blend = engine_render::BlendMode::Opaque;
+            commands.record(command)?;
+        }
+        Ok(commands)
     }
     pub fn material<B: RenderBackend>(
         &mut self,

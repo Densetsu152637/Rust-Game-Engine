@@ -76,6 +76,11 @@ impl Tool for ScreenshotTool {
                     "name": {"type": "string"}, "backend": {"type": "string"},
                     "device_type": {"type": "string"}}}),
                 ),
+                (
+                    "upscaler",
+                    json!({"type": ["object", "null"], "description":
+                        "Temporal upscaler request and what the renderer did for this image."}),
+                ),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
             ])),
@@ -145,6 +150,7 @@ impl Tool for ScreenshotTool {
             "width": width, "height": height, "ticks": report["ticks"],
             "png_bytes": png.len(), "adapter": shot["adapter"],
             "scene_id": report["scene"]["scene"]["scene_id"],
+            "upscaler": report["scene"]["upscaler"],
             "build": build, "run_millis": started.elapsed().as_millis(),
         });
         Ok(ToolResult::new(result).with_content(Content::Image {
