@@ -11,8 +11,7 @@ with the engine itself, into a native executable generation.
 Cargo builds the engine, tools and game generations; there is no additional build
 system. This repository replaces the earlier C++ implementation (EnTT, GLFW, Lua,
 Vulkan). Lua scripting is replaced by Rust game crates. Desktop hosts target
-Windows, Linux and macOS; mobile, browser and console application hosts remain
-unimplemented. See [Platforms](docs/platforms.md) for exact capability boundaries and
+Windows, Linux and macOS; mobile, browser and console hosts are out of scope. See [Platforms](docs/platforms.md) for exact capability boundaries and
 [Architecture](docs/architecture.md#design-decisions) for the design decisions.
 
 Keyboard, mouse/trackpad and controller actions support remapping. Native games
@@ -32,11 +31,12 @@ protocols need an adapter. See [Custom and accessible input](docs/custom-input.m
 | `crates/engine-assets` | Bounded glTF/GLB import, dependency fingerprints and typed generational asset ownership |
 | `crates/engine-physics` | Rapier 2D/3D bodies, contacts, sensors, queries, fixed/revolute joints and impulses |
 | `crates/engine-animation` | Skeletal poses, clip playback, crossfades, events and CPU skinning |
-| `crates/engine-navigation` | Bounded weighted-grid/graph searches and waypoint following |
-| `crates/engine-network` | Opt-in authoritative TCP sessions, ownership-checked input, snapshots and interpolation |
+| `crates/engine-navigation` | Bounded layered polygon NavMesh baking and pathfinding, weighted-grid/graph searches and waypoint following |
+| `crates/engine-network` | Opt-in authoritative sessions over mutual-TLS 1.3 (or explicit plaintext trusted-LAN TCP), ownership-checked input, snapshots and interpolation |
 | `crates/engine-platform` | Explicit host capabilities, unsupported-host errors and native package host metadata |
 | `crates/engine-project` | Authored schemas and typed component catalog, hierarchy, callbacks, simulation/network/UI adapters, runtime snapshots, persistence and transactional scene/prefab editing |
 | `crates/engine-desktop` | Main-thread winit host, 2D sprites and depth-tested 3D scenes, materials/custom WGSL, input, headless runner and native render passes |
+| `crates/engine-dlss` | Optional standalone NVIDIA DLSS Super Resolution (NGX/Vulkan) crate; not part of the renderer's default path |
 | `crates/engine-audio` | PCM clips, deterministic stereo mixer, spatial sources, CPAL device output |
 | `crates/engine-editor` | Portable egui/eframe scene editor, real rendered viewport, shared `EditorController` and isolated Cargo-backed play; retained Win32 smoke controls |
 | `crates/engine-mcp` | MCP stdio server for agents: project/scene/asset/file read tools, `--allow-write` scene and file edits, `project://` resources, and a `ToolProvider` for the CLI's `--allow-exec` build/run/screenshot tools |
@@ -45,14 +45,17 @@ protocols need an adapter. See [Custom and accessible input](docs/custom-input.m
 | `examples/desktop-2d` | 2D desktop synthetic lab: sprites, text, collision, rooms, audio, saves |
 | `examples/native-extension` | Custom components, systems and a custom wgpu render pass |
 | `examples/programmable-world` | Authored 3D scene, retained HUD, typed callbacks, physics, animation and navigation; GPU-free default and optional window |
+| `examples/pbr-shadows` | Data-only authored project (no Cargo crate) with PBR spheres and a directional shadow, run by `cargo run -p engine-desktop --example pbr_shadows` |
 | `assets/scripts/moving_entity` | Smallest script crate: one entity advanced along +X |
 | `docs/` | Documentation, starting at [docs/README.md](docs/README.md) |
 | `scripts/ci/` | Helper scripts used by the CI workflow |
 
-The `crates/*` directories form the root Cargo workspace. Each directory under
+The `crates/*` directories form the root Cargo workspace. Each Cargo example under
 `examples/` and `assets/scripts/moving_entity` is its own workspace root (an empty
 `[workspace]` table), so the engine workspace never builds them and their
-`Cargo.lock` and `target` directories are local and ignored.
+`Cargo.lock` and `target` directories are local and ignored. `examples/pbr-shadows`
+is a data project run through the workspace `engine-desktop` example, so the
+workspace tests, clippy and example build cover it.
 
 ## Prerequisites
 
@@ -63,8 +66,8 @@ The `crates/*` directories form the root Cargo workspace. Each directory under
   editor have Windows/Linux/macOS code paths. Linux builds need the ALSA, udev and
   window-system development packages (see `.github/workflows/ci.yml` for the list
   used by CI). Linux and macOS builds and interactive execution remain unverified
-  until their respective runner/device checks pass. WebAssembly has a compile-only
-  portable-library check, not a browser game host.
+  until their respective runner/device checks pass. A WebAssembly compile-only
+  check covers some portable libraries; it is not a game host.
 - A GPU adapter is needed only for the explicitly ignored rendering tests and for
   visible runs. An audio output device is needed only for native playback.
 
@@ -152,11 +155,19 @@ Retained game UI supplies layout, controls, clipping, focus and callback events;
 multiplayer sessions are explicit and use server-authoritative state.
 
 These are executable foundations, not a claim of Unity feature parity or AAA
-production readiness. The renderer has simple directional lighting and custom
-WGSL and CPU-deformed skinned meshes; it does not provide PBR, shadows or GPU skinning.
-Animation has no graph editor, IK or retargeting; navigation has no NavMesh baking
-or crowd avoidance. Networking is a bounded trusted-network baseline without
-authentication, encryption, prediction or matchmaking. Packages are host-native
+production readiness. The renderer provides metallic-roughness PBR materials with
+texture maps, one directional light with an optional shadow map (no cascades, point or
+spot shadows, IBL or HDR tone mapping), custom WGSL and CPU-deformed skinned meshes
+([3D rendering](docs/rendering3d.md)); there is no GPU skinning. Animation has no
+graph editor, IK or retargeting. Navigation bakes layered polygon NavMeshes and
+finds bounded paths through runtime and MCP tools; it has no crowd avoidance
+([Navigation](docs/navigation.md)). Multiplayer can use mutual-certificate TLS 1.3
+with a native authorization policy; it has no prediction, rollback, matchmaking or
+NAT traversal, and plaintext APIs remain for trusted LANs
+([Multiplayer](docs/networking.md)). The optional `engine-dlss` crate provides
+NVIDIA DLSS Super Resolution on Vulkan as a standalone crate; Frame Generation,
+Ray Reconstruction and DLSS 5 neural rendering are not implemented
+([DLSS](docs/dlss.md)). Packages are host-native
 directories, not signed installers or store submissions. Domain documentation
 records these limits and the tests that establish each feature.
 

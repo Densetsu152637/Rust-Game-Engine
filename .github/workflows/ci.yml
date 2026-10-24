@@ -90,6 +90,10 @@ jobs:
       # are deliberately not run: hosted runners have no such devices.
       - name: cargo test --workspace
         run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+      # examples/pbr-shadows is a data project (no Cargo crate) rendered by the
+      # workspace engine-desktop example, which cargo test --workspace builds.
+      - name: Validate PBR shadows example project
+        run: cargo run --locked -p engine-tooling --bin engine -- project validate examples/pbr-shadows/project.json --no-rust
       - name: Count passed tests
         if: ${{ !cancelled() }}
         run: |

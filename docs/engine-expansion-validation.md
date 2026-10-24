@@ -68,15 +68,21 @@ final frozen revision passed the complete suite.
 ## Remaining boundaries
 
 - This is a functional engine baseline, not Unity parity or an AAA production
-  engine. PBR/shadows, a full animation authoring/state-machine editor, NavMesh
-  baking, large-world streaming and production-scale performance need further work.
-- Networking is a bounded authoritative TCP implementation for trusted networks,
-  without secure Internet transport, matchmaking, prediction or rollback services.
+  engine. A full animation authoring/state-machine editor, crowd avoidance,
+  image-based lighting and cascaded shadows, large-world streaming and
+  production-scale performance need further work. Later work added
+  metallic-roughness PBR with directional shadows ([rendering](rendering3d.md)) and
+  layered NavMesh baking ([navigation](navigation.md)).
+- Networking is a bounded authoritative implementation. It offers mutual-certificate
+  TLS 1.3 ([multiplayer](networking.md)) alongside explicit plaintext trusted-LAN
+  APIs, without matchmaking, NAT traversal, prediction or rollback services.
+- The optional `engine-dlss` crate provides Super Resolution only; Frame Generation,
+  Ray Reconstruction and DLSS 5 neural rendering are not implemented ([DLSS](dlss.md)).
 - Profiles measure CPU stages, not GPU timestamps, allocation costs or individual
   systems. The editor viewport uses GPU readback and basic origin-based picking.
 - Native Windows/Linux/macOS host paths exist. Hosted Linux/macOS results and
   interactive execution must be verified separately. Mobile, browser and console
-  application hosts, SDK packaging and certification are not implemented.
+  hosts are out of scope; SDK packaging and certification are not implemented.
 - WebAssembly coverage is portable-library compilation only; see [platforms](platforms.md).
 - Physical keyboard/controller/assistive-device behavior and portable-editor
   window interaction were not manually verified. OS-emulating devices use the

@@ -144,7 +144,8 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `entity_get` | `scene`, `id` (both required) | One entity by stable authored ID, the catalog assets it references (id, kind, path) and the scene `revision`. Unknown IDs return suggestions. |
 | `component_schema` | `component` (optional enum) | The authored components (`Transform`, `Script`, `MeshRenderer`, `SpriteRenderer`, `Camera2D`, `Collider2D`) as JSON Schema with defaults and a valid example each, an entity schema and the rules the engine enforces. |
 | `asset_list` | `kind` (enum), `offset`, `limit` | Catalog entries: ID, kind, path, size. |
-| `asset_info` | `asset` (ID) | Kind, path, size, kind-specific details (texture size and format, mesh vertex/triangle count and bounds, font glyphs, script line count, scene entity count) and where the asset is used (scene, entity, component, field). |
+| `asset_info` | `asset` (ID) | Kind, path, size, kind-specific details (texture size and format, mesh vertex/triangle count and bounds, font glyphs, script line count, scene entity count) and where the asset is used (scene, entity, component, field), including `MeshMaterial` `shader`, `texture`, `normal_texture` and `metallic_roughness_texture` references. |
+| `navigation_query` | `path`, `start`, `goal`, `query` | A bounded path through a saved navigation document: `status` (`reached`, `unreachable` or `budget_exceeded`), `points` and `polygons`. Uses the same query API as native agents; see [Navigation meshes](navigation.md). |
 | `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |
 | `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
 | `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob` (at most 512 bytes), `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
@@ -167,6 +168,7 @@ nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
 | `component_set` | `entity`, `component`, `value`, `merge` | yes / yes | Replaces one component (omitted fields take defaults) or, with `merge`, overlays fields on the existing one. |
 | `component_remove` | `entity`, `component` | yes / yes | Removes one component; removing an absent one is a no-op. |
 | `file_write` | `path`, `content`, `expected_hash` | yes / yes | Creates or overwrites a UTF-8 text file. |
+| `navigation_bake` | `meshes` (1-128 mesh assets), `output`, `settings`, `obstacles` | no / no | Bakes world-space floor meshes and box obstacles into a new navigation JSON file (never overwrites) and returns the asset entry to add to `project.json`. |
 
 All write tools carry `readOnlyHint: false` and `openWorldHint: false`.
 

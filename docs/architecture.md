@@ -193,9 +193,13 @@ The desktop scene path combines a depth-tested 3D pass with the 2D/UI overlay in
 one submission. `Camera3D` provides perspective or orthographic projection;
 `MeshMaterial` selects textures, tint, unlit/lit behavior and custom WGSL. Opaque
 objects write depth; transparent objects test depth and sort by object origin.
-Built-in lighting uses geometric normals and simple directional light. This is
-not PBR, a shadow pipeline, or integrated skeletal mesh rendering. Supported
-shader bindings and validation are in [3D scene rendering](rendering3d.md).
+The built-in shader is metallic-roughness PBR with optional base-color, normal and
+metallic-roughness textures and one directional light with an optional shadow map;
+skinned meshes are deformed on the CPU. Image-based lighting, cascaded or
+point/spot shadows and GPU skinning are not provided. Supported shader bindings,
+materials and limits are in [3D scene rendering](rendering3d.md). The optional
+`engine-dlss` crate (see [DLSS](dlss.md)) is a standalone Super Resolution library,
+not part of the default render path.
 
 ## Editor and agent authoring
 
@@ -227,9 +231,9 @@ tools (`project_build`, `project_run_headless`, `render_screenshot`) through
 Cargo is the build system for every engine crate and generated game executable.
 The CLI also exposes `platform` capability reports. Packages record their native
 packaging host and launcher; they are directory deployments, not cross-platform
-binaries, signed installers or platform-store submissions. Mobile, browser and
-console application hosts remain unavailable. The portable-library WebAssembly
-job proves compilation only. See [Platforms](platforms.md).
+binaries, signed installers or platform-store submissions. Platform scope is
+Windows, Linux and macOS desktop. The portable-library WebAssembly job proves
+compilation only. See [Platforms](platforms.md).
 
 ## Design decisions
 
@@ -250,8 +254,7 @@ current design:
   handles.
 - **Platforms:** native desktop hosts target Windows/Linux/macOS, with Windows
   local verification and Linux/macOS validation tracked separately. Mobile, web
-  and console require additional host/SDK integration; they are not inferred from
-  dependency portability.
+  and console hosts are out of scope.
 - **Libraries:** serde_json replaces picojson, `image` replaces stb_image, CPAL and
   Hound provide audio output and WAV decoding, and `tracing` (via `engine-log`)
   replaces the C++ logger.
@@ -260,8 +263,9 @@ current design:
 
 The workspace supplies working feature foundations with explicit failure paths,
 not AAA readiness or full parity with a mature commercial engine. Important gaps
-include advanced rendering/shadows, animation graphs/IK/retargeting, NavMesh
-baking/crowd avoidance, authenticated Internet networking/prediction/matchmaking,
+include image-based lighting and cascaded/point/spot shadows, animation
+graphs/IK/retargeting, crowd avoidance, multiplayer prediction/matchmaking/NAT
+traversal, DLSS Frame Generation/Ray Reconstruction/neural rendering,
 text-input/accessibility UI, and platform-certified distribution. Domain docs
 state exact supported subsets. Passing unit tests, a local GPU test and compiling
 portable libraries establish different properties; none substitutes for platform

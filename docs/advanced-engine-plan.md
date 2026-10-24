@@ -51,3 +51,16 @@ schema/API changes before integration. No worker writes another checkout.
 The work establishes concrete tested capabilities. It does not imply DDoS
 resistance, platform certification, perfect photorealism, or unmeasured production
 scale. Security controls and limitations require an independent scoped review.
+
+## Status (2026-10-24)
+
+| Workstream | State | Detail |
+| --- | --- | --- |
+| PBR/shadows | Implemented | Metallic-roughness materials, normal/metallic-roughness textures and a directional shadow map: [rendering](rendering3d.md), `examples/pbr-shadows` |
+| NavMesh | Implemented | Layered polygon bake, bounded queries, `NavigationAgent` runtime mode and `navigation_bake`/`navigation_query` MCP tools: [navigation](navigation.md) |
+| Secure networking | Implemented | Mutual-certificate TLS 1.3 with native authorization policy, plaintext APIs retained for trusted LANs: [networking](networking.md) |
+| Desktop portability | Implemented, hosted results unverified | macOS data-alias fix and `scripts/ci/check-desktop-examples.sh` on Linux/macOS jobs; hosted runner results must be recorded separately |
+| DLSS | Super Resolution crate only | Optional standalone `engine-dlss` crate ([DLSS](dlss.md)); Frame Generation and Ray Reconstruction are not implemented and DLSS 5 neural rendering is deferred (no SDK access) |
+
+Known remaining boundaries: no image-based lighting, cascaded or point/spot
+shadows, crowd avoidance, prediction/rollback, matchmaking or NAT traversal.

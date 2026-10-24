@@ -35,9 +35,9 @@ the authoring APIs; compiling and running a game does not require opening it.
 These criteria establish useful engine capabilities, not Unity parity or AAA
 production readiness. Production scale, visual quality, platform certification,
 security and performance require separate evidence on representative games and
-hardware. A grid pathfinder is not a NavMesh implementation; basic lighting is not
-a full physically based renderer; plaintext local networking is not a secured
-Internet service.
+hardware. A grid pathfinder is not a NavMesh; the PBR and shadow renderer lacks
+image-based lighting and cascades; plaintext local networking is not a secured
+Internet service (see the TLS transport in [networking](networking.md)).
 
 ## Shared contracts
 
@@ -77,6 +77,6 @@ The integrated baseline and its acceptance evidence are recorded in
 
 Implementation status and limitations must be updated from the final code and
 recorded command results. Features are not considered complete merely because
-they appear in this plan. Desktop, browser, mobile and console support each need
-their own host, packaging, input/device and execution evidence. SDK or hardware
+they appear in this plan. Platform scope is Windows, Linux and macOS desktop; each
+needs its own packaging, input/device and execution evidence. SDK or hardware
 availability must be reported rather than simulated by capability flags.

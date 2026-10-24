@@ -29,6 +29,8 @@
 - [Programmable world](../examples/programmable-world/README.md): a 3D scene and
   retained HUD connected through typed callbacks, physics, animation and navigation;
   GPU-free default execution and an optional desktop window.
+- [PBR and shadows](../examples/pbr-shadows/README.md): three PBR spheres and a
+  directional shadow map, rendered to PNG or a window by an `engine-desktop` example.
 - [Moving entity](../assets/scripts/moving_entity/src/lib.rs): the smallest script
   crate.
 
@@ -36,12 +38,16 @@
 
 - [Desktop rendering](desktop-2d-rendering.md): CPU content, the render contract,
   wgpu host and native render-pass extensions.
-- [3D scene rendering](rendering3d.md): cameras, depth, directional lighting,
-  transparent draws, materials and custom WGSL.
+- [3D scene rendering](rendering3d.md): cameras, depth, metallic-roughness PBR
+  materials, directional shadow maps, transparent draws and custom WGSL.
+- [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
+  crate, SDK setup and feature scope.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
   fingerprints, ownership and reload behavior.
 - [Authored simulation](simulation.md): 2D/3D rigid bodies, animation and navigation
   adapters, transform authority and callback events.
+- [Navigation meshes](navigation.md): layered polygon NavMesh baking, bounded path
+  queries, authored `NavigationAgent` data and MCP navigation tools.
 - [Physics library](../crates/engine-physics/README.md),
   [animation library](../crates/engine-animation/README.md), and
   [navigation library](../crates/engine-navigation/README.md): native APIs and limits.
@@ -53,8 +59,8 @@
   remapping, hold/toggle actions and device diagnostics.
 - [Retained game UI](game-ui.md): hierarchy/layout, controls, clipping, focus and
   native callback integration.
-- [Multiplayer](networking.md): authoritative sessions, replication, ownership,
-  runtime integration and trusted-network limits.
+- [Multiplayer](networking.md): authoritative sessions, mutual-TLS 1.3 transport,
+  replication, ownership, runtime integration and plaintext trusted-LAN limits.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,
   typed adapters, hierarchy, events, batches and prefabs shared with MCP.
 - [Scheduled events](scheduled-events.md): CLI/MCP event injection, callback

@@ -154,8 +154,9 @@ The versioned `model` asset is self-contained JSON:
 references, numeric data, hierarchy and aggregate capacities. `node_entities[i]`
 is the prefab entity corresponding to source node `i`, before the instance prefix.
 This preserves richer vertex channels, full PBR properties, skin data, clips and
-original scene selections. Rendering currently uses base color and geometric
-lighting; full glTF PBR is preserved as metadata.
+original scene selections. The renderer consumes base color, metallic/roughness,
+normal maps and source normals; emissive, occlusion, alpha mask and sampler modes
+are preserved as metadata ([3D rendering](rendering3d.md)).
 
 Step/linear TRS clips become `animation` assets with per-channel key times. The
 first supported clip is attached to the prefab root as `engine.AnimationPlayer`,

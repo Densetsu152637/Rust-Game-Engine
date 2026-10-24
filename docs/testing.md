@@ -111,7 +111,7 @@ runs, pinned action SHAs and the toolchain installed from `rust-toolchain.toml` 
 | Job | Runner | What it runs |
 | --- | --- | --- |
 | Format and Clippy | `windows-latest` | `cargo fmt --check` for the workspace and each example crate, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and clippy for each example crate |
-| Workspace tests | `windows-latest` | `cargo test --workspace --locked` and a passed-test count |
+| Workspace tests | `windows-latest` | `cargo test --workspace --locked`, `engine project validate` of the data-only `examples/pbr-shadows` project (its renderer example is built by the workspace tests) and a passed-test count |
 | Example tests | `windows-latest`, one job per example | `cargo test --manifest-path` for `desktop-2d`, `first-project`, `native-extension`, `programmable-world` (default features) and `assets/scripts/moving_entity` (plus the desktop-2d fixture validator) and a passed-test count |
 | Test count gate | `ubuntu-latest` | Sums the counts above and fails when fewer than 1000 tests passed |
 | Workspace tests (Linux) | `ubuntu-latest` | `cargo test --workspace --locked` and standalone desktop entry-point checks after installing ALSA, udev and window-system development packages |

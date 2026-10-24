@@ -92,8 +92,10 @@ the follower converts movement to local coordinates under parents. Changing
 configuration replaces the path from the current world position. One
 `navigation.arrived` event is emitted on completion of a nonempty path. Native
 `engine-navigation::Grid` and `Graph` provide bounded path searches; game code
-can convert their returned nodes into these waypoints. There is no navmesh,
-obstacle avoidance or automatic obstacle baking.
+can convert their returned nodes into these waypoints. Alternatively an agent with
+`navmesh` and `target` fields follows paths found on a baked layered polygon NavMesh
+asset (see [Navigation meshes](navigation.md)). There is no crowd or dynamic obstacle
+avoidance.
 
 Animation cannot share any target with another animation, physics or navigation
 writer. Navigation may drive a kinematic body, but cannot share a fixed/dynamic
