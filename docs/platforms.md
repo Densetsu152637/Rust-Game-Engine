@@ -18,7 +18,7 @@ cross-compilation target or enable a missing host. Names are `windows`, `linux`,
 | --- | --- | --- |
 | Windows | Native window/GPU, audio, gamepad, directory packaging, CPU profiling | Windows CI; real devices require separate tests |
 | Linux | Native window/GPU, ALSA audio, gamepad, directory packaging, CPU profiling | Linux CI; system development packages required |
-| macOS | Native window/GPU, audio, gamepad, directory packaging, CPU profiling | macOS CI added; hosted execution and interactive hardware remain separate evidence |
+| macOS | Native window/GPU, audio, gamepad, directory packaging, CPU profiling | Native macOS CI; hosted tests and interactive hardware remain separate evidence |
 | WebAssembly | Compile check of core, ECS, backend-neutral render and platform libraries | No browser game host, browser input/audio bridge, or web package |
 | Android / iOS | No complete application host | Lifecycle, device services, platform SDK build and store packaging missing |
 | Console / other | No implemented host | Requires platform access/SDK and host integration; no console support claim |
@@ -49,8 +49,29 @@ macOS app bundles/signing/notarization, mobile store bundles, or console package
 
 ## CI and local checks
 
-Windows and Linux workspace jobs are retained. A macOS workspace test job and a
-`wasm32-unknown-unknown` portable-library compile job add regression checks.
+Desktop work targets Windows, Linux and macOS. Each has a native workspace test
+job. Linux and macOS also compile the standalone desktop examples, including the
+optional `programmable-world` window feature. Windows runs the example tests and
+lint jobs. Build with the pinned Rust toolchain and the native host linker:
+
+```text
+cargo build --workspace --locked
+cargo test --workspace --locked
+bash scripts/ci/check-desktop-examples.sh
+```
+
+On Windows, use the MSVC C++ build tools and Git for Windows Bash for the script.
+On macOS, use the Xcode command-line developer tools. On Debian/Ubuntu Linux,
+install `pkg-config`, `libasound2-dev`, `libudev-dev`, `libxkbcommon-dev`,
+`libwayland-dev`, `libx11-dev`, `libxcursor-dev`, `libxi-dev`, `libxrandr-dev` and
+`libxcb1-dev`, as the native CI job does. A graphical session and working native
+devices are required only for interactive/device checks.
+
+Player persistence accepts macOS's standard `/var` and `/tmp` aliases after
+checking their targets, while continuing to reject arbitrary symlinks in data
+paths. See [desktop-services.md](desktop-services.md) for that boundary.
+
+The existing `wasm32-unknown-unknown` portable-library compile check is retained:
 
 ```text
 rustup target add wasm32-unknown-unknown

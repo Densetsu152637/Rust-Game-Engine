@@ -71,7 +71,11 @@ root; player data never belongs inside a packaged project.
 
 - **Names.** Slot and project identifiers contain only ASCII letters, digits,
   underscore and hyphen, at most 64 bytes. Paths, traversal, links and junctions
-  (including temporary, backup and lock files) are rejected. This confines authored
+  (including temporary, backup and lock files) are rejected. On macOS, the system
+  aliases `/var` and `/tmp` are resolved only when their actual link targets are
+  `/private/var` and `/private/tmp`, respectively. Every component of the resolved
+  root is then checked; arbitrary links below these aliases remain rejected,
+  including when the requested data root does not yet exist. This confines authored
   content in a trusted user-data directory; it is not a defense against another
   process swapping directory entries.
 - **Envelope.** Each document is `{ "schema": N, "content_version": M, "data": {...} }`

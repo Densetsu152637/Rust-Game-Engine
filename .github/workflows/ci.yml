@@ -219,6 +219,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo test --workspace
         run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+      - name: Check standalone desktop entry points
+        run: bash scripts/ci/check-desktop-examples.sh
       - name: Report passed tests
         if: ${{ !cancelled() }}
         run: |
@@ -243,6 +245,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo test --workspace
         run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+      - name: Check standalone desktop entry points
+        run: bash scripts/ci/check-desktop-examples.sh
       - name: Report passed tests
         if: ${{ !cancelled() }}
         run: |

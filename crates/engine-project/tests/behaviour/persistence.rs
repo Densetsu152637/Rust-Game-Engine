@@ -1386,6 +1386,35 @@ fn settings_have_their_own_lock() {
 
 // ---- links ------------------------------------------------------------------------------------------------------------------------------------
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_system_temporary_aliases_allow_new_roots_and_round_trip_saves() {
+    for parent in ["/tmp", "/var/tmp"] {
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let root = dir.path().join("new/player-data");
+        let s = store(&root);
+        s.save("slot", n(7), None).unwrap();
+        s.save_settings(n(9), None).unwrap();
+        assert_eq!(level(&s, "slot"), 7);
+        assert_eq!(s.load_settings(None).unwrap(), n(9));
+        assert!(primary(&root, "slot").is_file());
+    }
+}
+
+#[test]
+fn an_arbitrary_symlinked_root_ancestor_is_refused_before_creating_directories() {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let link = dir.path().join("ancestor-link");
+    if !try_symlink_dir(elsewhere.path(), &link) {
+        eprintln!("symlink creation unavailable; test skipped");
+        return;
+    }
+    let s = store(&link.join("new/player-data"));
+    expect_code(s.save("slot", n(1), None), "persistence.path.link");
+    assert!(fs::read_dir(elsewhere.path()).unwrap().next().is_none());
+}
+
 #[test]
 fn a_symlinked_saves_directory_is_refused() {
     let dir = tempfile::tempdir().unwrap();

@@ -8,6 +8,7 @@ Use the toolchain pinned in `rust-toolchain.toml`.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+bash scripts/ci/check-desktop-examples.sh
 ```
 
 The standalone example crates are separate Cargo workspace roots with local,
@@ -21,6 +22,12 @@ cargo test --manifest-path examples/programmable-world/Cargo.toml
 cargo test --manifest-path assets/scripts/moving_entity/Cargo.toml
 python examples/desktop-2d/tools/validate_fixture.py
 ```
+
+`check-desktop-examples.sh` compiles all targets of `desktop-2d`, `first-project`
+and `native-extension`, plus `programmable-world` with its `desktop` feature. It
+uses `target/desktop-examples` to reuse dependencies unless `CARGO_TARGET_DIR` is
+set. Linux and macOS CI run the same script after workspace tests. This checks
+native entry-point compilation without opening a window or device.
 
 `programmable-world` uses its default GPU-free configuration in CI. Its integration
 test drives ordinary runtime ticks and checks HUD callbacks, typed score changes,
@@ -84,8 +91,13 @@ audio, visual quality, physical gamepad and window interaction remain manual che
 
 Windows compilation and real 3D readback tests have been exercised locally using
 an NVIDIA GeForce RTX 5080 through Vulkan. That evidence covers the tested GPU
-path, not all drivers/backends or portable-editor physical interaction. Linux and
-macOS builds and interactive runs remain unverified here. Record the revision,
+path, not all drivers/backends or portable-editor physical interaction. The baseline
+[CI run for `dbfef40`](https://github.com/Densetsu152637/Rust-Game-Engine/actions/runs/40060400676)
+passed Linux workspace tests. macOS compiled but failed 125 persistence tests
+because its system `/var` alias was rejected. The fix resolves only verified
+macOS system aliases and has explicit save/settings regression coverage; a new
+hosted run is required to validate it on macOS. Interactive Linux/macOS runs remain
+unverified here. Record the revision,
 device/backend, command and result for new platform checks rather than treating
 the existence of a CI job as a passed run.
 
@@ -102,8 +114,8 @@ runs, pinned action SHAs and the toolchain installed from `rust-toolchain.toml` 
 | Workspace tests | `windows-latest` | `cargo test --workspace --locked` and a passed-test count |
 | Example tests | `windows-latest`, one job per example | `cargo test --manifest-path` for `desktop-2d`, `first-project`, `native-extension`, `programmable-world` (default features) and `assets/scripts/moving_entity` (plus the desktop-2d fixture validator) and a passed-test count |
 | Test count gate | `ubuntu-latest` | Sums the counts above and fails when fewer than 1000 tests passed |
-| Workspace tests (Linux) | `ubuntu-latest` | `cargo test --workspace --locked` after installing ALSA, udev and window-system development packages |
-| Workspace tests (macOS) | `macos-latest` | `cargo test --workspace --locked`; hardware-dependent tests remain ignored |
+| Workspace tests (Linux) | `ubuntu-latest` | `cargo test --workspace --locked` and standalone desktop entry-point checks after installing ALSA, udev and window-system development packages |
+| Workspace tests (macOS) | `macos-latest` | `cargo test --workspace --locked` and standalone desktop entry-point checks; hardware-dependent tests remain ignored |
 | Portable library compile (WebAssembly) | `ubuntu-latest` | `cargo check --locked --target wasm32-unknown-unknown -p engine-core -p engine-ecs -p engine-render -p engine-platform`; compilation only, no browser host |
 
 `scripts/ci/test-count.sh` parses libtest `test result:` lines (ANSI colour is
@@ -130,7 +142,8 @@ Notes and limits:
   backend-neutral render and platform libraries. There is no browser host or
   browser runtime test. `cargo check` does not establish working filesystem,
   clock, thread, input or device services in WebAssembly.
-- Actionlint validates the workflow statically. Local act job enumeration works,
-  but Docker API access prevented local job rehearsal in the recorded session.
-  Hosted Linux/macOS execution, cache behavior, permissions and cancellation
-  remain separate unverified checks until the respective workflow runs pass.
+- Actionlint validates the workflow statically. Local act job enumeration works;
+  on this Windows host, Docker access requires execution outside the sandbox.
+  Act's Linux container does not reproduce native macOS or Windows runners.
+  Hosted execution, cache behavior, permissions and cancellation remain separate
+  checks until the respective workflow runs pass.

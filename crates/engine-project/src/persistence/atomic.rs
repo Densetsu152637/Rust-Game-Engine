@@ -7,6 +7,25 @@ pub enum PersistenceStage {
     Replace,
 }
 pub type FailureInjection = Option<fn(PersistenceStage) -> bool>;
+
+/// Resolve only macOS's standard temporary-directory aliases. The caller still
+/// checks every component of the resulting root before creating directories.
+pub(super) fn resolve_root(root: &Path) -> Result<PathBuf> {
+    let absolute = std::path::absolute(root)?;
+    #[cfg(target_os = "macos")]
+    for (alias, destination) in [("/var", "/private/var"), ("/tmp", "/private/tmp")] {
+        if let Ok(suffix) = absolute.strip_prefix(alias)
+            && let Ok(target) = fs::read_link(alias)
+            && Path::new("/").join(target) == Path::new(destination)
+        {
+            // Do not canonicalize the complete root: that would hide arbitrary
+            // links in the supplied path, including a symlinked root itself.
+            return Ok(Path::new(destination).join(suffix));
+        }
+    }
+    Ok(absolute)
+}
+
 pub(super) fn reject_link(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(meta) => {

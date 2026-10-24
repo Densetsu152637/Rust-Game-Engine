@@ -108,14 +108,14 @@ impl PersistenceStore {
                 "Slot must be a bounded safe identifier",
             ));
         }
-        let absolute = std::path::absolute(&self.options.root)?;
+        let absolute = atomic::resolve_root(&self.options.root)?;
         let mut prefix = PathBuf::new();
         for component in absolute.components() {
             prefix.push(component);
             reject_link(&prefix)?;
         }
-        fs::create_dir_all(&self.options.root)?;
-        let mut directory = fs::canonicalize(&self.options.root)?;
+        fs::create_dir_all(&absolute)?;
+        let mut directory = fs::canonicalize(&absolute)?;
         for component in [&self.options.project_id, area] {
             directory.push(component);
             reject_link(&directory)?;
