@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "duration": 2,
+  "joints": 1,
+  "tracks": [
+    {
+      "joint": 0,
+      "translation": {
+        "times": [0, 1, 2],
+        "values": [[0, 0.7, 0], [0, 1.7, 0], [0, 0.7, 0]],
+        "interpolation": "linear"
+      },
+      "rotation": {
+        "times": [0, 1, 2],
+        "values": [[0, 0, 0, 1], [0, 0.7071068, 0, 0.7071068], [0, 1, 0, 0]],
+        "interpolation": "linear"
+      }
+    }
+  ],
+  "events": [{ "time": 1, "name": "bob_peak" }]
+}
