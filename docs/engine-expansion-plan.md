@@ -26,6 +26,11 @@ the authoring APIs; compiling and running a game does not require opening it.
    distinguish implementation, compilation and execution validation.
 8. Documentation and examples describe the integrated behavior and its remaining
    limitations. Unsupported capabilities fail explicitly.
+9. Keyboard, mouse/trackpad and controller input share remappable actions.
+   Injectable peripheral adapters work through ordinary runtime ticks, including
+   accessibility controls, with tested disconnect, focus and overlapping-source
+   behavior. OS input emulation uses the standard device paths; proprietary
+   protocols require an adapter rather than an unsupported driver promise.
 
 These criteria establish useful engine capabilities, not Unity parity or AAA
 production readiness. Production scale, visual quality, platform certification,
