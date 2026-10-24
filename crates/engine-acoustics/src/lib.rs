@@ -35,13 +35,14 @@ pub use error::{AcousticsError, Result, unimplemented};
 pub use estimate::{SABINE_CONSTANT, eyring_rt60, sabine_rt60};
 pub use fit::{BandFit, DecayFit, fit_bands, fit_reverb, validate_histogram};
 pub use geometry::{
-    AcousticVolume, Enclosure, Footprint, Footprint2D, ListenerPose, Proxy2DSettings, ProxyMapping,
-    ProxyPlane, VolumeKind, VolumeShape,
+    AcousticVolume, Enclosure, Footprint, Footprint2D, ListenerPose, Proxy2DSettings, ProxyPlane,
+    VolumeKind, VolumeShape,
 };
 pub use ir::synthesize_ir;
 pub use material::{AcousticMaterial, MaterialId, MaterialPreset};
 pub use math::IDENTITY as IDENTITY_AFFINE;
 pub use planes::PlaneCluster;
+pub use proxy2d::{ProxyAir, ProxyMapping};
 pub use service::{
     AcousticState, AcousticStatus, AcousticsService, ParamHook, PropagationRequest,
     PropagationResult, PropagationSettings, PropagationSummary, ServiceConfig, ServiceMode,

@@ -1,5 +1,4 @@
 use crate::{MaterialId, MeshId, Mobility};
-use std::convert::Infallible;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Footprint2D {
@@ -63,25 +62,6 @@ pub struct ListenerPose {
     pub position: [f32; 3],
     pub forward: [f32; 3],
     pub up: [f32; 3],
-}
-
-/// Mapping from game space to proxy acoustic space. It can only come from a
-/// successful `AcousticWorldBuilder::add_proxy_2d`, which is not implemented yet,
-/// so no value exists and the methods are unreachable.
-#[derive(Clone, Debug)]
-pub struct ProxyMapping {
-    never: Infallible,
-}
-impl ProxyMapping {
-    pub fn to_acoustic(&self, _world: [f32; 3]) -> [f32; 3] {
-        match self.never {}
-    }
-    pub fn pose_to_acoustic(&self, _pose: ListenerPose) -> ListenerPose {
-        match self.never {}
-    }
-    pub fn metres_per_unit(&self) -> f32 {
-        match self.never {}
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
