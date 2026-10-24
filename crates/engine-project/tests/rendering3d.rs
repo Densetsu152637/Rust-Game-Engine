@@ -404,3 +404,130 @@ fn authored_frame_generation_is_validated_documented_and_overridable() {
         2
     );
 }
+
+#[test]
+fn render_feature_overrides_are_authored_through_component_set_and_reported() {
+    use engine_project::document::{EditOperation, SceneDocument};
+    let dir = fixture();
+    let mut document = SceneDocument::load(dir.path().join("project.json")).unwrap();
+    let revision = document.revision().to_owned();
+    let set = |value: serde_json::Value| EditOperation::SetComponent {
+        entity_id: "camera".into(),
+        component: "Camera3D".into(),
+        value,
+        merge: true,
+    };
+    let revision = document
+        .apply(
+            set(json!({"render_features": {"engine.opaque": false, "world.terrain": true}})),
+            &revision,
+        )
+        .unwrap();
+    for bad in [
+        json!({"render_features": {"Bad Name": false}}),
+        json!({"render_features": {"engine.opaque": "no"}}),
+        json!({"render_features": (0..65).map(|i| (format!("f{i}"), json!(true))).collect::<serde_json::Map<_, _>>()}),
+    ] {
+        assert!(document.apply(set(bad), &revision).is_err());
+    }
+    let mut project = Project::load(dir.path().join("project.json")).unwrap();
+    project.scene = document.snapshot().clone();
+    let runtime = Runtime::new(project).unwrap();
+    let frame = runtime.extract_scene_frame().unwrap();
+    let camera = &frame.camera3d.as_ref().unwrap().camera;
+    assert_eq!(camera.render_features.get("engine.opaque"), Some(&false));
+    let status = runtime.render_pipeline_status().unwrap();
+    assert_eq!(status.state, RenderPipelineState::NotRendered);
+    assert_eq!(status.overrides, camera.render_features);
+    let snapshot = serde_json::to_value(runtime.try_snapshot().unwrap()).unwrap();
+    assert_eq!(
+        snapshot["render_pipeline"]["overrides"]["engine.opaque"],
+        json!(false)
+    );
+    // Round trip: empty maps are not serialized; authored ones are.
+    let camera: Camera3D = serde_json::from_value(json!({})).unwrap();
+    assert!(
+        serde_json::to_value(&camera)
+            .unwrap()
+            .get("render_features")
+            .is_none()
+    );
+    let docs = engine_project::component_docs();
+    let doc = docs.iter().find(|d| d.name == "Camera3D").unwrap();
+    assert!(
+        doc.schema["properties"]["render_features"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("engine.opaque")
+    );
+}
+
+#[test]
+fn texture_streams_resolve_for_mesh_materials_by_stream_name() {
+    let dir = fixture();
+    let scene: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.path().join("scene.json")).unwrap()).unwrap();
+    let mut scene = scene;
+    scene["entities"][2]["components"]["MeshMaterial"]["texture"] = json!("stream:video");
+    fs::write(
+        dir.path().join("scene.json"),
+        serde_json::to_vec(&scene).unwrap(),
+    )
+    .unwrap();
+    let project = Project::load(dir.path().join("project.json")).unwrap();
+    let mut runtime = Runtime::new(project).unwrap();
+    let error = runtime.extract_scene_frame().unwrap_err();
+    assert!(
+        format!("{error}").contains("render.texture_stream.unknown"),
+        "{error}"
+    );
+    {
+        let world = runtime.app_mut().world_mut();
+        let mut streams = world.resource_mut::<TextureStreams>();
+        streams.create_cpu("video", 2, 1).unwrap();
+        assert!(streams.create_cpu("bad name", 2, 1).is_err());
+        assert!(streams.create_cpu("huge", 9000, 1).is_err());
+        assert!(
+            streams.upload_rgba("video", vec![0; 3]).is_err(),
+            "wrong size"
+        );
+        assert_eq!(streams.upload_rgba("video", vec![255; 8]).unwrap(), 1);
+        streams.create_external("camera", 4, 4).unwrap();
+        assert!(
+            streams.upload_rgba("camera", vec![0; 64]).is_err(),
+            "external streams are written on the GPU"
+        );
+        assert_eq!(streams.mark_written("camera").unwrap(), 1);
+    }
+    let frame = runtime.extract_scene_frame().unwrap();
+    assert_eq!(frame.streams.len(), 1);
+    let stream = &frame.streams[0];
+    assert_eq!(
+        (stream.name.as_str(), stream.revision, stream.size),
+        ("video", 1, [2, 1])
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        frame.meshes[0].texture.as_ref().unwrap(),
+        &stream.texture
+    ));
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<TextureStreams>()
+        .upload_rgba("video", vec![0; 8])
+        .unwrap();
+    let next = runtime.extract_scene_frame().unwrap();
+    assert_eq!(next.streams[0].revision, 2);
+    assert!(!std::sync::Arc::ptr_eq(
+        &next.streams[0].texture,
+        &stream.texture
+    ));
+    // Stream references are validated by name, not as catalog assets.
+    scene["entities"][2]["components"]["MeshMaterial"]["texture"] = json!("stream:bad name");
+    fs::write(
+        dir.path().join("scene.json"),
+        serde_json::to_vec(&scene).unwrap(),
+    )
+    .unwrap();
+    assert!(Project::load(dir.path().join("project.json")).is_err());
+}

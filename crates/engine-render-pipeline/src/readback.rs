@@ -1,7 +1,7 @@
 //! Blocking readback of `Rgba16Float` textures for tests and tools.
 
 use crate::pipeline::HdrImage;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use engine_render_wgpu::GpuContext;
 
 /// IEEE 754 half to `f32`.
@@ -17,14 +17,16 @@ pub fn f16_to_f32(bits: u16) -> f32 {
     }
 }
 
-/// Wait for the GPU and read every texel of an `Rgba16Float` texture.
+/// Wait for the GPU and read every texel of an `Rgba16Float` or
+/// `Rg16Float` texture (missing channels read as 0).
 pub fn read_rgba16f(gpu: &GpuContext, texture: &wgpu::Texture) -> Result<HdrImage> {
-    ensure!(
-        texture.format() == wgpu::TextureFormat::Rgba16Float,
-        "HDR readback needs an Rgba16Float texture"
-    );
+    let channels = match texture.format() {
+        wgpu::TextureFormat::Rgba16Float => 4,
+        wgpu::TextureFormat::Rg16Float => 2,
+        other => anyhow::bail!("half-float readback needs Rgba16Float or Rg16Float, not {other:?}"),
+    };
     let (width, height) = (texture.width(), texture.height());
-    let row = width * 8;
+    let row = width * channels * 2;
     let padded =
         row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -63,9 +65,12 @@ pub fn read_rgba16f(gpu: &GpuContext, texture: &wgpu::Texture) -> Result<HdrImag
     let mut pixels = Vec::with_capacity((width * height) as usize);
     for y in 0..height as usize {
         let start = y * padded as usize;
-        for texel in mapped[start..start + row as usize].chunks_exact(8) {
-            let channel = |i: usize| f16_to_f32(u16::from_le_bytes([texel[i], texel[i + 1]]));
-            pixels.push([channel(0), channel(2), channel(4), channel(6)]);
+        for texel in mapped[start..start + row as usize].chunks_exact(channels as usize * 2) {
+            let mut value = [0.0; 4];
+            for (index, channel) in value.iter_mut().enumerate().take(channels as usize) {
+                *channel = f16_to_f32(u16::from_le_bytes([texel[2 * index], texel[2 * index + 1]]));
+            }
+            pixels.push(value);
         }
     }
     drop(mapped);

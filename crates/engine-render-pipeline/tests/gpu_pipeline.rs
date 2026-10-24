@@ -624,3 +624,95 @@ fn optional_device_features_are_reported_honestly() -> Result<()> {
     );
     Ok(())
 }
+
+/// A feature that only declares it needs normals.
+struct NeedsNormals;
+impl PipelineFeature for NeedsNormals {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new("test.needs-normals", Stage::PostProcess).needs(FeatureNeeds {
+            normals: true,
+            motion: false,
+        })
+    }
+    fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
+        assert!(ctx.normals().is_some());
+        Ok(())
+    }
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn motion_vectors_and_normals_are_produced_on_request() -> Result<()> {
+    let gpu = gpu()?;
+    let mut pipeline = ScenePipeline::new(gpu.clone())?;
+    let target = offscreen(&gpu);
+    let mesh = quad(&gpu, [-0.3, -0.3], [0.3, 0.3]);
+    let mut view = view(ViewId::MAIN, Mat4::IDENTITY);
+    view.host_needs.motion = true;
+    let render = |pipeline: &mut ScenePipeline, x: f32| -> Result<ViewReport> {
+        let mut moving = unlit("moving", mesh.clone(), -2.0, [1.0; 4]);
+        moving.world_from_local = Mat4::from_translation(Vec3::new(x, 0.0, -2.0));
+        pipeline.render_view(
+            &SceneFrame {
+                view: &view,
+                meshes: &[moving],
+                lights: &LightList::default(),
+                world: None,
+            },
+            &target.target,
+            &mut NoHost,
+        )
+    };
+    let first = render(&mut pipeline, 0.0)?;
+    assert_eq!(
+        first.features.get(names::MOTION).unwrap().activity,
+        Activity::Ran
+    );
+    assert_eq!(
+        first.features.get(names::NORMALS).unwrap().activity,
+        Activity::Idle
+    );
+    // A new draw has no history: camera-only (zero) motion.
+    assert_eq!(
+        pipeline.read_motion(ViewId::MAIN)?.pixel(32, 32)[..2],
+        [0.0, 0.0]
+    );
+    render(&mut pipeline, 0.2)?;
+    let expected = column(0.2, -2.0) as f32 - column(0.0, -2.0) as f32;
+    let motion = pipeline
+        .read_motion(ViewId::MAIN)?
+        .pixel(column(0.2, -2.0), 32);
+    // Current-to-previous: the object moved right, so motion points left.
+    assert!(
+        (motion[0] + expected).abs() <= 1.0 && motion[1].abs() < 0.05,
+        "motion {motion:?}, expected x about {}",
+        -expected
+    );
+    assert!(
+        pipeline.read_normals(ViewId::MAIN).is_err(),
+        "nobody needed normals"
+    );
+
+    pipeline.register(NeedsNormals)?;
+    let report = render(&mut pipeline, 0.2)?;
+    assert_eq!(
+        report.features.get(names::NORMALS).unwrap().activity,
+        Activity::Ran
+    );
+    let normals = pipeline.read_normals(ViewId::MAIN)?;
+    assert_eq!(normals.pixel(column(0.2, -2.0), 32), [0.0, 0.0, 1.0, 1.0]);
+    assert_eq!(
+        normals.pixel(1, 1),
+        [0.0; 4],
+        "coverage is zero where nothing drew"
+    );
+    // Unmoved this frame: motion is zero again.
+    assert!(
+        pipeline
+            .read_motion(ViewId::MAIN)?
+            .pixel(column(0.2, -2.0), 32)[0]
+            .abs()
+            < 1e-3
+    );
+    Ok(())
+}

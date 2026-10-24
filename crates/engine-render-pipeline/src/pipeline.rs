@@ -853,6 +853,32 @@ impl ScenePipeline {
         crate::readback::read_rgba16f(&self.gpu, texture)
     }
 
+    /// Read back the motion vectors (`xy`, render pixels) of `view`'s last
+    /// frame; an error when no feature or host needed motion.
+    pub fn read_motion(&self, view: ViewId) -> Result<HdrImage> {
+        let targets = self
+            .targets(view)
+            .context("no frame was rendered for this view")?;
+        let motion = targets
+            .motion
+            .as_ref()
+            .context("this view produced no motion vectors")?;
+        crate::readback::read_rgba16f(&self.gpu, &motion.texture)
+    }
+
+    /// Read back the world normals of `view`'s last frame; an error when no
+    /// running feature needed normals.
+    pub fn read_normals(&self, view: ViewId) -> Result<HdrImage> {
+        let targets = self
+            .targets(view)
+            .context("no frame was rendered for this view")?;
+        let normals = targets
+            .normals
+            .as_ref()
+            .context("this view produced no normals")?;
+        crate::readback::read_rgba16f(&self.gpu, &normals.texture)
+    }
+
     /// Read back render-size scene HDR colour (before upscale/post).
     pub fn read_scene_hdr(&self, view: ViewId) -> Result<HdrImage> {
         let targets = self
