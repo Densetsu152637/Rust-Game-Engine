@@ -38,10 +38,11 @@ pub(crate) const BARYCENTRIC_TOLERANCE: f64 = 1e-4;
 pub(crate) const NORMAL_TOLERANCE: f64 = 1e-4;
 pub(crate) const POSITION_TOLERANCE: f64 = 1e-4;
 
-/// Hardware facing convention measured on the RTX 5080 (Vulkan): a triangle is
-/// front-facing when its vertices appear clockwise from the ray origin (in
-/// object space), as in DXR.
-pub(crate) const FRONT_FACE_CLOCKWISE: bool = true;
+/// Hardware facing convention measured on the RTX 5080 (Vulkan, wgpu 30.0.1): a
+/// triangle is front-facing when its vertices appear counter-clockwise from the
+/// ray origin in object space, i.e. when the ray travels against
+/// `(v1 - v0) x (v2 - v0)`.
+pub(crate) const FRONT_FACE_CLOCKWISE: bool = false;
 
 type V3 = [f64; 3];
 

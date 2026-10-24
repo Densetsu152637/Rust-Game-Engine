@@ -319,6 +319,7 @@ impl RtDevice {
                     Some(label),
                 ));
             }
+            Err(RtError::Invalid(message)) => return Err(self_test_failed(message)),
             Err(e) => return Err(self_test_failed(e.to_string())),
         };
         let has_specific = device

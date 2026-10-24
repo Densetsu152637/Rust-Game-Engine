@@ -509,6 +509,7 @@ impl RtScene {
                         at,
                         bytemuck::cast_slice(normals),
                     );
+                    stats.uploaded_bytes += positions.len() as u64;
                 }
                 let indices = bytemuck::cast_slice(&mesh.indices);
                 self.core.queue.write_buffer(
@@ -516,7 +517,7 @@ impl RtScene {
                     u64::from(mesh.index_offset) * 4,
                     indices,
                 );
-                stats.uploaded_bytes += (positions.len() * 2 + indices.len()) as u64;
+                stats.uploaded_bytes += (positions.len() + indices.len()) as u64;
             }
         }
         for slot in &mut self.meshes.slots {
