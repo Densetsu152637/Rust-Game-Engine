@@ -542,6 +542,26 @@ fn asset_info_lists_where_an_asset_is_used() {
 }
 
 #[test]
+fn asset_info_reports_material_texture_dependencies() {
+    let dir = fixture();
+    let path = dir.path().join("scenes/start.json");
+    let mut scene: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    scene["entities"][2]["components"]["MeshMaterial"] = json!({
+        "texture":"asset:texture", "normal_texture":"asset:texture",
+        "metallic_roughness_texture":"asset:texture"
+    });
+    fs::write(path, serde_json::to_vec(&scene).unwrap()).unwrap();
+    let info = data(dir.path(), "asset_info", json!({"asset":"asset:texture"}));
+    let uses = info["used_by"].as_array().unwrap();
+    for field in ["texture", "normal_texture", "metallic_roughness_texture"] {
+        assert!(
+            uses.contains(&json!({"scene":"scenes/start.json", "entity":"mesh",
+            "component":"MeshMaterial", "field":field}))
+        );
+    }
+}
+
+#[test]
 fn asset_info_unknown_asset_is_a_structured_failure() {
     let dir = fixture();
     let result = data(dir.path(), "asset_info", json!({"asset":"asset:TEX"}));

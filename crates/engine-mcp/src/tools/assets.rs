@@ -226,6 +226,21 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
                     fields.push(("MeshRenderer", "texture", t));
                 }
             }
+            if let Some(material) = &c.material {
+                for (field, reference) in [
+                    ("shader", &material.shader),
+                    ("texture", &material.texture),
+                    ("normal_texture", &material.normal_texture),
+                    (
+                        "metallic_roughness_texture",
+                        &material.metallic_roughness_texture,
+                    ),
+                ] {
+                    if let Some(reference) = reference {
+                        fields.push(("MeshMaterial", field, reference));
+                    }
+                }
+            }
             if let Some(s) = &c.sprite_renderer {
                 fields.push(("SpriteRenderer", "texture", &s.texture));
             }
