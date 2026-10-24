@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use engine_core::bevy_ecs::world::World;
 use engine_project::runtime::RenderFrame;
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use winit::window::Window;
 
 /// Environment variable that selects the swapchain present mode of window
@@ -51,6 +51,7 @@ pub struct WindowSurface {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     suspended: bool,
+    pacer: crate::PresentPacer,
 }
 
 impl WindowSurface {
@@ -78,10 +79,17 @@ impl WindowSurface {
         limits: RenderLimits,
         options: WgpuOptions,
     ) -> Result<Self> {
-        Self::with_upscaler(window, limits, options, &DlssConfig::default(), false).await
+        Self::with_upscaler(
+            window,
+            limits,
+            options,
+            &DlssConfig::default(),
+            crate::DlssRequest::NONE,
+        )
+        .await
     }
 
-    /// [`Self::with_options`] that, with `want_dlss`, first attempts a
+    /// [`Self::with_options`] that, for a DLSS `request`, first attempts a
     /// DLSS-capable device ([`crate::request_upscaler_gpu`]). The renderer
     /// records whether DLSS can run and why not.
     pub async fn with_upscaler(
@@ -89,7 +97,7 @@ impl WindowSurface {
         limits: RenderLimits,
         mut options: WgpuOptions,
         dlss: &DlssConfig,
-        want_dlss: bool,
+        request: crate::DlssRequest,
     ) -> Result<Self> {
         options.frames_in_flight = limits.max_frames_in_flight as u32;
         let instance = GpuContext::instance_with(options.backends);
@@ -97,8 +105,7 @@ impl WindowSurface {
             .create_surface(window.clone())
             .context("creating window surface")?;
         let (gpu, upscaler) =
-            crate::request_upscaler_gpu(instance, Some(&surface), &options, dlss, want_dlss)
-                .await?;
+            crate::request_upscaler_gpu(instance, Some(&surface), &options, dlss, request).await?;
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
@@ -129,6 +136,7 @@ impl WindowSurface {
             surface,
             config,
             suspended: size.width == 0 || size.height == 0,
+            pacer: crate::PresentPacer::default(),
         })
     }
 
@@ -159,6 +167,11 @@ impl WindowSurface {
         self.present_scene(&frame.clone().into(), world)
     }
 
+    /// Present one real frame. With DLSS Frame Generation active, the
+    /// generated frames are presented first, in order, each on its own
+    /// swapchain image, then the real frame, paced evenly over the recent
+    /// real-frame interval ([`crate::presentation_offsets`]). Returns `None`
+    /// when the real frame was not presented (suspended, occluded, lost).
     pub fn present_scene(
         &mut self,
         frame: &engine_project::rendering3d::SceneRenderFrame,
@@ -167,11 +180,42 @@ impl WindowSurface {
         if self.suspended {
             return Ok(None);
         }
+        if let Some(stats) = self.renderer.render_generated(frame)? {
+            let generated = self.renderer.generated_frame_count();
+            let start = Instant::now();
+            let offsets = crate::presentation_offsets(self.pacer.begin(start), generated);
+            let mut shown = 0;
+            for (index, offset) in offsets.iter().take(generated).enumerate() {
+                sleep_until(start + *offset);
+                if self.present_with(|renderer, view| renderer.present_generated(index, view))? {
+                    shown += 1;
+                }
+            }
+            sleep_until(start + offsets[generated]);
+            let real = self.present_with(|renderer, view| renderer.present_real(view))?;
+            self.renderer.note_generated_presented(shown);
+            return Ok(real.then_some(stats));
+        }
+        self.pacer.reset();
+        let mut stats = None;
+        self.present_with(|renderer, view| {
+            stats = Some(renderer.render_scene_without_generation(frame, view, world)?);
+            Ok(())
+        })?;
+        Ok(stats)
+    }
+
+    /// Acquire a swapchain image, draw into it and present it. `false` when no
+    /// image could be acquired (timeout, occlusion, lost/outdated surface).
+    fn present_with(
+        &mut self,
+        draw: impl FnOnce(&mut GpuRenderer, &wgpu::TextureView) -> Result<()>,
+    ) -> Result<bool> {
         let (output, suboptimal) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => (output, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(output) => (output, true),
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(None);
+                return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 self.renderer.gpu.check_errors()?;
@@ -184,13 +228,13 @@ impl WindowSurface {
                 self.surface
                     .configure(&self.renderer.gpu.device, &self.config);
                 self.renderer.gpu.check_errors()?;
-                return Ok(None);
+                return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface
                     .configure(&self.renderer.gpu.device, &self.config);
                 self.renderer.gpu.check_errors()?;
-                return Ok(None);
+                return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 self.renderer.gpu.check_errors()?;
@@ -198,7 +242,7 @@ impl WindowSurface {
             }
         };
         let view = output.texture.create_view(&Default::default());
-        let stats = self.renderer.render_scene(frame, &view, world)?;
+        draw(&mut self.renderer, &view)?;
         self.window.pre_present_notify();
         self.renderer.gpu.queue.present(output);
         if suboptimal {
@@ -206,7 +250,15 @@ impl WindowSurface {
                 .configure(&self.renderer.gpu.device, &self.config);
         }
         self.renderer.gpu.check_errors()?;
-        Ok(Some(stats))
+        Ok(true)
+    }
+}
+
+/// Sleep until `deadline` (no-op when it passed): the simple pacing baseline.
+fn sleep_until(deadline: Instant) {
+    let now = Instant::now();
+    if deadline > now {
+        std::thread::sleep(deadline - now);
     }
 }
 

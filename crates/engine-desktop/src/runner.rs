@@ -1,6 +1,6 @@
 use crate::{
-    BACKEND_ENV_VAR, CameraView, DlssConfig, FrameHistory, FramePacer, GpuRequirements,
-    NativeRenderPasses, RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
+    BACKEND_ENV_VAR, CameraView, DlssConfig, DlssRequest, FrameHistory, FramePacer,
+    GpuRequirements, NativeRenderPasses, RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
     input::{Gamepads, PressLatch, sample_tick, window_input},
 };
 use anyhow::{Context, Result, ensure};
@@ -8,7 +8,7 @@ use engine_audio::{AudioConfig, AudioEngine};
 use engine_project::{
     EventSchedule, EventTrace, Runtime,
     input::{ActionMapper, RawInput, merge_input},
-    rendering3d::{UpscalerControl, UpscalerMode},
+    rendering3d::{FrameGenerationControl, UpscalerControl},
     runtime::{InputSettings, RuntimeSnapshot},
 };
 use serde::Serialize;
@@ -269,12 +269,12 @@ fn run_headless(
 
 /// Make the renderer's upscaler status visible to native callbacks and reports.
 fn publish_upscaler_status(runtime: &mut Runtime, renderer: &crate::GpuRenderer) {
-    if let Some(mut control) = runtime
-        .app_mut()
-        .world_mut()
-        .get_resource_mut::<UpscalerControl>()
-    {
+    let world = runtime.app_mut().world_mut();
+    if let Some(mut control) = world.get_resource_mut::<UpscalerControl>() {
         control.status = renderer.upscaler_status().clone();
+    }
+    if let Some(mut control) = world.get_resource_mut::<FrameGenerationControl>() {
+        control.status = renderer.frame_generation_status().clone();
     }
 }
 
@@ -372,14 +372,15 @@ impl DesktopRunner {
             }
             scene.sprites = overlay;
             let revision = self.runtime.scene_revision();
-            let cut = self
-                .runtime
-                .app_mut()
-                .world_mut()
+            let world = self.runtime.app_mut().world_mut();
+            let cut = world
                 .get_resource_mut::<UpscalerControl>()
-                .is_some_and(|mut control| std::mem::take(&mut control.reset_history));
+                .is_some_and(|mut control| std::mem::take(&mut control.reset_history))
+                | world
+                    .get_resource_mut::<FrameGenerationControl>()
+                    .is_some_and(|mut control| std::mem::take(&mut control.reset_history));
             if cut || revision != self.scene_revision {
-                host.renderer.reset_upscaler_history();
+                host.renderer.reset_temporal_history();
                 self.scene_revision = revision;
             }
             let shown = host
@@ -451,10 +452,12 @@ impl ApplicationHandler for DesktopRunner {
         if self.surface.is_some() {
             let host = self.surface.as_mut().unwrap();
             let size = host.window.inner_size();
+            // Time spent suspended is not simulated, and no game frames were
+            // rendered: temporal history (SR and frame generation) restarts.
+            host.renderer.reset_temporal_history();
             if let Err(error) = host.resize(size.width, size.height) {
                 self.fail(event_loop, error);
             }
-            // Time spent suspended is not simulated.
             self.present_skipped = false;
             self.pacer.reset();
             self.last_frame = Instant::now();
@@ -489,11 +492,7 @@ impl ApplicationHandler for DesktopRunner {
                 .remove_resource::<DlssConfig>()
                 .unwrap_or_default();
             // NGX extensions must be requested at device creation.
-            let want_dlss = dlss.prepare_device
-                || frame
-                    .camera3d
-                    .as_ref()
-                    .is_some_and(|c| c.camera.upscaler.mode == UpscalerMode::DlssSr);
+            let request = DlssRequest::for_frame(&frame, &dlss);
             let mut host = pollster::block_on(WindowSurface::with_upscaler(
                 window,
                 RenderLimits::default(),
@@ -503,7 +502,7 @@ impl ApplicationHandler for DesktopRunner {
                     ..Default::default()
                 },
                 &dlss,
-                want_dlss,
+                request,
             ))?;
             let passes = self
                 .runtime

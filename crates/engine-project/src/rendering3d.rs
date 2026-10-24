@@ -42,6 +42,8 @@ pub struct Camera3D {
     /// Temporal upscaling request for this camera's 3D scene. A request is not a
     /// claim: [`UpscalerStatus`] reports what the renderer actually did.
     pub upscaler: UpscalerSettings,
+    /// Frame generation request; [`FrameGenerationStatus`] reports what ran.
+    pub frame_generation: FrameGenerationSettings,
 }
 impl Default for Camera3D {
     fn default() -> Self {
@@ -51,6 +53,7 @@ impl Default for Camera3D {
             active: true,
             lighting: SceneLighting::default(),
             upscaler: UpscalerSettings::default(),
+            frame_generation: FrameGenerationSettings::default(),
         }
     }
 }
@@ -135,6 +138,96 @@ pub fn bounded_upscaler_reason(reason: &str) -> String {
     reason[..end].to_owned()
 }
 
+/// Whether presentation inserts generated frames between real frames.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameGenerationMode {
+    #[default]
+    Off,
+    /// NVIDIA DLSS Frame Generation through NGX on Vulkan (desktop `dlss`
+    /// feature, official SR and FG runtimes, supported NVIDIA GPU).
+    DlssFg,
+}
+
+/// Inclusive multiplier range: presented frames per real frame.
+pub const FRAME_GENERATION_MULTIPLIERS: std::ops::RangeInclusive<u32> = 2..=4;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(default, deny_unknown_fields)]
+pub struct FrameGenerationSettings {
+    pub mode: FrameGenerationMode,
+    /// Presented frames per rendered frame: 2 inserts one generated frame,
+    /// 4 inserts three. The renderer also checks NGX's reported maximum.
+    pub multiplier: u32,
+}
+impl Default for FrameGenerationSettings {
+    fn default() -> Self {
+        Self {
+            mode: FrameGenerationMode::Off,
+            multiplier: 2,
+        }
+    }
+}
+impl FrameGenerationSettings {
+    pub fn validate(&self) -> Result<()> {
+        if !FRAME_GENERATION_MULTIPLIERS.contains(&self.multiplier) {
+            return Err(Error::new(
+                "camera3d.frame_generation.invalid",
+                "Frame generation multiplier must be 2, 3 or 4",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// What the renderer did with the frame generation request of the last frame.
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameGenerationState {
+    /// No renderer has produced a 3D frame (for example a headless run).
+    #[default]
+    NotRendered,
+    /// Not requested; only real frames are produced.
+    Off,
+    /// The last real frame went through NGX frame generation.
+    Active,
+    /// Requested but not running; only real frames are produced.
+    Fallback,
+}
+
+/// Renderer-reported frame generation state. Counters only include frames
+/// that an actual NGX evaluation produced.
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+pub struct FrameGenerationStatus {
+    pub requested: FrameGenerationSettings,
+    pub state: FrameGenerationState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    /// Effective multiplier of an active frame.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multiplier: Option<u32>,
+    /// NGX's maximum generated frames per real frame, once known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multi_frame_max: Option<u32>,
+    /// Presentable generated frames produced by NGX.
+    pub generated_frames: u64,
+    /// Generated frames a host presented to a window surface.
+    pub presented_frames: u64,
+    /// Real frames evaluated with reset (no interpolation from history).
+    pub history_resets: u64,
+}
+
+/// Runtime frame generation control, the sibling of [`UpscalerControl`].
+/// Callbacks may set `override_settings` and `reset_history` (both upscaler
+/// and frame generation history are reset by either flag); the host writes
+/// `status` after each frame.
+#[derive(bevy_ecs::prelude::Resource, Clone, Debug, Default)]
+pub struct FrameGenerationControl {
+    pub override_settings: Option<FrameGenerationSettings>,
+    pub reset_history: bool,
+    pub status: FrameGenerationStatus,
+}
+
 /// Runtime upscaler control shared by native callbacks and the host renderer.
 /// Callbacks may set `override_settings` (replacing the active camera's authored
 /// `upscaler` while set) and `reset_history` (discard temporal history on the
@@ -149,6 +242,7 @@ pub struct UpscalerControl {
 impl Camera3D {
     pub fn validate(&self) -> Result<()> {
         self.lighting.validate()?;
+        self.frame_generation.validate()?;
         let (size, near, far, perspective) = match self.projection {
             Projection3D::Perspective {
                 fov_y_radians,

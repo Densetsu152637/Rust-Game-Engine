@@ -38,8 +38,8 @@ mod window;
 pub use backend::*;
 pub use camera::*;
 pub use dlss::{
-    DEFAULT_NGX_PROJECT_ID, DlssConfig, NGX_LOG_DIR_ENV_VAR, NGX_RUNTIME_DIR_ENV_VAR,
-    UpscalerDevice, build_unavailable_reason, request_upscaler_gpu,
+    DEFAULT_NGX_PROJECT_ID, DlssConfig, DlssRequest, NGX_LOG_DIR_ENV_VAR, NGX_RUNTIME_DIR_ENV_VAR,
+    UpscalerDevice, build_unavailable_reason, fg_build_unavailable_reason, request_upscaler_gpu,
 };
 pub use engine_render;
 pub use engine_render_wgpu::{

@@ -43,14 +43,21 @@ pub(super) fn validate_material(draw: &MeshDraw3D, vp: Mat4) -> Result<ShaderInt
 }
 
 pub fn camera_matrix(camera: &CameraInstance3D, aspect: f32) -> Result<Mat4> {
-    camera.camera.validate()?;
-    ensure!(aspect.is_finite() && aspect > 0.0, "invalid camera aspect");
     let world = Mat4::from_cols_array_2d(&camera.world);
     ensure!(
         world.is_finite() && world.determinant().abs() > 1e-8,
         "camera transform is singular"
     );
-    let projection = match camera.camera.projection {
+    let matrix = camera_projection(camera, aspect)? * world.inverse();
+    ensure!(matrix.is_finite(), "camera matrix overflow");
+    Ok(matrix)
+}
+
+/// The view-to-clip projection of [`camera_matrix`] (depth 0..1, not inverted).
+pub(crate) fn camera_projection(camera: &CameraInstance3D, aspect: f32) -> Result<Mat4> {
+    camera.camera.validate()?;
+    ensure!(aspect.is_finite() && aspect > 0.0, "invalid camera aspect");
+    Ok(match camera.camera.projection {
         Projection3D::Perspective {
             fov_y_radians,
             near,
@@ -66,10 +73,7 @@ pub fn camera_matrix(camera: &CameraInstance3D, aspect: f32) -> Result<Mat4> {
                 far,
             )
         }
-    };
-    let matrix = projection * world.inverse();
-    ensure!(matrix.is_finite(), "camera matrix overflow");
-    Ok(matrix)
+    })
 }
 
 #[derive(Default)]

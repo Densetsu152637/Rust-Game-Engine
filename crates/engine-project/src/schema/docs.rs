@@ -83,15 +83,27 @@ fn upscaler_schema() -> Value {
     )
 }
 
+fn frame_generation_schema() -> Value {
+    closed(
+        json!({
+            "mode":{"type":"string","enum":["off","dlss_fg"],"default":"off",
+                "description":"dlss_fg requests NVIDIA DLSS Frame Generation (Vulkan, desktop `dlss` build feature, official SR and FG NGX runtimes, supported NVIDIA GPU, no native render passes); otherwise only real frames are presented and the run report states the fallback reason."},
+            "multiplier":{"type":"integer","minimum":2,"maximum":4,"default":2,
+                "description":"Presented frames per rendered frame (2 inserts one generated frame). Also limited at runtime by NGX's reported maximum."}
+        }),
+        &[],
+    )
+}
+
 /// All authored component documents.
 pub fn component_docs() -> Vec<ComponentDoc> {
     vec![
         ComponentDoc {
             name: "Camera3D",
-            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution; unsupported requests render natively with a reported reason.",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason.",
             requires: &["Transform"],
             schema: closed(
-                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"projection":{"oneOf":[
+                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"projection":{"oneOf":[
                     closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
                     closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])
                 ]}}),

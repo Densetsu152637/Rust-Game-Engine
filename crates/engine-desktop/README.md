@@ -129,6 +129,14 @@ reports what happened. Without the feature, SDK, Vulkan or a supported NVIDIA
 GPU the frame renders natively and the status states the reason. Contract,
 configuration and limits: [Scene rendering](../../docs/rendering3d.md#temporal-upscaling-dlss-super-resolution).
 
+`Camera3D.frame_generation` adds DLSS Frame Generation (2x to 4x) with or
+without SR: `GpuRenderer::render_generated` renders the real frame into an
+engine backbuffer plus HUD-less color and generates the in-between frames,
+`WindowSurface::present_scene` presents them in order before the real frame
+with even sleep-based pacing, and `capture_generated` reads them back for
+offscreen tests. Native render passes disable it. Details and the latency
+caveat: [Frame generation](../../docs/rendering3d.md#frame-generation-dlss-frame-generation).
+
 `validate_wgsl(source)` performs bounded CPU-only Naga parsing and semantic
 validation with source diagnostics. It requires a shader entry point. Native
 capabilities are admitted at this stage; actual device feature and limit checks
@@ -142,6 +150,7 @@ cargo test -p engine-desktop --test gpu_pixels -- --ignored --nocapture
 cargo test -p engine-desktop --test backend_parity -- --ignored --nocapture
 cargo test -p engine-render-wgpu -- --ignored --nocapture
 cargo test -p engine-desktop --test upscaler -- --ignored --nocapture
+cargo test -p engine-desktop --test frame_generation -- --ignored --nocapture
 cargo clippy -p engine-desktop --all-targets -- -D warnings
 cargo run -p engine-desktop --example desktop_smoke -- --headless
 cargo run -p engine-desktop --example desktop_smoke

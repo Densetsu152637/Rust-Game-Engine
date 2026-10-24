@@ -275,7 +275,10 @@ fn dlss_on_a_non_vulkan_selection_prepares_an_ordinary_device_and_says_why() -> 
         None,
         &options,
         &DlssConfig::default(),
-        true,
+        engine_desktop::DlssRequest {
+            super_resolution: true,
+            frame_generation: false,
+        },
     ))?;
     assert_eq!(gpu.adapter.get_info().backend, wgpu::Backend::Dx12);
     let reason = device.unavailable_reason().unwrap();
@@ -306,7 +309,10 @@ fn dlss_super_resolution_upscales_the_engine_scene_before_the_hud() -> anyhow::R
         None,
         &options,
         &DlssConfig::default(),
-        true,
+        engine_desktop::DlssRequest {
+            super_resolution: true,
+            frame_generation: false,
+        },
     ))?;
     if let Some(reason) = device.unavailable_reason() {
         panic!("DLSS device unavailable: {reason}");
@@ -390,7 +396,7 @@ fn dlss_super_resolution_upscales_the_engine_scene_before_the_hud() -> anyhow::R
     assert_eq!(moving.state, UpscalerState::Active);
     assert_eq!((moving.evaluated_frames, moving.history_resets), (14, 1));
     let moved = target.read_rgba(&renderer.gpu)?;
-    renderer.reset_upscaler_history();
+    renderer.reset_temporal_history();
     renderer.render_scene(&frame, &target.view, None)?;
     assert_eq!(renderer.upscaler_status().history_resets, 2);
     frame.camera3d.as_mut().unwrap().camera.upscaler = dlss(UpscalerQuality::Dlaa);
@@ -498,7 +504,10 @@ fn dlss_motion_vectors_let_history_track_camera_and_object_motion() -> anyhow::R
         None,
         &options,
         &DlssConfig::default(),
-        true,
+        engine_desktop::DlssRequest {
+            super_resolution: true,
+            frame_generation: false,
+        },
     ))?;
     if let Some(reason) = device.unavailable_reason() {
         panic!("DLSS device unavailable: {reason}");
@@ -509,11 +518,11 @@ fn dlss_motion_vectors_let_history_track_camera_and_object_motion() -> anyhow::R
     let mut frame = checker_scene(dlss(UpscalerQuality::Performance));
     let mut run =
         |renderer: &mut GpuRenderer, reset_every_frame: bool| -> anyhow::Result<Vec<u8>> {
-            renderer.reset_upscaler_history();
+            renderer.reset_temporal_history();
             for step in 0..24 {
                 pan(&mut frame, step);
                 if reset_every_frame {
-                    renderer.reset_upscaler_history();
+                    renderer.reset_temporal_history();
                 }
                 renderer.render_scene(&frame, &target.view, None)?;
                 assert_eq!(renderer.upscaler_status().state, UpscalerState::Active);

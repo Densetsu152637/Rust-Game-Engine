@@ -94,6 +94,8 @@ impl Tool for RunTool {
                 ("input_devices", json!({"type":["object","null"]})),
                 ("upscaler", json!({"type":["object","null"], "description":
                     "Temporal upscaler request and what the renderer did (state not_rendered in headless runs)."})),
+                ("frame_generation", json!({"type":["object","null"], "description":
+                    "Frame generation request and what the renderer did (state not_rendered in headless runs)."})),
                 ("telemetry_omitted", json!({"type":"array","items":{"type":"string"}})),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
@@ -213,8 +215,9 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
     let network = telemetry("network", &snapshot["network"]);
     let input_devices = telemetry("input_devices", &snapshot["input_devices"]);
     let upscaler = telemetry("upscaler", &snapshot["upscaler"]);
+    let frame_generation = telemetry("frame_generation", &snapshot["frame_generation"]);
     json!({
-        "upscaler": upscaler,
+        "upscaler": upscaler, "frame_generation": frame_generation,
         "profile": profile, "profile_frames_truncated": profile_frames_truncated,
         "network": network, "input_devices": input_devices, "telemetry_omitted": telemetry_omitted,
         "event_trace":event_trace, "event_count":report["event_trace"]["count"].as_u64().unwrap_or(0),
