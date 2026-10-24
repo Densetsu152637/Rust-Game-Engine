@@ -24,6 +24,9 @@
   collision, rooms, audio, saves and a scripted walkthrough.
 - [Native extension](../examples/native-extension/README.md): custom components,
   systems and a custom wgpu render pass from an external crate.
+- [Programmable world](../examples/programmable-world/README.md): a 3D scene and
+  retained HUD connected through typed callbacks, physics, animation and navigation;
+  GPU-free default execution and an optional desktop window.
 - [Moving entity](../assets/scripts/moving_entity/src/lib.rs): the smallest script
   crate.
 

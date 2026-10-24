@@ -17,8 +17,20 @@ uncommitted lockfiles, so each is checked with `--manifest-path`:
 cargo test --manifest-path examples/first-project/Cargo.toml
 cargo test --manifest-path examples/desktop-2d/Cargo.toml
 cargo test --manifest-path examples/native-extension/Cargo.toml
+cargo test --manifest-path examples/programmable-world/Cargo.toml
 cargo test --manifest-path assets/scripts/moving_entity/Cargo.toml
 python examples/desktop-2d/tools/validate_fixture.py
+```
+
+`programmable-world` uses its default GPU-free configuration in CI. Its integration
+test drives ordinary runtime ticks and checks HUD callbacks, typed score changes,
+physics contacts, animation events, navigation arrival and combined 3D/HUD frame
+extraction. This does not establish GPU pixels or interactive window behavior.
+The optional window path can be compiled and run separately:
+
+```text
+cargo check --manifest-path examples/programmable-world/Cargo.toml --features desktop
+cargo run --manifest-path examples/programmable-world/Cargo.toml --features desktop -- --window
 ```
 
 Some tests build real external Rust crates through Cargo (`engine-tooling`,
@@ -88,7 +100,7 @@ runs, pinned action SHAs and the toolchain installed from `rust-toolchain.toml` 
 | --- | --- | --- |
 | Format and Clippy | `windows-latest` | `cargo fmt --check` for the workspace and each example crate, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and clippy for each example crate |
 | Workspace tests | `windows-latest` | `cargo test --workspace --locked` and a passed-test count |
-| Example tests | `windows-latest`, one job per example | `cargo test --manifest-path` for `desktop-2d`, `first-project`, `native-extension` and `assets/scripts/moving_entity` (plus the desktop-2d fixture validator) and a passed-test count |
+| Example tests | `windows-latest`, one job per example | `cargo test --manifest-path` for `desktop-2d`, `first-project`, `native-extension`, `programmable-world` (default features) and `assets/scripts/moving_entity` (plus the desktop-2d fixture validator) and a passed-test count |
 | Test count gate | `ubuntu-latest` | Sums the counts above and fails when fewer than 1000 tests passed |
 | Workspace tests (Linux) | `ubuntu-latest` | `cargo test --workspace --locked` after installing ALSA, udev and window-system development packages |
 | Workspace tests (macOS) | `macos-latest` | `cargo test --workspace --locked`; hardware-dependent tests remain ignored |
