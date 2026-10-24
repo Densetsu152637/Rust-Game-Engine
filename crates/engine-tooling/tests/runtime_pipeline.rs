@@ -170,7 +170,7 @@ fn cli_compiles_runs_packages_and_editor_play_uses_unsaved_scene_without_saving(
             "move_right:0".as_ref(),
         ],
         temp.path(),
-        &[],
+        &[("ENGINE_LOG", "info")],
     );
     // The generation installs the logging subscriber, so engine-core lifecycle
     // events reach stderr while stdout stays the single run-result line that
