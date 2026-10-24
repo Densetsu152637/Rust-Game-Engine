@@ -748,19 +748,21 @@ fn apply_ellipsis(
     };
     let shaped = shape::shape_simple(library, face, size, ellipsis_text, para_rtl)?;
     let ellipsis_width: f32 = shaped.iter().map(|g| g.x_advance).sum();
-    let visible = |range: &Range<usize>| -> f32 {
-        let mut members: Vec<&Cluster> = range.clone().map(|i| &clusters[i]).collect();
-        while members
-            .last()
-            .is_some_and(|c| matches!(c.kind, ClusterKind::Whitespace | ClusterKind::Newline))
-        {
-            members.pop();
-        }
-        members.iter().map(|c| c.advance).sum()
-    };
+    // visible[k]: width of the first k clusters without trailing whitespace (one pass).
+    let start = line.clusters.start;
+    let mut visible = vec![0.0_f32; line.clusters.len() + 1];
+    let mut total = 0.0;
+    for (k, c) in clusters[line.clusters.clone()].iter().enumerate() {
+        total += c.advance;
+        visible[k + 1] = if matches!(c.kind, ClusterKind::Whitespace | ClusterKind::Newline) {
+            visible[k]
+        } else {
+            total
+        };
+    }
     if let Some(max) = max_width {
-        while line.clusters.end > line.clusters.start
-            && visible(&line.clusters) + ellipsis_width > max + EPSILON
+        while line.clusters.end > start
+            && visible[line.clusters.end - start] + ellipsis_width > max + EPSILON
         {
             line.clusters.end -= 1;
         }

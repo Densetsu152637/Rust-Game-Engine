@@ -99,10 +99,14 @@ fn real_script(c: char) -> Option<UScript> {
     }
 }
 
-/// Per-face character maps created on first use during one layout.
+/// One memoised `(weight, style)` request for a family and its result.
+type MatchEntry = ((u16, FontStyle), Option<FaceMatch>);
+
+/// Per-layout caches: character maps per face and family matches per request.
 pub(crate) struct CoverageCache<'a> {
     library: &'a FontLibrary,
     maps: HashMap<FaceId, Option<Charmap<'a>>>,
+    matches: HashMap<String, Vec<MatchEntry>>,
 }
 
 impl<'a> CoverageCache<'a> {
@@ -110,6 +114,7 @@ impl<'a> CoverageCache<'a> {
         Self {
             library,
             maps: HashMap::new(),
+            matches: HashMap::new(),
         }
     }
 
@@ -136,6 +141,24 @@ impl<'a> CoverageCache<'a> {
     pub fn glyph(&mut self, face: FaceId, c: char) -> Option<GlyphId> {
         self.charmap(face)?.map(c)
     }
+
+    /// Memoised [`FontLibrary::match_face`].
+    pub fn match_face(&mut self, family: &str, weight: u16, style: FontStyle) -> Option<FaceMatch> {
+        let request = (weight, style);
+        if let Some(found) = self
+            .matches
+            .get(family)
+            .and_then(|list| list.iter().find(|(r, _)| *r == request))
+        {
+            return found.1;
+        }
+        let found = self.library.match_face(family, weight, style);
+        self.matches
+            .entry(family.to_string())
+            .or_default()
+            .push((request, found));
+        found
+    }
 }
 
 struct Grapheme {
@@ -158,13 +181,16 @@ pub(crate) fn choose_face(
     script: Option<UScript>,
     text: &str,
 ) -> Result<FaceMatch, TextError> {
-    let script_tag = script.map(|s| s.short_name()).unwrap_or("Zyyy");
-    let primary = library.match_face(&style.family, style.weight, style.style);
+    let primary = cache.match_face(&style.family, style.weight, style.style);
+    if let Some(found) = primary
+        && cache.covers(found.face, text)
+    {
+        return Ok(found);
+    }
     let mut first = primary;
-    let families = std::iter::once(style.family.as_str())
-        .chain(library.fallback().chain(language, script_tag));
-    for family in families {
-        let Some(found) = library.match_face(family, style.weight, style.style) else {
+    let script_tag = script.map(|s| s.short_name()).unwrap_or("Zyyy");
+    for family in library.fallback().chain(language, script_tag) {
+        let Some(found) = cache.match_face(family, style.weight, style.style) else {
             continue;
         };
         first.get_or_insert(found);
@@ -507,11 +533,10 @@ fn shape_run(
     let metrics = face.metrics.scaled(style.size);
     for (k, (start, glyphs)) in merged.iter().enumerate() {
         let end = merged.get(k + 1).map(|(s, _)| *s).unwrap_or(run.end);
-        // Snap to the grapheme containing `start` so clusters never split a grapheme.
+        // The span style of a cluster is the style of the grapheme it starts in.
         let grapheme = graphemes
-            .iter()
-            .position(|g| g.range.contains(start))
-            .unwrap_or(0);
+            .partition_point(|g| g.range.end <= *start)
+            .min(graphemes.len() - 1);
         let style_index = graphemes[grapheme].style;
         let kind = if text[*start..end].chars().all(is_hanging_space) {
             ClusterKind::Whitespace

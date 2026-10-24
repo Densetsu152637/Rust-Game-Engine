@@ -100,11 +100,17 @@ impl TextLayout {
     }
 
     fn caret_x(&self, line: usize, index: usize) -> f32 {
+        // Logical clusters are sorted and contiguous, so binary search finds the owner.
         let clusters = self.line_clusters(line);
-        if let Some(c) = clusters.iter().find(|c| c.range.contains(&index)) {
+        let pos = clusters.partition_point(|c| c.range.end <= index);
+        if let Some(c) = clusters.get(pos).filter(|c| c.range.contains(&index)) {
             return self.edge_x(c, index);
         }
-        match clusters.iter().rev().find(|c| c.range.end == index) {
+        let ending = pos
+            .checked_sub(1)
+            .map(|p| &clusters[p])
+            .filter(|c| c.range.end == index);
+        match ending {
             Some(c) if c.rtl => c.x0,
             Some(c) => c.x1,
             None => {

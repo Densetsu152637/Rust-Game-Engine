@@ -196,3 +196,22 @@ fn pseudo_random_input_never_panics() {
         }
     }
 }
+
+/// Near-limit input stays roughly linear: 60 KB of wrapped text with caret queries.
+#[test]
+fn large_text_layout_and_caret_queries_finish() {
+    let library = library();
+    let text = "lorem ipsum dolor sit amet \u{5D0}\u{5D1} ".repeat(2000);
+    let started = std::time::Instant::now();
+    let l = library
+        .layout(&RichText::plain(text.clone()), &style(), &wrapped(600.0))
+        .unwrap();
+    assert!(l.lines.len() > 100);
+    let middle = l.lines[l.lines.len() / 2].baseline;
+    let hit = l.hit_test(glam::Vec2::new(300.0, middle));
+    assert!(hit > 0 && hit < text.len());
+    assert!(!l.selection_rects(0..text.len()).is_empty());
+    let elapsed = started.elapsed();
+    println!("60 KB layout + queries: {elapsed:?}");
+    assert!(elapsed.as_secs() < 20, "{elapsed:?}");
+}
