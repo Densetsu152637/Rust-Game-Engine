@@ -1188,6 +1188,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-dlss"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "cc",
+ "pollster 0.4.0",
+ "wgpu",
+]
+
+[[package]]
 name = "engine-ecs"
 version = "0.1.0"
 dependencies = [
