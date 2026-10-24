@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "scene_id": "programmable-world",
+  "entities": [
+    {
+      "id": "camera",
+      "name": "Perspective camera and logical HUD viewport",
+      "components": {
+        "Transform": { "position": [0, 3, 8], "rotation": [-0.1784248, 0, 0, 0.9839536] },
+        "Camera3D": { "projection": { "kind": "perspective", "fov_y_radians": 1.0471976, "near": 0.1, "far": 100 } },
+        "Camera2D": { "logicalSize": [640, 360] }
+      }
+    },
+    {
+      "id": "ground",
+      "name": "Fixed physics floor",
+      "components": {
+        "Transform": { "position": [0, -0.25, 0], "scale": [9, 0.5, 4] },
+        "MeshRenderer": { "mesh": "asset:cube" },
+        "MeshMaterial": { "tint": [0.16, 0.2, 0.27, 1] },
+        "custom": { "engine.PhysicsBody3D": { "version": 1, "data": { "motion": "fixed", "half_extents": [0.5, 0.5, 0.5] } } }
+      }
+    },
+    {
+      "id": "falling",
+      "name": "Orange dynamic cube",
+      "components": {
+        "Transform": { "position": [-2, 2.5, 0] },
+        "MeshRenderer": { "mesh": "asset:cube" },
+        "MeshMaterial": { "tint": [1, 0.4, 0.12, 1] },
+        "custom": { "engine.PhysicsBody3D": { "version": 1, "data": { "motion": "dynamic", "shape": "box", "half_extents": [0.5, 0.5, 0.5], "material": { "restitution": 0.25 } } } },
+        "EventBindings": { "bindings": [{ "event": "physics.contact.start", "handler": "observe_demo" }] }
+      }
+    },
+    {
+      "id": "animated",
+      "name": "Blue animated cube",
+      "components": {
+        "Transform": { "position": [0, 0.7, 0], "scale": [0.7, 0.7, 0.7] },
+        "MeshRenderer": { "mesh": "asset:cube" },
+        "MeshMaterial": { "tint": [0.2, 0.65, 1, 1] },
+        "custom": { "engine.AnimationPlayer": { "version": 1, "data": { "clip": "asset:bob", "looping": true } } },
+        "EventBindings": { "bindings": [{ "event": "animation.event", "handler": "observe_demo" }] }
+      }
+    },
+    {
+      "id": "navigator",
+      "name": "Green waypoint follower",
+      "components": {
+        "Transform": { "position": [1.5, 0.4, 0], "scale": [0.6, 0.6, 0.6] },
+        "MeshRenderer": { "mesh": "asset:cube" },
+        "MeshMaterial": { "tint": [0.25, 0.9, 0.5, 1] },
+        "custom": { "engine.NavigationAgent": { "version": 1, "data": { "speed": 1, "waypoints": [[2.5, 0.4, 0], [2.5, 0.4, 1]] } } },
+        "EventBindings": { "bindings": [{ "event": "navigation.arrived", "handler": "observe_demo" }] }
+      }
+    },
+    {
+      "id": "hud",
+      "name": "Retained HUD with native Score callback",
+      "components": {
+        "custom": {
+          "game.Score": { "version": 1, "data": { "points": 0 } },
+          "engine.UiRoot": {
+            "version": 1,
+            "data": {
+              "layer": 100,
+              "tree": {
+                "nodes": [
+                  { "id": "panel", "style": { "offset": [16, 16], "width": { "unit": "pixels", "value": 202 }, "height": { "unit": "pixels", "value": 142 }, "layout": "column", "padding": 10, "gap": 8, "background": [0.025, 0.04, 0.07, 0.9] } },
+                  { "id": "title", "parent": "panel", "widget": { "kind": "label", "text": "PROGRAMMABLE WORLD" }, "style": { "width": { "unit": "fill" }, "height": { "unit": "pixels", "value": 18 }, "padding": 0, "font": "asset:font", "background": [0, 0, 0, 0] } },
+                  { "id": "score", "parent": "panel", "widget": { "kind": "label", "text": "SCORE: 0" }, "style": { "width": { "unit": "fill" }, "height": { "unit": "pixels", "value": 16 }, "padding": 0, "font": "asset:font", "background": [0, 0, 0, 0] } },
+                  { "id": "add-score", "parent": "panel", "widget": { "kind": "button", "text": "ADD SCORE", "action": "add_score" }, "style": { "width": { "unit": "fill" }, "height": { "unit": "pixels", "value": 26 }, "font": "asset:font", "padding": 8, "background": [0.14, 0.3, 0.48, 1] } },
+                  { "id": "score-meter", "parent": "panel", "widget": { "kind": "progress", "value": 0, "min": 0, "max": 100 }, "style": { "width": { "unit": "fill" }, "height": { "unit": "pixels", "value": 12 }, "padding": 2 } },
+                  { "id": "help", "widget": { "kind": "label", "text": "ORANGE: PHYSICS   BLUE: ANIMATION   GREEN: WAYPOINTS" }, "style": { "offset": [16, 328], "width": { "unit": "pixels", "value": 608 }, "height": { "unit": "pixels", "value": 20 }, "font": "asset:font", "background": [0.025, 0.04, 0.07, 0.9] } }
+                ]
+              }
+            }
+          }
+        },
+        "EventBindings": { "bindings": [{ "event": "ui.clicked", "handler": "add_score" }] }
+      }
+    }
+  ]
+}

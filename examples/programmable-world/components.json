@@ -1,0 +1,15 @@
+[
+  {
+    "name": "game.Score",
+    "version": 1,
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["points"],
+      "properties": { "points": { "type": "integer", "minimum": 0, "maximum": 100 } }
+    },
+    "defaults": { "points": 0 },
+    "requires": ["engine.UiRoot"],
+    "dataOnly": false
+  }
+]

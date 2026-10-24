@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "name": "Programmable world integration showcase",
+  "rust": { "manifest": "Cargo.toml" },
+  "startup_scene": "scenes/main.scene.json",
+  "componentSchemas": "components.json",
+  "assets": [
+    { "id": "asset:cube", "kind": "mesh", "path": "assets/cube.cgmesh" },
+    { "id": "asset:font-texture", "kind": "texture", "path": "assets/font.png" },
+    { "id": "asset:font", "kind": "font", "path": "assets/font.json" },
+    { "id": "asset:bob", "kind": "animation", "path": "assets/bob.animation.json" }
+  ],
+  "inputBindings": {
+    "ui_click": ["Mouse:Left"],
+    "ui_next": ["Key:Tab", "Key:Down"],
+    "ui_previous": ["Key:Up"],
+    "ui_confirm": ["Key:Enter", "Key:Space"],
+    "ui_left": ["Key:Left"],
+    "ui_right": ["Key:Right"]
+  }
+}
