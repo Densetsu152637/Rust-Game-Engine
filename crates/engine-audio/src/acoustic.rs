@@ -10,13 +10,23 @@
 //!
 //! The audio thread never blocks on, allocates for, or frees anything owned by the
 //! writer: it only ever uses `Mutex::try_lock` and `mem::swap` on boxed frames.
-//! The DSP that applies these parameters lives in the mixer (Stream A); until then
-//! the mixer holds the consumer and tracks statistics without changing its output.
+//! The DSP that applies these parameters lives in the crate's `dsp` module and is
+//! driven by the mixer; see the crate README for the signal flow.
+//!
+//! Conventions shared with the propagation service:
+//!
+//! * Listener-frame directions are unit vectors pointing from the listener toward
+//!   the apparent source, in listener axes +X right, +Y up and -Z forward.
+//! * Air absorption (`air_np_per_m`) is amplitude attenuation in nepers per metre:
+//!   amplitude falls as `exp(-m d)` and energy as `exp(-2 m d)`.
+//! * Gains in [`VoicePropagation`] and [`ReflectionTap`] are amplitudes. Tap
+//!   gains are absolute (spreading included); the mixer multiplies them only by
+//!   the voice and bus gains. `direct` multiplies the mixer's distance law.
 
 use crate::{AudioError, Bus, Result, VoiceHandle};
 use std::sync::{
     Arc, Mutex, TryLockError,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// Number of frequency bands used by every acoustic quantity.
@@ -33,6 +43,8 @@ pub const MAX_REFLECTION_TAPS: usize = 16;
 pub const MAX_ACOUSTIC_VOICES: usize = 256;
 /// Maximum voices rendered through convolution.
 pub const MAX_CONVOLUTION_VOICES: usize = 4;
+/// Frames over which published gains and directions ramp linearly.
+pub const PARAM_RAMP_FRAMES: usize = 1024;
 /// Internal block size of the partitioned convolver, in frames.
 pub const CONVOLUTION_BLOCK: usize = 256;
 /// Longest accepted impulse response, in seconds.
@@ -93,13 +105,14 @@ impl VoiceAcoustics {
     }
 }
 
-/// Output spatialisation law. `StereoPan` is the existing equal-power law and the
-/// current default; `Binaural` is the dataset-free Brown-Duda structural model.
-/// The default may be changed by the project owner.
+/// Output spatialisation law for acoustic voices. `Binaural` (the default, by
+/// project decision) is the dataset-free Brown-Duda structural model for
+/// headphones; `StereoPan` is the equal-power speaker law. Voices with acoustics
+/// disabled always use the legacy equal-power path, whatever the renderer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SpatialRenderer {
-    #[default]
     StereoPan,
+    #[default]
     Binaural,
 }
 /// Late-reverb renderer.
@@ -247,21 +260,59 @@ pub struct StereoImpulseResponse {
     pub right: Vec<f32>,
 }
 /// Frequency-domain partitions of an impulse response for [`CONVOLUTION_BLOCK`].
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct ConvolutionKernel {
-    // Populated by the partitioned convolver (Stream A).
-    #[allow(dead_code)]
-    sample_rate: u32,
+    pub(crate) sample_rate: u32,
+    pub(crate) partitions: usize,
+    /// Left re, left im, right re, right im; `partitions * (CONVOLUTION_BLOCK + 1)` each.
+    pub(crate) spectra: [Vec<f32>; 4],
+    pub(crate) fingerprint: u64,
 }
-impl ConvolutionKernel {
-    /// Prepares partitions off the audio thread. Not yet implemented.
-    pub fn prepare(_ir: &StereoImpulseResponse, _output_rate: u32) -> Result<Self> {
-        Err(AudioError::new(
-            "audio.unimplemented",
-            "ConvolutionKernel::prepare is not implemented yet",
-        ))
+impl std::fmt::Debug for ConvolutionKernel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConvolutionKernel")
+            .field("sample_rate", &self.sample_rate)
+            .field("partitions", &self.partitions)
+            .field("fingerprint", &self.fingerprint)
+            .finish_non_exhaustive()
     }
 }
+impl ConvolutionKernel {
+    /// Prepares partitions off the audio thread: validates the response (1 sample
+    /// to [`MAX_IMPULSE_SECONDS`], finite, 8-192 kHz), resamples it linearly to
+    /// `output_rate` and transforms each `CONVOLUTION_BLOCK` partition.
+    pub fn prepare(ir: &StereoImpulseResponse, output_rate: u32) -> Result<Self> {
+        crate::dsp::convolver::prepare(ir, output_rate)
+    }
+    /// Output rate the kernel was prepared for.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    /// Content hash; the mixer only cross-fades when it changes.
+    pub fn fingerprint(&self) -> u64 {
+        self.fingerprint
+    }
+}
+
+/// Mixer-side acoustic counters (`AudioControl::acoustic_stats`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AcousticMixStats {
+    /// Voices currently rendered through the acoustic path.
+    pub acoustic_voices: u32,
+    /// Voices that requested acoustics but fell back to the legacy path at the
+    /// cap (counted once per voice while it stays capped).
+    pub over_cap_fallbacks: u64,
+    /// Published frames adopted by the mixer.
+    pub frames_adopted: u64,
+    /// Kernels ignored for a rate mismatch or excess length.
+    pub rejected_kernels: u64,
+    /// Voices currently rendered with their own convolution kernel.
+    pub hero_voices: u32,
+    /// The late field is ringing.
+    pub reverb_active: bool,
+}
+
+pub use crate::dsp::air::{db_per_m_to_np_per_m, iso9613_air_np_per_m};
 
 /// Counters visible to the writer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -274,12 +325,15 @@ pub struct PublisherStats {
 /// Shared slot between one writer and the audio thread.
 struct ParamSlot {
     frame: Mutex<Box<AcousticFrame>>,
+    /// Cleared when the publisher is dropped, so the mixer can issue a new one.
+    writer_alive: AtomicBool,
     generation: AtomicU64,
     consumed: AtomicU64,
     misses: AtomicU64,
 }
 
-/// Single writer. Obtained once through `AudioControl::acoustic_publisher`.
+/// Single writer, obtained through `AudioControl::acoustic_publisher`. Dropping
+/// it publishes the dry state and frees the slot for a later publisher.
 pub struct AcousticPublisher {
     slot: Arc<ParamSlot>,
     staging: Box<AcousticFrame>,
@@ -344,6 +398,14 @@ impl AcousticPublisher {
     }
 }
 
+impl Drop for AcousticPublisher {
+    fn drop(&mut self) {
+        // Best effort: the mixer goes dry, and old kernels are freed here.
+        let _ = self.reset_to_dry();
+        self.slot.writer_alive.store(false, Ordering::Release);
+    }
+}
+
 fn poisoned() -> AudioError {
     AudioError::new(
         "audio.state.poisoned",
@@ -373,7 +435,11 @@ impl AcousticConsumer {
                 // oldest goes back to the writer to be freed there.
                 std::mem::swap(&mut *slot, &mut self.fading);
                 std::mem::swap(&mut self.active, &mut self.fading);
-                self.seen = generation;
+                // Re-read under the lock: the writer bumps the generation while
+                // holding it, so this value matches the frame just taken. Using
+                // the pre-lock value could adopt the returned (older) frame on
+                // the next poll if a publish raced in between.
+                self.seen = self.slot.generation.load(Ordering::Acquire);
                 self.slot.consumed.fetch_add(1, Ordering::Relaxed);
                 true
             }
@@ -384,14 +450,16 @@ impl AcousticConsumer {
         }
     }
     /// Frame currently in force (dry until the first publish is adopted).
-    #[allow(dead_code)] // Applied by the mixer DSP (Stream A).
     pub(crate) fn active(&self) -> &AcousticFrame {
         &self.active
     }
     /// Previous frame, kept for cross-fades.
-    #[allow(dead_code)] // Applied by the mixer DSP (Stream A).
     pub(crate) fn fading(&self) -> &AcousticFrame {
         &self.fading
+    }
+    /// Whether the matching publisher still exists.
+    pub(crate) fn writer_alive(&self) -> bool {
+        self.slot.writer_alive.load(Ordering::Acquire)
     }
 }
 
@@ -399,6 +467,7 @@ impl AcousticConsumer {
 pub(crate) fn channel() -> (AcousticPublisher, AcousticConsumer) {
     let slot = Arc::new(ParamSlot {
         frame: Mutex::new(Box::default()),
+        writer_alive: AtomicBool::new(true),
         generation: AtomicU64::new(0),
         consumed: AtomicU64::new(0),
         misses: AtomicU64::new(0),
@@ -626,13 +695,49 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_kernel_preparation_is_explicit() {
+    fn kernel_preparation_validates_and_fingerprints() {
         let ir = StereoImpulseResponse {
             sample_rate: 48_000,
             left: vec![1.0],
             right: vec![1.0],
         };
-        let err = ConvolutionKernel::prepare(&ir, 48_000).unwrap_err();
-        assert_eq!(err.code, "audio.unimplemented");
+        let a = ConvolutionKernel::prepare(&ir, 48_000).unwrap();
+        assert_eq!(a.sample_rate(), 48_000);
+        assert_eq!(a.fingerprint(), a.clone().fingerprint());
+        let other = StereoImpulseResponse {
+            left: vec![0.5],
+            ..ir.clone()
+        };
+        assert_ne!(
+            ConvolutionKernel::prepare(&other, 48_000)
+                .unwrap()
+                .fingerprint(),
+            a.fingerprint()
+        );
+        let bad = StereoImpulseResponse {
+            left: vec![f32::NAN],
+            ..ir
+        };
+        assert_eq!(
+            ConvolutionKernel::prepare(&bad, 48_000).unwrap_err().code,
+            "audio.kernel.invalid"
+        );
+    }
+
+    #[test]
+    fn dropping_the_publisher_goes_dry_and_frees_the_slot() {
+        let (mut publisher, mut consumer) = channel();
+        publisher
+            .publish(|frame| {
+                frame.reverb.enabled = true;
+                Ok(())
+            })
+            .unwrap();
+        consumer.poll();
+        assert!(consumer.writer_alive());
+        drop(publisher);
+        assert!(!consumer.writer_alive());
+        assert!(consumer.poll());
+        assert!(!consumer.active().reverb.enabled);
     }
 }

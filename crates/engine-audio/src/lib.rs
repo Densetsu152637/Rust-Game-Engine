@@ -7,6 +7,7 @@
 pub mod acoustic;
 mod clip;
 mod device;
+mod dsp;
 mod mixer;
 mod sources;
 

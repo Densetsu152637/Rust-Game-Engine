@@ -1,9 +1,12 @@
-//! Legacy bit-identity: with acoustics disabled the mixer output must equal the
-//! pre-acoustics golden render exactly, even with the acoustic plumbing attached.
+//! Test 1, legacy bit-identity: with acoustics disabled the mixer output must
+//! equal the pre-acoustics golden render exactly, even with the acoustic
+//! plumbing attached and whichever spatial renderer is selected. The default
+//! renderer is binaural (project decision), and it applies only to voices with
+//! acoustics enabled.
 
 mod common;
 
-use engine_audio::acoustic::{MixerEnvironment, SpatialRenderer, VoiceAcoustics};
+use engine_audio::acoustic::{MixerEnvironment, ReverbRenderer, SpatialRenderer, VoiceAcoustics};
 use engine_audio::{
     Attenuation, AudioConfig, AudioEngine, Bus, Clip, Listener, PlayOptions, SpatialOptions,
 };
@@ -28,12 +31,17 @@ fn saw(period: usize, len: usize) -> Vec<f32> {
 }
 
 fn render(acoustics: Option<VoiceAcoustics>, attach_plumbing: bool) -> Vec<f32> {
+    render_with(acoustics, attach_plumbing.then(MixerEnvironment::default))
+}
+
+fn render_with(
+    acoustics: Option<VoiceAcoustics>,
+    environment: Option<MixerEnvironment>,
+) -> Vec<f32> {
     let mut engine = AudioEngine::offline(AudioConfig::default()).unwrap();
     let control = engine.control();
-    let _publisher = attach_plumbing.then(|| {
-        control
-            .set_environment(MixerEnvironment::default())
-            .unwrap();
+    let _publisher = environment.map(|environment| {
+        control.set_environment(environment).unwrap();
         let mut publisher = control.acoustic_publisher().unwrap();
         publisher.publish(|_| Ok(())).unwrap();
         publisher
@@ -105,7 +113,7 @@ fn default_play_options_leave_acoustics_disabled() {
     assert_eq!(options.acoustics, VoiceAcoustics::default());
     assert_eq!(
         MixerEnvironment::default().renderer,
-        SpatialRenderer::StereoPan
+        SpatialRenderer::Binaural
     );
 }
 
@@ -121,6 +129,29 @@ fn explicit_defaults_and_attached_publisher_do_not_change_output() {
     let golden = render(None, false);
     assert_eq!(render(Some(VoiceAcoustics::default()), false), golden);
     assert_eq!(render(None, true), golden);
+}
+
+#[test]
+fn every_renderer_and_reverb_mode_keeps_disabled_voices_bit_identical() {
+    let golden = render(None, false);
+    for renderer in [SpatialRenderer::Binaural, SpatialRenderer::StereoPan] {
+        for reverb in [
+            ReverbRenderer::Off,
+            ReverbRenderer::Parametric,
+            ReverbRenderer::Convolution,
+        ] {
+            let environment = MixerEnvironment {
+                renderer,
+                reverb,
+                ..Default::default()
+            };
+            assert_eq!(
+                render_with(None, Some(environment)),
+                golden,
+                "{renderer:?} {reverb:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -143,10 +174,16 @@ fn invalid_acoustic_options_are_rejected_before_playing() {
 }
 
 #[test]
-fn second_publisher_is_refused() {
+fn second_publisher_is_refused_until_the_first_is_dropped() {
     let engine = AudioEngine::offline(AudioConfig::default()).unwrap();
     let control = engine.control();
-    let _first = control.acoustic_publisher().unwrap();
+    let first = control.acoustic_publisher().unwrap();
+    assert_eq!(
+        control.acoustic_publisher().unwrap_err().code,
+        "audio.acoustic.publisher_taken"
+    );
+    drop(first);
+    let _second = control.acoustic_publisher().unwrap();
     assert_eq!(
         control.acoustic_publisher().unwrap_err().code,
         "audio.acoustic.publisher_taken"

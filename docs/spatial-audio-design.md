@@ -1,9 +1,11 @@
 # Spatial audio and acoustic propagation: decision record and implementation plan
 
-Task `advanced-engine-20261024/spatial-audio-design`, 2026-10-24. Status: **proposed design,
-ready for review. Nothing in this document is implemented yet.** Every capability below
-is a contract to build and verify, not a description of current behaviour. Only the
-ray-query probe results in §6.1 are measured facts.
+Task `advanced-engine-20261024/spatial-audio-design`, 2026-10-24. Status: **implemented and integrated; this
+record keeps the original decisions and marks where the build deviated.** The text is
+the design as proposed. The sections "Accepted deviations" (§6.3), "Integration
+record" (§11) and the user guide [acoustics.md](acoustics.md) describe what exists;
+where they disagree with an older sentence, they win. Measured facts are the §6.1
+probes, the per-crate READMEs and the test results they cite.
 
 User request: spatial audio that bounces and is damped by an acoustic world ("v_world"),
 which is either the real 3D polygons of the scene or a 3D world synthesized in the
@@ -159,7 +161,7 @@ The mixer renders each tap from the voice delay line at its delay, panned or ITD
 #### 5.4.4 Late field: stochastic ray tracing (the energy model shared by CPU and GPU)
 
 - Emit `rays` directions uniformly on the sphere from the emitter, each with per-band energy 1/rays. The RNG is the PCG hash on wrapping `u32`: `s = v*747796405 + 2891336453; w = ((s >> ((s >> 28) + 4)) ^ s) * 277803737; out = (w >> 22) ^ w`. It is seeded per (seed, job, ray), and the code is identical on the CPU and in WGSL.
-- At each hit, e_b *= 1 − α_b. With probability `scattering`, the next direction is cosine-weighted about the normal facing the ray; otherwise it is the specular reflection. Each segment applies e_b *= exp(−m_b · ℓ). The ray terminates after `max_bounces` or when max_b e_b < 1e-6 (−60 dB). It never uses Russian roulette, which keeps it deterministic.
+- At each hit, e_b *= 1 − α_b. With probability `scattering`, the next direction is cosine-weighted about the normal facing the ray; otherwise it is the specular reflection. Each segment applies e_b *= exp(−2 m_b · ℓ) (as built: `air_np_per_m` is an amplitude coefficient, so energy decays at twice the rate; see §11). The ray terminates after `max_bounces` or when max_b e_b < 1e-6 (−60 dB). It never uses Russian roulette, which keeps it deterministic.
 - **Receiver:** a sphere of radius `receiver_radius_m` (default 1.0). For each segment crossing it after at least one reflection, deposit e_b · 4π · ℓ_in / V_rcv into the bin at time (path length to entry + ℓ_in/2)/c. This normalizes energy relative to the direct sound at 1 m. Direct (zero-bounce) energy is excluded because the mixer renders it.
 - Also track `escaped` energy (rays with no hit, for open-sky detection) and the mean segment length (≈ 4V/S, the mean free path).
 - The listener-centric late field uses a job from the listener to itself (reciprocity). Per-source pair jobs are traced only for hero sources.
@@ -167,7 +169,7 @@ The mixer renders each tap from the voice delay line at its delay, panned or ITD
 #### 5.4.5 Fitting and analytic estimates
 
 - Schroeder backward integration runs per band. RT60 is taken from T30 (−5 to −35 dB), falling back to T20 and then EDT. The fit also produces the late level (energy after `late_start_s`, default 80 ms) and the predelay. The output is `ReverbParams` with `rt60`, `level`, `predelay_s`, `mean_free_path_m` and `escaped`.
-- Analytic estimates are available for volumes and tests. Sabine: T = 0.161·V/(Σ S_i α_i + 4mV). Eyring: T = 0.161·V/(−S·ln(1 − ᾱ) + 4mV).
+- Analytic estimates are available for volumes and tests. Sabine: T = 0.161·V/(Σ S_i α_i + 8mV). Eyring: T = 0.161·V/(−S·ln(1 − ᾱ) + 8mV) (with the amplitude coefficient m in Np/m, the energy coefficient is 2m, so the air term is 4·(2m)·V = 8mV; the first draft's 4mV omitted the factor 2).
 
 #### 5.4.6 Late reverb rendering (mixer)
 
@@ -232,6 +234,11 @@ The mixer renders each tap from the voice delay line at its delay, panned or ITD
   - Storage buffers: `GpuTriangle` (positions plus material, for normals and materials without relying on `EXPERIMENTAL_RAY_HIT_VERTEX_RETURN`), `GpuInstance` (triangle offset, normal matrix) and `GpuMaterial`. Tier 2 also uploads the flat `BvhNode` arrays and the instance-level BVH, the same buffers the CPU uses.
 - **Kernel:** one WGSL module is composed from `common.wgsl` (RNG, sampling, energy model, receiver, histogram deposit) plus either `intersect_rayquery.wgsl` or `intersect_bvh.wgsl` (fixed 64-entry stack; an iteration cap counts `aborted` rays and reports them). One invocation handles one ray, and jobs are batched in one dispatch (≤ 64 jobs). The histogram is `array<atomic<u32>>` [job][bin][band], fixed point with full scale 2^31 per unit of total ray energy, using integer atomics. That makes the sums order-independent and **deterministic for a fixed seed**. Saturation is detected and reported as an error.
 - **Readback:** `map_async` plus `poll(PollType::Wait { timeout })` on the worker thread only. Output histograms use the same `EnergyHistogram` type as the CPU, so fitting, IR synthesis and DSP are shared.
+- **Accepted deviations (stream C, approved by root; measured details in [the crate README](../crates/engine-acoustics-gpu/README.md)):**
+  - **Histogram accumulation:** each cell and per-job counter is a 64-bit fixed-point value held in two `atomic<u32>` words with carry, at 2^40 counts per unit of energy (and 2^16 per metre of path), instead of one `u32` at full scale 2^31. The single word loses the −35 dB tail at 1M rays. Integer addition stays order-independent, so a fixed seed is still bitwise reproducible on one device and driver; saturation of the high word is detected and reported as `acoustics.backend.failed`.
+  - **BLAS upload:** one non-indexed `Float32x3` triangle list per distinct mesh, in the mesh's triangle order, instead of the indexed upload above. This keeps `primitive_index` equal to the mesh-relative triangle, so normals and materials still come from the `GpuTriangle` buffer without vertex return.
+  - **`GraphicsApi` selector:** `GpuBackend::with_api(GraphicsApi::{Primary, Vulkan, Dx12, Metal})` chooses which wgpu backends a tier may open (`Primary` by default; tier 1 still requires Vulkan). It exists so the forced-DX12 fallback reason of test 19 is real evidence, and `select_backend(preference, options, api, cpu)` reuses the service's tier order and reason format.
+  - **Test 20 status:** measured at library level only. A separate wgpu device rendering 1080p frames while the ray-query tier traces gave p95 8.76 ms without the tracer, 8.40 ms with the default tracer (4,096 rays × 64 bounces at 4 Hz; within noise, median +0.10 ms) and 13.28 ms with a stress tracer (65,536 rays × 256 bounces back to back). The `engine-desktop` test `the_acoustics_device_coexists_with_a_live_renderer_device` (ignored, run on the RTX 5080) shows both devices live in one process and both working. The 95th-percentile frame time of the real windowed desktop renderer with the tracer at defaults has **not** been measured, so the "≤ 1 ms" criterion is unconfirmed there; the CPU tier can be forced with `--acoustics-backend cpu`.
 - **Not on the GPU in v1:** occlusion rays and early reflections stay on the CPU. They are few rays, sensitive to latency, and a GPU readback would add a frame of latency. Revisit when more than 64 traced sources are needed.
 
 ## 7. Interfaces
@@ -632,3 +639,29 @@ Each stream documents its crate in that crate's `README.md` from the final code.
 3. Should the default spatial renderer be binaural (headphones) or the existing stereo speaker panning?
 4. Permission to download crates later? Candidates are `realfft`/`rustfft` for faster convolution, and `sofar` plus a SOFA HRTF dataset (whose license must be checked) for measured binaural. The plan works without them.
 5. Audio playback and the listener are native-script-only today. Should authored `engine.AudioEmitter` and `engine.AudioListener` components be added, so MCP-only projects can place sounds? This is outside this design's scope unless requested.
+
+## 11. Integration record
+
+What the integration added or corrected relative to the design above (all root-approved).
+
+**Air absorption convention.** `air_np_per_m` is an *amplitude* attenuation in nepers per metre. The mixer applies `exp(−m d)` to amplitude, so the tracer decays energy as `exp(−2 m ℓ)` and Sabine/Eyring use an air term of `8mV`. The first draft wrote `e *= exp(−m ℓ)` and `4mV`, each off by a factor of 2. The component's `air` field maps through `engine_audio::acoustic::iso9613_air_np_per_m` (valid −20 to 50 °C, 0 to 100 % humidity, 50 to 120 kPa) or `db_per_m_to_np_per_m`.
+
+**Contract additions (stream B).**
+- `SourceRequest.voice: Option<VoiceHandle>`, with `id == voice.get()`. engine-audio cannot rebuild a handle from a `u64`; `None` traces a source without publishing (queries).
+- `AcousticsService::drain_events()` returns `ServiceEvent::{BackendChanged, Failed, Warning}`, which engine-project maps to `acoustics.backend_changed`, `acoustics.failed` and the runtime warnings.
+- `AcousticsService::set_convolution_rate(Option<u32>)`, called with the mixer output rate when `reverb` is `convolution`.
+- World and builder methods `with_revision`, `dynamic_generation`, `rooms`, `room_at`, `proxy`, `plane_clusters`, `ProxyMapping::{air, footprint_instance, rigid_motion}`, and serde derives on the input types. `WorldStats.triangles` counts triangles across instances.
+- `AcousticWorldDocument` (`seal`, `compute_hash`, `build(limits)`), the `"acoustics"` asset kind payload.
+- `SourceStatus.occluded` means visible fraction < 0.5; the 0.3/0.7 hysteresis of `acoustics.occlusion_changed` lives in engine-project.
+- `AcousticMaterial::preset`, `sabine_rt60`, `eyring_rt60`, `fit_reverb` and `synthesize_ir` keep the Stream 0 `Result` returns; `preset(Grass)` returns `acoustics.unimplemented` because no published table could be verified.
+- Integration: `AcousticStatus.mixer: MixerStats` carries `AudioControl::acoustic_stats()`; `ReverbParams.level` is an energy (stream A divides it by the FDN's own energy), so `fit_reverb` returns the late energy rather than its square root.
+
+**Conventions shared with stream A.** Listener-frame directions are unit vectors from the listener toward the apparent source (+X right, +Y up, −Z forward). Tap gains are absolute amplitudes that already include 1/length, and `direct` multiplies the mixer's distance law. Every publish lists every acoustic voice (a missing one reverts to neutral) and re-supplies its kernels. Acoustics apply only to voices with `spatial.enabled`; a voice with acoustics disabled keeps the legacy bit-identical path. The default renderer is binaural.
+
+**MCP and tooling.** `acoustics_inspect`, `acoustics_query` and `acoustics_bake` live in `engine-mcp` over `engine_project::acoustics::{inspect_scene, query_scene, bake_scene}`; the `acoustics` telemetry object is part of `project_run_headless` and `render_screenshot`. `engine-desktop` supplies `gpu_backends()` through `Runtime::set_acoustics` and exposes `--acoustics-backend auto|ray_query|compute|cpu`. The runtime does not yet build its world from `geometry.asset`; a baked document is validated and loadable by native code and tools.
+
+**Known limitations.**
+- The default CPU budget does not fit 4,096 rays × 64 bounces in 4 ms on a few threads; the threaded service halves the ray count until the update fits and recovers by ×1.25.
+- Closed solids apply their transmission twice (once per crossed surface); use single panels or author the square root for thick walls.
+- A closed box leaks about 1.2e-5 of rays through its edges (ray offsets at shared edges).
+- Moving 2D bodies rebuild the proxy (debounced to 0.5 s) instead of using `footprint_instance` and `rigid_motion`.

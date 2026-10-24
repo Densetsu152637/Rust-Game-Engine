@@ -41,6 +41,7 @@ impl Project {
                 "model",
                 "animation",
                 "navigation",
+                "acoustics",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -166,6 +167,7 @@ impl Project {
                 self.require_asset(&s.texture, "texture")?;
             }
         }
+        crate::acoustics::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.
@@ -183,6 +185,11 @@ impl Project {
                 }
                 "navigation" => {
                     crate::simulation::load_navmesh(self, &asset.id)?;
+                }
+                "acoustics" => {
+                    let bytes =
+                        read_bounded(&file, crate::acoustics::MAX_BAKED_DOCUMENT_BYTES as u64)?;
+                    crate::acoustics::validate_document(&asset.id, &bytes)?;
                 }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;

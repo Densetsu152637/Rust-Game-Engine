@@ -89,6 +89,7 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Va
             inputs: arguments.inputs,
             events: arguments.events,
             user_data: arguments.user_data,
+            acoustics_backend: arguments.acoustics_backend,
             shutdown: Some(monitor.shutdown.clone()),
         },
         arguments.render_backend,
@@ -137,6 +138,7 @@ fn screenshot_on(
     }
     let mut audio = engine_audio::AudioEngine::offline(engine_audio::AudioConfig::default())?;
     runtime.set_audio(audio.control())?;
+    engine_desktop::configure_acoustics(&mut runtime, true, arguments.acoustics_backend)?;
     runtime.start()?;
     let mut event_trace = engine_project::EventTrace::default();
     let result = (|| -> Result<serde_json::Value> {
@@ -262,15 +264,18 @@ fn screenshot_on(
         Ok(json!({"width": width, "height": height, "bytes": png.len(),
             "path": path, "adapter": adapter, "ticks": ticks, "generated_frames": generated}))
     })();
+    let acoustics = runtime.acoustics_status();
     let cleanup = runtime.stop();
     audio.shutdown();
     let shot = result?;
     cleanup?;
+    let mut scene = runtime.try_snapshot()?;
+    scene.acoustics = acoustics;
     Ok(json!({
         "event_trace": event_trace,
         "ticks": shot["ticks"],
         "fixed_delta": FIXED_DELTA,
-        "scene": runtime.try_snapshot()?,
+        "scene": scene,
         "presented_frames": 0,
         "screenshot": shot,
     }))

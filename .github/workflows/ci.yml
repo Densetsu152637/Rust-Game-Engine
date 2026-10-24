@@ -94,6 +94,9 @@ jobs:
       # workspace engine-desktop example, which cargo test --workspace builds.
       - name: Validate PBR shadows example project
         run: cargo run --locked -p engine-tooling --bin engine -- project validate examples/pbr-shadows/project.json --no-rust
+      # examples/acoustics-showcase is a data project too: a 3D room and a 2D proxy scene.
+      - name: Validate acoustics showcase example project
+        run: cargo run --locked -p engine-tooling --bin engine -- project validate examples/acoustics-showcase/project.json --no-rust
       - name: Count passed tests
         if: ${{ !cancelled() }}
         run: |

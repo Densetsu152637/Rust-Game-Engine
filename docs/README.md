@@ -29,6 +29,8 @@
 - [Programmable world](../examples/programmable-world/README.md): a 3D scene and
   retained HUD connected through typed callbacks, physics, animation and navigation;
   GPU-free default execution and an optional desktop window.
+- [Acoustics showcase](../examples/acoustics-showcase/README.md): a 3D room and a
+  2D side-view scene for spatial audio and ray-traced acoustics, as a data project.
 - [PBR and shadows](../examples/pbr-shadows/README.md): three PBR spheres and a
   directional shadow map, rendered to PNG or a window by an `engine-desktop` example.
 - [Moving entity](../assets/scripts/moving_entity/src/lib.rs): the smallest script
@@ -67,6 +69,12 @@
   delivery and bounded execution traces.
 - [Audio and persistence](desktop-services.md): the mixer, spatial sources, CPAL
   playback, durable saves and separate settings.
+- [Spatial audio and acoustics](acoustics.md): authored acoustic components,
+  ray-traced propagation with GPU tiers and CPU fallback, the 2D proxy world, MCP
+  tools and the `--acoustics-backend` option; the decision record and verification
+  plan are in [spatial-audio-design.md](spatial-audio-design.md), and the crates in
+  [engine-acoustics](../crates/engine-acoustics/README.md) and
+  [engine-acoustics-gpu](../crates/engine-acoustics-gpu/README.md).
 - [Desktop packages](desktop-packaging.md): relocatable packages and dependency
   notices.
 - [Editor](editor.md) and [portable viewport](portable-editor.md): the native

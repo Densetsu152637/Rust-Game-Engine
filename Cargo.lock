@@ -1137,7 +1137,11 @@ dependencies = [
 name = "engine-acoustics-gpu"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "engine-acoustics",
+ "naga",
+ "pollster 0.4.0",
+ "wgpu",
 ]
 
 [[package]]
@@ -1188,6 +1192,8 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "bytemuck",
+ "engine-acoustics",
+ "engine-acoustics-gpu",
  "engine-audio",
  "engine-core",
  "engine-dlss",
@@ -1200,6 +1206,7 @@ dependencies = [
  "naga",
  "pollster 0.4.0",
  "serde",
+ "tempfile",
  "wgpu",
  "winit",
 ]
@@ -1298,6 +1305,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "blake3",
+ "engine-acoustics",
  "engine-animation",
  "engine-assets",
  "engine-audio",
