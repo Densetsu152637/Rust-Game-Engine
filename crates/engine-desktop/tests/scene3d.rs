@@ -80,6 +80,48 @@ fn neutral_scene_path_rejects_invalid_custom_uniforms() {
     );
 }
 #[test]
+fn failed_material_edits_do_not_accumulate_gpu_resources() {
+    use engine_project::runtime::{Draw, DrawSpace};
+    let backend = engine_render::headless::RecordingBackend::new();
+    let log = backend.log();
+    let mut renderer =
+        OffscreenSprites::new(Box::new(backend), 64, 64, RenderLimits::default()).unwrap();
+    let baseline = log.live_resources();
+    let mut frame = scene();
+    frame.camera3d = None;
+    for id in ["a", "b"] {
+        frame.sprites.draws.push(Draw {
+            id: id.into(),
+            mesh: triangle(id, 0.0, [1.0; 4]).mesh,
+            texture: None,
+            layer: 0,
+            space: DrawSpace::World,
+            clip: None,
+            state: Default::default(),
+            motion: None,
+            offset: [0.0; 3],
+        });
+    }
+    frame.materials2d.insert(
+        "b".into(),
+        MaterialSnapshot {
+            material: MeshMaterial::default(),
+            shader: Some(Arc::from("invalid shader")),
+        },
+    );
+    for revision in 0..4 {
+        frame.materials2d.insert(
+            "a".into(),
+            MaterialSnapshot {
+                material: MeshMaterial::default(),
+                shader: Some(Arc::from(format!("{LIT_WGSL}\n// revision {revision}"))),
+            },
+        );
+        assert!(renderer.render_scene(&frame).is_err());
+        assert_eq!(log.live_resources(), baseline);
+    }
+}
+#[test]
 #[ignore = "requires a native GPU adapter"]
 fn gpu_scene_depth_lighting_and_custom_shader_produce_pixels() -> anyhow::Result<()> {
     let mut renderer =
@@ -109,5 +151,28 @@ fn gpu_scene_depth_lighting_and_custom_shader_produce_pixels() -> anyhow::Result
     s.meshes[0].model = Mat4::from_translation(Vec3::new(0.0, 0.0, -0.05)).to_cols_array_2d();
     renderer.render_scene(&s)?;
     assert_eq!(pixel(&renderer.read_rgba()?), [0, 0, 0, 255]);
+    // The same custom material must execute for legacy 2D submissions too.
+    let draw = s.meshes.pop().unwrap();
+    s.camera3d = None;
+    s.sprites.draws.push(engine_project::runtime::Draw {
+        id: "flat".into(),
+        mesh: draw.mesh,
+        texture: None,
+        layer: 0,
+        space: engine_project::runtime::DrawSpace::World,
+        clip: None,
+        state: Default::default(),
+        motion: None,
+        offset: [0.0; 3],
+    });
+    s.materials2d.insert(
+        "flat".into(),
+        MaterialSnapshot {
+            material: draw.material,
+            shader: draw.shader,
+        },
+    );
+    renderer.render_scene(&s)?;
+    assert_eq!(pixel(&renderer.read_rgba()?), [0, 0, 255, 255]);
     Ok(())
 }

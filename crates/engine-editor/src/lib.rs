@@ -1,5 +1,5 @@
-//! Native authoring editor. The controller is platform-independent; Win32 FFI is
-//! confined to the native module. Tooling injects a compiler-backed `PlayHost`.
+//! Portable visual authoring editor. Tooling injects a compiler-backed `PlayHost`.
+//! Legacy Win32 smoke controls remain confined to the native module.
 
 mod controller;
 #[cfg(windows)]

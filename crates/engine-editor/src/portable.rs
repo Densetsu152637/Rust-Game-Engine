@@ -88,6 +88,7 @@ struct PortableEditor {
     drag: Option<DragEdit>,
     confirm_close: bool,
     close_approved: bool,
+    viewport_rect: Option<egui::Rect>,
 }
 impl PortableEditor {
     fn new(controller: EditorController) -> Self {
@@ -107,6 +108,7 @@ impl PortableEditor {
             drag: None,
             confirm_close: false,
             close_approved: false,
+            viewport_rect: None,
         }
     }
     fn report(&mut self, result: Result<()>) {
@@ -382,6 +384,7 @@ impl PortableEditor {
         let response =
             ui.add(egui::Image::new((image.id(), size)).sense(egui::Sense::click_and_drag()));
         let rect = response.rect;
+        self.viewport_rect = Some(rect);
         if response.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll != 0.0 {
@@ -413,11 +416,10 @@ impl PortableEditor {
         }
         if response.clicked()
             && let Some(pointer) = response.interact_pointer_pos()
+            && let Some(id) = self.pick(pointer, rect)
         {
-            if let Some(id) = self.pick(pointer, rect) {
-                let r = self.controller.select(Some(id));
-                self.report(r);
-            }
+            let r = self.controller.select(Some(id));
+            self.report(r);
         }
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(origin) = response.interact_pointer_pos()
@@ -434,38 +436,38 @@ impl PortableEditor {
             });
         }
         if response.drag_stopped_by(egui::PointerButton::Primary)
-            && let Some(mut drag) = self.drag.take()
+            && let Some(drag) = self.drag.take()
             && let Some(pointer) = response.interact_pointer_pos()
         {
-            let parent_inverse = match self.parent_inverse(&drag.entity) {
-                Ok(value) => value,
-                Err(error) => {
-                    self.error = error.to_string();
-                    return;
+            let result = self
+                .translated_drag(&drag, pointer, rect)
+                .and_then(|entity| {
+                    self.controller
+                        .apply(EditOperation::ReplaceEntity { entity }, &drag.revision)
+                });
+            // Reconstruct from the accepted document even when a stale gesture fails.
+            self.runtime = None;
+            self.dirty_preview = true;
+            self.report(result);
+        } else if response.dragged_by(egui::PointerButton::Primary)
+            && let Some(drag) = &self.drag
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            match self.translated_drag(drag, pointer, rect) {
+                Ok(entity) => {
+                    if let Some(runtime) = &mut self.runtime
+                        && let Some(id) = runtime.entity(&entity.id)
+                        && let Some(transform) = entity.components.transform
+                    {
+                        runtime
+                            .app_mut()
+                            .world_mut()
+                            .entity_mut(id)
+                            .insert(transform);
+                        self.dirty_preview = true;
+                    }
                 }
-            };
-            if let Some(transform) = &mut drag.entity.components.transform {
-                let delta = pointer - drag.origin;
-                let shift = self.navigation.screen_delta(
-                    [
-                        delta.x * 640.0 / rect.width(),
-                        delta.y * 360.0 / rect.height(),
-                    ],
-                    360.0,
-                );
-                let shift = parent_inverse
-                    .transform_vector3(Vec3::from_array(shift))
-                    .to_array();
-                for (value, delta) in transform.position.iter_mut().zip(shift) {
-                    *value += delta;
-                }
-                let r = self.controller.apply(
-                    EditOperation::ReplaceEntity {
-                        entity: drag.entity,
-                    },
-                    &drag.revision,
-                );
-                self.report(r);
+                Err(error) => self.error = error.to_string(),
             }
         }
         if let Some(entity) = self.selected()
@@ -484,6 +486,35 @@ impl PortableEditor {
                 egui::Stroke::new(2.0, egui::Color32::GREEN),
             );
         }
+    }
+    fn translated_drag(
+        &self,
+        drag: &DragEdit,
+        pointer: egui::Pos2,
+        rect: egui::Rect,
+    ) -> Result<SceneEntity> {
+        let parent_inverse = self.parent_inverse(&drag.entity)?;
+        let mut entity = drag.entity.clone();
+        let transform = entity
+            .components
+            .transform
+            .as_mut()
+            .ok_or_else(|| anyhow!("Selected entity has no transform"))?;
+        let delta = pointer - drag.origin;
+        let shift = self.navigation.screen_delta(
+            [
+                delta.x * 640.0 / rect.width(),
+                delta.y * 360.0 / rect.height(),
+            ],
+            360.0,
+        );
+        let shift = parent_inverse
+            .transform_vector3(Vec3::from_array(shift))
+            .to_array();
+        for (value, delta) in transform.position.iter_mut().zip(shift) {
+            *value += delta;
+        }
+        Ok(entity)
     }
     fn project(&self, position: [f32; 3], rect: egui::Rect) -> Option<egui::Pos2> {
         let point = if self.navigation.three_dimensional {
@@ -636,6 +667,122 @@ impl eframe::App for PortableEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Host;
+    impl PlayHost for Host {
+        fn start(&mut self, _: engine_project::Project) -> Result<()> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn poll(&mut self) -> Result<crate::PlayStatus> {
+            Ok(crate::PlayStatus::Running)
+        }
+    }
+    fn fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("scene.json"),r#"{"schema":1,"scene_id":"scene","entities":[{"id":"object","name":"Object","components":{"Transform":{"position":[0,0,0]}}}]}"#).unwrap();
+        std::fs::write(
+            dir.path().join("project.json"),
+            r#"{"schema":1,"name":"Editor","startup_scene":"scene.json","assets":[]}"#,
+        )
+        .unwrap();
+        dir
+    }
+    fn pass(app: &mut PortableEditor, ctx: &egui::Context, events: Vec<egui::Event>) {
+        use eframe::App;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.ui(ui, &mut eframe::Frame::_new_kittest()));
+        // This input test has no egui GPU backend to consume texture updates.
+        output.textures_delta.clear();
+    }
+    #[test]
+    fn real_egui_drag_commits_once_and_undo_restores_the_scene() {
+        let dir = fixture();
+        let mut controller = EditorController::new(Box::new(Host));
+        controller
+            .open(dir.path().join("project.json"), false)
+            .unwrap();
+        let mut app = PortableEditor::new(controller);
+        app.renderer = Some(OffscreenSprites::headless(640, 360, RenderLimits::default()).unwrap());
+        let ctx = egui::Context::default();
+        pass(&mut app, &ctx, vec![]);
+        pass(&mut app, &ctx, vec![]);
+        assert!(app.image.is_some(), "{}", app.error);
+        let center = app.viewport_rect.unwrap().center();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        pass(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(center), button(center, true)],
+        );
+        pass(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(center + egui::vec2(10.0, 0.0))],
+        );
+        pass(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(center + egui::vec2(80.0, 0.0))],
+        );
+        assert_eq!(
+            app.selected()
+                .unwrap()
+                .components
+                .transform
+                .unwrap()
+                .position,
+            [0.0; 3],
+            "drag previews must not mutate authored state"
+        );
+        assert!(
+            app.world_position(&app.selected().unwrap()).unwrap()[0] > 0.5,
+            "the preview world must move during the held gesture"
+        );
+        pass(
+            &mut app,
+            &ctx,
+            vec![button(center + egui::vec2(80.0, 0.0), false)],
+        );
+        assert!(
+            app.selected()
+                .unwrap()
+                .components
+                .transform
+                .unwrap()
+                .position[0]
+                > 0.5,
+            "{}",
+            app.error
+        );
+        app.controller.undo().unwrap();
+        assert_eq!(
+            app.selected()
+                .unwrap()
+                .components
+                .transform
+                .unwrap()
+                .position,
+            [0.0; 3]
+        );
+        assert!(
+            !app.controller.is_dirty(),
+            "one gesture must produce one history entry"
+        );
+    }
     #[test]
     fn navigation_maps_screen_motion_to_world_axes() {
         let view = ViewNavigation::default();

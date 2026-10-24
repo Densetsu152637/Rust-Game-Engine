@@ -26,7 +26,7 @@ pub enum Projection3D {
 impl Default for Projection3D {
     fn default() -> Self {
         Self::Perspective {
-            fov_y_radians: 1.0471976,
+            fov_y_radians: std::f32::consts::FRAC_PI_3,
             near: 0.1,
             far: 1000.0,
         }
@@ -125,7 +125,8 @@ pub struct MeshDraw3D {
     pub texture: Option<Arc<Texture>>,
     pub model: [[f32; 4]; 4],
     pub material: MeshMaterial,
-    /// A validated asset snapshot. None selects the built-in lit shader.
+    /// An asset source snapshot, validated by the renderer before submission.
+    /// None selects the built-in lit shader.
     pub shader: Option<Arc<str>>,
 }
 #[derive(Clone, Debug)]

@@ -319,7 +319,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "000bc467d1b344b6609fcf217a9b08d349d49c8e85dc4179fb7656f2b6e3db47"
 dependencies = [
  "critical-section",
- "foldhash",
  "foldhash 0.2.0",
  "futures-channel",
  "futures-lite",
@@ -355,7 +354,6 @@ dependencies = [
  "disqualified",
  "downcast-rs 2.0.2",
  "erased-serde",
- "foldhash",
  "foldhash 0.2.0",
  "glam 0.33.12",
  "indexmap",
@@ -397,7 +395,6 @@ dependencies = [
  "crossbeam-queue",
  "derive_more",
  "futures-lite",
- "heapless",
  "heapless 0.9.3",
  "web-task",
 ]
@@ -721,7 +718,6 @@ dependencies = [
  "mach2",
  "ndk",
  "ndk-context",
- "num-derive",
  "num-derive 0.4.2",
  "num-traits",
  "objc2 0.6.5",
@@ -1105,7 +1101,6 @@ dependencies = [
  "glam 0.34.1",
  "image",
  "naga",
- "pollster",
  "pollster 0.4.0",
  "serde",
  "wgpu",
@@ -1219,7 +1214,6 @@ dependencies = [
  "bevy_ecs",
  "bytemuck",
  "engine-render",
- "pollster",
  "pollster 0.4.0",
  "wgpu",
 ]
@@ -1238,7 +1232,6 @@ dependencies = [
  "engine-platform",
  "engine-project",
  "image",
- "pollster",
  "pollster 0.4.0",
  "process-wrap",
  "serde",
@@ -1848,7 +1841,6 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash",
  "foldhash 0.2.0",
  "serde",
  "serde_core",
@@ -1860,7 +1852,6 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "foldhash",
  "foldhash 0.2.0",
 ]
 
@@ -2130,15 +2121,15 @@ checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 
 [[package]]
 name = "linux-raw-sys"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
-
-[[package]]
-name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "litrs"
@@ -2724,7 +2715,6 @@ checksum = "a1a1ae721c5e35be65f01a03b6d2ac13a54cb4fa70d8a5da293d7b0020261398"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
- "objc2-app-kit",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
 ]
@@ -2932,7 +2922,7 @@ dependencies = [
  "downcast-rs 2.0.2",
  "either",
  "ena",
- "foldhash",
+ "foldhash 0.2.0",
  "glamx",
  "hashbrown 0.17.1",
  "log",
@@ -2958,7 +2948,7 @@ dependencies = [
  "downcast-rs 2.0.2",
  "either",
  "ena",
- "foldhash",
+ "foldhash 0.2.0",
  "glamx",
  "hashbrown 0.17.1",
  "log",
@@ -4782,10 +4772,8 @@ dependencies = [
  "memmap2",
  "ndk",
  "objc2 0.5.3",
- "objc2-app-kit",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
- "objc2-ui-kit",
  "objc2-ui-kit 0.2.2",
  "orbclient",
  "percent-encoding",

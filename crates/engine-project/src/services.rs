@@ -107,6 +107,8 @@ pub fn snapshot_entity(world: &World, entity: Entity) -> Result<SceneEntity> {
         name: id.name.clone(),
         parent: e.get::<crate::Parent>().map(|p| p.0.clone()),
         components: Components {
+            camera3d: e.get::<crate::rendering3d::Camera3D>().cloned(),
+            material: e.get::<crate::rendering3d::MeshMaterial>().cloned(),
             custom: crate::catalog::snapshot(world, entity)?,
             event_bindings: e.get::<crate::EventBindings>().cloned(),
             transform: e.get::<Transform>().cloned(),

@@ -165,6 +165,14 @@ pub struct Collider2D {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Components {
+    #[serde(rename = "Camera3D", default, skip_serializing_if = "Option::is_none")]
+    pub camera3d: Option<crate::rendering3d::Camera3D>,
+    #[serde(
+        rename = "MeshMaterial",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub material: Option<crate::rendering3d::MeshMaterial>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub custom: BTreeMap<String, crate::catalog::CustomValue>,
     #[serde(

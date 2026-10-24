@@ -14,6 +14,27 @@ use std::collections::HashMap;
 
 pub const LIT_WGSL: &str = include_str!("lit.wgsl");
 
+pub(super) fn overlay_material(draw: &Draw, material: &MaterialSnapshot) -> MeshDraw3D {
+    MeshDraw3D {
+        id: draw.id.clone(),
+        mesh: draw.mesh.clone(),
+        texture: draw.texture.clone(),
+        model: Mat4::IDENTITY.to_cols_array_2d(),
+        material: material.material.clone(),
+        shader: material.shader.clone(),
+    }
+}
+
+pub(super) fn validate_material(draw: &MeshDraw3D, vp: Mat4) -> Result<ShaderInterface> {
+    draw.material.validate()?;
+    let source = draw.shader.as_deref().unwrap_or(LIT_WGSL);
+    let interface =
+        ShaderInterface::reflect(&ShaderResource::new(&draw.id, ShaderSource::wgsl(source)))?;
+    interface.check_vertex_layout(&vertex_layout())?;
+    interface.check_uniforms(&uniforms(draw, vp, &interface)?)?;
+    Ok(interface)
+}
+
 pub fn camera_matrix(camera: &CameraInstance3D, aspect: f32) -> Result<Mat4> {
     camera.camera.validate()?;
     ensure!(aspect.is_finite() && aspect > 0.0, "invalid camera aspect");
@@ -66,19 +87,11 @@ impl SceneResources {
         let vp = camera_matrix(camera, size.0 as f32 / size.1 as f32)?;
         // Validate the entire candidate before mutating the cache.
         for draw in &frame.meshes {
-            draw.material.validate()?;
             ensure!(
                 Mat4::from_cols_array_2d(&draw.model).is_finite(),
                 "nonfinite model transform"
             );
-            let source = draw.shader.as_deref().unwrap_or(LIT_WGSL);
-            let interface = ShaderInterface::reflect(&ShaderResource::new(
-                &draw.id,
-                ShaderSource::wgsl(source),
-            ))?;
-            interface.check_vertex_layout(&vertex_layout())?;
-            let uniforms = uniforms(draw, vp, &interface)?;
-            interface.check_uniforms(&uniforms)?;
+            validate_material(draw, vp)?;
         }
         let proxies: Vec<_> = frame
             .meshes
@@ -158,9 +171,7 @@ impl SceneResources {
         let source = draw.shader.as_deref().unwrap_or(LIT_WGSL);
         if !self.shaders.contains_key(source) {
             let resource = ShaderResource::new(&draw.id, ShaderSource::wgsl(source));
-            let interface = ShaderInterface::reflect(&resource)?;
-            interface.check_vertex_layout(&vertex_layout())?;
-            interface.check_uniforms(&uniforms(draw, vp, &interface)?)?;
+            let interface = validate_material(draw, vp)?;
             self.shaders
                 .insert(source.into(), (device.create_shader(resource)?, interface));
         }

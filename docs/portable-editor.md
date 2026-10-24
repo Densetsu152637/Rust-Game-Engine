@@ -21,7 +21,7 @@ Preview construction does not start or tick gameplay callbacks.
 
 Choose 2D or 3D in the toolbar. Right drag orbits the 3D camera, middle drag pans,
 and the wheel zooms. Click near an entity origin to select it; left drag moves
-the selected entity in the camera plane. Each viewport drag commits one edit on
+the selected entity in the camera plane with a transient visual preview. Each viewport drag commits one edit on
 release, so undo restores the previous transform. A stale revision rejects the
 gesture. Selection origins show colored translation axes. Frame selection moves
 the view center to the selected entity. Picking is origin-proximity selection,

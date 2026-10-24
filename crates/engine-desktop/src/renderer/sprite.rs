@@ -190,6 +190,15 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         };
         let camera = CameraView::new(&frame.sprites.camera, size.0, size.1)?;
         self.validate(&proxies, &camera)?;
+        // Failed authoring edits must not create resources for earlier valid draws.
+        for draw in &frame.sprites.draws {
+            if let Some(material) = frame.materials2d.get(&draw.id) {
+                super::scene::validate_material(
+                    &super::scene::overlay_material(draw, material),
+                    glam::Mat4::IDENTITY,
+                )?;
+            }
+        }
         let (mut commands, mut stats) = self.scene.build(
             &mut self.device,
             frame,
@@ -285,14 +294,7 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 .with_state(state)
                 .with_uniform(uniform);
             if let Some(material) = materials.get(&draw.id) {
-                let snapshot = engine_project::rendering3d::MeshDraw3D {
-                    id: draw.id.clone(),
-                    mesh: draw.mesh.clone(),
-                    texture: draw.texture.clone(),
-                    model: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    material: material.material.clone(),
-                    shader: material.shader.clone(),
-                };
+                let snapshot = super::scene::overlay_material(draw, material);
                 let matrix = if camera_index == 0 {
                     camera.world_with_offset(draw.offset)
                 } else {

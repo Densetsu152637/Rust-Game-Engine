@@ -148,7 +148,7 @@ fn screenshot_on(
             audio.mix(&mut mixed)?;
             ticks += 1;
         }
-        let frame = runtime.extract_frame()?;
+        let frame = runtime.extract_scene_frame()?;
         let requirements = runtime
             .app_mut()
             .world_mut()
@@ -179,7 +179,7 @@ fn screenshot_on(
         let target = OffscreenTarget::new(&gpu, width, height)?;
         let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default())?;
         renderer.set_passes(passes)?;
-        renderer.render(&frame, &target.view, Some(runtime.app().render_world()))?;
+        renderer.render_scene(&frame, &target.view, Some(runtime.app().render_world()))?;
         let pixels = target.read_rgba(&renderer.gpu)?;
         let mut png = Vec::new();
         image::codecs::png::PngEncoder::new(&mut png).write_image(

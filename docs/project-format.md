@@ -93,6 +93,8 @@ errors. Component references to assets must match the declared kind.
 | `MeshRenderer` | `mesh` (mesh asset), optional `texture` (texture asset) |
 | `SpriteRenderer` | `texture` (required); optional `size` `[1,1]`, `pivot` `[0.5,0.5]`, `tint` RGBA in `[0,1]` `[1,1,1,1]`, `source` and `frames` atlas rectangles `[x,y,w,h]`, `framesPerSecond` (0), `loop` (true), `layer` (0), `visible` (true) |
 | `Camera2D` | optional `logicalSize` `[320,180]`, `pixelsPerUnit` (16), `center` `[0,0]`, `follow` (entity ID), `pixelSnap` (true) |
+| `Camera3D` | optional `active` (true), `projection` tagged by `kind`: perspective uses `fov_y_radians`, `near`, `far`; orthographic uses `height`, `near`, `far`. Requires `Transform`. |
+| `MeshMaterial` | optional shader/texture asset IDs, RGBA `tint`, `unlit` and `transparent`; applies to mesh and sprite rendering. See [scene rendering](rendering3d.md). |
 | `Collider2D` | `size` (positive); optional `offset` `[0,0]`, `trigger` (false), `layer` (1), `mask` (4294967295) |
 
 Rules enforced by validation:

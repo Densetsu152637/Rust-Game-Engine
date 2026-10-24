@@ -19,6 +19,7 @@ use std::{
 
 mod events;
 mod render;
+mod render3d;
 mod resources;
 mod scene;
 mod scripts;

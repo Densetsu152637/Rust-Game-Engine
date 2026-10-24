@@ -3,7 +3,7 @@ name = "engine-editor"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Native Windows authoring editor and revision-aware controller"
+description = "Portable visual authoring editor and revision-aware controller"
 
 [dependencies]
 engine-core = { path = "../engine-core" }

@@ -17,7 +17,8 @@ existing 2D extraction behavior.
 
 `MeshMaterial` supplies `shader` and `texture` asset references, RGBA `tint`,
 `unlit` and `transparent`. Missing shader selects the built-in triangle-lit WGSL
-shader. Lighting uses derivatives of world positions, so nonuniform scale affects
+shader. Materials also apply to 2D sprites and meshes; their default material is
+unlit and existing painter/depth settings remain authoritative. Lighting uses derivatives of world positions, so nonuniform scale affects
 the geometric normal correctly. This is simple two-sided directional lighting,
 not a physically based material, shadow system or skinned animation renderer.
 Opaque draws write depth; transparent draws test depth, do not write it, and sort
