@@ -1010,6 +1010,14 @@ impl GameUi {
         let horizontal = axis("ui_right", "ui_left");
         let vertical = axis("ui_down", "ui_up");
         let confirm = input.pressed("ui_confirm");
+        if input.pressed("ui_cancel")
+            && matches!(node(roots, target).widget, UiWidget::TextInput { .. })
+        {
+            // Gamepad equivalent of the Escape edit key: leave the input.
+            self.focus = None;
+            self.preedit = None;
+            return;
+        }
         match node(roots, target).widget.clone() {
             UiWidget::Dropdown {
                 selected, options, ..
