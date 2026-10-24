@@ -214,10 +214,10 @@ impl Runtime {
                 });
             }
             if let Some(renderer) = entity.get::<MeshRenderer>() {
-                let original = self
-                    .content
-                    .meshes
-                    .get(&renderer.mesh)
+                let original = entity
+                    .get::<crate::GeometryOverride>()
+                    .map(|geometry| &geometry.0)
+                    .or_else(|| self.content.meshes.get(&renderer.mesh))
                     .ok_or_else(|| Error::new("render.mesh.unknown", &renderer.mesh))?;
                 let mut mesh = (**original).clone();
                 for vertex in &mut mesh.vertices {
@@ -305,6 +305,12 @@ impl Runtime {
                 offset: [0.0; 3],
             });
         }
+        draws.extend(crate::ui_tree::extract_world(
+            world,
+            camera.logical_size,
+            &self.content.fonts,
+            &self.content.textures,
+        )?);
         draws.sort_by(|a, b| {
             (a.space == DrawSpace::Ui, a.layer, &a.id).cmp(&(
                 b.space == DrawSpace::Ui,

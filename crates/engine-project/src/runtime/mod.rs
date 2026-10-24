@@ -71,6 +71,8 @@ impl Runtime {
         app.world_mut()
             .insert_resource(ProjectResource(Arc::new(project.clone())));
         crate::simulation::register_components(&mut app)?;
+        crate::ui_tree::register(&mut app)?;
+        crate::networking::register(&mut app)?;
         crate::simulation::install(app.world_mut(), simulation)?;
         app.world_mut().insert_resource(RuntimeLog::default());
         app.world_mut().insert_resource(EntityLookup::default());
@@ -191,6 +193,7 @@ impl Runtime {
             &self.project.component_catalog,
         )?;
         self.validate_event_bindings()?;
+        crate::networking::validate(self.app.world())?;
         crate::simulation::prepare(self.app.world_mut())?;
         crate::transforms::refresh_world_transforms(self.app.world_mut())?;
         self.sync_collision()?;
@@ -213,7 +216,10 @@ impl Runtime {
                 "Delta must be finite positive seconds",
             ));
         }
-        self.start()?;
+        if let Err(error) = self.start() {
+            let _ = self.stop();
+            return Err(error);
+        }
         let result = self.tick_inner(dt, input);
         if result.is_err() {
             let _ = self.stop();
@@ -233,8 +239,13 @@ impl Runtime {
             }
             world.insert_resource(gameplay);
         }
+        crate::networking::validate(self.app.world())?;
+        crate::networking::before_step(self.app.world_mut(), dt)?;
         self.attach_scripts()?;
         self.dispatch_events()?;
+        let viewport = self.extract_camera().logical_size;
+        let ui_input = self.app.world().resource::<UiModel>().gameplay_frame();
+        crate::ui_tree::tick_world(self.app.world_mut(), viewport, &ui_input)?;
         let mut scripts = std::mem::take(&mut self.scripts);
         let mut failure = None;
         for script in &mut scripts {
@@ -256,9 +267,12 @@ impl Runtime {
             return Err(error);
         }
         refresh_gameplay_input(self.app.world_mut());
+        let tick = self.ticks + 1;
         self.app
             .tick_with_post_update(dt, |world| {
+                crate::networking::validate(world)?;
                 crate::simulation::step(world, dt)?;
+                crate::networking::after_step(world, tick)?;
                 crate::transforms::refresh_world_transforms(world)?;
                 Ok(())
             })
@@ -318,6 +332,7 @@ impl Runtime {
             return Ok(());
         }
         let mut error = None;
+        crate::networking::shutdown(self.app.world_mut());
         for script in std::mem::take(&mut self.scripts).into_iter().rev() {
             if let Err(e) = destroy_script(self.app.world_mut(), script)
                 && error.is_none()
@@ -326,6 +341,10 @@ impl Runtime {
             }
         }
         self.app.world_mut().resource_mut::<UiModel>().clear();
+        self.app
+            .world_mut()
+            .resource_mut::<crate::ui_tree::GameUi>()
+            .clear();
         self.app
             .world_mut()
             .resource_mut::<ControlLocks>()

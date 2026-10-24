@@ -120,11 +120,15 @@ integration and platform-specific network deployment remain separate checks.
 
 `engine_project::networking` adapts the transport to authored ECS entities.
 `engine.NetworkReplica` is version 1 with `{ "authority": "server" }` or
-`{ "authority": "remote" }` data. The descriptor requires `Transform`. Merely
+`{ "authority": "remote" }` data. The shared catalog includes this builtin
+descriptor automatically, and `Runtime` registers its native adapter before
+hydration. Do not redeclare it or register it again in game configuration.
+The descriptor requires `Transform`. Merely
 loading that metadata does not establish a session. Native game configuration
 explicitly creates a `Server` or `Client` and passes it to `attach_server` or
 `attach_client` with `NetworkSettings` before startup. `NetworkSession` owns the
-endpoint as an ECS resource; `status(world)` reports its role, peers, snapshot
+endpoint as an ECS resource; `status(world)` and the optional runtime snapshot
+`network` field report its role, peers, snapshot
 progress, accepted/rejected input counts and last failure. `NetworkVelocity` is
 optional native velocity metadata for the replicated pose.
 
@@ -152,20 +156,25 @@ Replicas currently require root-level TRS; parenting is rejected rather than
 silently converting sheared hierarchy matrices. Remote replicas cannot have
 scripts, script ownership, local children, or any `engine.PhysicsBody2D`,
 `engine.PhysicsBody3D`, `engine.AnimationPlayer`, or `engine.NavigationAgent` pose
-writer. Guards run before applying poses and must run before startup callbacks.
+writer. Runtime guards run before startup callbacks, polling, and post-update
+simulation, as well as before applying remote poses.
 `NetworkSettings` sets per-peer poll budgets, simulation tick duration, and client
 interpolation delay. Invalid application poses or transport errors propagate as
 runtime errors; bounded queues are never silently dropped.
 
-The adapter's `validate`, `before_step`, `after_step` and `shutdown` functions are
-host lifecycle seams: validate after typed hydration before callbacks, poll before
-event dispatch/scripts, capture after simulation with increasing simulation ticks,
-and close on shutdown. Sessions are scoped to one scene because the wire protocol
-has no scene namespace. Hosts must reject active-session scene transitions until
-`detach(world)` closes the session. Detachment preserves the final status report.
-The current adapter tests invoke these lifecycle seams explicitly around real
-Runtime ticks; central lifecycle integration is separately verified by the host.
+`Runtime` automatically validates after typed hydration before callbacks, polls
+before event dispatch/scripts, captures authoritative poses after simulation
+and before extraction, and closes sockets on shutdown (including failed ticks).
+The adapter's `validate`, `before_step`, `after_step` and `shutdown` functions
+remain available to custom hosts; games using `Runtime` must not call them a
+second time. Network input received by polling can dispatch in the same tick;
+events emitted by callbacks retain the ordinary next-tick queue behavior.
+Sessions are scoped to one scene because the wire protocol has no scene
+namespace. Both native and runtime scene-request APIs reject attached sessions
+until `detach(world)` closes them, including disconnected but still attached
+endpoints. Detachment and shutdown preserve the final status report.
 
 `cargo test -p engine-project --test networking` exercises two real runtimes with
 loopback TCP, input callbacks, local script preservation, full-set remote
-spawn/despawn, unknown-ID filtering, script authority conflicts and opt-in loading.
+spawn/despawn, unknown-ID filtering, script authority conflicts, opt-in loading,
+scene-transition guards, and shutdown disconnects through ordinary runtime ticks.

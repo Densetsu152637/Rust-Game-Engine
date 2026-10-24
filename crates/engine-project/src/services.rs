@@ -125,6 +125,12 @@ pub(crate) fn prepare_scene(
     project: &Project,
     request: &SceneRequest,
 ) -> Result<(Scene, gameplay2d::World)> {
+    if crate::networking::is_attached(world) {
+        return Err(Error::new(
+            "runtime.scene.network_attached",
+            "Detach the network session before changing scenes",
+        ));
+    }
     let asset = project.require_asset(&request.asset, "scene")?;
     let mut scene = load_scene(&project.root, &asset.path)?;
     project.validate_scene(&scene)?;
