@@ -78,10 +78,44 @@ pub(super) fn generate(
         assets: Vec::new(),
         bytes: 0,
     };
-    let mut warnings=vec!["Static rendering uses vertex color, base-color texture/tint and alpha blending. Full PBR, source normals/tangents, skin bindings and cubic animation remain preserved in the model asset.".into()];
+    let mut warnings=vec!["Rendering uses vertex color, base-color texture/tint and alpha blending. Full PBR, source normals/tangents and cubic animation remain preserved in the model asset.".into()];
     let node_entities: Vec<_> = (0..scene.nodes.len())
         .map(|i| format!("node:{i}"))
         .collect();
+    let binding_bytes = serde_json::to_vec(&node_entities)?.len();
+    let mut entity_count = 1 + scene.nodes.len();
+    let mut skin_binding_bytes = 0_usize;
+    for node in &scene.nodes {
+        if let Some(mesh) = node.mesh {
+            let primitives = scene.meshes[mesh].primitives.len();
+            entity_count = entity_count
+                .checked_add(primitives)
+                .ok_or_else(|| Error::new("asset.import.limit", "Prefab entity count overflow"))?;
+            if node.skin.is_some() {
+                if scene.nodes.len() > 4096 || binding_bytes > 60 * 1024 {
+                    return Err(Error::new(
+                        "asset.import.skin.limit",
+                        "Skin bindings require at most 4096 nodes and a bounded binding component",
+                    ));
+                }
+                skin_binding_bytes = primitives
+                    .checked_mul(binding_bytes)
+                    .and_then(|n| skin_binding_bytes.checked_add(n))
+                    .ok_or_else(|| {
+                        Error::new(
+                            "asset.import.skin.limit",
+                            "Skin binding byte count overflow",
+                        )
+                    })?;
+            }
+        }
+    }
+    if entity_count > 65536 || skin_binding_bytes > 8 * 1024 * 1024 {
+        return Err(Error::new(
+            "asset.import.limit",
+            "Prefab entity or aggregate skin-binding capacity exceeded",
+        ));
+    }
     #[derive(Serialize)]
     struct ModelReference<'a> {
         version: u32,
@@ -171,15 +205,20 @@ pub(super) fn generate(
                 let texture = material
                     .and_then(|m| m.base_color_texture)
                     .map(|t| format!("{prefix}:texture:{}", scene.textures[t.texture].image));
-                entities.push(json!({"id":format!("node:{node_index}:primitive:{primitive_index}"),"name":format!("Primitive {primitive_index}"),"parent":node_entities[node_index],
+                let mut entity = json!({"id":format!("node:{node_index}:primitive:{primitive_index}"),"name":format!("Primitive {primitive_index}"),"parent":node_entities[node_index],
                 "components":{"Transform":{"position":[0,0,0]},"MeshRenderer":{"mesh":format!("{prefix}:mesh:{mesh_index}:{primitive_index}"),"texture":texture},
-                "MeshMaterial":{"version":1,"texture":texture,"tint":material.map_or([1.0;4],|m|m.base_color),"unlit":false,"transparent":material.is_some_and(|m|m.alpha_mode==AlphaMode::Blend)}}}));
+                "MeshMaterial":{"version":1,"texture":texture,"tint":material.map_or([1.0;4],|m|m.base_color),"unlit":false,"transparent":material.is_some_and(|m|m.alpha_mode==AlphaMode::Blend)}}});
+                if node.skin.is_some() {
+                    entity["components"]["custom"] = json!({"engine.SkinBinding":{"version":1,"data":{
+                        "model":format!("{prefix}:model"),"mesh_node":node_index,"primitive":primitive_index,"bindings":node_entities
+                    }}});
+                }
+                entities.push(entity);
             }
         }
     }
     let mut first_clip = None;
     let mut skipped = 0;
-    let binding_bytes = serde_json::to_vec(&node_entities)?.len();
     for (index, clip) in scene.clips.iter().enumerate() {
         if scene.nodes.is_empty()
             || scene.nodes.len() > 4096
@@ -222,9 +261,6 @@ pub(super) fn generate(
     }
     if skipped > 0 {
         warnings.push(format!("{skipped} clips preserved only in model metadata: runtime supports step/linear clips with at most 4096 nodes and a 64 KiB binding component."));
-    }
-    if !scene.skins.is_empty() {
-        warnings.push("Generated meshes are static; skin geometry is preserved in model metadata for explicit runtime skinning adapters.".into());
     }
     if scene.scenes.len() > 1 {
         warnings.push("Prefab includes every source node; original scene root selections remain in model metadata.".into());

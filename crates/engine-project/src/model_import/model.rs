@@ -111,7 +111,10 @@ impl ModelDocument {
         if !index(scene.default_scene, scene.scenes.len()) {
             return Err(invalid());
         }
+        let mut mesh_joints = Vec::with_capacity(scene.meshes.len());
         for mesh in &scene.meshes {
+            let mut maximum_joint = 0_u16;
+            let mut has_all_joints = true;
             count += mesh.primitives.len();
             if count > limits.max_entities {
                 return Err(invalid());
@@ -149,8 +152,25 @@ impl ModelDocument {
                     {
                         return Err(invalid());
                     }
+                    if let Some(joints) = v.joints {
+                        for joint in joints {
+                            maximum_joint = maximum_joint.max(joint);
+                        }
+                    } else {
+                        has_all_joints = false;
+                    }
+                    if let Some(weights) = v.weights {
+                        let sum = weights.iter().sum::<f32>();
+                        if weights.iter().any(|w| !(0.0..=1.0).contains(w))
+                            || !sum.is_finite()
+                            || sum <= 1e-6
+                        {
+                            return Err(invalid());
+                        }
+                    }
                 }
             }
+            mesh_joints.push((maximum_joint, has_all_joints));
         }
         for material in &scene.materials {
             if !finite(&material.base_color)
@@ -217,6 +237,14 @@ impl ModelDocument {
                     .any(|v| !finite(v))
             {
                 return Err(invalid());
+            }
+        }
+        for node in &scene.nodes {
+            if let (Some(mesh), Some(skin)) = (node.mesh, node.skin) {
+                let (maximum, complete) = mesh_joints[mesh];
+                if !complete || maximum as usize >= scene.skins[skin].joints.len() {
+                    return Err(invalid());
+                }
             }
         }
         for clip in &scene.clips {

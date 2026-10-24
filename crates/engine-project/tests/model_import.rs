@@ -161,3 +161,42 @@ fn model_documents_validate_references_before_consumption() {
     document.scene.meshes[0].primitives[0].indices[0] = 99;
     assert!(document.validate().is_err());
 }
+#[test]
+fn generated_skin_bindings_remap_and_model_rejects_invalid_joint_indices() {
+    let temp = tempfile::tempdir().unwrap();
+    fixture::write_project(temp.path());
+    fixture::write_skinned_source(temp.path());
+    let project = Project::load(temp.path().join("project.json")).unwrap();
+    import_model(&project, Path::new("source/model.gltf"), "skinned").unwrap();
+    let project = Project::load(&project.manifest).unwrap();
+    let mut model = load_model(&project.resolve_asset("skinned:model").unwrap()).unwrap();
+    assert_eq!(model.scene.skins[0].joints, vec![2]);
+    model.scene.meshes[0].primitives[0].vertices[0].joints = Some([1, 0, 0, 0]);
+    assert!(model.validate().is_err());
+    model.scene.meshes[0].primitives[0].vertices[0].joints = Some([0; 4]);
+    model.scene.meshes[0].primitives[0].vertices[0].weights = Some([0.; 4]);
+    assert!(model.validate().is_err());
+    let mut document = SceneDocument::new(project);
+    let revision = document.revision().to_owned();
+    document
+        .apply(
+            EditOperation::InstantiatePrefab {
+                asset: "skinned:prefab".into(),
+                prefix: "copy:".into(),
+                parent: None,
+            },
+            &revision,
+        )
+        .unwrap();
+    let primitive = document
+        .snapshot()
+        .entities
+        .iter()
+        .find(|e| e.id == "copy:node:1:primitive:0")
+        .unwrap();
+    assert_eq!(
+        primitive.components.custom["engine.SkinBinding"].data,
+        serde_json::json!({"model":"skinned:model","mesh_node":1,"primitive":0,
+            "bindings":["copy:node:0","copy:node:1","copy:node:2"]})
+    );
+}

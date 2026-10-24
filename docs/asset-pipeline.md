@@ -155,7 +155,7 @@ references, numeric data, hierarchy and aggregate capacities. `node_entities[i]`
 is the prefab entity corresponding to source node `i`, before the instance prefix.
 This preserves richer vertex channels, full PBR properties, skin data, clips and
 original scene selections. Rendering currently uses base color and geometric
-lighting; it does not claim full glTF PBR or automatic skin deformation.
+lighting; full glTF PBR is preserved as metadata.
 
 Step/linear TRS clips become `animation` assets with per-channel key times. The
 first supported clip is attached to the prefab root as `engine.AnimationPlayer`,
@@ -182,3 +182,4 @@ Project tests exercise import/reload, prefab instantiation, material/PNG/mesh
 association, animation binding remapping, conflicts, traversal and rollback.
 MCP tests exercise write gating and actual import; a CLI test launches the
 `engine` executable, imports a real source fixture, and reloads generated assets.
+
