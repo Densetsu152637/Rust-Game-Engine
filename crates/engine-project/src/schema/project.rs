@@ -41,6 +41,7 @@ impl Project {
                 "model",
                 "animation",
                 "navigation",
+                "acoustics",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -166,6 +167,7 @@ impl Project {
                 self.require_asset(&s.texture, "texture")?;
             }
         }
+        crate::acoustics::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.
@@ -183,6 +185,20 @@ impl Project {
                 }
                 "navigation" => {
                     crate::simulation::load_navmesh(self, &asset.id)?;
+                }
+                "acoustics" => {
+                    let bytes = read_bounded(&file, 64 * 1024 * 1024)?;
+                    let document: serde_json::Value = serde_json::from_slice(&bytes)?;
+                    if document
+                        .get("version")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_none()
+                    {
+                        return Err(Error::new(
+                            "acoustics.document.invalid",
+                            format!("Acoustics asset {} needs a numeric version", asset.id),
+                        ));
+                    }
                 }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;
