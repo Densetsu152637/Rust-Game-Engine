@@ -47,6 +47,7 @@ impl ComponentCatalog {
             .chain([
                 crate::ui_tree::descriptor(),
                 crate::networking::descriptor(),
+                crate::xr::descriptor(),
             ])
             .chain(descriptors)
         {
@@ -88,6 +89,8 @@ impl ComponentCatalog {
         validate_value(&descriptor.schema, &value.data, 0)?;
         if name == "engine.UiRoot" {
             serde_json::from_value::<crate::ui_tree::UiRoot>(value.data.clone())?.validate()?;
+        } else if name == crate::xr::XR_SETTINGS_COMPONENT {
+            serde_json::from_value::<crate::xr::XrSettings>(value.data.clone())?.validate()?;
         }
         Ok(())
     }

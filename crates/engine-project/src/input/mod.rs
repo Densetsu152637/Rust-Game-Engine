@@ -7,11 +7,13 @@ mod bindings;
 mod devices;
 mod mapper;
 mod sources;
+mod xr;
 
 pub use bindings::*;
 pub use devices::*;
 pub use mapper::*;
 pub use sources::*;
+pub use xr::*;
 
 pub type BindingMap = BTreeMap<String, Vec<String>>;
 #[derive(Clone, Debug, Serialize, Deserialize, Resource, PartialEq)]

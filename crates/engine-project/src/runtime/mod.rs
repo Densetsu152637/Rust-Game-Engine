@@ -73,6 +73,7 @@ impl Runtime {
         crate::simulation::register_components(&mut app)?;
         crate::ui_tree::register(&mut app)?;
         crate::networking::register(&mut app)?;
+        crate::xr::register(&mut app)?;
         crate::simulation::install(app.world_mut(), simulation)?;
         app.world_mut().insert_resource(RuntimeLog::default());
         app.world_mut().insert_resource(EntityLookup::default());
