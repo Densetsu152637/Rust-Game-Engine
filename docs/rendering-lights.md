@@ -141,6 +141,8 @@ of `engine::view`. One compute invocation per froxel tests every local light's
 range sphere against the froxel's view-space bounds, plus the outer cone of spot
 lights (against the froxel's bounding sphere) and the emitting half-space of
 one-sided area lights, and stores up to 256 light indices in ascending order.
+Workgroups of 64 froxels load the lights in view space into shared memory in
+batches of 64.
 Longer lists are truncated and counted. Disabling the feature in a view
 (`render_features: {"engine.lights.clusters": false}`) shades every uploaded
 local light per fragment instead (the all-lights path).
@@ -249,8 +251,8 @@ cascades replace the fixed volume). `ambient` stays; `exposure` is new.
 | Point light (1 m above the floor, range 6 m) | Max error 0.09% vs the windowed inverse-square formula; within 3.0% of pure inverse square for d <= 0.35 range; monotonic; exactly 0 at all 33 pixels beyond range |
 | Spot light (inner 0.3, outer 0.5 rad) | Factor 1 inside the inner cone (40 px), 0 outside the outer cone (58 px), max deviation from smoothstep 0.0008 between (30 px) |
 | Area light (2 m x 1 m at 1.5 m) | Max error 0.094% vs numerical integration over 256 floor samples; elongated along the rectangle's width |
-| 1024 point lights, 640x360 | Clustered and all-lights images identical (max difference 0); 992 clustered, 32 culled; longest list 98, 0 clusters over capacity; cluster pass 0.325 ms GPU; frame 1.36 ms clustered vs 1.84 ms all lights |
-| 4096 point lights, 640x360 | Cluster pass 1.30 ms; frame 3.67 ms clustered vs 6.27 ms all lights; longest list 377, so 20 clusters were truncated (reported) |
+| 1024 point lights, 640x360 | Clustered and all-lights images identical (max difference 0); 992 clustered, 32 culled; longest list 98, 0 clusters over capacity; cluster pass 0.076 ms GPU (timestamp queries); frame 1.07 ms clustered vs 1.90 ms all lights (wall time with a GPU wait, debug build) |
+| 4096 point lights, 640x360 | Cluster pass 0.300 ms; frame 2.61 ms clustered vs 6.37 ms all lights; longest list 377, so 20 clusters were truncated (reported) |
 | Cascades (4, 60 m) | A shadow at view depth 3.0 m used cascade 0 and one at 42.2 m cascade 3 (splits 4.14, 9.35, 20.35); both fully shadowed, lit neighbours 1.0 |
 | Cascade stability | A 0.0625 m camera move (0.70 of a 0.0895 m shadow texel) changed 0 of 1090 shadow-edge pixels; with snapping disabled the same move changed 1365 pixels (max 0.16) |
 | Spot and point shadows | Visibility 0 at the projected occluder centre (spot; point -Y and +X faces), 1.0 beside it |
@@ -264,8 +266,9 @@ cascades replace the fixed volume). `ambient` stays; `exposure` is new.
   come from the centre. Disc and sphere lights are not implemented.
 - Every shadow view draws every opaque caster (no per-view caster culling) and
   shadow maps are re-rendered every frame (no caching of static lights).
-- The cluster pass tests every local light per froxel (about 0.3 ms for 1024
-  and 1.3 ms for 4096 lights on an RTX 5080); a froxel holds at most 256 lights.
+- The cluster pass tests every local light against every froxel, in batches
+  of 64 lights shared per workgroup (0.08 ms for 1024 and 0.30 ms for 4096
+  lights on an RTX 5080); a froxel holds at most 256 lights.
 - Each view (camera, editor viewport, XR eye) owns its own atlas pages.
 - Transparent meshes do not cast shadows; custom vertex displacement is not
   replayed in shadow passes.

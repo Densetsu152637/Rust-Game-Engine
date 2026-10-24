@@ -1,6 +1,8 @@
 // Built-in light clustering (engine.lights.clusters): one invocation per
 // froxel tests every local light (bounding sphere, spot cone, area light
 // half-space) against the froxel's view-space bounds and writes its list.
+// Each workgroup loads lights in batches of 64 into shared memory, already in
+// view space, so a light is fetched and transformed once per workgroup.
 #import engine::view
 
 struct ClusterGridOut {
@@ -16,6 +18,14 @@ struct ClusterGridOut {
 // x clusters over capacity, y longest list, z stored entries, w nonempty clusters.
 @group(1) @binding(2) var<storage, read_write> stats: array<atomic<u32>, 4>;
 
+const BATCH: u32 = 64u;
+
+// View-space position and range.
+var<workgroup> batch_spheres: array<vec4<f32>, 64>;
+// View-space direction of travel; w: spot cos outer, or area two-sided flag.
+var<workgroup> batch_axes: array<vec4<f32>, 64>;
+var<workgroup> batch_kinds: array<u32, 64>;
+
 // View-space point of the jittered camera ray through `ndc` at view depth `depth`.
 fn froxel_point(ndc: vec2<f32>, depth: f32) -> vec3<f32> {
     let a = engine_view.view_from_clip * vec4<f32>(ndc, 0.0, 1.0);
@@ -27,15 +37,13 @@ fn froxel_point(ndc: vec2<f32>, depth: f32) -> vec3<f32> {
 }
 
 @compute @workgroup_size(64)
-fn build(@builtin(global_invocation_id) id: vec3<u32>) {
+fn build(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) local: u32) {
     let dims = grid.dims;
     let cluster = id.x;
-    if cluster >= dims.x * dims.y * dims.z {
-        return;
-    }
+    let valid = cluster < dims.x * dims.y * dims.z;
     let cx = cluster % dims.x;
     let cy = (cluster / dims.x) % dims.y;
-    let cz = cluster / (dims.x * dims.y);
+    let cz = min(cluster / (dims.x * dims.y), dims.z - 1u);
     let near = grid.depth.x;
     let ratio = grid.depth.y / near;
     let d0 = near * pow(ratio, f32(cz) / f32(dims.z));
@@ -58,35 +66,55 @@ fn build(@builtin(global_invocation_id) id: vec3<u32>) {
     let capacity = dims.w;
     let base = cluster * capacity;
     var count = 0u;
-    for (var i = grid.params.y; i < grid.params.z; i++) {
-        let light = engine_lights.lights[i];
-        let position = (engine_view.view_from_world * vec4<f32>(light.position, 1.0)).xyz;
-        let delta = clamp(position, lo, hi) - position;
-        if dot(delta, delta) > light.range * light.range {
-            continue;
+    // Read-only storage values: uniform across the workgroup.
+    let first = engine_lights.counts.y;
+    let total = engine_lights.counts.x;
+    for (var start = first; start < total; start += BATCH) {
+        let index = start + local;
+        if index < total {
+            let light = engine_lights.lights[index];
+            let position = (engine_view.view_from_world * vec4<f32>(light.position, 1.0)).xyz;
+            let axis = (engine_view.view_from_world * vec4<f32>(light.direction, 0.0)).xyz;
+            let extra = select(light.params.z, light.params.y, light.kind == ENGINE_LIGHT_SPOT);
+            batch_spheres[local] = vec4<f32>(position, light.range);
+            batch_axes[local] = vec4<f32>(axis, extra);
+            batch_kinds[local] = light.kind;
         }
-        let axis = (engine_view.view_from_world * vec4<f32>(light.direction, 0.0)).xyz;
-        if light.kind == ENGINE_LIGHT_SPOT {
-            // Cone against the froxel's bounding sphere.
-            let to_center = center - position;
-            let along = dot(to_center, axis);
-            let cos_outer = light.params.y;
-            let sin_outer = sqrt(max(1.0 - cos_outer * cos_outer, 0.0));
-            let lateral = sqrt(max(dot(to_center, to_center) - along * along, 0.0));
-            if cos_outer * lateral - along * sin_outer > radius || along < -radius {
+        workgroupBarrier();
+        let size = min(BATCH, total - start);
+        for (var j = 0u; j < size; j++) {
+            let sphere = batch_spheres[j];
+            let delta = clamp(sphere.xyz, lo, hi) - sphere.xyz;
+            if dot(delta, delta) > sphere.w * sphere.w {
                 continue;
             }
-        }
-        if light.kind == ENGINE_LIGHT_AREA && light.params.z < 0.5 {
-            // One-sided: nothing behind the emitting plane.
-            if dot(center - position, axis) + dot(half_size, abs(axis)) < 0.0 {
-                continue;
+            let kind = batch_kinds[j];
+            let axis = batch_axes[j];
+            if kind == ENGINE_LIGHT_SPOT {
+                // Cone against the froxel's bounding sphere.
+                let to_center = center - sphere.xyz;
+                let along = dot(to_center, axis.xyz);
+                let sin_outer = sqrt(max(1.0 - axis.w * axis.w, 0.0));
+                let lateral = sqrt(max(dot(to_center, to_center) - along * along, 0.0));
+                if axis.w * lateral - along * sin_outer > radius || along < -radius {
+                    continue;
+                }
             }
+            if kind == ENGINE_LIGHT_AREA && axis.w < 0.5 {
+                // One-sided: nothing behind the emitting plane.
+                if dot(center - sphere.xyz, axis.xyz) + dot(half_size, abs(axis.xyz)) < 0.0 {
+                    continue;
+                }
+            }
+            if valid && count < capacity {
+                cluster_lights[base + count] = start + j;
+            }
+            count++;
         }
-        if count < capacity {
-            cluster_lights[base + count] = i;
-        }
-        count++;
+        workgroupBarrier();
+    }
+    if !valid {
+        return;
     }
     grid.counts[cluster] = min(count, capacity);
     if count > capacity {
