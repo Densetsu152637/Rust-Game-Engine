@@ -1335,6 +1335,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-tilemap"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-tooling"
 version = "0.1.0"
 dependencies = [
