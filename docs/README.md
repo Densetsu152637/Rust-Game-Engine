@@ -76,4 +76,9 @@
 - [MCP server](mcp.md): the stdio protocol, read/write/exec tools, resources,
   access levels and limits.
 
+## World building
+
+- [World building overview](world.md): the `engine_project::world` module, its
+  per-feature component, install and tick-hook contract, and the render adapter.
+
 Per-crate details are in `crates/*/README.md`.

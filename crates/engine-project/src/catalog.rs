@@ -44,6 +44,7 @@ impl ComponentCatalog {
         let mut result = Self::default();
         for d in crate::simulation::component_descriptors()
             .into_iter()
+            .chain(crate::world::component_descriptors())
             .chain([
                 crate::ui_tree::descriptor(),
                 crate::networking::descriptor(),
