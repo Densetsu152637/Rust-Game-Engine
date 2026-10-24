@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT"
-description = "Acoustic world, CPU geometric propagation and the propagation backend contract (contract skeleton)"
+description = "Acoustic world, CPU geometric propagation, fitting and the propagation service"
 
 [dependencies]
 engine-audio = { path = "../engine-audio" }
