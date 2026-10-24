@@ -40,6 +40,8 @@ pub const REBUILD_DEBOUNCE_S: f32 = 0.5;
 pub const MAX_SUBMITTED_SOURCES: usize = 256;
 /// Hero (per-pair convolution) sources.
 pub const MAX_HERO_SOURCES: usize = 4;
+/// Warnings kept for `acoustics_inspect` and `warnings()`.
+const MAX_WARNINGS: usize = 64;
 /// A source becomes occluded below this visible fraction ...
 pub const OCCLUDED_BELOW: f32 = 0.3;
 /// ... and is audible again above this one.
@@ -69,6 +71,10 @@ pub struct AcousticHost {
     pub(crate) backends: Mutex<Vec<Box<dyn PropagationBackend>>>,
     pub(crate) mode: ServiceMode,
 }
+/// The mixer output rate in Hz, supplied by the host so the service can prepare
+/// convolution kernels (used only while `reverb` is `convolution`).
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct AcousticOutputRate(pub u32);
 /// The native parameter hook, shared with the worker.
 #[derive(Resource, Clone, Default)]
 pub struct AcousticHooks(pub(crate) Arc<Mutex<Option<ParamHook>>>);
@@ -114,7 +120,6 @@ pub(crate) struct RuntimeAcoustics {
     last_dynamic: BTreeMap<String, [f32; 12]>,
     occlusion: Occlusion,
     owners: BTreeMap<u64, Entity>,
-    last_backend: Option<BackendKind>,
     failure: Option<(String, String)>,
     reported: Option<(String, String)>,
     rooms: Arc<Mutex<RoomSet>>,
@@ -197,7 +202,6 @@ impl RuntimeAcoustics {
             last_dynamic: BTreeMap::new(),
             occlusion: Occlusion::default(),
             owners: BTreeMap::new(),
-            last_backend: None,
             failure: None,
             reported: None,
             rooms: Arc::new(Mutex::new(RoomSet::default())),
@@ -316,6 +320,13 @@ fn create_service(
     };
     let mut service =
         AcousticsService::new(config, publisher).map_err(|e| (e.code.to_owned(), e.message))?;
+    if environment.reverb == Reverb::Convolution
+        && let Some(rate) = world.get_resource::<AcousticOutputRate>()
+    {
+        service
+            .set_convolution_rate(Some(rate.0))
+            .map_err(|e| (e.code.to_owned(), e.message))?;
+    }
     let user = world
         .get_resource::<AcousticHooks>()
         .cloned()
@@ -521,6 +532,7 @@ impl RuntimeAcoustics {
         if let Some(summary) = self.service().and_then(AcousticsService::latest) {
             self.handle(world, &summary, events);
         }
+        self.drain_service_events(events);
     }
 
     fn refresh_world(&mut self, collected: &Collected, force: bool, events: &mut Vec<EngineEvent>) {
@@ -627,6 +639,7 @@ impl RuntimeAcoustics {
                 heroes += usize::from(hero);
                 SourceRequest {
                     id: v.voice.get(),
+                    voice: Some(v.voice),
                     position: map(&self.proxy, v.position),
                     radius_m: c.radius_m,
                     occlusion: c.occlusion,
@@ -678,24 +691,32 @@ impl RuntimeAcoustics {
                 });
             }
         }
-        if let Some(previous) = self.last_backend.replace(summary.backend)
-            && previous != summary.backend
-        {
-            let reason = self
-                .service()
-                .and_then(|s| s.status().fallback_reason)
-                .unwrap_or_default();
-            events.push(EngineEvent {
-                name: EVENT_BACKEND_CHANGED.into(),
-                source: None,
-                target: None,
-                payload: serde_json::json!({
-                    "from": backend_name(previous),
-                    "to": backend_name(summary.backend),
-                    "reason": reason,
-                }),
-            });
+    }
+
+    /// Map the service's own notifications to `acoustics.*` events and the log.
+    fn drain_service_events(&mut self, events: &mut Vec<EngineEvent>) {
+        let Some(drained) = self.service().map(AcousticsService::drain_events) else {
+            return;
+        };
+        for event in drained {
+            match event {
+                ServiceEvent::BackendChanged { from, to, reason } => {
+                    events.push(EngineEvent {
+                        name: EVENT_BACKEND_CHANGED.into(),
+                        source: None,
+                        target: None,
+                        payload: serde_json::json!({
+                            "from": from.map_or("none", backend_name),
+                            "to": to.map_or("none", backend_name),
+                            "reason": reason,
+                        }),
+                    });
+                }
+                ServiceEvent::Failed { code, message } => self.fail(code, &message, events),
+                ServiceEvent::Warning { code, message } => self.warnings.push(format!("{code}: {message}")),
+            }
         }
+        self.warnings.truncate(MAX_WARNINGS);
     }
 }
 

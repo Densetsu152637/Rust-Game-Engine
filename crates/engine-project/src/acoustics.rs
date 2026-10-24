@@ -22,7 +22,7 @@ pub use collect::{
 pub use components::*;
 pub use descriptors::descriptors;
 pub use service::{
-    AcousticControl, AcousticHooks, AcousticHost, AcousticUnits, EVENT_BACKEND_CHANGED,
+    AcousticControl, AcousticHooks, AcousticHost, AcousticOutputRate, AcousticUnits, EVENT_BACKEND_CHANGED,
     EVENT_FAILED, EVENT_OCCLUSION_CHANGED, EVENT_WORLD_REBUILT, MAX_EVENTS_PER_TICK,
     OCCLUDED_BELOW, Occlusion, REBUILD_DEBOUNCE_S, VISIBLE_ABOVE, mixer_environment,
     propagation_settings, set_bus_effect, set_param_hook, status, warnings,

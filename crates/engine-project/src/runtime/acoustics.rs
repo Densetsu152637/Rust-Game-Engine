@@ -27,6 +27,21 @@ impl Runtime {
             });
         Ok(())
     }
+    /// Tell the acoustics service the mixer output rate so `reverb: "convolution"`
+    /// can prepare kernels at it. Call before startup, with the rate of the
+    /// `AudioConfig` the host created its engine with.
+    pub fn set_acoustics_output_rate(&mut self, rate: u32) -> Result<()> {
+        if self.started {
+            return Err(Error::new(
+                "runtime.started",
+                "Configure acoustics before startup",
+            ));
+        }
+        self.app
+            .world_mut()
+            .insert_resource(crate::acoustics::AcousticOutputRate(rate));
+        Ok(())
+    }
     /// Install or clear the native parameter hook. It runs on the propagation
     /// worker after each result and may adjust the published frame.
     pub fn set_param_hook(&mut self, hook: Option<ParamHook>) {
