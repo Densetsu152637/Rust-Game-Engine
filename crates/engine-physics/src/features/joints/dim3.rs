@@ -1,6 +1,10 @@
+//! 3D joint descriptors. The dimension-generic side table and `World` methods are in
+//! `shared.rs`, compiled once per dimension.
 use super::{Position, vector};
 use crate::{Error, Result};
 use rapier3d::prelude::*;
+#[path = "shared.rs"]
+mod shared;
 /// Anchors and hinge axis are in local body coordinates. Connected contacts are disabled.
 #[derive(Clone, Copy, Debug)]
 pub enum JointDesc {
