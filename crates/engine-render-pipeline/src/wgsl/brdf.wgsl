@@ -49,7 +49,7 @@ fn engine_brdf(surface: EngineSurface, v: vec3<f32>, l: vec3<f32>) -> EngineBrdf
     let distribution = a2 / max(ENGINE_PI * denom * denom, 0.0000001);
     let gv = 2.0 * nv / (nv + sqrt(a2 + (1.0 - a2) * nv * nv));
     let gl = 2.0 * nl / max(nl + sqrt(a2 + (1.0 - a2) * nl * nl), 0.000001);
-    let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vh, 5.0);
+    let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(clamp(1.0 - vh, 0.0, 1.0), 5.0);
     var brdf: EngineBrdf;
     brdf.specular = distribution * gv * gl * fresnel / max(4.0 * nv * nl, 0.000001);
     brdf.diffuse = (vec3<f32>(1.0) - fresnel) * (1.0 - surface.metallic) * surface.albedo / ENGINE_PI;
