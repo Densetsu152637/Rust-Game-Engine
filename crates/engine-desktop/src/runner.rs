@@ -245,6 +245,9 @@ pub fn run_with_wgpu_backends(
         event_trace: EventTrace::default(),
     };
     let event_result = event_loop.run_app(&mut app).context("desktop event loop");
+    // Stopping shuts the acoustics service down and drops its status, so the
+    // report keeps the status of the last tick.
+    let acoustics = app.runtime.acoustics_status();
     let cleanup = app.runtime.stop().map_err(anyhow::Error::from);
     let audio_error = app.audio.device_error();
     app.audio.shutdown();
@@ -264,7 +267,11 @@ pub fn run_with_wgpu_backends(
         profile: app.runtime.app().profile(),
         ticks: app.ticks,
         fixed_delta: FIXED_DELTA,
-        scene: app.runtime.try_snapshot()?,
+        scene: {
+            let mut scene = app.runtime.try_snapshot()?;
+            scene.acoustics = acoustics;
+            scene
+        },
         presented_frames: app.presented_frames,
     })
 }
@@ -310,6 +317,7 @@ fn run_headless(
         }
         Ok(())
     })();
+    let acoustics = runtime.acoustics_status();
     let cleanup = runtime.stop().map_err(anyhow::Error::from);
     audio.shutdown();
     combine(result, cleanup)?;
@@ -318,7 +326,11 @@ fn run_headless(
         profile: runtime.app().profile(),
         ticks,
         fixed_delta: FIXED_DELTA,
-        scene: runtime.try_snapshot()?,
+        scene: {
+            let mut scene = runtime.try_snapshot()?;
+            scene.acoustics = acoustics;
+            scene
+        },
         presented_frames: 0,
     })
 }

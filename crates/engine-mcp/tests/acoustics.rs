@@ -116,7 +116,7 @@ fn query_shows_the_divider_occluding_high_frequencies_and_is_deterministic() {
     );
     assert!(behind["distance_m"].as_f64().unwrap() > 5.9);
     assert!(behind["reflections"].as_array().unwrap().len() <= 16);
-    assert!(clear["reflections"].as_array().unwrap().len() > 0);
+    assert!(!clear["reflections"].as_array().unwrap().is_empty());
 
     let rt60: Vec<f64> = first["reverb"]["rt60_s"]
         .as_array()

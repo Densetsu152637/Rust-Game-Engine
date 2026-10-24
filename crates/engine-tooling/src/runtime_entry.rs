@@ -264,6 +264,7 @@ fn screenshot_on(
         Ok(json!({"width": width, "height": height, "bytes": png.len(),
             "path": path, "adapter": adapter, "ticks": ticks, "generated_frames": generated}))
     })();
+    let acoustics = runtime.acoustics_status();
     let cleanup = runtime.stop();
     audio.shutdown();
     let shot = result?;
@@ -272,7 +273,11 @@ fn screenshot_on(
         "event_trace": event_trace,
         "ticks": shot["ticks"],
         "fixed_delta": FIXED_DELTA,
-        "scene": runtime.try_snapshot()?,
+        "scene": {
+            let mut scene = runtime.try_snapshot()?;
+            scene.acoustics = acoustics;
+            scene
+        },
         "presented_frames": 0,
         "screenshot": shot,
     }))

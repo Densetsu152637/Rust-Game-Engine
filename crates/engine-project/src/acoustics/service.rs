@@ -310,6 +310,14 @@ fn create_service(
         None => (vec![], ServiceMode::Synchronous),
     };
     state.mode = mode;
+    // A host override (`--acoustics-backend`) applies from the first selection, so a
+    // forced `cpu` never initializes a GPU tier even for one update.
+    if let Some(forced) = world
+        .get_resource::<AcousticControl>()
+        .and_then(|control| control.override_backend)
+    {
+        state.preference = forced;
+    }
     let config = ServiceConfig {
         preference: state.preference,
         mode,
