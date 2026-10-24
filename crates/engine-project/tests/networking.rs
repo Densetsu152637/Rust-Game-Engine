@@ -21,12 +21,12 @@ fn fixture(authority: &str, with_callback: bool) -> tempfile::TempDir {
         {"id":"local","name":"local","components":{"Transform":{"position":[99,0,0]},"Script":{"asset":"counter"}}}
     ]})).unwrap()).unwrap();
     fs::write(
-        dir.path().join("components.json"),
-        serde_json::to_vec(&vec![descriptor()]).unwrap(),
+        dir.path().join("next.scene.json"),
+        serde_json::to_vec(&json!({"schema":1,"scene_id":"next","entities":[]})).unwrap(),
     )
     .unwrap();
     fs::write(dir.path().join("counter.rs"), "pub fn configure() {}\n").unwrap();
-    fs::write(dir.path().join("project.json"),serde_json::to_vec(&json!({"schema":1,"name":"network-test","startup_scene":"scene.json","componentSchemas":"components.json","assets":[{"id":"counter","kind":"script","path":"counter.rs"}]})).unwrap()).unwrap();
+    fs::write(dir.path().join("project.json"),serde_json::to_vec(&json!({"schema":1,"name":"network-test","startup_scene":"scene.json","assets":[{"id":"counter","kind":"script","path":"counter.rs"},{"id":"next","kind":"scene","path":"next.scene.json"}]})).unwrap()).unwrap();
     dir
 }
 #[derive(Resource, Default)]
@@ -49,7 +49,6 @@ fn movement(world: &mut World, owner: Entity, event: &EngineEvent) -> engine_pro
 fn runtime(dir: &tempfile::TempDir, callback: bool) -> Runtime {
     let mut runtime =
         Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
-    register(runtime.app_mut()).unwrap();
     runtime.set_user_data_root(dir.path().join("data")).unwrap();
     runtime
         .app_mut()
@@ -61,15 +60,8 @@ fn runtime(dir: &tempfile::TempDir, callback: bool) -> Runtime {
     }
     runtime
 }
-// Adapter seam test before central Runtime lifecycle integration. Integration owner replaces
-// this helper with runtime.tick once the same hooks are installed in the shared lifecycle.
 fn step(runtime: &mut Runtime) {
-    runtime.start().unwrap();
-    validate(runtime.app().world()).unwrap();
-    before_step(runtime.app_mut().world_mut(), 1.0 / 60.0).unwrap();
     runtime.tick(1.0 / 60.0, InputSnapshot::default()).unwrap();
-    let tick = runtime.snapshot().ticks;
-    after_step(runtime.app_mut().world_mut(), tick).unwrap();
 }
 fn until(mut test: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -263,9 +255,83 @@ fn remote_pose_application_rejects_local_ownership_takeover() {
         .world_mut()
         .entity_mut(hero)
         .insert(runtime::OwnedBy(local));
-    assert!(before_step(client.app_mut().world_mut(), 1.0 / 60.0).is_err());
-    assert_eq!(client.position("hero").unwrap(), [0.0; 3]);
+    assert!(client.tick(1.0 / 60.0, InputSnapshot::default()).is_err());
     assert!(client.entity("local").is_some());
+    assert!(!client.running());
+    assert!(!is_attached(client.app().world()));
     detach(server.app_mut().world_mut());
     detach(client.app_mut().world_mut());
+}
+
+#[test]
+fn attached_sessions_reject_both_scene_request_entrypoints_until_detached() {
+    let (_server_dir, _client_dir, mut server, mut client) = pair(false);
+    let revision = server.scene_revision();
+    assert!(
+        server
+            .request_scene("next", "", "")
+            .unwrap_err()
+            .to_string()
+            .contains("network_attached")
+    );
+    assert!(
+        engine_project::services::request_scene(
+            server.app_mut().world_mut(),
+            runtime::SceneRequest {
+                asset: "next".into(),
+                spawn: String::new(),
+                traveller: String::new()
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        server
+            .app()
+            .world()
+            .resource::<runtime::PendingScene>()
+            .0
+            .is_none()
+    );
+    assert_eq!(server.scene_revision(), revision);
+    detach(server.app_mut().world_mut());
+    server.request_scene("next", "", "").unwrap();
+    step(&mut server);
+    assert_eq!(server.active_scene().id, "next");
+    assert_eq!(server.scene_revision(), revision + 1);
+    assert!(server.entity("hero").is_none());
+    client.stop().unwrap();
+}
+
+#[test]
+fn runtime_shutdown_closes_sockets_and_keeps_final_snapshot_status() {
+    let (_server_dir, _client_dir, mut server, mut client) = pair(false);
+    server.stop().unwrap();
+    assert!(!is_attached(server.app().world()));
+    assert!(!server.snapshot().network.unwrap().connected);
+    until(|| {
+        step(&mut client);
+        !client.snapshot().network.unwrap().connected
+    });
+    client.stop().unwrap();
+    assert!(!is_attached(client.app().world()));
+    assert!(client.snapshot().network.unwrap().last_error.is_some());
+}
+
+#[test]
+fn remote_script_authority_fails_before_native_startup_callbacks_without_a_session() {
+    let dir = fixture("remote", false);
+    let path = dir.path().join("scene.json");
+    let mut scene: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    scene["entities"][0]["components"]["Script"] = json!({"asset":"counter"});
+    fs::write(path, serde_json::to_vec(&scene).unwrap()).unwrap();
+    let mut runtime = runtime(&dir, false);
+    runtime
+        .app_mut()
+        .schedule_mut(engine_core::Stage::Startup)
+        .add_systems(|mut updates: ResMut<Updates>| {
+            updates.0 += 1;
+        });
+    assert!(runtime.tick(1.0 / 60.0, InputSnapshot::default()).is_err());
+    assert_eq!(runtime.app().world().resource::<Updates>().0, 0);
 }

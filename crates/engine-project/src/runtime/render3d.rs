@@ -83,10 +83,10 @@ impl Runtime {
                 .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
             let material = entity.get::<MeshMaterial>().cloned().unwrap_or_default();
             material.validate()?;
-            let mesh = self
-                .content
-                .meshes
-                .get(&renderer.mesh)
+            let mesh = entity
+                .get::<crate::GeometryOverride>()
+                .map(|geometry| &geometry.0)
+                .or_else(|| self.content.meshes.get(&renderer.mesh))
                 .ok_or_else(|| Error::new("render.mesh.unknown", &renderer.mesh))?
                 .clone();
             let texture = material

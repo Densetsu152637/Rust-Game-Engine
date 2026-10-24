@@ -475,7 +475,7 @@ fn missing_font_fails_explicitly_and_descriptor_accepts_typed_roundtrip() {
         root.extract_draws("hud", [320, 180], None, &BTreeMap::new(), &BTreeMap::new())
             .is_err()
     );
-    let catalog = engine_project::ComponentCatalog::new(vec![descriptor()]).unwrap();
+    let catalog = engine_project::ComponentCatalog::new(vec![]).unwrap();
     let value = engine_project::CustomValue {
         version: 1,
         data: serde_json::to_value(&root).unwrap(),
@@ -508,31 +508,55 @@ fn authored_ui_hydrates_changes_typed_state_and_delivers_native_callbacks() {
             action: "mute".into(),
         },
     )]);
-    std::fs::write(
-        dir.path().join("components.json"),
-        serde_json::to_vec(&vec![descriptor()]).unwrap(),
-    )
-    .unwrap();
     std::fs::write(dir.path().join("scene.json"),serde_json::to_vec(&json!({"schema":1,"scene_id":"main","entities":[{
         "id":"hud","name":"HUD","components":{"custom":{"engine.UiRoot":{"version":1,"data":root}},
         "EventBindings":{"bindings":[{"event":"ui.value_changed","handler":"sound"}]}}
     }]})).unwrap()).unwrap();
-    std::fs::write(dir.path().join("project.json"),serde_json::to_vec(&json!({"schema":1,"name":"ui-test","startup_scene":"scene.json","componentSchemas":"components.json","assets":[]})).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("project.json"),
+        serde_json::to_vec(
+            &json!({"schema":1,"name":"ui-test","startup_scene":"scene.json","assets":[]}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let mut runtime =
         Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
-    register(runtime.app_mut()).unwrap();
     runtime
         .app_mut()
         .world_mut()
         .insert_resource(Observed::default());
     engine_project::register_event_handler(runtime.app_mut(), "sound", callback).unwrap();
-    runtime.start().unwrap();
-    tick_world(
-        runtime.app_mut().world_mut(),
-        [320, 180],
-        &frame("ui_click", [5.0, 5.0]),
-    )
-    .unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<engine_project::ui::UiModel>()
+        .open(engine_project::ui::PanelOptions {
+            id: "pause".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    runtime
+        .tick(1.0 / 60.0, frame("ui_click", [5.0, 5.0]))
+        .unwrap();
+    runtime.tick(1.0 / 60.0, ActionFrame::default()).unwrap();
+    assert!(runtime.app().world().resource::<Observed>().0.is_empty());
+    assert_eq!(
+        runtime.try_snapshot().unwrap().scene.entities[0]
+            .components
+            .custom["engine.UiRoot"]
+            .data["tree"]["nodes"][0]["widget"]["checked"],
+        false,
+        "Runtime must suppress retained UI input while a modal panel is open"
+    );
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<engine_project::ui::UiModel>()
+        .close("pause");
+    runtime
+        .tick(1.0 / 60.0, frame("ui_click", [5.0, 5.0]))
+        .unwrap();
     assert!(runtime.app().world().resource::<Observed>().0.is_empty());
     runtime.tick(1.0 / 60.0, ActionFrame::default()).unwrap();
     assert_eq!(
@@ -546,13 +570,116 @@ fn authored_ui_hydrates_changes_typed_state_and_delivers_native_callbacks() {
         true
     );
     assert!(
-        !extract_world(
-            runtime.app().world(),
-            [320, 180],
-            &BTreeMap::new(),
-            &BTreeMap::new()
-        )
-        .unwrap()
-        .is_empty()
+        runtime
+            .extract_frame()
+            .unwrap()
+            .draws
+            .iter()
+            .any(|d| d.id.starts_with("game-ui:"))
     );
+    assert!(runtime.app().world().resource::<GameUi>().focus().is_some());
+    runtime.stop().unwrap();
+    assert!(runtime.app().world().resource::<GameUi>().focus().is_none());
+}
+
+#[test]
+fn builtin_ui_descriptor_rejects_semantically_invalid_authored_trees() {
+    let catalog = engine_project::ComponentCatalog::new(vec![]).unwrap();
+    assert!(catalog.0.contains_key("engine.UiRoot"));
+    assert!(catalog.0.contains_key("engine.NetworkReplica"));
+    assert!(engine_project::ComponentCatalog::new(vec![descriptor()]).is_err());
+    for nodes in [
+        json!([{"id":"a","parent":"b"},{"id":"b","parent":"a"}]),
+        json!([{"id":"a","widget":{"kind":"slider","value":2,"min":0,"max":1,"step":0.1}}]),
+        json!([{"id":"a","style":{"width":{"unit":"percent","value":2}}}]),
+        json!([{"id":"a","widget":{"kind":"button"}}]),
+    ] {
+        let value = engine_project::CustomValue {
+            version: 1,
+            data: json!({"tree":{"nodes":nodes}}),
+        };
+        assert!(catalog.validate("engine.UiRoot", &value).is_err());
+    }
+}
+
+#[test]
+fn transition_clears_ui_focus_and_resets_retained_physics_at_new_spawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let ui = root(vec![button("play")]);
+    std::fs::write(dir.path().join("scene.json"),serde_json::to_vec(&json!({"schema":1,"scene_id":"main","entities":[
+        {"id":"hud","name":"HUD","components":{"custom":{"engine.UiRoot":{"version":1,"data":ui}}}},
+        {"id":"body","name":"body","components":{"Transform":{"position":[0,2,0]},"custom":{"engine.PhysicsBody3D":{"version":1,"data":{}}}}}
+    ]})).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("next.json"),
+        serde_json::to_vec(&json!({"schema":1,"scene_id":"next","entities":[
+            {"id":"spawn","name":"spawn","components":{"Transform":{"position":[0,10,0]}}}
+        ]}))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("project.json"),serde_json::to_vec(&json!({"schema":1,"name":"ui-transition","startup_scene":"scene.json","assets":[{"id":"next","kind":"scene","path":"next.json"}]})).unwrap()).unwrap();
+    let mut runtime =
+        Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    runtime
+        .tick(1.0 / 60.0, frame("ui_click", [5.0, 5.0]))
+        .unwrap();
+    assert!(runtime.app().world().resource::<GameUi>().focus().is_some());
+    let body = runtime.entity("body").unwrap();
+    runtime.request_scene("next", "spawn", "body").unwrap();
+    runtime.tick(1.0 / 60.0, ActionFrame::default()).unwrap();
+    assert_eq!(runtime.entity("body"), Some(body));
+    assert_eq!(runtime.position("body").unwrap(), [0.0, 10.0, 0.0]);
+    assert!(runtime.app().world().resource::<GameUi>().focus().is_none());
+    assert!(runtime.extract_frame().unwrap().draws.is_empty());
+    runtime.tick(1.0 / 60.0, ActionFrame::default()).unwrap();
+    let height = runtime.position("body").unwrap()[1];
+    assert!(
+        height > 9.5 && height < 10.0,
+        "retained body resumed at new spawn: {height}"
+    );
+}
+
+#[test]
+fn evaluated_geometry_overrides_static_assets_in_both_render_paths() {
+    use engine_project::{
+        GeometryOverride,
+        content::{Mesh, Vertex},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("mesh.cgmesh"),
+        "CGMESH 1\nvertex 0 0 0 0 0\nvertex 1 0 0 1 0\nvertex 0 1 0 0 1\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("scene.json"),serde_json::to_vec(&json!({"schema":1,"scene_id":"main","entities":[
+        {"id":"camera","name":"camera","components":{"Transform":{"position":[0,0,5]},"Camera3D":{}}},
+        {"id":"mesh","name":"mesh","components":{"Transform":{"position":[10,0,0]},"MeshRenderer":{"mesh":"mesh"}}}
+    ]})).unwrap()).unwrap();
+    std::fs::write(dir.path().join("project.json"),serde_json::to_vec(&json!({"schema":1,"name":"geometry-override","startup_scene":"scene.json","assets":[{"id":"mesh","kind":"mesh","path":"mesh.cgmesh"}]})).unwrap()).unwrap();
+    let mut runtime =
+        Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    let entity = runtime.entity("mesh").unwrap();
+    let geometry = Arc::new(Mesh {
+        vertices: vec![
+            Vertex {
+                position: [-3.0, 0.0, 0.0],
+                uv: [0.2, 0.3],
+                color: [0.5; 4]
+            };
+            3
+        ],
+        indices: vec![0, 1, 2],
+    });
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(entity)
+        .insert(GeometryOverride(geometry.clone()));
+    let legacy = runtime.extract_frame().unwrap();
+    assert_eq!(legacy.draws[0].mesh.vertices[0].position, [7.0, 0.0, 0.0]);
+    let scene = runtime.extract_scene_frame().unwrap();
+    assert!(Arc::ptr_eq(&scene.meshes[0].mesh, &geometry));
+    assert_eq!(scene.meshes[0].mesh.vertices[0].uv, [0.2, 0.3]);
+    assert_eq!(scene.meshes[0].model[3][0], 10.0);
 }

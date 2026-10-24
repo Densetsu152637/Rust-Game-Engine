@@ -5,6 +5,8 @@ pub struct RuntimeSnapshot {
     /// Nonempty means the compatibility snapshot is incomplete; hosts use try_snapshot.
     pub diagnostics: Vec<crate::Diagnostic>,
     pub events: Vec<crate::events::EventRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<crate::networking::NetworkStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -105,6 +107,8 @@ impl Runtime {
             &self.scene,
             &self.project.component_catalog,
         )?;
+        crate::networking::validate(self.app.world())?;
+        crate::simulation::reset(self.app.world_mut())?;
         crate::refresh_world_transforms(self.app.world_mut())?;
         self.validate_event_bindings()?;
         crate::events::clear(self.app.world_mut());
@@ -114,6 +118,10 @@ impl Runtime {
             .0
             .clear();
         self.app.world_mut().resource_mut::<UiModel>().clear();
+        self.app
+            .world_mut()
+            .resource_mut::<crate::ui_tree::GameUi>()
+            .clear();
         crate::audio::synchronize(self.app.world_mut())?;
         self.attach_scripts()?;
         Ok(())
@@ -142,6 +150,7 @@ impl Runtime {
         RuntimeSnapshot {
             diagnostics,
             events: crate::events::records(self.app.world()),
+            network: crate::networking::status(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self

@@ -14,8 +14,10 @@ editor toolkit dependency in game executables.
 
 ## Authored component
 
-The component name is `engine.UiRoot`, version 1. Its descriptor is returned by
-`ui_tree::descriptor()` for the shared component catalog and JSON inspector.
+The component name is `engine.UiRoot`, version 1. Its descriptor is included
+automatically in the shared component catalog and JSON inspector; native code
+can also inspect `ui_tree::descriptor()`. Do not redeclare the reserved
+`engine.UiRoot` descriptor in a project's custom component schema file.
 The descriptor supplies field metadata; typed validation additionally rejects
 cycles, missing parents, variant mismatches, and invalid ranges. As with other
 typed authored components, the value sits in `components.custom`:
@@ -135,12 +137,13 @@ Widget values remain in the typed `UiRoot`, so runtime snapshots include them.
 `UiTree::layout(viewport)` returns `UiBox` geometry. `GameUi::tick` operates on
 `(root ID, UiRoot)` pairs, retaining focus and slider capture while returning
 widget events. `UiRoot::extract_draws` returns native geometry and font draws.
-The runtime adapter functions are `ui_tree::register`, `tick_world`, and
-`extract_world`. Register the typed adapter before authored component hydration;
-tick after event dispatch using `UiModel::gameplay_frame()` to keep new UI events
-for the next dispatch; append extracted draws before final frame sorting.
-Clear `GameUi` on scene changes and shutdown. These hooks also support custom
-hosts that own the ECS and render pipeline directly.
+`Runtime` automatically registers the typed adapter before authored component
+hydration, ticks it after event dispatch using `UiModel::gameplay_frame()`, and
+includes its draws in both 2D and combined 3D/HUD extraction. UI events dispatch
+on the following tick. Scene changes and shutdown clear focus and capture.
+Game configuration must not call `ui_tree::register` again. The adapter functions
+`register`, `tick_world`, and `extract_world` remain available for custom hosts
+that assemble their own ECS lifecycle instead of using `Runtime`.
 
 Bounds are 64 roots, 1024 nodes per root, hierarchy depth 64, 128-byte IDs and
 actions, 4096-byte individual labels and 64 KiB of text per root. Logical
