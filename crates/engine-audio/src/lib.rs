@@ -4,6 +4,7 @@
 //! application resources. Dropping a source controller stops its voices, and
 //! dropping the engine stops the device and invalidates surviving controls.
 
+pub mod acoustic;
 mod clip;
 mod device;
 mod mixer;
@@ -182,6 +183,9 @@ pub struct PlayOptions {
     pub owner: String,
     pub pitch: f32,
     pub spatial: SpatialOptions,
+    /// Acoustic propagation options. The default is disabled, which keeps the
+    /// legacy mixing path and bit-identical output.
+    pub acoustics: acoustic::VoiceAcoustics,
 }
 impl Default for PlayOptions {
     fn default() -> Self {
@@ -192,6 +196,7 @@ impl Default for PlayOptions {
             owner: String::new(),
             pitch: 1.0,
             spatial: SpatialOptions::default(),
+            acoustics: acoustic::VoiceAcoustics::default(),
         }
     }
 }
@@ -217,6 +222,7 @@ impl PlayOptions {
                 "Invalid bus, owner, pitch or spatial options",
             ));
         }
+        self.acoustics.validate()?;
         Ok(())
     }
 }

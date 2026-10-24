@@ -1125,6 +1125,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-acoustics"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "engine-audio",
+ "serde",
+]
+
+[[package]]
+name = "engine-acoustics-gpu"
+version = "0.1.0"
+dependencies = [
+ "engine-acoustics",
+]
+
+[[package]]
 name = "engine-animation"
 version = "0.1.0"
 dependencies = [
