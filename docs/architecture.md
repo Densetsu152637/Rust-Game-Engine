@@ -14,7 +14,8 @@ engine is built this way.
 | `engine-assets` | glTF/GLB import, fingerprints and typed asset ownership |
 | `engine-physics`, `engine-animation`, `engine-navigation` | Independent simulation libraries without ECS or window ownership |
 | `engine-network` | Owned network endpoints, validated input/state and bounded transport work |
-| `engine-audio` | Clips, mixer, spatial sources and native CPAL output |
+| `engine-audio` | Clips, mixer, spatial sources, binaural/reverb/Doppler acoustic DSP and native CPAL output |
+| `engine-acoustics`, `engine-acoustics-gpu` | Acoustic world, CPU ray-traced propagation and the GPU ray-query/compute tiers; the host injects the GPU tiers into `engine-project` |
 | `engine-render`, `engine-render-wgpu` | GPU-free rendering contract and real wgpu implementation |
 | `engine-project` | Authored schemas/catalog, runtime adapters, events, UI, content extraction and scene documents |
 | `engine-desktop` | Window/input/device lifecycle, 2D/3D rendering and headless execution |

@@ -7,13 +7,15 @@ acoustic-only volumes. The decision record, contracts and verification plan are
 in [spatial-audio-design.md](spatial-audio-design.md); this page is the
 authoring and integration guide.
 
-Status: the components, validation, world extraction, runtime wiring, events,
-status and native hooks described here are implemented in `engine-project`.
-Their behaviour depends on the `engine-audio` DSP and the `engine-acoustics`
-world and CPU propagation, and on `engine-acoustics-gpu` for GPU tiers. Until
-those streams are integrated the status reports a coded `failed` state instead
-of faking success. Nothing here claims perceptual parity with commercial
-middleware, and GPU claims hold only for what the GPU tests measured.
+Status: implemented across `engine-project` (components, world extraction,
+runtime wiring, events, status, hooks), `engine-audio` (binaural, reverb, Doppler
+DSP), `engine-acoustics` (world and CPU propagation), `engine-acoustics-gpu` (GPU
+tiers), `engine-desktop` and `engine-tooling` (host wiring and the
+`--acoustics-backend` option) and `engine-mcp` (inspect, query, bake). A failure
+reports a coded `failed` state instead of faking success. Nothing here claims
+perceptual parity with commercial middleware, and GPU claims hold only for what the
+GPU tests measured. A runnable example is
+[examples/acoustics-showcase](../examples/acoustics-showcase/README.md).
 
 ## Quick start
 
@@ -74,7 +76,7 @@ Authoring rules:
 | `reverb` / `reverb_source` | `parametric` / `traced` | Late reverb renderer (`off`, `parametric`, `convolution`) and where its parameters come from: `traced` energy, analytic `volumes`, or `off`. |
 | `update_hz`, `reverb_update_hz` | 15, 4 | Occlusion/early reflection and late field update rates. |
 | `speed_of_sound` | 343 | Metres per second, 300 to 400. |
-| `air` | 20 C, 50 % | ISO 9613-1 absorption from `temperature_c` and `humidity_percent`, or explicit `absorption_db_per_m` (4 bands, wins), or `enabled: false`. |
+| `air` | 20 C, 50 % | ISO 9613-1 absorption from `temperature_c` (-20 to 50) and `humidity_percent` at the four exact octave midbands, or explicit `absorption_db_per_m` (4 bands, wins), or `enabled: false`. The mixer and tracer use it as an amplitude coefficient in Np/m (energy decays as `exp(-2 m d)`). |
 | `quality` | see schema | `occlusion_rays` 16, `reflection_order` 2, `max_reflections` 8, `er_rays` 256, `reverb_rays` 4096, `max_bounces` 64, `histogram_length_s` 2, `histogram_bin_ms` 1, `late_start_ms` 80, `receiver_radius_m` 1, `time_budget_ms` 4. With `backend: "cpu"`, `reverb_rays` is at most 65,536. |
 | `seed` | 1 | Deterministic tracing seed. |
 | `geometry` | meshes on | `render_meshes`, baked `asset`, `default_material`, `mask`. |
@@ -142,8 +144,10 @@ them as warnings), and all propagation runs in proxy space.
 Choose the proportions with **`units_per_meter`**, the number of world units in
 one acoustic metre (0.001 to 1000). Set it so a character maps to about 1.8 m:
 a 16-unit-tall character is `units_per_meter: 9`, a 2-unit-tall one `1.1`.
-Everything scales with it, so doubling the room dimensions (halving
-`units_per_meter`) roughly doubles the reverb time. Sources and the listener are
+Level geometry scales with it, so halving `units_per_meter` doubles the room's
+width and height. `depth_m` and `wall_height_m` are in metres and do not follow it:
+the reverb time doubles only if you double the depth too (an 8 m deep room at
+`units_per_meter: 1` becomes 16 m at 0.5). Sources and the listener are
 mapped automatically, and voices get `metres_per_unit = 1 / units_per_meter`.
 
 - `plane: "side_view"` (platformers): 2D `(x, y)` becomes acoustic `(x, y)`, each
@@ -178,7 +182,35 @@ ones. GPU tiers exist only when the host supplies them
 (`Runtime::set_acoustics`); the engine-project crate does not depend on wgpu.
 Linux Vulkan and macOS ray query are unverified, DirectX 12 does not expose it
 here. A scene with an environment and no host configuration gets a CPU-only
-synchronous service, so headless runs and tests work without a GPU. In a
+synchronous service, so headless runs and tests work without a GPU.
+
+`engine-desktop` is the host that supplies the GPU tiers. Before the scene starts
+it calls `Runtime::set_acoustics` with `engine_acoustics_gpu::gpu_backends()` (ray
+query, then compute; the service appends the CPU tier), so `auto` follows the order
+above. Visible runs use the threaded service; `--headless` and `--screenshot` runs
+use the synchronous, bitwise-repeatable one. The tiers open their own wgpu devices
+when the service first selects them, independent of the renderer, so the renderer
+and the tracer coexist on one GPU (see the measurement below). A host that already
+called `set_acoustics` keeps its own configuration.
+
+### Choosing a tier: `--acoustics-backend`
+
+```text
+engine run <manifest> [--headless] --acoustics-backend auto|ray_query|compute|cpu
+```
+
+The option replaces the authored `AcousticEnvironment.backend` for the run (it sets
+`AcousticControl.override_backend`). `ray_query` and `compute` request that GPU tier
+and fall back below it; `cpu` never creates a GPU instance. Native hosts use
+`RunOptions.acoustics_backend` or call
+`engine_desktop::configure_acoustics(runtime, headless, backend)`. The report's
+`scene.acoustics` (and the `acoustics` object of `project_run_headless` and
+`render_screenshot`) says what actually ran:
+
+```jsonc
+{"requested":"Auto","active":"GpuRayQuery","state":"Active","hardware_rt":true,
+ "adapter":"<adapter name>","fallback_reason":null}
+``` In a
 headless run without `set_audio` a private offline mixer hosts the parameter
 publisher: the status, events and hooks work, nothing is audible.
 
@@ -203,8 +235,9 @@ at most 32 per tick (extras are dropped and noted in the runtime log):
 `RuntimeSnapshot.acoustics` (`Runtime::acoustics_status`) carries the status:
 requested and active backend, state, fallback reason, adapter, hardware RT flag,
 world statistics, update counters and timings, budget overruns, publisher
-statistics, and at most 32 per-source entries. It is absent without an
-environment.
+statistics, the mixer counters (`mixer`: acoustic voices, voices that fell back to
+the legacy path at the cap, adopted frames, rejected kernels, hero voices, reverb
+ringing) and at most 32 per-source entries. It is absent without an environment.
 
 ## Native hooks and MCP
 
@@ -227,9 +260,28 @@ Native game code can:
 
 MCP: all components are editable with `component_set` and described by
 `component_schema`; out-of-range and inconsistent values are rejected with
-coded errors. The planned `acoustics_inspect`, `acoustics_query` and
-`acoustics_bake` tools and the `acoustics` run-report telemetry are scheduled
-after this integration (design record section 7.7).
+coded errors. Three tools work on the acoustic world without running game code
+(arguments in [MCP](mcp.md)):
+
+- `acoustics_inspect` (read): world statistics and bounds, materials, `room`
+  volumes with Sabine and Eyring RT60, the proxy summary, up to 256 contributing
+  entities and findings such as ignored components or a closed room that leaks.
+- `acoustics_query` (read): for up to 16 point sources and a listener, the visible
+  fraction, direct gain per band in dB, distance, up to 16 early reflections and the
+  reverb (RT60 per band, level, mean free path, escaped fraction), always on the CPU
+  tier and deterministic. Positions are scene units; a 2D proxy maps them.
+- `acoustics_bake` (write, `--allow-write`): writes the scene's acoustic source
+  geometry as a new sealed `AcousticWorldDocument` JSON file (never overwriting) and
+  returns the `acoustics` asset entry to add to `project.json`. Loading a project
+  replays every `acoustics` asset through the world builder under the default
+  limits, so a hand-edited or oversized document is rejected with its `acoustics.*`
+  code. The runtime still builds its world from live geometry: `geometry.asset` is
+  validated but not yet used to replace it.
+
+`project_run_headless` and `render_screenshot` return the status above as
+`acoustics` (bounded to 64 KiB, with a `telemetry_omitted` entry if oversized).
+The same logic is available to native code as
+`engine_project::acoustics::{inspect_scene, query_scene, bake_scene}`.
 
 ## Limitations
 
@@ -249,5 +301,11 @@ after this integration (design record section 7.7).
   callback never waits on propagation.
 - Linux Vulkan and macOS hardware ray queries are unverified; DirectX 12 and
   Metal are not supported for hardware ray queries.
+- Closed solids apply their transmission twice (once per crossed surface), so use
+  single panels or author the square root of the intended transmission for thick
+  walls. A closed box leaks about 1e-5 of rays through its edges.
+- At the default quality (4,096 rays by 64 bounces) the CPU tier does not fit its
+  4 ms budget on a few threads; the threaded service halves the ray count until it
+  does, so late reverb is noisier on slow CPUs.
 - Not goals: parity with commercial middleware, wave-based simulation, measured
   HRTFs, ambisonics, head tracking, deforming acoustics.
