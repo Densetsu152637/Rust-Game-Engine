@@ -29,8 +29,9 @@
 - [Programmable world](../examples/programmable-world/README.md): a 3D scene and
   retained HUD connected through typed callbacks, physics, animation and navigation;
   GPU-free default execution and an optional desktop window.
-- [PBR and shadows](../examples/pbr-shadows/README.md): three PBR spheres and a
-  directional shadow map, rendered to PNG or a window by an `engine-desktop` example.
+- [PBR and shadows](../examples/pbr-shadows/README.md): three PBR spheres lit by a
+  cascaded-shadow sun, a PCSS spot light and a point light, rendered to PNG or a
+  window by an `engine-desktop` example.
 - [Moving entity](../assets/scripts/moving_entity/src/lib.rs): the smallest script
   crate.
 
@@ -39,7 +40,10 @@
 - [Desktop rendering](desktop-2d-rendering.md): CPU content, the render contract,
   wgpu host and native render-pass extensions.
 - [3D scene rendering](rendering3d.md): cameras, depth, metallic-roughness PBR
-  materials, directional shadow maps, transparent draws and custom WGSL.
+  materials, transparent draws and custom WGSL.
+- [Lights and shadows](rendering-lights.md): directional, point, spot and area
+  light components in photometric units, clustered forward shading, cascaded,
+  spot and cube shadows in a shadow atlas with PCF/PCSS, and lighting status.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency

@@ -80,6 +80,7 @@ are never run by ordinary `cargo test`, so they must be run and reported separat
 | --- | --- | --- |
 | `cargo test -p engine-desktop --test gpu_pixels -- --ignored --nocapture` | GPU adapter | Real offscreen pixels for sprites, fonts, clipping, ordering, resizing and a custom WGSL pass |
 | `cargo test -p engine-desktop --test scene3d -- --ignored --nocapture` | GPU adapter | Real depth, clipping, directional lighting and custom material/WGSL pixels |
+| `cargo test -p engine-render-pipeline --test gpu_lights -- --ignored --test-threads=1 --nocapture` | GPU adapter | Light falloff, spot cones, area lights versus integration, 1024-light clustering versus all lights, cascades, cube/spot shadows, PCSS and atlas overflow, with measured values |
 | `cargo test --manifest-path examples/native-extension/Cargo.toml external_custom_pass_verifies_real_offscreen_pixels -- --ignored --nocapture` | GPU adapter | An external crate's custom render pass draws and updates real pixels |
 | `cargo test -p engine-audio native_device_opens_submits_pcm_and_closes -- --ignored --nocapture` | Audio output device | Native device open, callback progress, PCM consumption and shutdown (not audibility) |
 | `cargo test -p engine-editor real_native_controls_smoke_closes_without_saving -- --ignored --nocapture` | Interactive Windows desktop | Retained legacy Win32 controls; does not validate the portable editor shell |
