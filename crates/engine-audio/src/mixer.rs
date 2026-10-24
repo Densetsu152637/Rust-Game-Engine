@@ -1,4 +1,12 @@
-use crate::acoustic::{AcousticConsumer, AcousticPublisher, DspEffect, MixerEnvironment, channel};
+use crate::acoustic::{
+    AcousticConsumer, AcousticFrame, AcousticMixStats, AcousticPublisher, DspEffect, EffectContext,
+    MAX_ACOUSTIC_VOICES, MAX_CONVOLUTION_VOICES, MixerEnvironment, ReverbParams, channel,
+};
+use crate::dsp::{
+    BLOCK,
+    render::AcousticEngine,
+    voice::{Context, Send, VoiceDsp},
+};
 use crate::{
     Attenuation, AudioConfig, AudioError, Bus, Clip, Listener, PlayOptions, Result, SpatialOptions,
     allocate_handle, gain,
@@ -26,11 +34,15 @@ pub struct VoiceSnapshot {
     pub options: PlayOptions,
 }
 pub(crate) struct Voice {
-    handle: VoiceHandle,
+    pub(crate) handle: VoiceHandle,
     clip: Arc<Clip>,
     options: PlayOptions,
     cursor: f64,
     paused: bool,
+    /// Acoustic DSP state; `None` renders through the legacy path.
+    pub(crate) dsp: Option<Box<VoiceDsp>>,
+    /// Acoustics were requested but the voice cap was reached (counted once).
+    capped: bool,
 }
 pub(crate) struct Mixer {
     pub(crate) config: AudioConfig,
@@ -39,12 +51,12 @@ pub(crate) struct Mixer {
     pub(crate) listener: Listener,
     pub(crate) running: bool,
     pub(crate) failure: Option<AudioError>,
-    // Held but not yet applied by the mixer DSP (Stream A).
-    #[allow(dead_code)]
-    environment: MixerEnvironment,
-    #[allow(dead_code)]
     effects: [Option<Box<dyn DspEffect>>; 4],
     acoustic: Option<AcousticConsumer>,
+    engine: AcousticEngine,
+    /// DSP states retired by the audio thread, freed by the next control call.
+    retired: Vec<Box<VoiceDsp>>,
+    frame_cursor: u64,
 }
 impl Mixer {
     pub(crate) fn new(config: AudioConfig) -> Self {
@@ -55,9 +67,11 @@ impl Mixer {
             listener: Listener::default(),
             running: true,
             failure: None,
-            environment: MixerEnvironment::default(),
             effects: [None, None, None, None],
             acoustic: None,
+            engine: AcousticEngine::new(config.sample_rate),
+            retired: Vec::with_capacity(config.max_voices),
+            frame_cursor: 0,
         }
     }
     pub(crate) fn ready(&self) -> Result<()> {
@@ -75,66 +89,318 @@ impl Mixer {
     pub(crate) fn fail(&mut self, message: impl Into<String>) {
         self.failure
             .get_or_insert_with(|| AudioError::new("audio.device.failed", message));
+        // May run in the callback: park DSP boxes instead of freeing them here.
+        for voice in &mut self.voices {
+            if let Some(dsp) = voice.dsp.take()
+                && self.retired.len() < self.retired.capacity()
+            {
+                self.retired.push(dsp);
+            }
+        }
         self.voices.clear();
         self.listener = Listener::default();
     }
+
+    /// Control thread: (re)builds or drops acoustic state for `options`.
+    /// Returns the state and whether the request is held back by the cap.
+    fn attach_dsp(
+        &mut self,
+        options: &PlayOptions,
+        existing: Option<Box<VoiceDsp>>,
+        was_capped: bool,
+    ) -> (Option<Box<VoiceDsp>>, bool) {
+        if !(options.acoustics.enabled && options.spatial.enabled) {
+            return (None, false);
+        }
+        let rate = self.config.sample_rate;
+        if let Some(dsp) = existing
+            && dsp.built_for(rate, options.acoustics.max_delay_s)
+        {
+            return (Some(dsp), false);
+        }
+        let in_use = self.voices.iter().filter(|v| v.dsp.is_some()).count();
+        if in_use >= self.engine.max_voices {
+            if !was_capped {
+                self.engine.stats.over_cap_fallbacks += 1;
+            }
+            return (None, true);
+        }
+        let dsp = VoiceDsp::new(rate, options.acoustics.max_delay_s, &self.engine.head);
+        (Some(dsp), false)
+    }
+
+    /// Re-applies the active frame after a control-side change.
+    fn reapply_frame(&mut self) {
+        let empty = empty_frame();
+        let active = self.acoustic.as_ref().map_or(&empty, |c| c.active());
+        self.engine.apply_frame(&mut self.voices, active, false);
+    }
+
     pub(crate) fn mix(&mut self, output: &mut [f32]) {
         output.fill(0.0);
-        if let Some(acoustic) = &mut self.acoustic {
+        let mut adopted = false;
+        if !self.engine.busy()
+            && let Some(acoustic) = &mut self.acoustic
+        {
             // Adopt the newest published parameters; never waits for the writer.
-            acoustic.poll();
+            adopted = acoustic.poll();
         }
         if !self.running || self.failure.is_some() {
             return;
         }
-        for voice in &mut self.voices {
-            if voice.paused {
-                continue;
-            }
-            let clip = &voice.clip;
-            let frames = clip.frames();
-            let volume = voice.options.gain * self.gains[0] * self.gains[voice.options.bus.index()];
-            let step = f64::from(clip.sample_rate()) / f64::from(self.config.sample_rate)
-                * f64::from(voice.options.pitch);
-            let spatial = spatial_gains(voice.options.spatial, self.listener);
-            for frame in output.as_chunks_mut::<2>().0 {
-                if voice.cursor >= frames as f64 {
-                    if !voice.options.looped {
-                        break;
-                    }
-                    voice.cursor %= frames as f64;
+        if adopted && let Some(acoustic) = &self.acoustic {
+            self.engine
+                .apply_frame(&mut self.voices, acoustic.active(), true);
+        }
+        let general = self.effects.iter().any(Option::is_some)
+            || self.voices.iter().any(|v| v.dsp.is_some())
+            || !self.engine.late_idle();
+        let rate = self.config.sample_rate;
+        if general {
+            self.mix_general(output);
+        } else {
+            // Legacy summation path, unchanged: bit-identical output.
+            for voice in &mut self.voices {
+                if voice.paused {
+                    continue;
                 }
-                let first = voice.cursor as usize;
-                let second = if first + 1 < frames {
-                    first + 1
-                } else if voice.options.looped {
-                    0
-                } else {
-                    first
-                };
-                let alpha = (voice.cursor - first as f64) as f32;
-                for channel in 0..2 {
-                    let sample = |index| {
-                        if voice.options.spatial.enabled && clip.channels() == 2 {
-                            (clip.samples()[index * 2] + clip.samples()[index * 2 + 1]) * 0.5
-                        } else {
-                            clip.samples()[index * clip.channels() as usize
-                                + if clip.channels() == 1 { 0 } else { channel }]
-                        }
-                    };
-                    let a = sample(first);
-                    let b = sample(second);
-                    frame[channel] += (a + (b - a) * alpha) * volume * spatial[channel];
-                }
-                voice.cursor += step;
+                let volume =
+                    voice.options.gain * self.gains[0] * self.gains[voice.options.bus.index()];
+                let spatial = spatial_gains(voice.options.spatial, self.listener);
+                render_legacy(voice, rate, output.as_chunks_mut::<2>().0, volume, spatial);
             }
         }
-        self.voices
-            .retain(|v| v.options.looped || v.cursor < v.clip.frames() as f64);
-        for sample in output {
+        let retired = &mut self.retired;
+        self.voices.retain_mut(|v| {
+            let finished = !v.options.looped && v.cursor >= v.clip.frames() as f64;
+            let alive = !finished || v.dsp.as_ref().is_some_and(|d| !d.drained());
+            if !alive
+                && let Some(dsp) = v.dsp.take()
+                && retired.len() < retired.capacity()
+            {
+                retired.push(dsp);
+            }
+            alive
+        });
+        for sample in output.iter_mut() {
             *sample = sample.clamp(-1.0, 1.0);
         }
+        self.frame_cursor += (output.len() / 2) as u64;
     }
+
+    /// Bus-structured path: acoustic voices, bus effects and the late field.
+    fn mix_general(&mut self, output: &mut [f32]) {
+        let frames = output.len() / 2;
+        let rate = self.config.sample_rate;
+        let listener = self.engine.listener_frame(&self.listener, frames);
+        {
+            let engine = &self.engine;
+            let ctx = Context {
+                design: &engine.design,
+                head: &engine.head,
+                env: &engine.env,
+                listener: &listener,
+                rate,
+            };
+            for voice in &mut self.voices {
+                if voice.paused {
+                    continue;
+                }
+                if let Some(dsp) = &mut voice.dsp {
+                    let g = voice.options.gain * self.gains[voice.options.bus.index()];
+                    dsp.prepare(
+                        &ctx,
+                        &voice.options.spatial,
+                        &voice.options.acoustics,
+                        g,
+                        frames,
+                    );
+                }
+            }
+        }
+        let empty = empty_frame();
+        let (active, fading) = self
+            .acoustic
+            .as_ref()
+            .map_or((&empty, &empty), |c| (c.active(), c.fading()));
+        let pinna = self.engine.env.binaural.pinna_echoes;
+        let out = output.as_chunks_mut::<2>().0;
+        let mut start = 0;
+        while start < frames {
+            let n = BLOCK.min(frames - start);
+            let mut buses = [[[0.0f32; 2]; BLOCK]; 4];
+            let mut shared = [0.0f32; BLOCK];
+            let mut heroes = [[0.0f32; BLOCK]; MAX_CONVOLUTION_VOICES];
+            for voice in &mut self.voices {
+                if voice.paused {
+                    continue;
+                }
+                let bus = voice.options.bus.index();
+                if voice.dsp.is_some() {
+                    let mut mono = [0.0f32; BLOCK];
+                    let produced = read_mono(voice, rate, &mut mono[..n]);
+                    let Some(dsp) = &mut voice.dsp else {
+                        continue;
+                    };
+                    if produced < n {
+                        dsp.end_input();
+                    }
+                    let send = match dsp.hero {
+                        Some(slot) => Send::Hero(&mut heroes[slot][..n]),
+                        None => Send::Shared(&mut shared[..n]),
+                    };
+                    dsp.render(
+                        &self.engine.design,
+                        &self.engine.head,
+                        pinna,
+                        &mono[..n],
+                        &mut buses[bus][..n],
+                        send,
+                    );
+                } else {
+                    let volume = voice.options.gain * self.gains[bus];
+                    let spatial = spatial_gains(voice.options.spatial, self.listener);
+                    render_legacy(voice, rate, &mut buses[bus][..n], volume, spatial);
+                }
+            }
+            let cursor = self.frame_cursor + start as u64;
+            for bus in [Bus::Music, Bus::Effects, Bus::Dialogue] {
+                if let Some(effect) = &mut self.effects[bus.index()] {
+                    effect.process(
+                        &mut buses[bus.index()][..n],
+                        &EffectContext {
+                            sample_rate: rate,
+                            bus,
+                            frame_cursor: cursor,
+                        },
+                    );
+                }
+            }
+            let (master, rest) = buses.split_at_mut(1);
+            let master = &mut master[0][..n];
+            for bus in rest.iter() {
+                for (m, b) in master.iter_mut().zip(bus) {
+                    m[0] += b[0];
+                    m[1] += b[1];
+                }
+            }
+            self.engine
+                .late(active, fading, &shared[..n], &heroes, master);
+            for m in master.iter_mut() {
+                m[0] *= self.gains[0];
+                m[1] *= self.gains[0];
+            }
+            if let Some(effect) = &mut self.effects[Bus::Master.index()] {
+                effect.process(
+                    master,
+                    &EffectContext {
+                        sample_rate: rate,
+                        bus: Bus::Master,
+                        frame_cursor: cursor,
+                    },
+                );
+            }
+            for (o, m) in out[start..start + n].iter_mut().zip(master.iter()) {
+                o[0] += m[0];
+                o[1] += m[1];
+            }
+            start += n;
+        }
+    }
+}
+
+/// A dry frame that owns no heap memory (safe to build and drop on the audio thread).
+fn empty_frame() -> AcousticFrame {
+    AcousticFrame {
+        sequence: 0,
+        voices: Vec::new(),
+        reverb: ReverbParams::default(),
+        listener_kernel: None,
+    }
+}
+
+/// The legacy per-voice synthesis loop (linear interpolation, equal-power pan).
+fn render_legacy(
+    voice: &mut Voice,
+    rate: u32,
+    out: &mut [[f32; 2]],
+    volume: f32,
+    spatial: [f32; 2],
+) {
+    let clip = &voice.clip;
+    let frames = clip.frames();
+    let step = f64::from(clip.sample_rate()) / f64::from(rate) * f64::from(voice.options.pitch);
+    for frame in out {
+        if voice.cursor >= frames as f64 {
+            if !voice.options.looped {
+                break;
+            }
+            voice.cursor %= frames as f64;
+        }
+        let first = voice.cursor as usize;
+        let second = if first + 1 < frames {
+            first + 1
+        } else if voice.options.looped {
+            0
+        } else {
+            first
+        };
+        let alpha = (voice.cursor - first as f64) as f32;
+        for channel in 0..2 {
+            let sample = |index| {
+                if voice.options.spatial.enabled && clip.channels() == 2 {
+                    (clip.samples()[index * 2] + clip.samples()[index * 2 + 1]) * 0.5
+                } else {
+                    clip.samples()[index * clip.channels() as usize
+                        + if clip.channels() == 1 { 0 } else { channel }]
+                }
+            };
+            let a = sample(first);
+            let b = sample(second);
+            frame[channel] += (a + (b - a) * alpha) * volume * spatial[channel];
+        }
+        voice.cursor += step;
+    }
+}
+
+/// Mono source signal for an acoustic voice (stereo clips are downmixed, as
+/// on the legacy spatial path); returns the frames produced before a one-shot
+/// clip ended. The rest of `out` stays zero.
+fn read_mono(voice: &mut Voice, rate: u32, out: &mut [f32]) -> usize {
+    let clip = &voice.clip;
+    let frames = clip.frames();
+    let step = f64::from(clip.sample_rate()) / f64::from(rate) * f64::from(voice.options.pitch);
+    let samples = clip.samples();
+    let stereo = clip.channels() == 2;
+    let sample = |index: usize| {
+        if stereo {
+            (samples[index * 2] + samples[index * 2 + 1]) * 0.5
+        } else {
+            samples[index]
+        }
+    };
+    for (i, o) in out.iter_mut().enumerate() {
+        if voice.cursor >= frames as f64 {
+            if !voice.options.looped {
+                return i;
+            }
+            voice.cursor %= frames as f64;
+        }
+        let first = voice.cursor as usize;
+        let second = if first + 1 < frames {
+            first + 1
+        } else if voice.options.looped {
+            0
+        } else {
+            first
+        };
+        let alpha = (voice.cursor - first as f64) as f32;
+        let a = sample(first);
+        let b = sample(second);
+        *o = a + (b - a) * alpha;
+        voice.cursor += step;
+    }
+    out.len()
 }
 
 /// Thread-safe controls. All full configurations validate before taking effect;
@@ -144,15 +410,23 @@ pub struct AudioControl {
     pub(crate) inner: Arc<Mutex<Mixer>>,
 }
 impl AudioControl {
+    /// Locks the mixer from the audio path (never frees retired DSP state).
     pub(crate) fn lock(&self) -> Result<MutexGuard<'_, Mixer>> {
         self.inner
             .lock()
             .map_err(|_| AudioError::new("audio.state.poisoned", "Audio state lock was poisoned"))
     }
+    /// Locks the mixer from a control call and frees DSP state retired by the
+    /// audio thread, so it is never freed inside the callback.
+    fn control(&self) -> Result<MutexGuard<'_, Mixer>> {
+        let mut mixer = self.lock()?;
+        mixer.retired.clear();
+        Ok(mixer)
+    }
     pub fn play(&self, clip: Arc<Clip>, mut options: PlayOptions) -> Result<VoiceHandle> {
         options.validate()?;
         options.gain = gain(options.gain);
-        let mut mixer = self.lock()?;
+        let mut mixer = self.control()?;
         mixer.ready()?;
         if mixer.voices.len() >= mixer.config.max_voices {
             return Err(AudioError::new(
@@ -161,17 +435,25 @@ impl AudioControl {
             ));
         }
         let handle = VoiceHandle(allocate_handle()?);
+        let (dsp, capped) = mixer.attach_dsp(&options, None, false);
+        let acoustic = dsp.is_some();
         mixer.voices.push(Voice {
             handle,
             clip,
             options,
             cursor: 0.0,
             paused: false,
+            dsp,
+            capped,
         });
+        if acoustic {
+            // Parameters already published for this handle apply immediately.
+            mixer.reapply_frame();
+        }
         Ok(handle)
     }
     pub fn stop(&self, handle: VoiceHandle) -> bool {
-        self.lock().is_ok_and(|mut m| {
+        self.control().is_ok_and(|mut m| {
             let len = m.voices.len();
             m.voices.retain(|v| v.handle != handle);
             len != m.voices.len()
@@ -184,7 +466,7 @@ impl AudioControl {
         self.set_paused(handle, false)
     }
     fn set_paused(&self, handle: VoiceHandle, paused: bool) -> bool {
-        self.lock().is_ok_and(|mut m| {
+        self.control().is_ok_and(|mut m| {
             m.voices
                 .iter_mut()
                 .find(|v| v.handle == handle)
@@ -195,7 +477,7 @@ impl AudioControl {
         })
     }
     pub fn set_gain(&self, handle: VoiceHandle, value: f32) -> bool {
-        self.lock().is_ok_and(|mut m| {
+        self.control().is_ok_and(|mut m| {
             m.voices
                 .iter_mut()
                 .find(|v| v.handle == handle)
@@ -208,18 +490,28 @@ impl AudioControl {
     pub fn configure(&self, handle: VoiceHandle, mut options: PlayOptions) -> Result<bool> {
         options.validate()?;
         options.gain = gain(options.gain);
-        let mut m = self.lock()?;
+        let mut m = self.control()?;
         m.ready()?;
-        if let Some(voice) = m.voices.iter_mut().find(|v| v.handle == handle) {
-            voice.options = options;
-            Ok(true)
-        } else {
-            Ok(false)
+        let Some(index) = m.voices.iter().position(|v| v.handle == handle) else {
+            return Ok(false);
+        };
+        let existing = m.voices[index].dsp.take();
+        let had = existing.is_some();
+        let was_capped = m.voices[index].capped;
+        let (dsp, capped) = m.attach_dsp(&options, existing, was_capped);
+        let fresh = dsp.as_ref().is_some_and(|d| !had || !d.started());
+        let voice = &mut m.voices[index];
+        voice.dsp = dsp;
+        voice.capped = capped;
+        voice.options = options;
+        if fresh {
+            m.reapply_frame();
         }
+        Ok(true)
     }
     pub fn set_listener(&self, listener: Listener) -> Result<()> {
         listener.validate()?;
-        let mut m = self.lock()?;
+        let mut m = self.control()?;
         m.ready()?;
         m.listener = listener;
         Ok(())
@@ -253,59 +545,98 @@ impl AudioControl {
         self.lock().map_or(0, |m| m.voices.len())
     }
     pub fn stop_owner(&self, owner: &str) {
-        if let Ok(mut mixer) = self.lock() {
+        if let Ok(mut mixer) = self.control() {
             mixer.voices.retain(|v| v.options.owner != owner);
         }
     }
     pub fn stop_all(&self) {
-        if let Ok(mut mixer) = self.lock() {
+        if let Ok(mut mixer) = self.control() {
             mixer.voices.clear();
         }
     }
     pub fn set_bus_gain(&self, bus: Bus, value: f32) -> Result<()> {
-        let mut m = self.lock()?;
+        let mut m = self.control()?;
         m.ready()?;
         m.gains[bus.index()] = gain(value);
         Ok(())
     }
-    /// Sets the mixer-wide acoustic environment after validating it.
+    /// Sets the mixer-wide acoustic environment after validating it. Selecting
+    /// `ReverbRenderer::Convolution` allocates the convolution state here.
     pub fn set_environment(&self, environment: MixerEnvironment) -> Result<()> {
         environment.validate()?;
-        let mut m = self.lock()?;
+        let mut m = self.control()?;
         m.ready()?;
-        m.environment = environment;
+        let released = m.engine.set_environment(environment);
+        m.reapply_frame();
+        drop(m);
+        drop(released);
         Ok(())
     }
     pub fn environment(&self) -> Result<MixerEnvironment> {
-        Ok(self.lock()?.environment)
+        Ok(self.lock()?.engine.env)
     }
     /// Installs or removes a bus effect and returns the previous one, which the
-    /// caller drops so the audio thread never frees it.
+    /// caller drops so the audio thread never frees it. A new effect is `reset`
+    /// before it is installed. `process` receives blocks of at most 256 frames;
+    /// bus effects see that bus after voice and bus gains, and the `Master`
+    /// effect sees the sum of all buses plus the late reverb after master gain.
     pub fn set_bus_effect(
         &self,
         bus: Bus,
-        effect: Option<Box<dyn DspEffect>>,
+        mut effect: Option<Box<dyn DspEffect>>,
     ) -> Result<Option<Box<dyn DspEffect>>> {
-        let mut m = self.lock()?;
+        if let Some(effect) = &mut effect {
+            effect.reset();
+        }
+        let mut m = self.control()?;
         m.ready()?;
         Ok(std::mem::replace(&mut m.effects[bus.index()], effect))
     }
-    /// Returns the single parameter writer. A second call is an error.
+    /// Returns the parameter writer. Only one can exist at a time: a second call
+    /// fails while the first is alive and succeeds again once it is dropped.
     pub fn acoustic_publisher(&self) -> Result<AcousticPublisher> {
-        let mut m = self.lock()?;
+        let mut m = self.control()?;
         m.ready()?;
-        if m.acoustic.is_some() {
+        if m.acoustic
+            .as_ref()
+            .is_some_and(AcousticConsumer::writer_alive)
+        {
             return Err(AudioError::new(
                 "audio.acoustic.publisher_taken",
                 "The acoustic publisher was already obtained",
             ));
         }
         let (publisher, consumer) = channel();
-        m.acoustic = Some(consumer);
+        let previous = m.acoustic.replace(consumer);
+        m.engine.enable_reverb();
+        m.reapply_frame();
+        drop(m);
+        drop(previous);
         Ok(publisher)
     }
     pub fn bus_gain(&self, bus: Bus) -> Result<f32> {
         Ok(self.lock()?.gains[bus.index()])
+    }
+    /// Caps voices rendered through the acoustic path (0..=256, default 32).
+    /// Applies to later `play`/`configure` calls; voices over the cap use the
+    /// legacy path and are counted in `AcousticMixStats::over_cap_fallbacks`.
+    pub fn set_max_acoustic_voices(&self, limit: usize) -> Result<()> {
+        if limit > MAX_ACOUSTIC_VOICES {
+            return Err(AudioError::new(
+                "audio.options.invalid",
+                "Acoustic voice limit must be 0-256",
+            ));
+        }
+        self.control()?.engine.max_voices = limit;
+        Ok(())
+    }
+    /// Mixer-side acoustic counters.
+    pub fn acoustic_stats(&self) -> Result<AcousticMixStats> {
+        let m = self.lock()?;
+        Ok(AcousticMixStats {
+            acoustic_voices: m.voices.iter().filter(|v| v.dsp.is_some()).count() as u32,
+            ..m.engine.stats
+        })
     }
 }
 
@@ -403,5 +734,26 @@ mod tests {
             engine.device_error().unwrap().message,
             "device disconnected"
         );
+    }
+
+    #[test]
+    fn retired_dsp_is_parked_until_a_control_call() {
+        let mut engine = AudioEngine::offline(AudioConfig::default()).unwrap();
+        let control = engine.control();
+        let mut options = PlayOptions::default();
+        options.spatial.enabled = true;
+        options.acoustics.enabled = true;
+        options.acoustics.propagation_delay = false;
+        control
+            .play(Clip::new(48_000, 1, vec![0.5; 64]).unwrap(), options)
+            .unwrap();
+        let mut out = vec![0.0; 4096];
+        for _ in 0..4 {
+            engine.mix(&mut out).unwrap();
+        }
+        assert_eq!(control.voice_count(), 0, "drained one-shot retires");
+        assert_eq!(control.lock().unwrap().retired.len(), 1);
+        control.set_bus_gain(Bus::Music, 1.0).unwrap();
+        assert!(control.lock().unwrap().retired.is_empty());
     }
 }
