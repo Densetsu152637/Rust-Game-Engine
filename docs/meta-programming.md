@@ -110,8 +110,10 @@ pending events while retaining the last delivered records for reports.
 
 `events::DeliveredEvents` is available to ECS systems. Runtime/headless reports
 include the last tick's serializable `events` with authored source/target IDs and
-payloads. Native test code may inject events before `run_headless` using `emit_event`.
-The authoring MCP server edits event bindings; it does not yet provide a live
+payloads. Native test code may inject events using `emit_event` or atomic
+`emit_events`. CLI `--events` and MCP `project_run_headless.events` schedule
+stable-ID inputs and report bounded delivery traces across the run; see
+[scheduled events](scheduled-events.md). This does not provide a live
 running-process event channel.
 
 ## Transactional commands and prefabs

@@ -179,3 +179,74 @@ fn a_truncated_run_output_is_output_too_large_not_run_no_result() {
     let failure = parse_run_output(b"noise only\n", false, Some(1)).unwrap_err();
     assert_eq!(failure.code, "run_no_result");
 }
+
+#[test]
+fn scheduled_run_checks_exec_gate_before_events_and_never_needs_authoring_write() {
+    use engine_mcp::{Access, Limits, Tool, ToolContext};
+    let dir = tempfile::tempdir().unwrap();
+    let limits = Limits::default();
+    let tool = RunTool(Arc::new(State::default()));
+    let args = json!({"ticks":1,"events":[{"tick":5,"name":"test"}]})
+        .as_object()
+        .unwrap()
+        .clone();
+    for write in [false, true] {
+        let cx = ToolContext {
+            root: dir.path(),
+            limits: &limits,
+            access: Access { write, exec: false },
+        };
+        assert_eq!(tool.call(&cx, &args).unwrap_err().code, "exec_disabled");
+    }
+    let cx = ToolContext {
+        root: dir.path(),
+        limits: &limits,
+        access: Access {
+            write: false,
+            exec: true,
+        },
+    };
+    let error = tool.call(&cx, &args).unwrap_err();
+    assert_ne!(error.code, "write_disabled");
+    assert!(error.message.contains("events"));
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        0,
+        "validation must precede build or writes"
+    );
+}
+#[test]
+fn scheduled_events_stage_only_ephemeral_input_and_round_trip_through_cli_parser() {
+    use engine_mcp::schema::Args;
+    let input =
+        json!({"events":[{"tick":0,"name":"game.hit","target":"player","payload":{"damage":4}}]});
+    let schedule = parse_events(&Args(input.as_object().unwrap()), 2).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut args = vec!["project.json".into(), "--ticks".into(), "2".into()];
+    stage_events(&schedule, directory.path(), &mut args).unwrap();
+    let parsed = crate::arguments::parse_run(&args).unwrap();
+    assert_eq!(parsed.events.entries(), schedule.entries());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+#[test]
+fn event_trace_summary_reports_truncation_and_total_count() {
+    let events: Vec<_> = (0..120)
+        .map(|tick| json!({"tick":tick,"name":"test","payload":{}}))
+        .collect();
+    let summary = summarize(
+        &json!({"event_trace":{"events":events,"count":150,"truncated":true}}),
+        None,
+        50,
+    );
+    assert_eq!(summary["event_trace"].as_array().unwrap().len(), 100);
+    assert_eq!(summary["event_count"], 150);
+    assert_eq!(summary["event_trace_truncated"], true);
+    let summary = summarize(
+        &json!({"event_trace":{"events":[{"tick":0,"name":"large","payload":"x".repeat(65536)}],"count":1,"truncated":false}}),
+        None,
+        50,
+    );
+    assert!(summary["event_trace"].as_array().unwrap().is_empty());
+    assert_eq!(summary["event_trace_truncated"], true);
+    assert_eq!(summary["event_count"], 1);
+}

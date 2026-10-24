@@ -4,7 +4,10 @@ use bevy_ecs::prelude::*;
 use engine_core::EngineApp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 #[derive(Clone, Debug)]
 pub struct EngineEvent {
@@ -23,11 +26,19 @@ pub struct EventRecord {
 pub(crate) fn records(world: &World) -> Vec<EventRecord> {
     world
         .get_resource::<DeliveredRecords>()
-        .map(|r| r.0.clone())
-        .unwrap_or_default()
+        .map_or_else(Vec::new, |r| r.0.to_vec())
+}
+pub(crate) fn delivered_records(world: &World) -> &[EventRecord] {
+    world
+        .get_resource::<LastDispatchRecords>()
+        .map_or(&[], |r| r.0.as_ref())
 }
 #[derive(Resource, Default)]
-struct DeliveredRecords(Vec<EventRecord>);
+struct DeliveredRecords(Arc<[EventRecord]>);
+/// Last dispatch survives scene replacement until the next (including empty)
+/// dispatch, so hosts can observe deliveries made before a transition.
+#[derive(Resource, Default)]
+struct LastDispatchRecords(Arc<[EventRecord]>);
 fn capture_records(world: &World, events: &[EngineEvent]) -> Vec<EventRecord> {
     let id = |entity: Entity| {
         world
@@ -99,28 +110,40 @@ pub(crate) fn validate_bindings(bindings: &EventBindings) -> Result<()> {
     Ok(())
 }
 pub fn emit_event(world: &mut World, event: EngineEvent) -> Result<()> {
+    emit_events(world, vec![event])
+}
+/// Validate and enqueue a complete batch, preserving FIFO order. A rejected batch
+/// leaves the existing queue unchanged; callbacks cannot run during insertion.
+pub fn emit_events(world: &mut World, events: Vec<EngineEvent>) -> Result<()> {
     let limits = world
         .get_resource::<EventLimits>()
         .copied()
         .unwrap_or_default();
-    if !valid_name(&event.name) || serde_json::to_vec(&event.payload)?.len() > limits.payload_bytes
-    {
-        return Err(Error::new(
-            "event.invalid",
-            "Invalid name or event payload exceeds limit",
-        ));
-    }
-    if !world.contains_resource::<EventQueue>() {
-        world.insert_resource(EventQueue::default());
-    }
-    let mut queue = world.resource_mut::<EventQueue>();
-    if queue.pending.len() >= limits.queued {
+    let pending = world
+        .get_resource::<EventQueue>()
+        .map_or(0, |q| q.pending.len());
+    if events.len() > limits.queued.saturating_sub(pending) {
         return Err(Error::new(
             "event.capacity",
             "Event queue capacity exceeded",
         ));
     }
-    queue.pending.push_back(event);
+    for event in &events {
+        if !valid_name(&event.name)
+            || serde_json::to_vec(&event.payload)?.len() > limits.payload_bytes
+        {
+            return Err(Error::new(
+                "event.invalid",
+                "Invalid name or event payload exceeds limit",
+            ));
+        }
+    }
+    if !events.is_empty() {
+        if !world.contains_resource::<EventQueue>() {
+            world.insert_resource(EventQueue::default());
+        }
+        world.resource_mut::<EventQueue>().pending.extend(events);
+    }
     Ok(())
 }
 pub fn register_event_handler(
@@ -153,7 +176,9 @@ pub(crate) fn take_events(world: &mut World) -> Vec<EngineEvent> {
         .into_iter()
         .filter(|e| e.target.is_none_or(|t| world.get_entity(t).is_ok()))
         .collect();
-    world.insert_resource(DeliveredRecords(capture_records(world, &events)));
+    let records: Arc<[EventRecord]> = capture_records(world, &events).into();
+    world.insert_resource(DeliveredRecords(records.clone()));
+    world.insert_resource(LastDispatchRecords(records));
     world.insert_resource(DeliveredEvents(events.clone()));
     events
 }

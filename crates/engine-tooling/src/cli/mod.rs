@@ -32,7 +32,7 @@ project import-model <manifest> <project-relative-source> --prefix <unique-name>
 project shaders <manifest>\n  \
 project package <manifest> <new-directory> [--profile release|dev]\n  \
 scene inspect <scene> --project-root <project-directory>\n  \
-run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--render-backend primary|vulkan|dx12|metal|gl|all] [--screenshot file.png [--screenshot-size WxH]]\n  \
+run <manifest> [--headless] [--ticks N] [--input action:tick]... [--events schedule.json] [--user-data dir] [--scene-override file] [--render-backend primary|vulkan|dx12|metal|gl|all] [--screenshot file.png [--screenshot-size WxH]]\n  \
 editor <manifest>\n  \
 mcp <project-root> [--allow-write] [--allow-exec]";
 

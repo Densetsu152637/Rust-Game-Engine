@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use engine_audio::{AudioConfig, AudioEngine};
 use engine_project::{
-    Runtime,
+    EventSchedule, EventTrace, Runtime,
     input::{ActionMapper, RawInput, merge_input},
     runtime::{InputSettings, RuntimeSnapshot},
 };
@@ -40,6 +40,8 @@ pub struct RunOptions {
     /// Zero-based fixed tick -> held injected actions. An absent action releases
     /// on the following tick; consecutive entries stay held without new presses.
     pub inputs: BTreeMap<u64, BTreeSet<String>>,
+    /// Stable-ID events injected immediately before their zero-based fixed tick.
+    pub events: EventSchedule,
     pub user_data: Option<PathBuf>,
     /// Checked at tick boundaries. Cooperative shutdown runs game cleanup before
     /// releasing native devices; the generation launcher owns the flag.
@@ -51,6 +53,7 @@ impl Default for RunOptions {
             headless: false,
             ticks: 1_000_000,
             inputs: BTreeMap::new(),
+            events: EventSchedule::default(),
             user_data: None,
             shutdown: None,
         }
@@ -59,6 +62,7 @@ impl Default for RunOptions {
 
 #[derive(Serialize)]
 pub struct RunReport {
+    pub event_trace: EventTrace,
     pub profile: engine_core::ProfileSnapshot,
     pub ticks: u64,
     pub fixed_delta: f64,
@@ -120,6 +124,7 @@ pub fn run_with_wgpu_backends(
         (1..=1_000_000).contains(&options.ticks),
         "ticks must be 1..=1000000"
     );
+    options.events.validate_run(options.ticks)?;
     for (tick, actions) in &options.inputs {
         ensure!(
             *tick < options.ticks,
@@ -179,6 +184,7 @@ pub fn run_with_wgpu_backends(
         ticks: 0,
         presented_frames: 0,
         error: None,
+        event_trace: EventTrace::default(),
     };
     let event_result = event_loop.run_app(&mut app).context("desktop event loop");
     let cleanup = app.runtime.stop().map_err(anyhow::Error::from);
@@ -196,6 +202,7 @@ pub fn run_with_wgpu_backends(
         ),
     )?;
     Ok(RunReport {
+        event_trace: app.event_trace,
         profile: app.runtime.app().profile(),
         ticks: app.ticks,
         fixed_delta: FIXED_DELTA,
@@ -228,6 +235,7 @@ fn run_headless(
 ) -> Result<RunReport> {
     let mut previous = BTreeSet::new();
     let mut ticks = 0;
+    let mut event_trace = EventTrace::default();
     let mut audio_frame = [0.0_f32; 1600]; // 48,000 / 60 frames, stereo.
     let result = (|| -> Result<()> {
         for tick in 0..options.ticks {
@@ -236,7 +244,9 @@ fn run_headless(
             }
             let actions = options.inputs.get(&tick).cloned().unwrap_or_default();
             let input = merge_input(&Default::default(), &actions, &mut previous);
+            runtime.enqueue_scheduled_events(&options.events, tick)?;
             runtime.tick(FIXED_DELTA as f32, input)?;
+            event_trace.capture(&runtime, tick);
             audio.mix(&mut audio_frame)?;
             ticks += 1;
         }
@@ -246,6 +256,7 @@ fn run_headless(
     audio.shutdown();
     combine(result, cleanup)?;
     Ok(RunReport {
+        event_trace,
         profile: runtime.app().profile(),
         ticks,
         fixed_delta: FIXED_DELTA,
@@ -264,6 +275,7 @@ fn stop_requested(runtime: &Runtime, options: &RunOptions) -> bool {
 }
 
 struct DesktopRunner {
+    event_trace: EventTrace,
     runtime: Runtime,
     audio: AudioEngine,
     options: RunOptions,
@@ -396,7 +408,10 @@ impl DesktopRunner {
             injected,
             &mut self.previous,
         );
+        self.runtime
+            .enqueue_scheduled_events(&self.options.events, self.ticks)?;
         self.runtime.tick(FIXED_DELTA as f32, input)?;
+        self.event_trace.capture(&self.runtime, self.ticks);
         self.ticks += 1;
         Ok(())
     }

@@ -12,6 +12,7 @@ pub mod networking;
 pub mod persistence;
 pub mod rendering3d;
 pub mod runtime;
+pub mod scheduled_events;
 pub mod schema;
 pub mod services;
 pub mod simulation;
@@ -23,13 +24,15 @@ pub use catalog::{ComponentCatalog, ComponentDescriptor, CustomValue, register_c
 pub use content::GeometryOverride;
 pub use document::{EditOperation, SceneDocument};
 pub use events::{
-    EngineEvent, EventBinding, EventBindings, EventLimits, emit_event, register_event_handler,
+    EngineEvent, EventBinding, EventBindings, EventLimits, emit_event, emit_events,
+    register_event_handler,
 };
 pub use input::{ActionFrame, ActionMapper, InputSnapshot, RawInput};
 pub use runtime::{
     AuthoredId, NativeScript, RenderFrame, Runtime, RuntimeSnapshot, ScriptFactory, ScriptRegistry,
     register_script,
 };
+pub use scheduled_events::{EventSchedule, EventTrace, ScheduledEvent};
 pub use schema::*;
 pub use transforms::{Parent, WorldTransform, refresh_world_transforms, world_transform};
 

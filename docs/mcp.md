@@ -393,3 +393,12 @@ runs, timeouts). The screenshot test needs a GPU and is `#[ignore]`d; run it wit
 batches, reparenting and prefab instantiation through the same `SceneDocument`
 commands as human controllers, with revision checks and dry runs. See
 [metaprogramming](meta-programming.md) for schemas and operation payloads.
+
+## Scheduled events and delivery traces
+
+`project_run_headless` accepts an ordered `events` array of
+`{tick,name,source?,target?,payload?}`. The existing exec gate applies; write access
+is not required for this ephemeral run input. The result includes `event_trace`,
+`event_count` and `event_trace_truncated`, covering actual deliveries across the
+run rather than only the final tick. See [scheduled events](scheduled-events.md)
+for bounds, stable-ID resolution, atomic enqueue and CLI usage.
