@@ -166,16 +166,7 @@ fn bake(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
         "obstacles",
     )?;
     let output = Args(args).string("output")?;
-    let target = paths::resolve_write_target(cx.root, output, "output")?;
-    if target.exists
-        || target.needs_directories
-        || target.path.extension().and_then(|s| s.to_str()) != Some("json")
-    {
-        return Err(schema::invalid(
-            "output",
-            "a new .json file in an existing project directory",
-        ));
-    }
+    check_new_json_target(cx, output)?;
     let document = engine_project::simulation::navigation_from_meshes(
         &cx.project()?,
         &meshes,
@@ -192,7 +183,34 @@ fn bake(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
             "a navigation document below 16 MiB",
         ));
     }
-    // Recheck confinement after potentially expensive baking; create_new never clobbers.
+    publish_new_file(cx, output, &bytes, "navigation.publish")?;
+    Ok(ToolResult::new(
+        json!({"path":output,"polygons":polygons,"hash":paths::content_hash(&bytes),"asset":{"id":"choose-a-unique-navigation-id","kind":"navigation","path":output}}),
+    ))
+}
+/// Rejects an `output` that exists, needs new directories or is not `.json`.
+pub(super) fn check_new_json_target(cx: &ToolContext<'_>, output: &str) -> Result<(), ToolFailure> {
+    let target = paths::resolve_write_target(cx.root, output, "output")?;
+    if target.exists
+        || target.needs_directories
+        || target.path.extension().and_then(|s| s.to_str()) != Some("json")
+    {
+        return Err(schema::invalid(
+            "output",
+            "a new .json file in an existing project directory",
+        ));
+    }
+    Ok(())
+}
+/// Atomically creates `output` with `bytes`; never replaces an existing file.
+/// Confinement is rechecked after any expensive work and again before the rename.
+pub(super) fn publish_new_file(
+    cx: &ToolContext<'_>,
+    output: &str,
+    bytes: &[u8],
+    error_code: &str,
+) -> Result<(), ToolFailure> {
+    // Recheck confinement after potentially expensive work; create_new never clobbers.
     let target = paths::resolve_write_target(cx.root, output, "output")?;
     let parent = target
         .path
@@ -200,7 +218,7 @@ fn bake(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
         .ok_or_else(|| schema::invalid("output", "a project file"))?;
     let mut file = tempfile::NamedTempFile::new_in(parent)
         .map_err(|e| ToolFailure::from(engine_project::Error::from(e)))?;
-    file.write_all(&bytes)
+    file.write_all(bytes)
         .and_then(|_| file.as_file().sync_all())
         .map_err(|e| ToolFailure::from(engine_project::Error::from(e)))?;
     let target = paths::resolve_write_target(cx.root, output, "output")?;
@@ -209,7 +227,7 @@ fn bake(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     let mut attempt = 0u64;
     loop {
         match file.persist_noclobber(&target.path) {
-            Ok(_) => break,
+            Ok(_) => return Ok(()),
             Err(error)
                 if error.error.kind() == std::io::ErrorKind::PermissionDenied && attempt < 8 =>
             {
@@ -219,15 +237,12 @@ fn bake(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
             }
             Err(error) => {
                 return Err(ToolFailure::from(engine_project::Error::new(
-                    "navigation.publish",
+                    error_code,
                     error.error.to_string(),
                 )));
             }
         }
     }
-    Ok(ToolResult::new(
-        json!({"path":output,"polygons":polygons,"hash":paths::content_hash(&bytes),"asset":{"id":"choose-a-unique-navigation-id","kind":"navigation","path":output}}),
-    ))
 }
 fn query(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     let path = args

@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 11] = [
+const KINDS: [&str; 12] = [
     "script",
     "mesh",
     "texture",
@@ -23,6 +23,7 @@ const KINDS: [&str; 11] = [
     "model",
     "animation",
     "navigation",
+    "acoustics",
 ];
 const MAX_USES: usize = 200;
 
@@ -191,6 +192,18 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
         "navigation" => {
             let mesh = engine_project::simulation::load_navmesh(project, &asset.id)?;
             json!({"polygons":mesh.polygon_count(),"settings":mesh.settings()})
+        }
+        "acoustics" => {
+            let bytes =
+                paths::read_bounded(&file, engine_project::acoustics::MAX_BAKED_DOCUMENT_BYTES)
+                    .map_err(|_| {
+                        ToolFailure::new("file_too_large", "acoustics document is too large")
+                    })?;
+            let document = engine_project::acoustics::validate_document(&asset.id, &bytes)?;
+            json!({"version":document.version,"source_scene":document.source_scene,
+                "materials":document.materials.len(),"meshes":document.meshes.len(),
+                "instances":document.instances.len(),"volumes":document.volumes.len(),
+                "proxy":document.proxy.is_some(),"content_hash":document.content_hash})
         }
         "scene" | "prefab" => {
             let relative = file.strip_prefix(cx.root).expect("confined file");
