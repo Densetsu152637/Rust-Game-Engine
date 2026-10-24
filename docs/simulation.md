@@ -2,7 +2,7 @@
 
 `Runtime::new` installs Rapier 2D/3D, animation playback and waypoint navigation.
 All projects automatically expose `engine.PhysicsBody2D`, `engine.PhysicsBody3D`,
-`engine.AnimationPlayer` and `engine.NavigationAgent` in the component catalog,
+`engine.AnimationPlayer`, `engine.SkinBinding` and `engine.NavigationAgent` in the component catalog,
 including MCP discovery. No game registration is required. Custom values use
 `{"version":1,"data":{...}}` in the entity's `components.custom` map.
 The `engine.*` namespace is reserved.
@@ -44,6 +44,8 @@ of at most approximately 1/60 second. There is no wall-clock accumulator or
 cross-machine determinism guarantee. Contact start/stop events target each live
 participant, with the other participant as source and `{dimension,other}` payload.
 Names are `physics.contact.start` and `physics.contact.stop`.
+Rapier evaluates contacts before integration, so a newly reached kinematic target
+is detected by the next physics substep.
 
 ## Animation and imported models
 
@@ -65,8 +67,21 @@ Bindings preserve complete glTF node order, including non-joint ancestors.
 `imported_skeleton` and `imported_clip` convert importer data without compressing
 the hierarchy. `skin_palette` computes mesh-local skin matrices suitable for
 `engine_animation::skin_vertices`. Cubic spline clips remain in model metadata
-and conversion explicitly rejects them. Runtime playback updates bound node TRS;
-the adapter does not itself upload a skin palette or deform render meshes.
+and conversion explicitly rejects them. Runtime playback updates bound node TRS.
+`engine.SkinBinding` data contains `model` (a model asset ID), `mesh_node` and
+`primitive` source indices, and the full node `bindings` list. The service evaluates
+these node world matrices after all pose writers and deforms source primitive
+positions on the CPU. It publishes `GeometryOverride(Arc<Mesh>)` for render
+extraction, preserving source indices, UV0 and vertex colors. Removing SkinBinding
+removes its override. The source mesh stays immutable. Lighting derives geometric
+normals from the deformed triangles; authored smooth normals are not retained in
+the current render vertex format.
+
+Runtime skinning bounds source models to 64 MiB each, 256 MiB total cached source
+file size, 64 models, 4096 bound nodes per mesh and one million deformed vertices
+across the world. Model and palette indices, weights and matrices are validated;
+bad bindings fail before rendering. Scene changes must call `simulation::reset`
+after hydration so retained entities rebuild from their new scene poses.
 Native animation supplies crossfades and CPU skinning; there is no authored state
 machine, inverse kinematics, retargeting or morph animation.
 
