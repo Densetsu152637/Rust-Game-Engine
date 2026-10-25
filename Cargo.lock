@@ -1262,6 +1262,7 @@ dependencies = [
  "base64",
  "blake3",
  "engine-project",
+ "epaint_default_fonts",
  "regex",
  "serde",
  "serde_json",
