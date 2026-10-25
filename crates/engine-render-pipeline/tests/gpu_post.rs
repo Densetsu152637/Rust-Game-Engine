@@ -129,8 +129,12 @@ impl Rig {
     }
 
     fn frame(&mut self, post: Option<&PostSettings>, delta_time: f32, reset: bool) -> ViewReport {
-        let projection =
-            glam::camera::rh::proj::directx::perspective(std::f32::consts::FRAC_PI_3, 1.0, 0.1, 100.0);
+        let projection = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_3,
+            1.0,
+            0.1,
+            100.0,
+        );
         let mut view = ViewData::new(self.view_id, Mat4::IDENTITY, projection, SIZE, SIZE).unwrap();
         view.post = post.cloned();
         view.delta_time = delta_time;
@@ -293,7 +297,10 @@ fn auto_exposure_converges_lower_for_bright_scenes() -> Result<()> {
     rig.uniform([8.0; 3]);
     rig.frame(Some(&s), dt, true);
     let cut = rig.pipeline.auto_exposure(rig.view_id)?.unwrap();
-    assert!((cut.ev - cut.target_ev).abs() < 1e-4, "reset snaps: {cut:?}");
+    assert!(
+        (cut.ev - cut.target_ev).abs() < 1e-4,
+        "reset snaps: {cut:?}"
+    );
     Ok(())
 }
 
@@ -319,7 +326,13 @@ fn manual_exposure_scales_the_scene() -> Result<()> {
 #[ignore = "requires a GPU adapter"]
 fn bloom_spreads_a_bright_pixel_and_leaves_dim_content() -> Result<()> {
     let mut rig = Rig::new()?;
-    rig.fill(|x, y| if (x, y) == (32, 32) { [50.0; 3] } else { [0.0; 3] });
+    rig.fill(|x, y| {
+        if (x, y) == (32, 32) {
+            [50.0; 3]
+        } else {
+            [0.0; 3]
+        }
+    });
     let mut s = settings();
     s.bloom.enabled = true;
     s.bloom.threshold = 1.0;
@@ -354,7 +367,13 @@ fn bloom_spreads_a_bright_pixel_and_leaves_dim_content() -> Result<()> {
     eprintln!("sub-threshold max deviation {worst}");
     assert!(worst < 2e-3);
     // Scatter widens the halo.
-    rig.fill(|x, y| if (x, y) == (32, 32) { [50.0; 3] } else { [0.0; 3] });
+    rig.fill(|x, y| {
+        if (x, y) == (32, 32) {
+            [50.0; 3]
+        } else {
+            [0.0; 3]
+        }
+    });
     s.bloom.scatter = 0.2;
     rig.frame(Some(&s), 0.0, false);
     let narrow = rig.hdr().pixel(32 + 16, 32)[0];

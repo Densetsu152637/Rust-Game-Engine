@@ -118,7 +118,105 @@ impl Runtime {
             .retain(|draw| !mesh_ids.contains(&draw.id));
         frame.materials2d.retain(|id, _| !mesh_ids.contains(id));
         frame.lights = extract_lights(world)?;
+        frame.post = self.extract_post(entity, true)?;
         Ok(frame)
+    }
+    /// The active camera's `PostProcess`, the enabled volumes and the LUT
+    /// files they reference (read bounded; the renderer validates them).
+    fn extract_post(&self, camera: Entity, load_luts: bool) -> Result<crate::post::PostFrame> {
+        use crate::post::{
+            MAX_FRAME_LUTS, MAX_LUT_BYTES, PostFrame, PostProcess, PostProcessVolume,
+        };
+        let world = self.app.world();
+        let mut frame = PostFrame {
+            camera: world.get::<PostProcess>(camera).cloned(),
+            ..Default::default()
+        };
+        if let Some(post) = &frame.camera {
+            post.validate()?;
+        }
+        for entity in world.iter_entities() {
+            let Some(volume) = entity.get::<PostProcessVolume>().filter(|v| v.enabled) else {
+                continue;
+            };
+            volume.validate()?;
+            let id = entity
+                .get::<AuthoredId>()
+                .map(|id| id.id.clone())
+                .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
+            let matrix = if entity.get::<Transform>().is_some() {
+                crate::world_transform(world, entity.id())?.matrix
+            } else if volume.is_local() {
+                return Err(Error::new(
+                    "render.post.transform",
+                    format!("{id}: a non-global PostProcessVolume requires Transform"),
+                ));
+            } else {
+                [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+            };
+            frame.volumes.push(crate::post::VolumeInstance3D {
+                id,
+                volume: volume.clone(),
+                world: matrix,
+            });
+        }
+        frame.volumes.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut lut_ids: BTreeSet<&str> = BTreeSet::new();
+        if let Some(post) = &frame.camera {
+            lut_ids.extend(post.asset_refs());
+        }
+        for instance in &frame.volumes {
+            lut_ids.extend(instance.volume.asset_refs());
+        }
+        if lut_ids.len() > MAX_FRAME_LUTS {
+            return Err(Error::new(
+                "render.post.lut.limit",
+                format!("a frame references at most {MAX_FRAME_LUTS} grading LUTs"),
+            ));
+        }
+        let mut luts = BTreeMap::new();
+        for id in lut_ids.into_iter().filter(|_| load_luts) {
+            let asset = self
+                .project
+                .require_asset(id, "lut")
+                .map_err(|_| Error::new("render.lut.unknown", id))?;
+            let bytes = crate::schema::read_bounded(
+                &self.project.resolve_asset(&asset.id)?,
+                MAX_LUT_BYTES,
+            )?;
+            let text = String::from_utf8(bytes)
+                .map_err(|e| Error::new("render.lut.invalid", e.to_string()))?;
+            luts.insert(id.to_owned(), Arc::<str>::from(text));
+        }
+        frame.luts = luts;
+        Ok(frame)
+    }
+    /// The renderer-reported post-processing state of the active camera
+    /// view. Before any 3D frame the state is `not_rendered` and the summary
+    /// is what the authored data resolves to at the camera; `None` without
+    /// an active 3D camera.
+    pub fn post_status(&self) -> Option<crate::post::PostStatus> {
+        let world = self.app.world();
+        let (entity, _) = active_camera3d(world)?;
+        let mut status = world
+            .get_resource::<crate::post::PostControl>()
+            .map(|control| control.status.clone())
+            .unwrap_or_default();
+        if status.state == RenderPipelineState::NotRendered {
+            let frame = self.extract_post(entity, false).ok()?;
+            let position = crate::world_transform(world, entity)
+                .map(|t| [t.matrix[3][0], t.matrix[3][1], t.matrix[3][2]])
+                .unwrap_or_default();
+            let resolved =
+                crate::post::resolve_post(frame.camera.as_ref(), &frame.volumes, position);
+            status = crate::post::PostStatus::of(resolved.as_ref(), frame.volumes.len());
+        }
+        Some(status)
     }
     /// A catalog texture, or the current frame of a `stream:<name>` texture
     /// stream (recorded once in `streams`).

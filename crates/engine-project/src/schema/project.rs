@@ -41,6 +41,7 @@ impl Project {
                 "model",
                 "animation",
                 "navigation",
+                "lut",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -138,6 +139,14 @@ impl Project {
         for entity in &scene.entities {
             self.component_catalog.validate_entity(scene, entity)?;
             let c = &entity.components;
+            for lut in c
+                .post_process
+                .iter()
+                .flat_map(|p| p.asset_refs())
+                .chain(c.post_process_volume.iter().flat_map(|v| v.asset_refs()))
+            {
+                self.require_asset(lut, "lut")?;
+            }
             if let Some(material) = &c.material {
                 if let Some(shader) = &material.shader {
                     self.require_asset(shader, "shader")?;

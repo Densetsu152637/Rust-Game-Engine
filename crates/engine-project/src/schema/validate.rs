@@ -63,6 +63,15 @@ impl Scene {
                     return Err(bad("PointLight, SpotLight and AreaLight require Transform"));
                 }
             }
+            if let Some(post) = &c.post_process {
+                post.validate()?;
+            }
+            if let Some(volume) = &c.post_process_volume {
+                volume.validate()?;
+                if volume.is_local() && c.transform.is_none() {
+                    return Err(bad("A non-global PostProcessVolume requires Transform"));
+                }
+            }
             if let Some(t) = &c.transform
                 && (t.version != 1 || crate::transforms::local_matrix(t).is_err())
             {
