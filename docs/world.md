@@ -7,7 +7,7 @@ descriptors, typed ECS adapters, installed services and per-tick hooks:
 | Submodule | Feature |
 | --------- | ------- |
 | `coordinates` | Large-world coordinates |
-| `terrain` | Heightmap terrain |
+| `terrain` | Heightmap terrain ([guide](terrain.md)) |
 | `foliage` | Foliage and vegetation |
 | `water` | Ocean, lake and river water |
 | `streaming` | Level streaming and world partition |

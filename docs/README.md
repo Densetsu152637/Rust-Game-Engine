@@ -129,5 +129,9 @@
   path, native painting API and MCP tilemap tools.
 - [Procedural content generation](pcg.md): seeded noise, the node graph and executor
   (`engine-pcg`), `engine.PcgVolume` runtime generation and the `pcg_*` MCP tools.
+- [Heightmap terrain](terrain.md): the `.terrain` heightfield asset (`engine-terrain`),
+  crack-free CDLOD geomorphing, sculpt/paint/hole brushes, `engine.Terrain` collider
+  tiles, PCG surfaces and navigation input, the CPU chunk fallback, the `world.terrain`
+  GPU feature (`engine-world-render`) and the `terrain_*` MCP tools.
 
 Per-crate details are in `crates/*/README.md`.

@@ -45,7 +45,7 @@ clients take the same `command` and `args`.
 
 | Level | Flag | Tools | What it can do |
 | --- | --- | --- | --- |
-| Read | always on | 20 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
+| Read | always on | 21 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
 | Write | `--allow-write` | `entity_create`, `entity_update`, `entity_delete`, `component_set`, `component_remove`, `file_write` | Change scenes and text files inside the project root. |
 | Exec | `--allow-exec` | `project_build`, `project_run_headless`, `render_screenshot` | Compile and run the project's native game code. |
 
@@ -152,6 +152,7 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `physics_debug` | `scene`, `ticks`, `dt`, `max_items`, `aabbs`, `contacts`, `joints` | Bounded physics debug-view summary after `ticks` fixed ticks: uncapped `totals`, collider counts by `states` colour key, `line_segments` in the full wireframe, and up to `max_items` `colliders`, `contacts` and `anchors`; `truncated` reports cuts. Works whether or not `engine.PhysicsSettings.debug` is set. |
 | `tilemap_info` | `path` (asset ID or file) | Summary of a tileset (texture, tile and collision counts, rule tiles) or tilemap (bounds, per-layer z order, visibility, opacity, chunk and cell counts). See [World tilemaps](world-tilemap.md). |
 | `tilemap_query` | `path`, `tileset`, `layer`, `mode` (`cell`, `rect`, `collision`), `cell`, `rect` | Painted and displayed tile (rule tiles resolved as the runtime does), a rectangle listing of up to 4096 cells, or the merged collision boxes and outline loops of a layer. |
+| `terrain_info` | `path` (asset ID or `.terrain` file), `samples` (at most 256 `[x, z]`) | Terrain summary (samples, spacing, extent, height range, layers, hole count, content hash) and per-point triangulated height, normal, slope, hole flag and layer weights. See [Heightmap terrain](terrain.md). |
 | `pcg_validate` | `path`, `kinds`, `run`, `seed`, `center`, `size`, `origin_offset`, `ground_height`, `max_instances`, `sample` | Validates a procedural generation graph against the built-in node library with precise `problems` (code, node, port, message); `kinds` adds the node catalog; `run` adds a bounded dry run on flat ground (counts, per-asset totals, bounds, content hash, sample). See [Procedural content generation](pcg.md). |
 | `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |
 | `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
@@ -184,6 +185,11 @@ nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
 | `tilemap_create` | `output`, `tileset`, `bounds`, `layers` | no / no | Writes a new empty tilemap JSON file and returns the `tilemap` asset entry plus an `engine.Tilemap` component snippet. Never overwrites. |
 | `tilemap_define_rules` | `path`, `rule_tile` | yes / yes | Adds or replaces a rule tile (`blob47`, `four_neighbour16` or custom neighbour rules) in an existing tileset file, validated before an atomic rewrite. |
 | `tilemap_paint` | `path`, `tileset`, `layer`, `ops` (1-256) | yes / yes | Applies `set`, `erase`, `rect`, `flood` and `layer` edits to an existing tilemap file, all or nothing. |
+| `terrain_create` | `output`, `columns`, `rows`, `spacing`, `height`, `noise`, `layers` | no / no | Writes a new binary `.terrain` heightmap and returns the `terrain` asset entry plus an `engine.Terrain` component snippet. Never overwrites. |
+| `terrain_sculpt` | `path`, `expected_hash`, `ops` (1-256) | yes / no | Applies `raise`, `lower`, `smooth`, `flatten`, `set_height` and `noise` brushes, all or nothing, with an atomic rewrite. |
+| `terrain_paint` | `path`, `expected_hash`, `ops` (1-256) | yes / no | Applies splat `paint`, `add_layer` and `set_layer` edits, all or nothing. |
+| `terrain_holes` | `path`, `expected_hash`, `ops` (1-256) | yes / no | Cuts or fills hole cells under circular brushes, all or nothing. |
+| `terrain_navmesh` | `path`, `output`, `origin`, `region`, `settings` | no / no | Bakes a terrain into a new `navigation` JSON document (raster-aligned walkable soup without holes and steep cells). Never overwrites. |
 
 All write tools carry `readOnlyHint: false` and `openWorldHint: false`.
 
