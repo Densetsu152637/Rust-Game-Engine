@@ -1375,6 +1375,7 @@ dependencies = [
  "engine-streaming",
  "engine-terrain",
  "engine-tilemap",
+ "engine-water",
  "engine-xpbd",
  "fs2",
  "glam 0.34.1",
