@@ -517,6 +517,10 @@ Release builds were not measured.
   inside the template.
 - Images have no intrinsic size.
 - A modal dialog inside a hidden tab panel still opens.
+- World panels (`engine.UiWorldPanel`) receive no typed text and no IME, because the desktop
+  runner pushes text events only to the screen UI; text inputs there can be focused but not
+  typed into. IME is unit-tested at the translation layer only; no OS IME session has been
+  observed.
 
 ## Design record
 

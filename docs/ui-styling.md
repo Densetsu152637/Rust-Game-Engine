@@ -363,12 +363,28 @@ path stays. The panel's text keeps a coverage atlas rasterised at `pixelsPerUnit
 Pointer picking is unchanged (`UiWorldPanel::pick`, CPU). VR controller rays are not
 read from input; a presenter can call `UiWorldPanel::pick` with its own ray.
 
+## Cascade budget
+
+Resolving a theme matches every compiled selector against every node (at most 1024), up
+to three times per root per tick (tick, draw and the dialog re-draw). To keep that bounded,
+a composed theme has a cost budget: each compiled selector costs 8, plus 1 per child
+combinator and 64 (a full tree depth) per descendant combinator, and the sum over the
+`extends` chain may not exceed 40 000. Composing (`UiThemeSet::compose`, a theme entity
+used by a root) or validating a standalone theme over the budget fails with
+`ui.style.cascade_budget`. 2048 plain selectors cost 16 384; about 290 selectors with
+three descendant combinators (`.a .b .c .d`) fill the budget. Measured on a debug build
+with a 1009-node tree 64 deep, a theme of 2048 selectors with three descendant
+combinators each took 7.5 s per cascade before the budget; the largest theme the budget
+allows (200 such selectors) takes about 0.7 s, and 2048 plain `*` selectors about 0.4 s.
+Results are not cached between the three cascades of a tick.
+
 ## Limits and error codes
 
 | Limit | Value |
 | --- | --- |
 | rules per theme | 512 |
 | compiled selectors per composed theme | 2048 |
+| selector cost per composed theme | 40 000 (see [Cascade budget](#cascade-budget)) |
 | tokens per kind | 256 |
 | keyframe sets per theme / frames per set | 64 / 16 |
 | transitions per rule | 8 |
@@ -379,7 +395,7 @@ read from input; a presenter can call `UiWorldPanel::pick` with its own ray.
 | bindings per root | 512 |
 | world panels | 64; surface 4096 px per axis |
 
-Stable codes: `ui.style.invalid`, `ui.style.selector`, `ui.style.token_unknown`,
+Stable codes: `ui.style.invalid`, `ui.style.selector`, `ui.style.cascade_budget`, `ui.style.token_unknown`,
 `ui.style.keyframes_unknown`, `ui.theme.unknown`, `ui.theme.cycle`,
 `ui.theme.duplicate`, `ui.bind.invalid`, `ui.bind.path`, `ui.world_panel.invalid`
 (plus the existing `ui.tree.invalid`). `UiTheme::validate` checks structure,
@@ -447,7 +463,12 @@ repeated rows.
   list's replicas through their template only.
 - Only the eight listed properties transition or animate; layout properties
   (padding, gap, grid tracks) switch instantly.
-- Per-item text does not take part in layout measuring.
+- Per-item text does not take part in layout measuring. It does name the replicas in the
+  accessibility tree ([accessibility.md](accessibility.md)); the texts are computed once per
+  tick for that and again when drawing.
+- World panels receive no typed text and no IME: `TextBridge` pushes text events only to
+  the screen `GameUi`, so a `text_input` in a world panel can be focused and navigated but not
+  typed into (pointer and `ui_*` actions work).
 - Selectors have no `:not`, attribute or sibling selectors; `:selected` is set by
   `GameUi` for `list` children only.
 - A theme change replaces the cascade for the whole root; there is no per-node
