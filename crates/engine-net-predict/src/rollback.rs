@@ -264,14 +264,14 @@ impl<G: RollbackGame> RollbackSession<G> {
         }
         let rf = self.remote_frame[p]?;
         Some((
-            self.current_frame as i64 - rf as i64,
+            frame_difference(self.current_frame, rf),
             i64::from(self.remote_advantage[p]),
         ))
     }
     pub fn time_sync(&self) -> TimeSync {
         let wait = (0..self.players)
             .filter_map(|p| self.frame_advantage(p as u8))
-            .map(|(local, remote)| (local - remote) / 2)
+            .map(|(local, remote)| local.saturating_sub(remote) / 2)
             .max()
             .unwrap_or(0)
             .clamp(0, i64::from(self.config.max_prediction));
@@ -329,6 +329,13 @@ impl<G: RollbackGame> RollbackSession<G> {
             .checked_add(u64::from(count))
             .ok_or(PredictError::Malformed("frame overflow"))?;
         let sender_frame = r.u64()?;
+        // A legitimate peer stalls within `max_prediction` frames of our inputs, so its frame
+        // never exceeds the input acceptance window.
+        if sender_frame > self.accept_limit() {
+            return Err(PredictError::Malformed(
+                "sender frame beyond the acceptance window",
+            ));
+        }
         let advantage = r.i32()?;
         let ack = if flags & 1 != 0 { Some(r.u64()?) } else { None };
         let report = if flags & 2 != 0 {
@@ -564,7 +571,7 @@ impl<G: RollbackGame> RollbackSession<G> {
             }
             let ack = self.confirmed_through[p];
             let advantage = self.remote_frame[p].map_or(0, |rf| {
-                (self.current_frame as i64 - rf as i64).clamp(i32::MIN as i64, i32::MAX as i64)
+                frame_difference(self.current_frame, rf).clamp(i32::MIN as i64, i32::MAX as i64)
                     as i32
             });
             let mut w = Writer::with_limit(self.config.max_message_bytes);
@@ -591,4 +598,9 @@ impl<G: RollbackGame> RollbackSession<G> {
         }
         Ok(out)
     }
+}
+
+/// `a - b` in frames, saturated to `i64` (frames are untrusted `u64`s).
+fn frame_difference(a: u64, b: u64) -> i64 {
+    (i128::from(a) - i128::from(b)).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
 }

@@ -456,3 +456,30 @@ fn malformed_rollback_messages_change_nothing() {
     // Valid inputs that survived mutation are only accepted within the acceptance window.
     assert!(a.receive(1, &valid).is_ok());
 }
+
+#[test]
+fn hostile_sender_frame_cannot_overflow_time_sync_or_outgoing() {
+    let mut a = RollbackSession::<Arena>::new(RollbackConfig::default()).unwrap();
+    let mut b = RollbackSession::<Arena>::new(RollbackConfig {
+        local_player: 1,
+        ..RollbackConfig::default()
+    })
+    .unwrap();
+    let mut gb = Arena::new(2);
+    b.add_local_input(pad_for(1, 2)).unwrap();
+    b.advance_frame(&mut gb).unwrap();
+    let valid = b.outgoing().unwrap().remove(0).1;
+    // Header: version, kind, flags, count, u64 start_frame, then u64 sender_frame.
+    for hostile in [1_u64 << 63, u64::MAX, (1 << 63) + 1] {
+        let mut bytes = valid.clone();
+        bytes[12..20].copy_from_slice(&hostile.to_le_bytes());
+        let _ = a.receive(1, &bytes);
+        // Debug builds panic on overflow here before the fix.
+        assert!(a.time_sync().recommended_wait_frames <= 8);
+        let (local, _) = a.frame_advantage(1).unwrap_or((0, 0));
+        assert!(local > -1_000, "hostile frame accepted: advantage {local}");
+        a.outgoing().unwrap();
+    }
+    // A legitimate message is still accepted afterwards.
+    assert!(a.receive(1, &valid).is_ok());
+}
