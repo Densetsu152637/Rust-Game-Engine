@@ -26,7 +26,7 @@ same on every API: sRGB RGBA8 targets and textures, y-up clip space, top-left
 scissor and viewport, straight alpha, depth `LessEqual`/`Always` with a write
 flag, a backend-owned depth attachment, and nearest/clamp sampling. The
 `backend_parity` tests render the sprite scenes on each API available on the
-machine and assert exact, byte-identical pixels. Native render passes and
+machine and assert exact, byte-identical pixels. Overlay render features and
 `GpuRequirements` work on every API.
 
 ## CPU content (`engine_project::content`)
@@ -137,7 +137,7 @@ mesh, never rebuilt, so the GPU copy is reused and blending costs no uploads.
 Consequently:
 
 - Sprite animation frames, UVs and tint are the current tick's. UI draws have no
-  motion and are not interpolated. Native render passes receive the current
+  motion and are not interpolated. Render features receive the current
   tick's render world unblended.
 - Pixel snapping applies after the blend: a snapping sprite is drawn at the pixel
   grid position of the blended position (`snap_to_pixels`, the function
@@ -171,13 +171,15 @@ the first successful present resumes display-rate redraws.
 ## Native extensions
 
 Games compile into the host executable and use `engine_desktop::wgpu`, so there is
-no cross-compiler Rust ABI. Implement `NativeRenderPass` and register it with
-`NativeRenderPasses::register(name, pass)`, then insert the resource into
-`EngineApp::world_mut()` during configuration. Passes run after built-in draws in
-insertion order and receive the device, queue, command encoder, target view and the
+no cross-compiler Rust ABI. Implement `render_pipeline::PipelineFeature` (an
+`Overlay`-stage feature draws after the engine's output and sprites; other stages
+reach the HDR scene, see [render architecture](rendering-architecture.md)) and
+register it with `PipelineFeatures::register(feature)`, then insert the resource
+into `EngineApp::world_mut()` during configuration. Features receive the device,
+queue, command encoder, view data, frame textures, output target and the
 extracted world; they may create arbitrary wgpu render, compute and transfer work.
-Insert `GpuRequirements { features, limits }` before launch when a custom pipeline
-needs more than baseline wgpu. `examples/native-extension` is a complete example,
+Add a `DeviceFeatureRequest` to the `GpuRequirements` resource before launch when
+a custom pipeline needs more than baseline wgpu. `examples/native-extension` is a complete example,
 including a custom WGSL pipeline.
 
 `WindowSurface` is the reusable window and surface owner (used by hosts such as the

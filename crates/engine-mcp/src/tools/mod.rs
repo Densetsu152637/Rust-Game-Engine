@@ -1,14 +1,18 @@
 //! Built-in tools, one module per family. Read-only tools are always listed;
 //! the write family is listed only when the server allows write access.
 
+mod acoustics;
 mod assets;
 mod components;
 mod edit;
 mod files;
+mod locale;
 mod model_import;
 mod navigation;
+mod physics;
 mod project;
 mod scene;
+mod ui;
 
 pub use components::{COMPONENT_NAMES, ComponentDoc, component_docs};
 
@@ -75,6 +79,10 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(files::write_tools());
     tools.extend(model_import::tools());
     tools.extend(navigation::tools());
+    tools.extend(acoustics::tools());
+    tools.extend(physics::tools());
+    tools.extend(locale::tools());
+    tools.extend(ui::tools());
     tools
 }
 

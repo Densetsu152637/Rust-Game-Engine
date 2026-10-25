@@ -2,6 +2,7 @@ use engine_desktop::{LIT_WGSL, OffscreenSprites, RenderLimits, WgpuBackends, cam
 use engine_project::{
     Camera2D,
     content::{Mesh, Vertex},
+    lights::{DirectionalLight, LightInstance3D},
     rendering3d::*,
     runtime::RenderFrame,
 };
@@ -22,8 +23,17 @@ fn scene() -> SceneRenderFrame {
             world: Mat4::IDENTITY.to_cols_array_2d(),
         }),
         meshes: vec![],
+        lights: vec![sun([0.4, 0.7, 1.0], DirectionalLight::default())],
+        post: Default::default(),
+        ray_tracing: None,
         materials2d: Default::default(),
+        streams: vec![],
     }
+}
+/// A directional light shining from `toward` (the former camera default
+/// light was `[0.4, 0.7, 1.0]` at 3 lux-equivalent).
+fn sun(toward: [f32; 3], light: DirectionalLight) -> LightInstance3D {
+    LightInstance3D::directional_toward("sun", toward, light).unwrap()
 }
 fn triangle(id: &str, z: f32, tint: [f32; 4]) -> MeshDraw3D {
     MeshDraw3D {
@@ -54,7 +64,9 @@ fn triangle(id: &str, z: f32, tint: [f32; 4]) -> MeshDraw3D {
 }
 #[test]
 fn camera_depth_and_shader_contract_are_valid() {
-    engine_desktop::validate_wgsl(LIT_WGSL).unwrap();
+    use engine_desktop::render_pipeline::{MaterialTarget, compose_material};
+    compose_material(LIT_WGSL, MaterialTarget::Mesh).unwrap();
+    compose_material(LIT_WGSL, MaterialTarget::Sprite).unwrap();
     let s = scene();
     let camera = camera_matrix(s.camera3d.as_ref().unwrap(), 1.0).unwrap();
     let depth = |z| {
@@ -66,32 +78,48 @@ fn camera_depth_and_shader_contract_are_valid() {
     assert!(depth(-0.05) < 0.0);
 }
 #[test]
-fn small_shadow_volumes_at_large_world_coordinates_remain_finite() {
+fn shadow_cascades_at_large_world_coordinates_remain_finite() {
     let mut renderer = OffscreenSprites::headless(64, 64, RenderLimits::default()).unwrap();
     let mut s = scene();
     s.meshes.push(triangle("mesh", -2.0, [1.0; 4]));
-    let light = &mut s.camera3d.as_mut().unwrap().camera.lighting;
-    light.direction = [1.0, 1.0, 1.0];
+    let mut light = DirectionalLight::default();
     light.shadows.enabled = true;
-    light.shadows.center = [1_000_000.0; 3];
-    light.shadows.depth = 0.1;
-    assert_eq!(renderer.render_scene(&s).unwrap().draws, 1);
+    light.shadows.max_distance = 0.5;
+    s.lights = vec![sun([1.0, 1.0, 1.0], light)];
+    let far = Mat4::from_translation(Vec3::splat(1_000_000.0));
+    s.camera3d.as_mut().unwrap().world = far.to_cols_array_2d();
+    // The neutral backend validates 3D scenes without drawing them.
+    renderer.render_scene(&s).unwrap();
+    let projection = glam::camera::rh::proj::directx::perspective(1.0, 1.0, 0.1, 1000.0);
+    let shadow = engine_desktop::render_pipeline::shadows::cascade_view(
+        far,
+        projection,
+        [0.1, 0.5],
+        -Vec3::ONE,
+        1024,
+        1.0,
+    );
+    assert!(shadow.clip_from_world.is_finite());
+    let projected = shadow.clip_from_world * Vec3::new(1e6, 1e6, 1e6 - 0.3).extend(1.0);
+    assert!(projected.is_finite() && projected.w != 0.0, "{projected}");
+    assert!(
+        projected.x.abs() <= 1.0 && projected.y.abs() <= 1.0,
+        "{projected}"
+    );
 }
 #[test]
-fn neutral_scene_path_rejects_invalid_custom_uniforms() {
+fn scene_validation_rejects_shaders_breaking_the_material_contract() {
     let mut renderer = OffscreenSprites::headless(64, 64, RenderLimits::default()).unwrap();
     let mut s = scene();
     s.meshes.push(triangle("mesh", -2.0, [1.0; 4]));
-    assert_eq!(renderer.render_scene(&s).unwrap().draws, 1);
-    s.meshes[0].shader = Some(Arc::from(
-        LIT_WGSL.replace("@group(2) @binding(0)", "@group(3) @binding(1)"),
-    ));
+    renderer.render_scene(&s).unwrap();
+    s.meshes[0].shader = Some(Arc::from(format!(
+        "{LIT_WGSL}\n@group(3) @binding(1) var<uniform> extra: vec4<f32>;"
+    )));
+    let error = format!("{:#}", renderer.render_scene(&s).unwrap_err());
     assert!(
-        renderer
-            .render_scene(&s)
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported material uniform")
+        error.contains("unsupported material binding (group 3, binding 1)"),
+        "{error}"
     );
 }
 #[test]
@@ -227,7 +255,7 @@ fn gpu_pbr_factors_and_linear_data_textures_change_pixels() -> anyhow::Result<()
     let mut renderer =
         OffscreenSprites::wgpu(WgpuBackends::Primary, 64, 64, RenderLimits::default())?;
     let mut s = scene();
-    s.camera3d.as_mut().unwrap().camera.lighting.direction = [0.3, 0.0, 1.0];
+    s.lights = vec![sun([0.3, 0.0, 1.0], DirectionalLight::default())];
     s.meshes.push(quad("surface", -3.0, 1.5));
     s.meshes[0].material.roughness = 1.0;
     renderer.render_scene(&s)?;
@@ -331,19 +359,17 @@ fn gpu_shadow_occlusion_cast_receive_and_resolution_are_observable() -> anyhow::
     let mut renderer =
         OffscreenSprites::wgpu(WgpuBackends::Primary, 64, 64, RenderLimits::default())?;
     let mut s = scene();
-    let lighting = &mut s.camera3d.as_mut().unwrap().camera.lighting;
-    lighting.direction = [0.8, 0.0, 1.0];
-    lighting.shadows = ShadowSettings {
-        resolution: 256,
-        center: [0.0, 0.0, -3.0],
-        extent: 6.0,
-        depth: 10.0,
-        ..Default::default()
-    };
+    let mut light = DirectionalLight::default();
+    light.shadows.resolution = 256;
+    light.shadows.cascades = 1;
+    light.shadows.max_distance = 6.0;
+    light.shadows.caster_extension = 10.0;
+    s.lights = vec![sun([0.8, 0.0, 1.0], light.clone())];
     s.meshes = vec![quad("receiver", -3.0, 1.5), quad("occluder", -2.0, 0.3)];
     renderer.render_scene(&s)?;
     let baseline = renderer.read_rgba()?;
-    s.camera3d.as_mut().unwrap().camera.lighting.shadows.enabled = true;
+    light.shadows.enabled = true;
+    s.lights = vec![sun([0.8, 0.0, 1.0], light.clone())];
     renderer.render_scene(&s)?;
     let shadowed = renderer.read_rgba()?;
     let darker = baseline
@@ -368,16 +394,15 @@ fn gpu_shadow_occlusion_cast_receive_and_resolution_are_observable() -> anyhow::
         "receiver can opt out of shadows"
     );
     s.meshes[0].material.receive_shadows = true;
-    s.camera3d
-        .as_mut()
-        .unwrap()
-        .camera
-        .lighting
-        .shadows
-        .resolution = 512;
+    light.shadows.resolution = 512;
+    s.lights = vec![sun([0.8, 0.0, 1.0], light)];
     renderer.render_scene(&s)?;
     let resized = renderer.read_rgba()?;
     assert_ne!(resized, baseline);
+    assert_ne!(
+        resized, shadowed,
+        "the shadow map resolution changes the edge"
+    );
     // Save inspectable evidence only when explicitly requested by the test invoker.
     if let Some(path) = std::env::var_os("ENGINE_PBR_CAPTURE") {
         image::save_buffer(path, &resized, 64, 64, image::ColorType::Rgba8)?;

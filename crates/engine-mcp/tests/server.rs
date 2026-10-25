@@ -59,7 +59,7 @@ fn a_server_can_be_reused_for_many_connections() {
             .serve(Cursor::new(request.into_bytes()), &mut out)
             .unwrap();
         let response: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 13);
+        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 22);
     }
     let names: Vec<_> = server
         .registry()
@@ -85,7 +85,7 @@ fn access_flags_are_independent() {
             .definitions()
             .count()
     };
-    assert_eq!(count(ServerConfig::new()), 13);
+    assert_eq!(count(ServerConfig::new()), 22);
     let access = |config: ServerConfig, name: &str| {
         Server::new(dir.path(), config)
             .unwrap()
@@ -103,7 +103,62 @@ fn access_flags_are_independent() {
         access(ServerConfig::new().allow_write(true), "navigation_bake"),
         Some(AccessLevel::Write)
     );
-    assert_eq!(count(ServerConfig::new().allow_write(true)), 22);
+    for name in [
+        "acoustics_inspect",
+        "acoustics_query",
+        "physics_query",
+        "physics_debug",
+    ] {
+        assert_eq!(
+            access(ServerConfig::new(), name),
+            Some(AccessLevel::Read),
+            "{name}"
+        );
+    }
+    assert_eq!(access(ServerConfig::new(), "acoustics_bake"), None);
+    assert_eq!(
+        access(ServerConfig::new().allow_write(true), "acoustics_bake"),
+        Some(AccessLevel::Write)
+    );
+    for tool in ["locale_list", "locale_messages", "locale_pseudo_preview"] {
+        assert_eq!(
+            access(ServerConfig::new(), tool),
+            Some(AccessLevel::Read),
+            "{tool} is a read tool"
+        );
+    }
+    for tool in [
+        "locale_set_message",
+        "locale_remove_message",
+        "locale_add_locale",
+    ] {
+        assert_eq!(
+            access(ServerConfig::new(), tool),
+            None,
+            "{tool} needs write"
+        );
+        assert_eq!(
+            access(ServerConfig::new().allow_write(true), tool),
+            Some(AccessLevel::Write)
+        );
+    }
+    for tool in ["ui_inspect", "ui_preview"] {
+        assert_eq!(
+            access(ServerConfig::new(), tool),
+            Some(AccessLevel::Read),
+            "{tool} is a read tool"
+        );
+    }
+    assert_eq!(
+        access(ServerConfig::new(), "ui_edit"),
+        None,
+        "ui_edit needs write"
+    );
+    assert_eq!(
+        access(ServerConfig::new().allow_write(true), "ui_edit"),
+        Some(AccessLevel::Write)
+    );
+    assert_eq!(count(ServerConfig::new().allow_write(true)), 36);
     for (config, exposed) in [
         (ServerConfig::new(), false),
         (ServerConfig::new().allow_exec(true), false),
@@ -121,12 +176,12 @@ fn access_flags_are_independent() {
     }
     assert_eq!(
         count(ServerConfig::new().allow_exec(true)),
-        13,
+        22,
         "exec tools come from providers"
     );
     assert_eq!(
         count(ServerConfig::new().allow_write(true).allow_write(false)),
-        13
+        22
     );
 }
 

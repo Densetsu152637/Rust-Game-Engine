@@ -11,11 +11,16 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 11] = [
+const KINDS: [&str; 18] = [
     "script",
     "mesh",
     "texture",
     "font",
+    "font_face",
+    "font_config",
+    "string_table",
+    "caption_track",
+    "locale_config",
     "audio",
     "scene",
     "shader",
@@ -23,6 +28,8 @@ const KINDS: [&str; 11] = [
     "model",
     "animation",
     "navigation",
+    "acoustics",
+    "lut",
 ];
 const MAX_USES: usize = 200;
 
@@ -176,6 +183,51 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
             json!({"glyphs": font.glyphs.len(), "line_height": font.line_height,
                 "fallback_codepoint": font.fallback, "texture_asset": font.texture})
         }
+        "font_face" => {
+            let face = content::load_font_face(&file)?;
+            let faces: Vec<Value> = face
+                .faces
+                .iter()
+                .map(|f| json!({"family": f.family, "weight": f.weight, "italic": f.italic, "index": f.index}))
+                .collect();
+            json!({"bytes": face.bytes.len(), "faces": faces})
+        }
+        "font_config" => {
+            let config = content::load_font_config(&file)?;
+            json!({"default_family": config.default_family, "default_size": config.default_size,
+                "faces": config.faces.len(), "families": config.families.len()})
+        }
+        "string_table" => {
+            let table = engine_project::localization::load_string_table(&file)?;
+            let locales = engine_project::localization::locale_config(project)?
+                .map(|info| {
+                    info.settings
+                        .resources
+                        .iter()
+                        .filter(|r| {
+                            r.paths
+                                .iter()
+                                .any(|p| p.replace('\\', "/") == slash(&asset.path))
+                        })
+                        .map(|r| r.locale.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            json!({"entries": table.entries, "bytes": table.text.len(), "locales": locales})
+        }
+        "caption_track" => {
+            let track = engine_project::captions::load_caption_track(&file)?;
+            json!({"cues": track.cues.len(), "speakers": track.speakers.len(),
+                "duration": track.duration()})
+        }
+        "locale_config" => {
+            let config = engine_project::localization::load_locale_config(&file)?;
+            json!({"default_locale": config.default_locale,
+                "available_locales": config.available_locales,
+                "string_tables": config.resources.iter().map(|r| r.paths.len()).sum::<usize>(),
+                "pseudo_enabled": config.pseudo.enabled,
+                "locales_with_assets": config.assets.len()})
+        }
         "script" => {
             let bytes = paths::read_bounded(&file, cx.limits.max_file_scan_bytes)
                 .map_err(|_| ToolFailure::new("file_too_large", "script source is too large"))?;
@@ -191,6 +243,18 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
         "navigation" => {
             let mesh = engine_project::simulation::load_navmesh(project, &asset.id)?;
             json!({"polygons":mesh.polygon_count(),"settings":mesh.settings()})
+        }
+        "acoustics" => {
+            let bytes =
+                paths::read_bounded(&file, engine_project::acoustics::MAX_BAKED_DOCUMENT_BYTES)
+                    .map_err(|_| {
+                        ToolFailure::new("file_too_large", "acoustics document is too large")
+                    })?;
+            let document = engine_project::acoustics::validate_document(&asset.id, &bytes)?;
+            json!({"version":document.version,"source_scene":document.source_scene,
+                "materials":document.materials.len(),"meshes":document.meshes.len(),
+                "instances":document.instances.len(),"volumes":document.volumes.len(),
+                "proxy":document.proxy.is_some(),"content_hash":document.content_hash})
         }
         "scene" | "prefab" => {
             let relative = file.strip_prefix(cx.root).expect("confined file");

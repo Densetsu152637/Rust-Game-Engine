@@ -1,7 +1,7 @@
 //! Shared built-in authoring component documentation.
 use serde_json::{Value, json};
 /// The component keys of an entity's `components` object, in schema order.
-pub const COMPONENT_NAMES: [&str; 9] = [
+pub const COMPONENT_NAMES: [&str; 16] = [
     "Camera3D",
     "MeshMaterial",
     "EventBindings",
@@ -11,6 +11,13 @@ pub const COMPONENT_NAMES: [&str; 9] = [
     "SpriteRenderer",
     "Camera2D",
     "Collider2D",
+    "DirectionalLight",
+    "PointLight",
+    "SpotLight",
+    "AreaLight",
+    "PostProcess",
+    "PostProcessVolume",
+    "RayTracing",
 ];
 
 /// Documentation for one authored component type.
@@ -54,18 +61,10 @@ fn closed(properties: Value, required: &[&str]) -> Value {
 fn lighting_schema() -> Value {
     closed(
         json!({
-            "direction":vector(3, "Finite nonzero direction from surface toward directional light", Some(json!([0.4,0.7,1.0]))),
-            "color":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":3,"maxItems":3,"default":[1,1,1]},
-            "intensity":{"type":"number","minimum":0,"maximum":100,"default":3},
-            "ambient":{"type":"number","minimum":0,"maximum":1,"default":0.08},
-            "shadows":closed(json!({
-                "enabled":{"type":"boolean","default":false},
-                "resolution":{"type":"integer","enum":[64,128,256,512,1024,2048,4096],"default":1024},
-                "center":{"type":"array","items":{"type":"number","minimum":-1000000,"maximum":1000000},"minItems":3,"maxItems":3,"default":[0,0,0]},
-                "extent":{"type":"number","minimum":0.01,"maximum":100000,"default":20},
-                "depth":{"type":"number","minimum":0.1,"maximum":100000,"default":100},
-                "bias":{"type":"number","minimum":0,"maximum":0.1,"default":0.001}
-            }), &[])
+            "ambient":{"type":"number","minimum":0,"maximum":1,"default":0.08,
+                "description":"Ambient radiance added to lit materials (already exposed)."},
+            "exposure":{"type":"number","minimum":1e-8,"maximum":1000,"default":1,
+                "description":"Linear factor from photometric light units (lux, lumens) to output: a 1 lux directional light on a white diffuse surface gives exposure/pi. Physically based scenes use 1/(1.2*2^EV100), about 2.5e-5 for sunlight at EV100 15. Lights are DirectionalLight, PointLight, SpotLight and AreaLight entities."}
         }),
         &[],
     )
@@ -97,13 +96,22 @@ fn frame_generation_schema() -> Value {
 
 /// All authored component documents.
 pub fn component_docs() -> Vec<ComponentDoc> {
+    let mut docs = builtin_docs();
+    docs.extend(super::light_docs::light_docs());
+    docs.extend(super::post_docs::post_docs());
+    docs.push(super::post_docs::ray_tracing_doc());
+    docs
+}
+
+fn builtin_docs() -> Vec<ComponentDoc> {
     vec![
         ComponentDoc {
             name: "Camera3D",
-            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason.",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. `render_features` enables or disables render features in this camera view.",
             requires: &["Transform"],
             schema: closed(
-                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"projection":{"oneOf":[
+                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
+                    "description":"Per-camera render feature overrides by stable feature name (for example engine.opaque, engine.shadows, engine.sprites, the UI features ui.sdf_text, ui.world and ui.color_filter of engine-ui-render, or a native feature such as world.terrain): false disables the feature in this camera view, true enables a feature that is off by default. Required features (engine.output) cannot be disabled. Unknown names are reported in the run report's render_pipeline.unknown_overrides."},"projection":{"oneOf":[
                     closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
                     closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])
                 ]}}),
@@ -116,7 +124,7 @@ pub fn component_docs() -> Vec<ComponentDoc> {
             description: "Material for MeshRenderer or SpriteRenderer: custom WGSL shader, texture, tint and 3D transparency/lighting controls.",
             requires: &[],
             schema: closed(
-                json!({"version":version(),"shader":{"type":["string","null"]},"texture":{"type":["string","null"]},"tint":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":4,"maxItems":4,"default":[1,1,1,1]},"unlit":{"type":"boolean","default":false},"transparent":{"type":"boolean","default":false},"metallic":{"type":"number","minimum":0,"maximum":1,"default":0},"roughness":{"type":"number","minimum":0,"maximum":1,"default":0.5},"cast_shadows":{"type":"boolean","default":true},"receive_shadows":{"type":"boolean","default":true},"normal_scale":{"type":"number","minimum":0,"maximum":10,"default":1},"normal_texture":{"type":["string","null"],"minLength":1},"metallic_roughness_texture":{"type":["string","null"],"minLength":1}}),
+                json!({"version":version(),"shader":{"type":["string","null"]},"texture":{"type":["string","null"],"description":"Catalog texture asset ID, or stream:<name> for a texture stream registered natively at runtime (video, camera feeds)."},"tint":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":4,"maxItems":4,"default":[1,1,1,1]},"unlit":{"type":"boolean","default":false},"transparent":{"type":"boolean","default":false},"metallic":{"type":"number","minimum":0,"maximum":1,"default":0},"roughness":{"type":"number","minimum":0,"maximum":1,"default":0.5},"cast_shadows":{"type":"boolean","default":true},"receive_shadows":{"type":"boolean","default":true},"normal_scale":{"type":"number","minimum":0,"maximum":10,"default":1},"normal_texture":{"type":["string","null"],"minLength":1},"metallic_roughness_texture":{"type":["string","null"],"minLength":1}}),
                 &[],
             ),
             example: json!({"tint":[0.4,0.8,1.0,1.0],"unlit":true}),
@@ -247,10 +255,11 @@ pub fn component_docs() -> Vec<ComponentDoc> {
     ]
 }
 
-pub const SCENE_RULES: [&str; 5] = [
+pub const SCENE_RULES: [&str; 6] = [
     "Entity `id` is the stable authored identifier: unique within the scene, 1-256 characters, no control characters. It cannot be changed after creation.",
     "A scene may contain at most one Camera2D.",
-    "SpriteRenderer, Collider2D and Camera3D require a Transform on the same entity.",
+    "SpriteRenderer, Collider2D, Camera3D, PointLight, SpotLight and AreaLight require a Transform on the same entity.",
     "Camera2D.follow must name an entity that has a Transform.",
     "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture/normal_texture/metallic_roughness_texture) must be catalog asset IDs of the right kind.",
+    "A scene may contain at most one `engine.AcousticEnvironment`; `engine.AudioEmitter.clip` must be an `audio` asset, `engine.AcousticGeometry.mesh` and `engine.AcousticVolume.mesh` `mesh` assets, and `engine.AcousticEnvironment.geometry.asset` an `acoustics` asset.",
 ];

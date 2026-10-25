@@ -34,6 +34,11 @@ impl Project {
                 "mesh",
                 "texture",
                 "font",
+                "font_face",
+                "font_config",
+                "string_table",
+                "caption_track",
+                "locale_config",
                 "audio",
                 "scene",
                 "shader",
@@ -41,6 +46,8 @@ impl Project {
                 "model",
                 "animation",
                 "navigation",
+                "acoustics",
+                "lut",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -138,12 +145,34 @@ impl Project {
         for entity in &scene.entities {
             self.component_catalog.validate_entity(scene, entity)?;
             let c = &entity.components;
+            for lut in c
+                .post_process
+                .iter()
+                .flat_map(|p| p.asset_refs())
+                .chain(c.post_process_volume.iter().flat_map(|v| v.asset_refs()))
+            {
+                self.require_asset(lut, "lut")?;
+            }
             if let Some(material) = &c.material {
                 if let Some(shader) = &material.shader {
                     self.require_asset(shader, "shader")?;
                 }
+                if let Some(texture) = &material.texture {
+                    match texture.strip_prefix(crate::rendering3d::STREAM_TEXTURE_PREFIX) {
+                        // Streams are registered natively at runtime.
+                        Some(name) if crate::rendering3d::valid_stream_name(name) => {}
+                        Some(_) => {
+                            return Err(Error::new(
+                                "project.asset.stream",
+                                format!("Invalid texture stream reference {texture}"),
+                            ));
+                        }
+                        None => {
+                            self.require_asset(texture, "texture")?;
+                        }
+                    }
+                }
                 for texture in [
-                    &material.texture,
                     &material.metallic_roughness_texture,
                     &material.normal_texture,
                 ]
@@ -166,6 +195,7 @@ impl Project {
                 self.require_asset(&s.texture, "texture")?;
             }
         }
+        crate::acoustics::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.
@@ -184,6 +214,11 @@ impl Project {
                 "navigation" => {
                     crate::simulation::load_navmesh(self, &asset.id)?;
                 }
+                "acoustics" => {
+                    let bytes =
+                        read_bounded(&file, crate::acoustics::MAX_BAKED_DOCUMENT_BYTES as u64)?;
+                    crate::acoustics::validate_document(&asset.id, &bytes)?;
+                }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;
                 }
@@ -197,12 +232,31 @@ impl Project {
                         crate::content::load_texture(&self.resolve_asset(&font.texture)?)?;
                     font.validate(texture.width, texture.height)?;
                 }
+                "font_face" => {
+                    crate::content::load_font_face(&file)?;
+                }
+                "font_config" => {
+                    let config = crate::content::load_font_config(&file)?;
+                    let faces = self
+                        .assets
+                        .values()
+                        .filter(|a| a.kind == "font_face")
+                        .map(|a| a.id.clone())
+                        .collect();
+                    config.validate_against(&faces)?;
+                }
+                "string_table" => {
+                    crate::localization::load_string_table(&file)?;
+                }
+                "caption_track" => {
+                    crate::captions::load_caption_track(&file)?;
+                }
                 "script" => {
                     read_bounded(&file, 1024 * 1024)?;
                 }
                 _ => {}
             }
         }
-        Ok(())
+        crate::localization::validate_project(self)
     }
 }

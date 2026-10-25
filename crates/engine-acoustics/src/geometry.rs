@@ -1,7 +1,7 @@
 use crate::{MaterialId, MeshId, Mobility};
-use std::convert::Infallible;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Footprint2D {
     Rect {
         center: [f32; 2],
@@ -22,24 +22,26 @@ pub enum Footprint2D {
         points: Vec<[f32; 2]>,
     },
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Footprint {
     pub shape: Footprint2D,
     pub material: MaterialId,
     pub mobility: Mobility,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProxyPlane {
     SideView,
     TopDown,
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Enclosure {
     None,
     Auto { margin_m: f32 },
     Bounds { min: [f32; 2], max: [f32; 2] },
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Proxy2DSettings {
     pub plane: ProxyPlane,
     pub units_per_meter: f32,
@@ -58,38 +60,21 @@ pub struct Proxy2DSettings {
 }
 
 /// Listener pose in acoustic space.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ListenerPose {
     pub position: [f32; 3],
     pub forward: [f32; 3],
     pub up: [f32; 3],
 }
 
-/// Mapping from game space to proxy acoustic space. It can only come from a
-/// successful `AcousticWorldBuilder::add_proxy_2d`, which is not implemented yet,
-/// so no value exists and the methods are unreachable.
-#[derive(Clone, Debug)]
-pub struct ProxyMapping {
-    never: Infallible,
-}
-impl ProxyMapping {
-    pub fn to_acoustic(&self, _world: [f32; 3]) -> [f32; 3] {
-        match self.never {}
-    }
-    pub fn pose_to_acoustic(&self, _pose: ListenerPose) -> ListenerPose {
-        match self.never {}
-    }
-    pub fn metres_per_unit(&self) -> f32 {
-        match self.never {}
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VolumeShape {
     Box { half_extents: [f32; 3] },
     Mesh(MeshId),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VolumeKind {
     Solid,
     /// `open_faces` has one bit per face: -X, +X, -Y, +Y, -Z, +Z.
@@ -97,7 +82,7 @@ pub enum VolumeKind {
         open_faces: u8,
     },
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AcousticVolume {
     pub shape: VolumeShape,
     pub kind: VolumeKind,

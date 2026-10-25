@@ -4,17 +4,23 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT"
-description = "GPU ray-query and compute propagation backends for engine-acoustics (contract skeleton)"
+description = "GPU ray-query (hardware) and compute (BVH traversal) propagation backends for engine-acoustics"
 
 [dependencies]
 engine-acoustics = { path = "../engine-acoustics" }
+bytemuck = { workspace = true }
+pollster = "0.4"
+wgpu = { workspace = true, features = ["std", "parking_lot", "vulkan", "dx12", "metal", "wgsl"] }
+
+[dev-dependencies]
+naga = { workspace = true, features = ["wgsl-in"] }
 
 # Opts out of `[workspace.lints]` (which forbids unsafe code), as engine-dlss does.
 # The crate instead denies unsafe code: the single audited
-# `#[allow(unsafe_code)]` function that will create wgpu's
-# `ExperimentalFeatures::enabled()` token (docs/spatial-audio-design.md section 6.3,
-# approved by root) is the only place the lint may be lifted. `forbid` is not used
-# because it cannot be locally allowed.
+# `#[allow(unsafe_code)]` function `device::experimental_features_token` creates
+# wgpu's `ExperimentalFeatures::enabled()` token (docs/spatial-audio-design.md
+# section 6.3, approved by root) and is the only place the lint is lifted.
+# `forbid` is not used because it cannot be locally allowed.
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"

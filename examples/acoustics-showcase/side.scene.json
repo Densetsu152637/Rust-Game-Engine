@@ -1,0 +1,216 @@
+{
+  "schema": 1,
+  "scene_id": "side",
+  "entities": [
+    {
+      "id": "acoustics",
+      "name": "Acoustic environment",
+      "components": {
+        "custom": {
+          "engine.AcousticEnvironment": {
+            "version": 1,
+            "data": {
+              "backend": "auto",
+              "renderer": "binaural",
+              "reverb": "parametric",
+              "reverb_source": "traced",
+              "proxy2d": {
+                "plane": "side_view",
+                "units_per_meter": 1,
+                "depth_m": 6,
+                "enclosure": "auto",
+                "margin_m": 0,
+                "material": "concrete",
+                "floor_material": "wood",
+                "ceiling_material": "plaster",
+                "side_material": "plaster"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "left",
+      "name": "Left",
+      "components": {
+        "Transform": {
+          "position": [
+            -5.5,
+            0,
+            0
+          ]
+        },
+        "Collider2D": {
+          "size": [
+            1,
+            8
+          ]
+        },
+        "custom": {
+          "engine.AcousticMaterial": {
+            "version": 1,
+            "data": {
+              "preset": "concrete"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "right",
+      "name": "Right",
+      "components": {
+        "Transform": {
+          "position": [
+            5.5,
+            0,
+            0
+          ]
+        },
+        "Collider2D": {
+          "size": [
+            1,
+            8
+          ]
+        },
+        "custom": {
+          "engine.AcousticMaterial": {
+            "version": 1,
+            "data": {
+              "preset": "concrete"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "floor",
+      "name": "Floor",
+      "components": {
+        "Transform": {
+          "position": [
+            0,
+            -3.5,
+            0
+          ]
+        },
+        "Collider2D": {
+          "size": [
+            12,
+            1
+          ]
+        },
+        "custom": {
+          "engine.AcousticMaterial": {
+            "version": 1,
+            "data": {
+              "preset": "wood"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ceiling",
+      "name": "Ceiling",
+      "components": {
+        "Transform": {
+          "position": [
+            0,
+            3.5,
+            0
+          ]
+        },
+        "Collider2D": {
+          "size": [
+            12,
+            1
+          ]
+        },
+        "custom": {
+          "engine.AcousticMaterial": {
+            "version": 1,
+            "data": {
+              "preset": "plaster"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "divider",
+      "name": "Divider",
+      "components": {
+        "Transform": {
+          "position": [
+            0,
+            -1,
+            0
+          ]
+        },
+        "Collider2D": {
+          "size": [
+            0.5,
+            5
+          ]
+        },
+        "custom": {
+          "engine.AcousticMaterial": {
+            "version": 1,
+            "data": {
+              "preset": "concrete"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "listener",
+      "name": "Listener",
+      "components": {
+        "Transform": {
+          "position": [
+            -3,
+            0,
+            0
+          ]
+        },
+        "custom": {
+          "engine.AudioListener": {
+            "version": 1,
+            "data": {}
+          }
+        }
+      }
+    },
+    {
+      "id": "speaker",
+      "name": "Speaker",
+      "components": {
+        "Transform": {
+          "position": [
+            3,
+            -1,
+            0
+          ]
+        },
+        "custom": {
+          "engine.AudioEmitter": {
+            "version": 1,
+            "data": {
+              "clip": "hum",
+              "looped": true
+            }
+          },
+          "engine.AcousticSource": {
+            "version": 1,
+            "data": {
+              "radius_m": 0.3
+            }
+          }
+        }
+      }
+    }
+  ]
+}
