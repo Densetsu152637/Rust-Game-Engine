@@ -75,12 +75,29 @@ pub fn extract_world(
     fonts: &BTreeMap<String, FontAtlas>,
     textures: &BTreeMap<String, Arc<Texture>>,
 ) -> Result<Vec<Draw>> {
+    extract_world_with(
+        world,
+        viewport,
+        &BitmapTextBackend::new(fonts, textures),
+        textures,
+    )
+}
+
+/// [`extract_world`] with an explicit text backend (for example a
+/// [`SelectingTextBackend`] that adds shaped TrueType text). Calls
+/// `text.begin_frame()` once.
+pub fn extract_world_with(
+    world: &World,
+    viewport: [u32; 2],
+    text: &dyn UiTextBackend,
+    textures: &BTreeMap<String, Arc<Texture>>,
+) -> Result<Vec<Draw>> {
+    text.begin_frame();
     let roots = roots(world);
     if roots.len() > MAX_UI_ROOTS {
         return Err(invalid("UI exceeds 64 roots"));
     }
     let ui = world.get_resource::<GameUi>();
-    let text = BitmapTextBackend::new(fonts, textures);
     let mut draws = vec![];
     let mut ids = std::collections::BTreeSet::new();
     for (id, _, root) in roots {
@@ -88,7 +105,7 @@ pub fn extract_world(
             return Err(invalid("Duplicate UI root ID"));
         }
         let state = ui.map(|ui| ui.render_state(&id)).unwrap_or_default();
-        draws.extend(root.extract_draws_with(&id, viewport, &state, &text, textures)?);
+        draws.extend(root.extract_draws_with(&id, viewport, &state, text, textures)?);
     }
     Ok(draws)
 }

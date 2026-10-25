@@ -299,12 +299,24 @@ pub(super) fn input_view(
         caret_byte + preedit.map_or(0, |p| p.cursor.map_or(p.text.len(), |c| c[1]))
     };
     let line = laid.metrics.line_height.max(1.0);
-    let stop = stop_at(&laid, caret_at).unwrap_or(UiCaretStop {
-        index: 0,
-        x: 0.0,
-        y: 0.0,
-        height: line,
-    });
+    let geometry = laid.geometry.clone();
+    let stop = match &geometry {
+        Some(g) => {
+            let r = g.caret_rect(caret_at);
+            UiCaretStop {
+                index: caret_at as u32,
+                x: r.x,
+                y: r.y,
+                height: r.height,
+            }
+        }
+        None => stop_at(&laid, caret_at).unwrap_or(UiCaretStop {
+            index: 0,
+            x: 0.0,
+            y: 0.0,
+            height: line,
+        }),
+    };
     let height = if stop.height > 0.0 { stop.height } else { line };
     let shift = if *multiline {
         [0.0, (stop.y + height - content.height).max(0.0)]
@@ -316,10 +328,26 @@ pub(super) fn input_view(
         vec![]
     } else {
         let (a, b) = ((*caret).min(*anchor), (*caret).max(*anchor));
-        range_rects(&laid, display_byte(a), display_byte(b), false)
+        let (a, b) = (display_byte(a), display_byte(b));
+        match &geometry {
+            Some(g) => g.selection_rects(a, b),
+            None => range_rects(&laid, a, b, false),
+        }
     };
     let underline = preedit.map_or(vec![], |p| {
-        range_rects(&laid, caret_byte, caret_byte + p.text.len(), true)
+        let end = caret_byte + p.text.len();
+        match &geometry {
+            Some(g) => g
+                .selection_rects(caret_byte, end)
+                .into_iter()
+                .map(|r| Rect {
+                    y: r.y + r.height - 1.0,
+                    height: 1.0,
+                    ..r
+                })
+                .collect(),
+            None => range_rects(&laid, caret_byte, end, true),
+        }
     });
     Ok(Some(InputView {
         caret: offset(
@@ -352,6 +380,14 @@ impl InputView {
             return Some(0);
         }
         let local = [point[0] - self.origin[0], point[1] - self.origin[1]];
+        if let Some(geometry) = &self.layout.geometry {
+            let byte = geometry.hit_test(local).min(self.shown.len());
+            return Some(if self.password {
+                byte as u32
+            } else {
+                self.shown.get(..byte)?.chars().count() as u32
+            });
+        }
         let stops = &self.layout.carets;
         // The last line starting at or above the pointer (else the first line).
         let first = stops.first()?.y;
@@ -371,4 +407,39 @@ impl InputView {
             self.shown[..byte].chars().count() as u32
         })
     }
+}
+
+/// Character index one wrapped line above or below `caret` (in characters) of
+/// a multiline input's value, when the backend has caret geometry. `None`
+/// leaves the move to the logical-line editing rules.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn vertical_caret(
+    text: &dyn UiTextBackend,
+    font: &str,
+    scale: f32,
+    color: [f32; 4],
+    value: &str,
+    caret: u32,
+    password: bool,
+    width: f32,
+    down: bool,
+) -> Option<u32> {
+    let shown = if password {
+        layout::mask(value)
+    } else {
+        value.to_owned()
+    };
+    let request = UiTextRequest {
+        text: &shown,
+        kind: UiTextKind::Plain,
+        font,
+        scale,
+        color,
+        max_width: Some(width),
+    };
+    let geometry = text.layout(&request).ok()?.geometry?;
+    let to = geometry
+        .move_vertical(byte_of(&shown, caret), down)
+        .min(shown.len());
+    Some(shown.get(..to)?.chars().count() as u32)
 }

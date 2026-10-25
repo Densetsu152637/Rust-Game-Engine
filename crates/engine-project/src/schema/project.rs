@@ -34,6 +34,8 @@ impl Project {
                 "mesh",
                 "texture",
                 "font",
+                "font_face",
+                "font_config",
                 "audio",
                 "scene",
                 "shader",
@@ -196,6 +198,19 @@ impl Project {
                     let texture =
                         crate::content::load_texture(&self.resolve_asset(&font.texture)?)?;
                     font.validate(texture.width, texture.height)?;
+                }
+                "font_face" => {
+                    crate::content::load_font_face(&file)?;
+                }
+                "font_config" => {
+                    let config = crate::content::load_font_config(&file)?;
+                    let faces = self
+                        .assets
+                        .values()
+                        .filter(|a| a.kind == "font_face")
+                        .map(|a| a.id.clone())
+                        .collect();
+                    config.validate_against(&faces)?;
                 }
                 "script" => {
                     read_bounded(&file, 1024 * 1024)?;

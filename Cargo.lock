@@ -1316,6 +1316,8 @@ dependencies = [
  "engine-navigation",
  "engine-network",
  "engine-physics",
+ "engine-text",
+ "epaint_default_fonts",
  "fs2",
  "glam 0.34.1",
  "image",
@@ -1324,6 +1326,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tempfile",
+ "unicode-linebreak",
 ]
 
 [[package]]

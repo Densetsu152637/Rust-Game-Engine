@@ -86,10 +86,17 @@ pub(super) struct Content {
     pub(super) textures: BTreeMap<String, Arc<Texture>>,
     pub(super) meshes: BTreeMap<String, Arc<Mesh>>,
     pub(super) fonts: BTreeMap<String, FontAtlas>,
+    /// Shaping backend over `font_face` assets; `None` when the project has none.
+    pub(super) text: Option<Arc<crate::ui_tree::EngineTextBackend>>,
 }
 impl Content {
+    pub(super) fn ui_text(&self) -> crate::ui_tree::SelectingTextBackend<'_> {
+        crate::ui_tree::SelectingTextBackend::new(self.text.as_deref(), &self.fonts, &self.textures)
+    }
     pub(super) fn load(project: &Project) -> Result<Self> {
         let mut content = Self::default();
+        let mut faces = BTreeMap::new();
+        let mut config = None;
         for asset in project.assets.values() {
             let path = project.resolve_asset(&asset.id)?;
             match asset.kind.as_str() {
@@ -108,7 +115,27 @@ impl Content {
                         .fonts
                         .insert(asset.id.clone(), content::load_font(&path)?);
                 }
+                "font_face" => {
+                    faces.insert(asset.id.clone(), Arc::new(content::load_font_face(&path)?));
+                }
+                "font_config" => {
+                    if config.replace(content::load_font_config(&path)?).is_some() {
+                        return Err(Error::new(
+                            "asset.font_config.duplicate",
+                            "A project may declare at most one font_config asset",
+                        ));
+                    }
+                }
                 _ => {}
+            }
+        }
+        if !faces.is_empty() || config.is_some() {
+            let config = config.unwrap_or_default();
+            config.validate_against(&faces.keys().cloned().collect())?;
+            if !faces.is_empty() {
+                content.text = Some(Arc::new(crate::ui_tree::EngineTextBackend::from_content(
+                    &faces, &config,
+                )?));
             }
         }
         Ok(content)
@@ -116,6 +143,32 @@ impl Content {
 }
 
 impl Runtime {
+    /// The UI text backend: shaped `font_face` families first, bitmap fonts
+    /// for every other font key.
+    pub fn ui_text(&self) -> crate::ui_tree::SelectingTextBackend<'_> {
+        self.content.ui_text()
+    }
+    fn push_world_text(&self, draws: &mut Vec<Draw>, text: crate::world_text::WorldTextDraw) {
+        draws.push(Draw {
+            mesh: self.cached_mesh(&text.id, text.mesh),
+            id: text.id,
+            texture: Some(text.texture),
+            layer: text.layer,
+            space: DrawSpace::World,
+            clip: None,
+            state: DrawState::default(),
+            motion: Some(DrawMotion {
+                position: text.position,
+                pixel_snap: false,
+            }),
+            offset: [0.0; 3],
+        });
+    }
+    /// The shaping text engine, when the project has `font_face` assets (to read
+    /// its status, set the language or replace fallback chains).
+    pub fn text_engine(&self) -> Option<&Arc<crate::ui_tree::EngineTextBackend>> {
+        self.content.text.as_ref()
+    }
     fn cached_mesh(&self, id: &str, mesh: Mesh) -> Arc<Mesh> {
         let hash = blake3::hash(&serde_json::to_vec(&mesh).expect("finite geometry"));
         let mut cache = self.geometry.borrow_mut();
@@ -305,10 +358,13 @@ impl Runtime {
                 offset: [0.0; 3],
             });
         }
-        draws.extend(crate::ui_tree::extract_world(
+        for text in crate::world_text::extract(world, self.content.text.as_deref())? {
+            self.push_world_text(&mut draws, text);
+        }
+        draws.extend(crate::ui_tree::extract_world_with(
             world,
             camera.logical_size,
-            &self.content.fonts,
+            &self.ui_text(),
             &self.content.textures,
         )?);
         draws.sort_by(|a, b| {

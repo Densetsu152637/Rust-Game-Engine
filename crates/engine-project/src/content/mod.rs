@@ -3,11 +3,13 @@ use crate::{Error, Result, schema::read_bounded};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 mod font;
+mod font_face;
 mod geometry;
 mod loaders;
 mod viewport;
 
 pub use font::*;
+pub use font_face::*;
 pub use geometry::*;
 pub use loaders::*;
 pub use viewport::*;

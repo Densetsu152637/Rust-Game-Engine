@@ -201,6 +201,38 @@ impl Painter<'_> {
             .ok_or_else(|| Error::new("render.texture.unknown", key))
     }
 
+    /// Inline images of a laid-out rich label, grouped by texture.
+    fn inline_images(
+        &self,
+        layout: &UiTextLayout,
+        origin: [f32; 2],
+        alpha: f32,
+    ) -> Result<Vec<(Arc<Texture>, Mesh)>> {
+        let mut groups: Vec<(Arc<Texture>, Mesh)> = vec![];
+        for image in &layout.images {
+            let page = self.texture(&image.key)?;
+            let slot = match groups.iter().position(|(p, _)| Arc::ptr_eq(p, &page)) {
+                Some(slot) => slot,
+                None => {
+                    groups.push((page, Mesh::default()));
+                    groups.len() - 1
+                }
+            };
+            let rect = Rect {
+                x: image.rect.x + origin[0],
+                y: image.rect.y + origin[1],
+                ..image.rect
+            };
+            textured(
+                &mut groups[slot].1,
+                rect,
+                [0.0, 0.0, 1.0, 1.0],
+                [1.0, 1.0, 1.0, alpha],
+            );
+        }
+        Ok(groups)
+    }
+
     fn layout_text(
         &self,
         node: &UiNode,
@@ -239,6 +271,7 @@ impl Painter<'_> {
             quad(&mut chrome, bounds.rect, background);
         }
         let mut image = None;
+        let mut inline = vec![];
         match &node.widget {
             UiWidget::Toggle { checked: true, .. } => {
                 let size = inner.height.min(12.0).min(inner.width);
@@ -459,6 +492,7 @@ impl Painter<'_> {
                     inner.x
                 };
                 batch.add(&layout, [origin_x, inner.y], alpha);
+                inline = self.inline_images(&layout, [origin_x, inner.y], alpha)?;
             }
         }
         if focused {
@@ -477,6 +511,15 @@ impl Painter<'_> {
             self.push(format!("{key}:1"), mesh, Some(page), layer, clip);
         }
         self.push_text(key, batch, layer, text_clip);
+        for (index, (page, mesh)) in inline.into_iter().enumerate() {
+            self.push(
+                format!("{key}:2~{index:03}"),
+                mesh,
+                Some(page),
+                layer,
+                text_clip,
+            );
+        }
         self.push(format!("{key}:3"), top, None, layer, clip);
         Ok(())
     }

@@ -17,6 +17,7 @@ mod layout;
 mod navigation;
 mod render;
 mod schema;
+mod shaped_text;
 mod style;
 mod text;
 mod text_edit;
@@ -29,13 +30,18 @@ pub use layout::{MAX_UI_BOXES, UiBox};
 pub use navigation::UiDirection;
 pub use render::{UI_DIALOG_LAYER, UI_POPUP_LAYER, UiRenderState};
 pub use schema::descriptor;
+pub use shaped_text::{
+    EngineTextBackend, SDF_DEFERRED_REASON, TextRenderState, TextRenderStatus, UiTextStats,
+    validate_markup,
+};
 pub use style::{
     MAX_GRID_TRACKS, MAX_UI_EXTENT, UiAlign, UiEdges, UiGridFlow, UiGridPlacement, UiInset,
     UiJustify, UiLayout, UiLength, UiPosition, UiStyle, UiTrack, UiTrackSize, UiWrap,
 };
 pub use text::{
-    BitmapTextBackend, NullTextBackend, UiCaretStop, UiGlyphQuad, UiTextBackend, UiTextKind,
-    UiTextLayout, UiTextMetrics, UiTextRequest, strip_markup,
+    BitmapTextBackend, NullTextBackend, SelectingTextBackend, UiCaretStop, UiGlyphQuad,
+    UiInlineImage, UiLinkRegion, UiTextBackend, UiTextGeometry, UiTextKind, UiTextLayout,
+    UiTextMetrics, UiTextRequest, strip_markup,
 };
 pub use text_edit::{
     MAX_TEXT_EVENT_BYTES, MAX_TEXT_EVENTS, MemoryClipboard, UiClipboard, UiEditKey,
@@ -46,7 +52,7 @@ pub use widget::{
     MAX_UI_ROOT_TEXT, MAX_UI_TEXT, MAX_VIRTUAL_ITEMS, MAX_VIRTUAL_VISIBLE, UiImageFit,
     UiNavigation, UiScrollAxes, UiTooltip, UiWidget, virtual_range,
 };
-pub use world::{extract_world, register, tick_world};
+pub use world::{extract_world, extract_world_with, register, tick_world};
 
 /// Nodes per root (natively built trees). Authored JSON is additionally bound
 /// by the 64 KiB component limit; serialization omits default values, so a

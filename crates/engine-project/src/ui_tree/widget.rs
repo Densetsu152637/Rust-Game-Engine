@@ -282,15 +282,18 @@ fn is_zero_i32(value: &i32) -> bool {
 impl UiWidget {
     /// Receives pointer presses.
     pub fn interactive(&self) -> bool {
-        !matches!(
-            self,
-            Self::Container
-                | Self::Label { .. }
-                | Self::RichLabel { .. }
-                | Self::Image { .. }
-                | Self::NineSlice { .. }
-                | Self::Progress { .. }
-        )
+        match self {
+            // A rich label is a pointer target only when its markup has links.
+            Self::RichLabel { markup } => markup.contains("[link="),
+            _ => !matches!(
+                self,
+                Self::Container
+                    | Self::Label { .. }
+                    | Self::Image { .. }
+                    | Self::NineSlice { .. }
+                    | Self::Progress { .. }
+            ),
+        }
     }
     /// Can hold keyboard focus by default.
     pub fn focusable(&self) -> bool {
