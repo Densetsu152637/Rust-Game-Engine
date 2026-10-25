@@ -1,0 +1,17 @@
+[package]
+name = "engine-net-quic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytes = "=1.12.1"
+engine-network = { path = "../engine-network" }
+quinn-proto = { version = "=0.11.19", default-features = false, features = ["rustls-ring"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "crypto"] }
+
+[lints]
+workspace = true
