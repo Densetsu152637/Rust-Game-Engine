@@ -136,5 +136,9 @@
   crack-free CDLOD geomorphing, sculpt/paint/hole brushes, `engine.Terrain` collider
   tiles, PCG surfaces and navigation input, the CPU chunk fallback, the `world.terrain`
   GPU feature (`engine-world-render`) and the `terrain_*` MCP tools.
+- [Foliage and vegetation](world-foliage.md): foliage types, deterministic scatter and
+  brush painting over terrain or PCG surfaces (`engine-foliage`), LOD bands with
+  hysteresis and impostors, wind, `engine.Foliage`, the CPU cluster fallback, the
+  `world.foliage` GPU feature and the `foliage_*` MCP tools.
 
 Per-crate details are in `crates/*/README.md`.
