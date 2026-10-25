@@ -135,6 +135,11 @@
   `engine-net-predict` crate (client prediction and reconciliation, redundant input
   transport, prediction keys for abilities, GGPO-style rollback, rewound hitbox queries),
   its limits and trust model.
+- [Online services](online-services.md): the self-hostable `engine-online` crate and
+  `engine-online-server` reference server: Ed25519 tokens bound to the client's TLS certificate,
+  the admission gate, lobby / session browser, rule-based matchmaking with a widening skill
+  window, deterministic host migration with epoch fencing, the bounded `Lane::SESSION` JSON
+  protocol, server configuration, deployment and threat model.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,
   typed adapters, hierarchy, events, batches and prefabs shared with MCP.
 - [Scheduled events](scheduled-events.md): CLI/MCP event injection, callback
