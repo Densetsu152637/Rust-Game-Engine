@@ -240,6 +240,15 @@ pub(super) fn process(
     for (_, root) in &mut effective {
         parts.scaling.apply_text(root, ctx.text);
     }
+    // The access tree names virtual-list rows from the same bound item texts
+    // the draw path uses.
+    ui.set_item_texts(
+        effective
+            .iter()
+            .map(|(id, root)| (id.clone(), parts.bindings.item_texts(root, &parts.data)))
+            .filter(|(_, texts)| !texts.is_empty())
+            .collect(),
+    );
     let events = ui.tick_with(&mut effective, input, ctx)?;
     // Interaction edits widget values on the effective roots; carry them over.
     for ((_, authored), (_, effective)) in authored.iter_mut().zip(&effective) {

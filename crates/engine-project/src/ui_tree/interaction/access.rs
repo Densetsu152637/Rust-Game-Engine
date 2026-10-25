@@ -101,6 +101,7 @@ impl GameUi {
                     .map(|m| (frame.targets[m].frame, frame.targets[m].node)),
                 viewport: frame.viewport,
                 scale: self.scale(),
+                item_texts: &self.item_texts,
             })
         };
         self.access.tree = Some(tree);
