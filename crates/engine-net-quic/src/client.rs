@@ -11,10 +11,9 @@ use engine_network::{
     Delivery, Error, Lane, LinkEvent, LinkStats, MessageEndpoint, PeerId, PollBudget, Result,
     SERVER_PEER, TransportKind, TransportSecurity,
 };
-use quinn_proto::{ClientConfig, DatagramEvent, Endpoint, EndpointConfig};
+use quinn_proto::{ClientConfig, DatagramEvent, Endpoint};
 use std::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
     time::Instant,
 };
 
@@ -57,7 +56,7 @@ impl QuicClient {
         security: QuicClientSecurity,
     ) -> Result<Self> {
         config.limits.validate()?;
-        let mut endpoint = Endpoint::new(Arc::new(EndpointConfig::default()), None, true, None);
+        let mut endpoint = Endpoint::new(crate::config::endpoint_config(), None, true, None);
         let mut client_config = ClientConfig::new(security.config.clone());
         client_config.transport_config(config.limits.transport(config.congestion));
         let now = Instant::now();

@@ -149,3 +149,13 @@ pub struct QuicClientConfig {
     pub limits: QuicLimits,
     pub congestion: CongestionControl,
 }
+
+/// Endpoint configuration shared by servers and clients. QUIC-bit greasing (RFC 9287) is
+/// disabled so every engine QUIC packet keeps the 0x40 fixed bit set: datagrams on a shared
+/// socket whose first byte clears it can then be demultiplexed to other protocols
+/// (`engine-net-nat`'s `DemuxSocket`) without ever stealing QUIC traffic.
+pub(crate) fn endpoint_config() -> std::sync::Arc<quinn_proto::EndpointConfig> {
+    let mut config = quinn_proto::EndpointConfig::default();
+    config.grease_quic_bit(false);
+    std::sync::Arc::new(config)
+}

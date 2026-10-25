@@ -118,6 +118,9 @@ with the workspace's rustls 0.23 ring provider. All socket I/O, timers and
 handshakes run synchronously inside `poll`; there is no async runtime, thread or
 sleep. `QuicClient::connect` binds an ephemeral UDP socket (loopback for a
 loopback server, otherwise the unspecified address of the server's family).
+QUIC-bit greasing (RFC 9287) is disabled on every endpoint, so engine QUIC packets
+always set the `0x40` fixed bit. Other protocols can therefore share a socket
+through first-byte demultiplexing (see [NAT traversal and relay](online-nat-relay.md)).
 
 ### Admission
 

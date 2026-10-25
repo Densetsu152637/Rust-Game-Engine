@@ -168,21 +168,15 @@ drop. Each half reads at most `max_reads_per_call` times per call. Sends go stra
 shared socket.
 
 **Classification** (`is_control_datagram`): a first byte in `0x01..=0x3F` **and** bytes
-1..5 equal to `NAT1`. RFC 9000 QUIC sets the fixed bit `0x40`. However, quinn-proto 0.11
-**greases the fixed bit by default** (RFC 9287, `EndpointConfig::grease_quic_bit`, which
-`engine-net-quic` does not disable). A peer that sees our endpoint advertise
-`grease_quic_bit` clears `0x40` on about half of its packets. A first-byte test alone would
-therefore divert real QUIC traffic, so the 4-byte magic is required too.
+1..5 equal to `NAT1`. RFC 9000 QUIC sets the fixed bit `0x40`, and `engine-net-quic` builds
+every endpoint with QUIC-bit greasing (RFC 9287, `EndpointConfig::grease_quic_bit`) disabled.
+Engine endpoints therefore never advertise greasing, and engine peers always set `0x40`. The
+first-byte rule alone separates the protocols between engine endpoints.
 
-A greased short-header packet carries our own randomly chosen connection ID after its first
-byte. It is misclassified only if that connection ID starts with `NAT1`, which has
-probability 2^-32 per issued connection ID. Such a packet becomes loss that QUIC recovers.
+The 4-byte magic is kept as defense in depth against foreign QUIC stacks that grease anyway.
+Such a greased short-header packet is misclassified only if our connection ID starts with
+`NAT1`, which has probability 2^-32 per issued connection ID. QUIC then recovers it as loss.
 Unit and end-to-end tests pass greased, long-header and short-header QUIC through the demux.
-
-**Proposed `engine-net-quic` change** (not made here; it is owned elsewhere): build both
-endpoints with `EndpointConfig::default()` plus `.grease_quic_bit(false)` in
-`QuicServer::with_socket` and `QuicClient::with_socket`. Peers then never clear the fixed
-bit toward our endpoints, and the first-byte rule alone becomes collision-free.
 
 ## Relay
 

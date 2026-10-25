@@ -10,7 +10,7 @@ use engine_network::{
     Delivery, Error, Lane, LinkEvent, LinkStats, MessageEndpoint, PeerId, PollBudget, Result,
     TransportKind, TransportSecurity,
 };
-use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig, Incoming, ServerConfig};
+use quinn_proto::{DatagramEvent, Endpoint, Incoming, ServerConfig};
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Instant};
 
 const RECEIVE_BUFFER_BYTES: usize = 64 * 1024;
@@ -53,7 +53,7 @@ impl QuicServer {
             .incoming_buffer_size(64 * 1024)
             .incoming_buffer_size_total(64 * 1024 * config.limits.max_pending_handshakes as u64);
         let endpoint = Endpoint::new(
-            Arc::new(EndpointConfig::default()),
+            crate::config::endpoint_config(),
             Some(Arc::new(server_config)),
             true,
             None,
