@@ -209,8 +209,16 @@ impl Destructible3D {
         Ok(())
     }
 }
+/// Marker resource: a renderer that draws destruction fragments is installed (inserted by
+/// `engine_physics_render::install_physics_extraction` while fragment drawing is enabled).
+/// Scene extraction hides the intact mesh of a [`Fractured`] entity only while this resource
+/// exists; without it nothing draws the fragments and hiding the mesh would make the object
+/// vanish.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FragmentRenderer;
 /// Runtime marker on a destructible entity that has fractured. Its `PhysicsBody3D` was
-/// removed; scene extraction skips the intact mesh of a fractured entity.
+/// removed; scene extraction skips the intact mesh of a fractured entity while a
+/// [`FragmentRenderer`] is installed.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct Fractured {
     pub fragments: u32,
@@ -256,8 +264,17 @@ pub struct DestructibleStatus {
     /// Fragments are cached from a pre-fracture.
     pub prefractured: bool,
     pub live_fragments: usize,
+    /// Why the last attempt to fracture was refused (for example a fragment density outside
+    /// the accepted range). Impact triggers stay off until the component or body changes.
+    pub refused: Option<String>,
 }
 
+/// A refused fracture attempt: the reason, and the authored state it applies to.
+struct Refusal {
+    reason: String,
+    config: Destructible3D,
+    body: PhysicsBody3D,
+}
 struct Cached {
     config: Destructible3D,
     body: PhysicsBody3D,
@@ -293,6 +310,7 @@ pub(crate) struct DestructionState {
     debris: BTreeMap<Entity, Debris>,
     meshes: BTreeMap<Entity, Arc<FragmentRender>>,
     cache: Mutex<BTreeMap<Entity, Cached>>,
+    refused: BTreeMap<Entity, Refusal>,
     sequence: u64,
     tick_time: f32,
 }
@@ -383,6 +401,38 @@ impl DestructionState {
     }
     fn debris_in(&self, pool: &str) -> usize {
         self.debris.values().filter(|d| d.pool == pool).count()
+    }
+    /// Records why an impact-triggered fracture of `entity` was refused and reports it once;
+    /// the trigger stays off until the component or the body changes.
+    fn refuse(
+        &mut self,
+        world: &World,
+        bodies: &Bodies,
+        entity: Entity,
+        error: &crate::Error,
+        events: &mut Vec<Event>,
+    ) {
+        let (Some(config), Some(record)) = (
+            world.get::<Destructible3D>(entity),
+            bodies.three.get(&entity),
+        ) else {
+            return;
+        };
+        let reason = error.to_string();
+        self.pending.remove(&entity);
+        self.refused.insert(
+            entity,
+            Refusal {
+                reason: reason.clone(),
+                config: config.clone(),
+                body: record.config.clone(),
+            },
+        );
+        events.push(Event {
+            name: "refused",
+            target: entity,
+            payload: json!({"dimension": 3, "reason": reason}),
+        });
     }
     /// Removes `entity` from the world and every table; reports the expiry.
     fn retire(
@@ -761,6 +811,7 @@ fn execute(
         });
     state.cache().remove(&entity);
     state.pending.remove(&entity);
+    state.refused.remove(&entity);
     state.damage.remove(&entity);
     events.push(Event {
         name: "fractured",
@@ -878,12 +929,20 @@ impl Feature for Destruction {
             return Ok(());
         }
         let mut loads = Vec::new();
+        let mut stale = Vec::new();
+        let state = world.resource::<DestructionState>();
         for entity in cx.bodies.three.keys() {
             let Some(config) = world.get::<Destructible3D>(*entity) else {
                 continue;
             };
             if world.get::<Fractured>(*entity).is_some() {
                 continue;
+            }
+            if let Some(refusal) = state.refused.get(entity) {
+                if refusal.config == *config && refusal.body == cx.bodies.three[entity].config {
+                    continue;
+                }
+                stale.push(*entity);
             }
             let id = entity.to_bits();
             if cx.worlds.three.is_sleeping(id) != Ok(false) {
@@ -903,6 +962,13 @@ impl Feature for Destruction {
         }
         let mut state = world.resource_mut::<DestructionState>();
         state.tick_time += dt;
+        for entity in stale {
+            // The component or body was edited since the refusal: try again.
+            state.refused.remove(&entity);
+        }
+        state
+            .refused
+            .retain(|entity, _| cx.bodies.three.contains_key(entity));
         for (entity, contact, tracks_damage, floor) in loads {
             let load = state.pending.entry(entity).or_default();
             if contact.impulse > load.peak_impulse {
@@ -934,7 +1000,11 @@ impl Feature for Destruction {
                     bodies,
                     settings,
                 };
-                execute(parts, world, &mut state, entity, &trigger, &mut events)?;
+                // A refusal must not abort the step: the next impact would only refuse again.
+                if let Err(error) = execute(parts, world, &mut state, entity, &trigger, &mut events)
+                {
+                    state.refuse(world, bodies, entity, &error, &mut events);
+                }
             }
             state.tick_debris(worlds, world, &mut events);
             Ok::<_, crate::Error>(events)
@@ -1037,6 +1107,7 @@ pub fn destructible_status(world: &World, entity: Entity) -> Result<Destructible
         live_fragments: state.map_or(0, |s| {
             s.debris.values().filter(|d| d.owner == entity).count()
         }),
+        refused: state.and_then(|s| s.refused.get(&entity).map(|r| r.reason.clone())),
     })
 }
 /// Sets `engine.Destructible3D.threshold` (in the unit of its `threshold_mode`).

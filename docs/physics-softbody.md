@@ -5,8 +5,9 @@ dynamics. The solver loop, `XpbdWorld`, `XpbdSettings`, collider proxies, fricti
 per-proxy reaction impulses are shared with cloth and described in
 [Cloth](physics-cloth.md#solver); this page covers what is specific to soft bodies.
 
-Units are meters, seconds and kilograms. Status: CPU reference implementation, native Rust
-API only (see [Deferred](#deferred)).
+Units are meters, seconds and kilograms. The crate is a CPU reference implementation with a
+native Rust API; the authored `engine.SoftBody` component, rigid coupling and rendering are
+wired (see [Authored component](#authored-component-enginesoftbody)).
 
 ## Creating a soft body
 
@@ -108,8 +109,10 @@ collision_mask != 0` (sensors never collide).
 | trimesh, heightfield | **not coupled** (no simple plane/box path exists; put a fixed box collider under them) |
 
 Only bodies within the object's bounds plus 0.25 m are passed to the solver; more than
-1024 (cloth, soft body) or 256 (fluid) nearby proxies fail the step with a named error rather
-than dropping bodies silently.
+1024 (cloth, soft body) or 256 (fluid) nearby proxies keep the nearest ones (ties by entity id)
+and leave the others out of that step's coupling; the omissions are counted
+(`PressureStatus::proxies_omitted`) and announced once per episode with `physics.proxies.limited`
+([Physics](physics.md#pressure-and-capacity)). The step never fails for this.
 
 ### Transforms and render data
 
@@ -146,5 +149,5 @@ contributor hook takes a stateless function pointer, so these segments are not m
   collide with each other or with cloth.
 - **Tetrahedralization of arbitrary meshes**: callers supply tetrahedra (or use the box
   generator); no Delaunay/TetGen-style mesher is included.
-- **GPU acceleration** and **engine integration** (components, MCP, events, Rapier proxy
-  filling, rendering through `PipelineFeature`): as for [cloth](physics-cloth.md#deferred).
+- **GPU acceleration**: as for [cloth](physics-cloth.md#deferred). Components, MCP editing,
+  rigid proxy filling and rendering are done; soft bodies emit no `physics.softbody.*` events.

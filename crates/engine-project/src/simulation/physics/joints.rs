@@ -814,6 +814,15 @@ fn sync_dimension<S: Sim>(
         let ready = ends(world, entity, config)
             .filter(|(a, b)| a != b && S::has_body(bodies, *a) && S::has_body(bodies, *b));
         let Some((first, second)) = ready else {
+            // A broken joint outlives a missing endpoint (a starved or removed body): the
+            // break is remembered, so the joint is not re-created intact when the body comes
+            // back. Only an edit of the component repairs it.
+            if let Some(current) = live.get_mut(&entity)
+                && (current.broken || sim.broken(id).is_some())
+            {
+                current.broken = true;
+                continue;
+            }
             if live.remove(&entity).is_some() {
                 sim.delete(id);
             }

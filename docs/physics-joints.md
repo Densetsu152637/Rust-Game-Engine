@@ -120,7 +120,9 @@ either endpoint, or on the joint's own entity) is inactive the same way: the syn
 constraint, `joint_status` reads `Inactive`, it is not reported as broken, no event is emitted
 and the scene stays valid (before, validation failed on every tick from then on). If a body is rebuilt
 (its component changed, or a fixed body moved) the joint is re-created from the authored data;
-a joint that broke stays broken until its component is edited.
+a joint that broke stays broken until its component is edited, also across a period in which one
+of its bodies is missing (starved, or a fractured body that returns): the break is remembered, so
+the joint is not re-created intact when the body comes back.
 
 Event `physics.joints.broken` is delivered to the joint entity and both body entities:
 

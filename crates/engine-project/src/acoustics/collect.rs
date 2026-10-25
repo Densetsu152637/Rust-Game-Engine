@@ -214,8 +214,42 @@ fn convex_hull_2d(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
     }
     hull
 }
-/// World-space convex polygon of local planar `points` under `m`, or `None` without area.
-fn world_polygon(m: &Mat4, points: &[[f32; 2]]) -> Option<FootprintShape> {
+/// Limits the proxy builder enforces on footprints.
+fn footprint_limits() -> (usize, usize) {
+    let limits = ac::WorldLimits::default();
+    (
+        limits.max_footprint_vertices as usize,
+        limits.max_proxy_footprints as usize,
+    )
+}
+/// Reduces a convex counter-clockwise polygon to at most `max` vertices by repeatedly dropping
+/// the vertex whose triangle with its neighbours has the least area. The result stays convex
+/// (it only ever cuts corners) and the choice is deterministic.
+fn simplify_convex(mut hull: Vec<[f32; 2]>, max: usize) -> Vec<[f32; 2]> {
+    let corner = |p: [f32; 2], v: [f32; 2], n: [f32; 2]| {
+        ((v[0] - p[0]) * (n[1] - p[1]) - (v[1] - p[1]) * (n[0] - p[0])).abs()
+    };
+    while hull.len() > max.max(3) {
+        let count = hull.len();
+        let mut best = (f32::INFINITY, 0);
+        for i in 0..count {
+            let area = corner(
+                hull[(i + count - 1) % count],
+                hull[i],
+                hull[(i + 1) % count],
+            );
+            if area < best.0 {
+                best = (area, i);
+            }
+        }
+        hull.remove(best.1);
+    }
+    hull
+}
+/// World-space convex polygon of local planar `points` under `m`, or `None` without area. A
+/// hull with more vertices than the builder accepts is simplified; the second value is the
+/// vertex count before simplification when that happened.
+fn world_polygon(m: &Mat4, points: &[[f32; 2]]) -> Option<(FootprintShape, Option<usize>)> {
     let world: Vec<[f32; 2]> = points
         .iter()
         .map(|p| {
@@ -230,7 +264,21 @@ fn world_polygon(m: &Mat4, points: &[[f32; 2]]) -> Option<FootprintShape> {
             a[0] * b[1] - b[0] * a[1]
         })
         .sum();
-    (hull.len() >= 3 && area.abs() > 1e-12).then_some(FootprintShape::Polygon { points: hull })
+    if hull.len() < 3 || area.abs() <= 1e-12 {
+        return None;
+    }
+    let (max_vertices, _) = footprint_limits();
+    let original = hull.len();
+    let simplified = original > max_vertices;
+    let points = if simplified {
+        simplify_convex(hull, max_vertices)
+    } else {
+        hull
+    };
+    Some((
+        FootprintShape::Polygon { points },
+        simplified.then_some(original),
+    ))
 }
 /// Footprints of one 2D physics shape (or compound part) posed by `m`. A shape with no planar
 /// footprint adds a named warning instead of vanishing silently.
@@ -256,7 +304,7 @@ fn push_body_footprints(
         ),
         |p| (p.half_extents, p.radius, p.half_height, &p.points),
     );
-    let mut unsupported = |what: &str| {
+    let unsupported = |warnings: &mut Vec<String>, what: &str| {
         warnings.push(format!(
             "{key}: {what} has no acoustic proxy footprint and is ignored"
         ));
@@ -278,8 +326,20 @@ fn push_body_footprints(
             rotation,
         }),
         Shape::ConvexHull => match world_polygon(m, points) {
-            Some(polygon) => out.push(polygon),
-            None => unsupported("convex_hull shape (fewer than 3 distinct points or no area)"),
+            Some((polygon, simplified)) => {
+                if let Some(original) = simplified {
+                    warnings.push(format!(
+                        "{key}: convex_hull footprint simplified from {original} to {} vertices (the proxy builder accepts at most {})",
+                        footprint_limits().0,
+                        footprint_limits().0
+                    ));
+                }
+                out.push(polygon);
+            }
+            None => unsupported(
+                warnings,
+                "convex_hull shape (fewer than 3 distinct points or no area)",
+            ),
         },
         Shape::TriMesh if part.is_none() => {
             let before = out.len();
@@ -288,12 +348,12 @@ fn push_body_footprints(
                     .iter()
                     .map(|&i| body.vertices.get(i as usize).copied())
                     .collect();
-                if let Some(polygon) = corners.and_then(|c| world_polygon(m, &c)) {
+                if let Some((polygon, _)) = corners.and_then(|c| world_polygon(m, &c)) {
                     out.push(polygon);
                 }
             }
             if out.len() == before {
-                unsupported("trimesh shape (no triangle with area)");
+                unsupported(warnings, "trimesh shape (no triangle with area)");
             }
         }
         Shape::Compound if part.is_none() => {
@@ -304,9 +364,11 @@ fn push_body_footprints(
                 push_body_footprints(key, p.shape, body, Some(p), &local, out, warnings);
             }
         }
-        Shape::Cylinder => unsupported("cylinder shape (3D only)"),
-        Shape::HeightField => unsupported("heightfield shape"),
-        Shape::TriMesh | Shape::Compound => unsupported(&format!("nested {shape:?} part")),
+        Shape::Cylinder => unsupported(warnings, "cylinder shape (3D only)"),
+        Shape::HeightField => unsupported(warnings, "heightfield shape"),
+        Shape::TriMesh | Shape::Compound => {
+            unsupported(warnings, &format!("nested {shape:?} part"))
+        }
     }
 }
 fn footprint_of(
@@ -492,6 +554,14 @@ pub fn collect(world: &World, lookup: &MeshLookup) -> Result<Option<Collected>> 
     if proxy_active && skipped_meshes > 0 {
         out.warnings.push(format!(
             "{skipped_meshes} MeshRenderer entities ignored because the environment uses proxy2d"
+        ));
+    }
+    let cap = footprint_limits().1;
+    if out.footprints.len() > cap {
+        let ignored = out.footprints.len() - cap;
+        out.footprints.truncate(cap);
+        out.warnings.push(format!(
+            "{ignored} proxy2d footprints beyond the limit of {cap} were ignored"
         ));
     }
     out.materials = materials.0;

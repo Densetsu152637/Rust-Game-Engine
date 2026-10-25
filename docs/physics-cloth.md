@@ -6,9 +6,11 @@ and rigid-body coupling, and cloth. Soft bodies are described in
 [Soft bodies](physics-softbody.md). The crate is ECS-free and depends only on `glam`; the
 crate [README](../crates/engine-xpbd/README.md) has a short example.
 
-Units are meters, seconds and kilograms. Status: CPU reference implementation, native Rust
-API only. Authored components, MCP tools, runtime events and rendering hookup are not
-part of this crate yet (see [Deferred](#deferred)).
+Units are meters, seconds and kilograms. The crate is a CPU reference implementation with a
+native Rust API. The authored `engine.Cloth` / `engine.SoftBody` components (MCP-editable through
+`component_set`), rigid coupling and rendering are wired in `engine-project` and
+`engine-physics-render`: see [Authored component](#authored-component-enginecloth) below.
+Cloth does not emit events of its own.
 
 ## Solver
 
@@ -16,8 +18,8 @@ Every `XpbdWorld::step(dt, proxies)` is split into `substeps` equal substeps
 ("small steps" XPBD, Macklin et al. 2019). Each substep:
 
 1. computes per-triangle aerodynamic forces (cloth only),
-2. predicts `v += h (g + w f)`, `x += h v`; pinned particles move linearly toward their
-   target and land on it exactly at the last substep,
+2. predicts `v += h (g + w f)` (then clamps the speed to `MAX_SPEED`), `x += h v`; pinned
+   particles move linearly toward their target and land on it exactly at the last substep,
 3. resets the Lagrange multipliers and runs `iterations` Gauss-Seidel passes over the
    constraints in their stable creation order (cloth: stretch, tethers, bending),
 4. projects particles out of every proxy (in proxy id order) with friction,
@@ -64,7 +66,11 @@ use entity bits: `insert_cloth`, `insert_soft_body`, `remove`, `kind`, `ids` (as
 
 `step` rejects `dt` outside `(0, MAX_STEP]` (0.25 s). A rejected call leaves the world
 unchanged. A non-finite result (not expected for validated input) returns an error after
-the step; the host should remove or recreate the affected objects.
+the step; the host should remove or recreate the affected objects. The prediction clamp in step 2
+matters: aerodynamic forces scale with the inverse mass (up to 1e6) and the squared air speed, and
+a validated cloth in a 1e4 m/s wind with `drag`/`lift` 10 used to overflow to infinity within a
+step (`crates/engine-xpbd/tests/robustness.rs` reproduces that and the same for a proxy at the
+speed limit).
 
 ## Collider proxies and two-way coupling
 
@@ -227,8 +233,10 @@ collision_mask != 0` (sensors never collide).
 | trimesh, heightfield | **not coupled** (no simple plane/box path exists; put a fixed box collider under them) |
 
 Only bodies within the object's bounds plus 0.25 m are passed to the solver; more than
-1024 (cloth, soft body) or 256 (fluid) nearby proxies fail the step with a named error rather
-than dropping bodies silently.
+1024 (cloth, soft body) or 256 (fluid) nearby proxies keep the nearest ones (ties by entity id)
+and leave the others out of that step's coupling; the omissions are counted
+(`PressureStatus::proxies_omitted`) and announced once per episode with `physics.proxies.limited`
+([Physics](physics.md#pressure-and-capacity)). The step never fails for this.
 
 ### Transforms and render data
 
@@ -267,8 +275,7 @@ contributor hook takes a stateless function pointer, so these segments are not m
 - **Separate static/kinetic friction coefficients**: one coefficient serves both.
 - **GPU acceleration**: CPU reference path only; a compute-shader solver (graph colouring
   or Jacobi) is future work.
-- **Engine integration**: authored components, schema, MCP editing, `physics.cloth.*`
-  events, Rapier proxy filling and rendering through the rendering domain's
-  `PipelineFeature` API ([render architecture](rendering-architecture.md)) are a
-  follow-up step outside this crate. Cloth and soft-body surfaces are drawn by
-  `engine-physics-render` ([Physics rendering](physics-rendering.md)).
+- **Engine integration gaps**: the authored components, schema, MCP editing, rigid proxy
+  filling and rendering are done (see above and [Physics rendering](physics-rendering.md)).
+  What is missing: `physics.cloth.*` events (cloth does not tear), importing a model mesh node
+  as cloth, and trimesh / heightfield bodies as collision proxies.

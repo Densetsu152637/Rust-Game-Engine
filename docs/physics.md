@@ -119,15 +119,21 @@ other catalog components.
 ### Pressure and capacity
 
 The engine event queue holds 1024 events and the body table `SimulationConfig::body_capacity`
-(default 16384 per dimension, shared by authored bodies, fragments and ragdoll bones). Hitting
-either limit never fails a step; it degrades in a bounded, counted way and says so:
+(default 16384 per dimension, shared by authored bodies, fragments and ragdoll bones). Reaching
+a capacity limit (the event queue, the body table, a deformable's proxy limit) never fails a
+step: it degrades in a bounded, counted way and says so. What still fails a step is invalid
+input: a rejected authored value, an invalid native-API argument, or a solver fault that cannot
+be recovered. The guarantee covers capacity, not correctness.
 
-- **Events.** `physics::emit` drops an event when the queue is full and counts it. The next step
+- **Events.** `physics::emit` (every physics event, including `physics.fluid.capacity_reached`) drops an event when the queue is full and counts it. The next step
   delivers one `physics.events.dropped` event, `{dropped, total}`, to the entity carrying
   `engine.PhysicsSettings` (broadcast when the scene has none). Example: 700 joints breaking in
   one step queue 1400 events; 1024 are delivered, 376 are dropped and counted, and the step
   succeeds (before: "Event queue capacity exceeded" aborted the step after the physics world had
-  stepped but before the poses were written back).
+  stepped but before the poses were written back). Contact events are the bulk traffic, so in
+  one physics frame they may use only 7/8 of the queue (896 of 1024): the last eighth is reserved
+  for the rare events (`physics.joints.broken`, `physics.destruction.fractured`, ...), which are
+  dropped only when the whole queue is full. Contacts drop first and are counted like the rest.
 - **Bodies.** A body, fragment or joint that does not fit is not inserted. Its entity is
   *starved* and retried at every sync, so it simulates as soon as room appears (a ragdoll needs
   room for all its bones at once and reports "physics body capacity exceeded" in its status).
@@ -135,8 +141,20 @@ either limit never fails a step; it degrades in a bounded, counted way and says 
   `{capacity, starved, new}`. Example: a capacity of 20 with 10 rocks and a 24-fragment fracture
   leaves 14 fragments without a body, one warning, and ticks that keep succeeding; despawning
   the rocks gives 10 of the 14 their bodies.
+- **Solver proxies.** A cloth or soft body couples with at most 1024 nearby rigid bodies, a
+  fluid volume with at most 256. With more bodies near it, the nearest ones are kept (ties by
+  entity id, so the choice is deterministic) and the others are left out of that step's
+  coupling: they neither collide with the deformable nor receive reactions from it. The omissions
+  are counted (`PressureStatus::proxies_omitted`) and each episode is announced once with
+  `physics.proxies.limited`, `{omitted, total}`; an episode ends with a step that omits nothing.
+- **Refused fractures.** An impact- or damage-triggered fracture that cannot complete (for
+  example a fragment density outside 0.000001..=10000 kg/m^3) is refused: the body stays intact,
+  one `physics.destruction.refused` `{dimension, reason}` event is delivered, and
+  `destructible_status(..).refused` holds the reason. The trigger stays off until the
+  component or the body is edited, so a resting load does not retry every tick. (`fracture_now`
+  still returns the error to its caller.)
 - `physics::pressure_status(&World) -> PressureStatus { body_capacity, bodies_2d, bodies_3d,
-  starved_bodies, events_dropped }` reads the counters.
+  starved_bodies, events_dropped, proxies_omitted }` reads the counters.
 
 ## Native API
 
@@ -146,6 +164,7 @@ provides:
 | Function | Purpose |
 | --- | --- |
 | `body_state(&World, Entity) -> BodyState` | World position, rotation, linear and angular velocity, and `Dimension`. |
+| `set_body_pose(&mut World, Entity, position: Vec3, rotation: Quat, velocity: Option<(Vec3, Vec3)>)` | Teleports a dynamic or kinematic body (2D needs a rotation about Z and planar velocities), wakes it, writes the `Transform` at once and restarts interpolation from the new pose. `None` keeps the velocities. Contacts and joints are not touched, so a jointed partner is pulled along by the next step. Fixed bodies move by editing their `Transform`. This is the way to move a dynamic body: plain `Transform` writes lose to the simulation. |
 | `apply_impulse(&mut World, Entity, Vec3)` | Linear impulse on a dynamic body (2D requires `z == 0`). |
 | `apply_angular_impulse(&mut World, Entity, Vec3)` | Angular impulse (2D uses only `z`). |
 | `raycast_2d` / `raycast_3d(&World, origin, direction, max_distance, mask)` | Closest hit as `RaycastHit { entity, distance }`. |

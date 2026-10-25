@@ -787,3 +787,136 @@ fn an_event_flood_drops_events_with_a_counter_and_one_warning() {
         status.events_dropped
     );
 }
+
+/// A contact flood leaves headroom for the rare physics events: `physics.joints.broken` still
+/// reaches its handler although contacts alone would fill the whole queue.
+#[test]
+fn a_contact_flood_cannot_starve_the_joint_broken_event() {
+    const BALLS: usize = 600;
+    let mut entities = vec![
+        settings(json!({"gravity_3d":[0.,-9.81,0.]})),
+        entity(
+            "ground",
+            [0., -0.5, 0.],
+            body3(json!({"motion":"fixed","shape":"box","half_extents":[2000.,0.5,2.]})),
+        ),
+        entity(
+            "anchor",
+            [0., 20., 0.],
+            body3(json!({"motion":"fixed","shape":"ball","radius":0.1})),
+        ),
+        bound(entity(
+            "swing",
+            [0., 20., 0.],
+            with(
+                body3(json!({"shape":"ball","radius":0.1,"material":{"density":1000.0}})),
+                "engine.PhysicsJoint3D",
+                json!({"kind":"fixed","body_b":"anchor","anchor_a":[0.,0.,0.],
+                    "anchor_b":[0.,0.,0.],"break_force":1.0}),
+            ),
+        )),
+    ];
+    // Each ball overlaps the ground: one contact.start per ball and per ground side.
+    for i in 0..BALLS {
+        entities.push(entity(
+            &format!("b{i}"),
+            [i as f32 * 3. + 3., 0.05, 0.],
+            body3(json!({"shape":"ball","radius":0.1})),
+        ));
+    }
+    let dir = fixture(entities);
+    let mut runtime =
+        Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .insert_resource(Broken::default());
+    register_event_handler(runtime.app_mut(), "record", record).unwrap();
+    runtime.start().unwrap();
+    ticks(&mut runtime, 3);
+    let status = physics::pressure_status(runtime.app().world()).unwrap();
+    assert!(
+        status.events_dropped > 0,
+        "the contact flood must overflow the queue for this test to mean anything: {status:?}"
+    );
+    let events = runtime.app().world().resource::<Broken>().0.clone();
+    let broken: Vec<_> = events.iter().filter(|e| e.get("joint").is_some()).collect();
+    assert!(
+        !broken.is_empty(),
+        "physics.joints.broken was starved by contacts: {status:?}"
+    );
+}
+
+/// A broken joint stays broken while one of its bodies is missing: when the body comes back
+/// the joint is not re-created intact.
+#[test]
+fn a_broken_joint_stays_broken_across_a_missing_body() {
+    let (_dir, mut runtime) = started(vec![
+        entity(
+            "ceiling",
+            [0., 5., 0.],
+            body3(json!({"motion":"fixed","shape":"ball","radius":0.1})),
+        ),
+        entity(
+            "crate",
+            [0., 4., 0.],
+            with(
+                body3(json!({"shape":"ball","radius":0.5,"material":{"density":10.0}})),
+                "engine.PhysicsJoint3D",
+                json!({"kind":"fixed","body_b":"ceiling","anchor_a":[0.,1.,0.],
+                    "break_force":30.0}),
+            ),
+        ),
+    ]);
+    let (crate_, ceiling) = (entity_of(&runtime, "crate"), entity_of(&runtime, "ceiling"));
+    ticks(&mut runtime, 10);
+    assert!(matches!(
+        physics::joint_status(runtime.app().world(), crate_, Dimension::Three).unwrap(),
+        JointStatus::Broken { .. }
+    ));
+    // The ceiling body disappears for a while (a fractured body keeps its joints valid but
+    // inactive), then returns.
+    let body = runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(ceiling)
+        .take::<physics::PhysicsBody3D>()
+        .unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(ceiling)
+        .insert(physics::Fractured {
+            fragments: 1,
+            impulse: 0.,
+            point: Vec3::ZERO,
+        });
+    ticks(&mut runtime, 3);
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(ceiling)
+        .remove::<physics::Fractured>()
+        .insert(body);
+    ticks(&mut runtime, 3);
+    let status = physics::joint_status(runtime.app().world(), crate_, Dimension::Three).unwrap();
+    assert!(
+        matches!(status, JointStatus::Broken { .. }),
+        "the joint came back intact: {status:?}"
+    );
+    assert!(position(&runtime, "crate").y < 3.9, "the crate stays free");
+    // Editing the component still repairs it.
+    physics::set_joint_break_limits(
+        runtime.app_mut().world_mut(),
+        crate_,
+        Dimension::Three,
+        Some(5000.),
+        None,
+    )
+    .unwrap();
+    ticks(&mut runtime, 2);
+    assert_eq!(
+        physics::joint_status(runtime.app().world(), crate_, Dimension::Three).unwrap(),
+        JointStatus::Active
+    );
+}

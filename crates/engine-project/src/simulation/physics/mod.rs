@@ -52,9 +52,9 @@ pub use deformables::{
 };
 pub use destruction::{
     DebrisFragment, DebrisSettings, Destructible3D, DestructibleMesh, DestructibleStatus,
-    FracturePattern, FractureReport, Fractured, FragmentInfo, FragmentRender, RecyclePolicy,
-    ThresholdMode, debris_count, destructible_status, fracture_now, fragment_mesh, fragments,
-    preview_fracture, set_fracture_threshold,
+    FracturePattern, FractureReport, Fractured, FragmentInfo, FragmentRender, FragmentRenderer,
+    RecyclePolicy, ThresholdMode, debris_count, destructible_status, fracture_now, fragment_mesh,
+    fragments, preview_fracture, set_fracture_threshold,
 };
 pub use joints::{
     AxisKind, AxisSetting, BrokenJoint, JointKind, JointMotor, JointReadout, JointStatus,

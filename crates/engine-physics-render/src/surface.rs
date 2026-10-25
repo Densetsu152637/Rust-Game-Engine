@@ -319,7 +319,12 @@ impl PipelineFeature for SurfaceFeature {
                 self.index_count = 0;
             }
             Some(extract) => {
-                if self.uploaded != Some(extract.revision) {
+                let revision = match self.kind {
+                    SurfaceKind::Cloth => extract.revisions.cloth,
+                    SurfaceKind::SoftBody => extract.revisions.soft_bodies,
+                    SurfaceKind::Fragments => extract.revisions.fragments,
+                };
+                if self.uploaded != Some(revision) {
                     let batch = self.build(extract);
                     let device = &ctx.gpu.device;
                     let queue = &ctx.gpu.queue;
@@ -329,7 +334,7 @@ impl PipelineFeature for SurfaceFeature {
                         .write(device, queue, bytemuck::cast_slice(&batch.indices));
                     self.vertex_count = batch.vertices.len() as u32;
                     self.index_count = batch.indices.len() as u32;
-                    self.uploaded = Some(extract.revision);
+                    self.uploaded = Some(revision);
                     let mut reasons = Vec::new();
                     if batch.dropped_for_cap > 0 {
                         reasons.push(format!(

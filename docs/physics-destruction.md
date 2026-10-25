@@ -166,6 +166,11 @@ Delivered to the destructible entity's `EventBindings`:
   angular_velocity}` (mass and velocities are those of the intact body at the fracture).
 - `physics.destruction.debris_expired`: once per fragment. Payload `{fragment: id, index,
   reason: "lifetime"|"recycled", age, volume, pool}`.
+- `physics.destruction.refused`: an impact- or damage-triggered fracture that cannot complete
+  (the errors in step 5) is refused: the body stays intact, the step does not fail, and this event
+  fires once with `{dimension:3, reason}`. `destructible_status(..).refused` holds the reason, and
+  the trigger stays off until the component or the body is edited, so a resting load does not
+  re-trigger every tick. `fracture_now` returns the error to its caller instead.
 
 ### Native API
 
@@ -176,14 +181,18 @@ Delivered to the destructible entity's `EventBindings`:
 | `fracture_now(&mut World, Entity, impact_point: Vec3, impulse: f32) -> FractureReport` | Fracture immediately; `impact_point` is world space; `impulse` is reported in the event. The entity needs a synced body (after its first tick). |
 | `fragments(&World, Entity) -> Vec<FragmentInfo>` | Live fragments (entity, index, volume, age) ordered by index. |
 | `fragment_mesh(&World, fragment: Entity) -> Option<Arc<FragmentRender>>` | Render mesh relative to the fragment origin: positions, triangles, per-triangle `interior`. |
-| `destructible_status(&World, Entity) -> DestructibleStatus` | Fractured, accumulated damage, health, threshold, prefractured, live fragments. |
+| `destructible_status(&World, Entity) -> DestructibleStatus` | Fractured, accumulated damage, health, threshold, prefractured, live fragments, `refused` (reason of the last refused fracture). |
 | `set_fracture_threshold(&mut World, Entity, f32)` | Edit `threshold` (validated). |
 | `debris_count(&World, Option<&str>)` | Live debris in a pool, or all. |
 | `preview_fracture(&Destructible3D, &PhysicsBody3D, scale) -> Vec<f32>` | Fragment volumes without touching the world. |
 
 Rendering: the fragment meshes live in the runtime state and are exposed through
-`fragment_mesh`; the renderer hookup through `PipelineFeature` comes in a later change, and
-until then the physics debug view draws the fragment hulls.
+`fragment_mesh`. `engine-physics-render` draws them as the `physics.fragments` pipeline feature
+([Physics rendering](physics-rendering.md)); a host that installs it calls
+`install_physics_extraction` and `register_physics_features`. Without them nothing draws the
+fragments, so scene extraction keeps the intact mesh of a `Fractured` entity visible (it hides
+the mesh only while the `FragmentRenderer` marker resource that `install_physics_extraction`
+inserts is present). The physics debug view draws the fragment hulls either way.
 
 ## Validation
 

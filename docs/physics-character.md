@@ -69,12 +69,16 @@ bodies: 3 m/s at 144 Hz frames and a 60 Hz step moves the `Transform` by 0.0208 
 and the engine-physics pose always report the latest step.
 
 **Teleporting.** Writing the `Transform` of a character moves it there: the controller notices a
-world position that differs from the one it last wrote by more than 0.5 mm, moves the body at
+local position that differs from the one it last wrote by more than 0.5 mm, moves the body at
 once (`World::set_character_position`) and forgets the old ground, platform, wall contact and
 vertical speed; `desired_velocity` is kept and no events are emitted for the reset. Before, the
 controller overwrote the write with its own position (a hero written to (20, 3, 0) ended the
 next tick at (2.03, 0.81, 0)). After the write the character falls from the new place and
 lands again (`tests/physics_character.rs`, `writing_the_transform_teleports_a_character...`).
+The comparison is in the entity's local space, so a *parent* that moves (a vehicle, a platform)
+is not mistaken for a teleport of the character: its ground state survives, and the character
+stays where the simulation puts it (the controller rewrites the local `Transform` to keep that
+world pose). To move a parented character, write its own `Transform`.
 
 Pushing: Rapier transfers the character's velocity into dynamic bodies it presses against,
 scaled by `m_body * m / (m_body + m)` with `m = push_mass`, so a heavier character pushes more.

@@ -55,7 +55,7 @@ pub(crate) struct Bodies {
     carry2: BTreeMap<Entity, Live2>,
     carry3: BTreeMap<Entity, Live3>,
 }
-fn planar(rotation: Quat) -> Result<f32> {
+pub(super) fn planar(rotation: Quat) -> Result<f32> {
     if rotation.x.abs() > 0.0001 || rotation.y.abs() > 0.0001 {
         return Err(invalid("2D bodies require rotation about world Z only"));
     }

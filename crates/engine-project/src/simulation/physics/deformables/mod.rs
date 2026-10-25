@@ -465,27 +465,22 @@ impl Feature for Deformables {
             return Ok(());
         }
         let colliders = colliders::collect(&cx);
-        for (&entity, rt) in &mut self.cloths {
+        // Bodies beyond a solver's proxy limit are left out (nearest kept) and counted.
+        let mut omitted = 0;
+        for rt in self.cloths.values_mut() {
             let (min, max) = bounds(rt.world.cloth(OBJECT).expect("cloth exists").positions());
             let coupling = rt.config.coupling();
-            let near = colliders::near(
+            let mut near = colliders::near(
                 &colliders,
                 coupling.mask,
                 min,
                 max,
                 rt.config.thickness + PROXY_MARGIN,
             );
-            step_xpbd(
-                &mut rt.world,
-                &mut cx,
-                &near,
-                coupling,
-                dt,
-                entity,
-                "engine.Cloth",
-            )?;
+            omitted += colliders::limit(&mut near, min, max, engine_xpbd::MAX_PROXIES);
+            step_xpbd(&mut rt.world, &mut cx, &near, coupling, dt, "engine.Cloth")?;
         }
-        for (&entity, rt) in &mut self.softs {
+        for rt in self.softs.values_mut() {
             let (min, max) = bounds(
                 rt.world
                     .soft_body(OBJECT)
@@ -493,40 +488,39 @@ impl Feature for Deformables {
                     .positions(),
             );
             let coupling = rt.config.coupling();
-            let near = colliders::near(
+            let mut near = colliders::near(
                 &colliders,
                 coupling.mask,
                 min,
                 max,
                 rt.config.particle_radius + PROXY_MARGIN,
             );
+            omitted += colliders::limit(&mut near, min, max, engine_xpbd::MAX_PROXIES);
             step_xpbd(
                 &mut rt.world,
                 &mut cx,
                 &near,
                 coupling,
                 dt,
-                entity,
                 "engine.SoftBody",
             )?;
         }
         for (&entity, rt) in &mut self.fluids {
             let domain = *rt.world.volume(OBJECT).expect("volume exists").domain();
             let coupling = rt.config.coupling();
-            let near = colliders::near(
+            let mut near = colliders::near(
                 &colliders,
                 coupling.mask,
                 domain.min,
                 domain.max,
                 PROXY_MARGIN,
             );
-            if near.len() > engine_fluids::MAX_PROXIES {
-                return Err(invalid(format!(
-                    "engine.FluidVolume: {} rigid bodies near the domain exceed the {} proxy limit",
-                    near.len(),
-                    engine_fluids::MAX_PROXIES
-                )));
-            }
+            omitted += colliders::limit(
+                &mut near,
+                domain.min,
+                domain.max,
+                engine_fluids::MAX_PROXIES,
+            );
             let proxies: Vec<_> = near.iter().map(Collider::fluid).collect();
             let report = rt
                 .world
@@ -546,11 +540,11 @@ impl Feature for Deformables {
             }
             let step = &report.volumes[0].1;
             if step.capacity_reached && !rt.full {
-                crate::simulation::emit(
+                super::emit_named(
                     world,
+                    "physics.fluid.capacity_reached",
                     entity,
                     None,
-                    "physics.fluid.capacity_reached",
                     json!({
                         "capacity": rt.config.capacity,
                         "particles": step.particle_count,
@@ -560,6 +554,7 @@ impl Feature for Deformables {
             }
             rt.full = step.capacity_reached;
         }
+        super::pressure::note_proxies_omitted(world, omitted);
         Ok(())
     }
     fn after_step(&mut self, _cx: Context<'_>, world: &mut World) -> Result<()> {
@@ -631,16 +626,8 @@ fn step_xpbd(
     near: &[Collider],
     coupling: Coupling,
     dt: f32,
-    entity: Entity,
     name: &str,
 ) -> Result<()> {
-    if near.len() > engine_xpbd::MAX_PROXIES {
-        return Err(invalid(format!(
-            "{name}: {} rigid bodies near {entity} exceed the {} proxy limit",
-            near.len(),
-            engine_xpbd::MAX_PROXIES
-        )));
-    }
     let proxies: Vec<_> = near.iter().map(Collider::xpbd).collect();
     solver
         .step(dt, &proxies)

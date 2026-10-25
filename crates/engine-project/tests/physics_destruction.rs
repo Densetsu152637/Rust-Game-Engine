@@ -951,3 +951,69 @@ fn running_out_of_body_capacity_degrades_gracefully() {
     );
     assert_eq!(events(&runtime, "physics.capacity.exceeded").len(), 1);
 }
+
+const REFUSED: &str = "physics.destruction.refused";
+
+/// An impact (or resting load) whose fracture cannot complete is refused with a status reason
+/// and one event instead of aborting the step on every later tick.
+#[test]
+fn a_refused_impact_fracture_reports_once_and_never_aborts_the_step() {
+    let mut refused_seeds = 0;
+    for seed in 1..=24u64 {
+        let mut crate_ = entity(
+            "box",
+            [0., 0.51, 0.],
+            parts(vec![
+                (
+                    "engine.PhysicsBody3D",
+                    json!({"half_extents":[0.5,0.5,0.5],"material":{"density":10000.0}}),
+                ),
+                (
+                    "engine.Destructible3D",
+                    json!({"fragment_count":16,"threshold":1.0,"threshold_mode":"force",
+                        "seed":seed}),
+                ),
+            ]),
+        );
+        crate_["components"]["EventBindings"] = json!({"bindings":[
+            {"event":REFUSED,"handler":"record"},{"event":FRACTURED,"handler":"record"}]});
+        let (_d, mut runtime) = started(vec![
+            settings(json!({"gravity_3d":[0.,-9.81,0.]})),
+            entity(
+                "floor",
+                [0., -0.5, 0.],
+                parts(vec![(
+                    "engine.PhysicsBody3D",
+                    json!({"motion":"fixed","half_extents":[5.,0.5,5.]}),
+                )]),
+            ),
+            crate_,
+        ]);
+        let owner = entity_of(&runtime, "box");
+        // The box rests on the floor under its own weight (about 98 kN): every tick is a
+        // force-mode trigger. No tick may fail.
+        ticks(&mut runtime, 40);
+        let refused = events(&runtime, REFUSED);
+        let fractured = events(&runtime, FRACTURED);
+        let status = physics::destructible_status(runtime.app().world(), owner).unwrap();
+        if fractured.is_empty() {
+            refused_seeds += 1;
+            assert_eq!(
+                refused.len(),
+                1,
+                "seed {seed}: one refusal, no loop: {refused:?}"
+            );
+            assert!(
+                refused[0]["reason"].as_str().unwrap().contains("density"),
+                "{refused:?}"
+            );
+            assert_eq!(status.refused.as_deref(), refused[0]["reason"].as_str());
+            assert!(!status.fractured);
+        } else {
+            assert!(refused.is_empty(), "seed {seed}: {refused:?}");
+            assert!(status.refused.is_none());
+        }
+    }
+    println!("{refused_seeds}/24 seeds refused");
+    assert!(refused_seeds > 0, "no seed reached the density refusal");
+}

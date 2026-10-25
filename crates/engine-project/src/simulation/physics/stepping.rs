@@ -113,6 +113,11 @@ impl Stepper {
             ..StepStatus::default()
         };
     }
+    /// Drops the remembered pose of `entity` after a teleport, so interpolation never blends
+    /// from the pose it left.
+    pub(super) fn forget(&mut self, entity: Entity) {
+        self.previous.remove(&entity);
+    }
     /// Remembers the current dynamic poses; call before each fixed step when interpolating.
     pub(super) fn capture(&mut self, bodies: &Bodies, worlds: &Worlds) {
         self.previous.clear();

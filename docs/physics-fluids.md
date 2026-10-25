@@ -5,8 +5,11 @@
 creates, updates, steps and reads fluid volumes by stable `u64` ids. Units are meters, seconds
 and kilograms. See the crate [README](../crates/engine-fluids/README.md) for a code sample.
 
-Authored `engine.*` components, MCP editing and `physics.fluids.*` events are a follow-up
-step and are not part of the crate yet. 2D fluids are deferred (see [Limits](#limits-and-deferred-work)).
+The authored `engine.FluidVolume` component (MCP-editable through `component_set`), its
+`physics.fluid.capacity_reached` event, rigid coupling and rendering are wired in
+`engine-project` and `engine-physics-render`: see
+[Authored component](#authored-component-enginefluidvolume). 2D fluids are deferred (see
+[Limits](#limits-and-deferred-work)).
 
 ## Solver choice
 
@@ -230,8 +233,10 @@ collision_mask != 0` (sensors never collide).
 | trimesh, heightfield | **not coupled** (no simple plane/box path exists; put a fixed box collider under them) |
 
 Only bodies within the object's bounds plus 0.25 m are passed to the solver; more than
-1024 (cloth, soft body) or 256 (fluid) nearby proxies fail the step with a named error rather
-than dropping bodies silently.
+1024 (cloth, soft body) or 256 (fluid) nearby proxies keep the nearest ones (ties by entity id)
+and leave the others out of that step's coupling; the omissions are counted
+(`PressureStatus::proxies_omitted`) and announced once per episode with `physics.proxies.limited`
+([Physics](physics.md#pressure-and-capacity)). The step never fails for this.
 
 ### Transforms and render data
 

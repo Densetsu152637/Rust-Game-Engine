@@ -199,3 +199,63 @@ fn disabled_features_are_not_extracted_and_a_world_without_physics_is_reported()
     assert_eq!(disabled.debug_state, DebugState::Disabled);
     assert!(disabled.fragments.is_empty());
 }
+
+#[test]
+fn installing_the_extraction_marks_a_fragment_renderer_and_follows_the_toggle() {
+    let (_dir, mut runtime) = started(vec![settings(json!({}))]);
+    assert!(
+        runtime
+            .app()
+            .world()
+            .contains_resource::<physics::FragmentRenderer>(),
+        "install_physics_extraction marks the fragment renderer"
+    );
+    let mut config = PhysicsRenderConfig::default();
+    config.enabled.fragments = false;
+    runtime.app_mut().world_mut().insert_resource(config);
+    ticks(&mut runtime, 1);
+    assert!(
+        !runtime
+            .app()
+            .world()
+            .contains_resource::<physics::FragmentRenderer>(),
+        "fragments off: the intact mesh must draw again"
+    );
+}
+
+#[test]
+fn animated_debug_lines_do_not_bump_the_deformable_revisions() {
+    let (_dir, mut runtime) = started(vec![
+        settings(json!({"debug":true})),
+        with(
+            "cloth",
+            [0., 2., 0.],
+            "engine.Cloth",
+            json!({"size":[1.,1.],"resolution":[3,3]}),
+        ),
+        with(
+            "box",
+            [4., 0., 0.],
+            "engine.PhysicsBody3D",
+            json!({"shape":"box"}),
+        ),
+    ]);
+    // Extract twice without stepping in between: the same simulation frame.
+    ticks(&mut runtime, 2);
+    let world = runtime.app_mut().world_mut();
+    let config = PhysicsRenderConfig::default();
+    let first = build_extract(world, &config, None);
+    assert!(!first.debug.is_empty(), "debug lines exist for the test");
+    let second = build_extract(world, &config, Some(first.clone()));
+    assert_eq!(
+        second.revisions.cloth, first.revisions.cloth,
+        "same simulation frame: the cloth buffers keep their revision"
+    );
+    assert_eq!(second.revisions.fluid, first.revisions.fluid);
+    assert_eq!(second.revisions.soft_bodies, first.revisions.soft_bodies);
+    assert!(
+        second.revisions.debug > first.revisions.debug,
+        "debug lines are re-uploaded every frame"
+    );
+    assert_eq!(second.revision, second.revisions.total());
+}
