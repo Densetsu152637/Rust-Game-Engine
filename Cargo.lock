@@ -1503,6 +1503,7 @@ dependencies = [
  "engine-render-pipeline",
  "engine-render-wgpu",
  "engine-terrain",
+ "engine-water",
  "glam 0.34.1",
  "serde_json",
  "tempfile",

@@ -1,6 +1,6 @@
 //! Render features for world building, one module per feature, drawn through the render
-//! extension API (`engine-render-pipeline`). Today: [`terrain`] (`world.terrain`); the
-//! `world.water` and `world.foliage` features will live here too. See docs/terrain.md.
+//! extension API (`engine-render-pipeline`): [`terrain`] (`world.terrain`, docs/terrain.md)
+//! and [`water`] (`world.water`, `world.water.underwater`, docs/world-water.md).
 //!
 //! A host enables the terrain feature in two parts, both before the runner starts:
 //!
@@ -16,6 +16,7 @@
 //!
 //! [`enable`] does both and merges into an existing `PipelineFeatures` resource.
 pub mod terrain;
+pub mod water;
 
 use anyhow::Result;
 use bevy_ecs::prelude::*;
@@ -29,6 +30,10 @@ pub mod names {
     /// Terrain normals into the normals target (`Prepass` stage, after
     /// `engine.prepass.normals`); runs only when another feature needs normals.
     pub const TERRAIN_NORMALS: &str = "world.terrain.normals";
+    /// Water surfaces (`Transparent` stage, before `engine.transparent`).
+    pub const WATER: &str = "world.water";
+    /// Underwater fog (`Transparent` stage, after `engine.transparent` and `world.water`).
+    pub const WATER_UNDERWATER: &str = "world.water.underwater";
 }
 
 pub use terrain::{
@@ -36,9 +41,11 @@ pub use terrain::{
     TerrainRenderStatusHandle, extract_terrain,
 };
 
-/// Registers `world.terrain` and `world.terrain.normals`; returns a handle that reports what
-/// the features drew in the last view.
+/// Registers `world.terrain`, `world.terrain.normals`, `world.water` and
+/// `world.water.underwater`; returns a handle that reports what the terrain features drew in
+/// the last view (use [`water::register`] alone for the water status handle).
 pub fn register(features: &mut PipelineFeatures) -> Result<TerrainRenderStatusHandle> {
+    water::register(features)?;
     terrain::register(features)
 }
 
@@ -47,6 +54,7 @@ pub fn register(features: &mut PipelineFeatures) -> Result<TerrainRenderStatusHa
 /// the GPU path. Call once while configuring the app.
 pub fn install(app: &mut EngineApp) {
     terrain::install(app);
+    water::install(app);
 }
 
 /// [`install`] plus [`register`] into the world's `PipelineFeatures` resource (created when
