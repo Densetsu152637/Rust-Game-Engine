@@ -17,9 +17,13 @@
 
 Every core is sans-IO: it takes an explicit `now`, uses no threads, performs bounded work per
 call and holds bounded state. The socket adapters implement `engine_net_quic::DatagramSocket`.
-Lobby, matchmaking and token issuance live in the online-services crate. This crate takes
-authorization as a callback (`Authorizer`) and candidate exchange as data (`CandidateSet`
-bytes plus a `PunchSecret`), so integration can wire both in later.
+Lobby, matchmaking and token issuance live in the online-services crate
+([online services](online-services.md)). This crate takes authorization as a callback
+(`Authorizer`) and candidate exchange as data (`CandidateSet` bytes plus a `PunchSecret`).
+`engine_online::relay::relay_authorizer` is the ready-made `Authorizer` for the online service's
+pair-scoped relay credentials, and the lobby's `request_peer_intro` delivers the `PunchSecret`
+(derived per pair, to the two members only); see
+[relay credentials](online-services.md#relay-credentials-and-nat-introductions).
 
 ## Typical flow
 
@@ -32,13 +36,19 @@ let mut server = QuicServer::with_socket(quic_socket, QuicServerConfig::default(
 // 1. Discover the public mapping (repeat per discovery server).
 let mut reflexive = ReflexiveClient::new(Instant::now(), relay_addr, ReflexiveConfig::default())?;
 drive_agents(&mut nat, Instant::now(), &mut [&mut reflexive], 64)?; // every frame
-// 2. Publish candidates through the lobby (opaque blob); the lobby also hands both
-//    sides the same PunchSecret over its authenticated channel.
+// 2. Publish candidates through the lobby (opaque blob, visible to every session member).
+//    Then ask the lobby for a pair introduction (`request_peer_intro`): it returns the
+//    peer's candidates and a PunchSecret that the server derived for exactly this pair and
+//    that only these two members ever receive.
 let mine = CandidateSet::gather(nat.local_addr()?, [reflexive_addr], [relay_addr])?;
 lobby.publish(mine.to_bytes());
-let theirs = CandidateSet::from_bytes(&lobby.peer_blob())?;
-// 3. Punch (opposite roles: the joining client controls, the host is controlled).
-let mut session = PunchSession::new(Instant::now(), PunchRole::Controlled, &secret, &theirs,
+let intro = lobby.peer_intro(peer_name)?;       // PeerIntro { candidates, punch_secret, controlling }
+let theirs = CandidateSet::from_bytes(&intro.candidates)?;
+let secret = PunchSecret::from_bytes(intro.punch_secret);
+let role = if intro.controlling { PunchRole::Controlling } else { PunchRole::Controlled };
+// 3. Punch (opposite roles: the introduction gives the two sides opposite values; the host
+//    is always controlled).
+let mut session = PunchSession::new(Instant::now(), role, &secret, &theirs,
     PunchConfig::default())?;
 // Every frame: drive_agents(&mut nat, now, &mut [&mut session, ..], 64)?; server.poll(..)
 match session.outcome() {
@@ -187,7 +197,9 @@ Unit and end-to-end tests pass greased, long-header and short-header QUIC throug
    that is accepted for one to two windows. This is return routability: a spoofed source
    never sees the cookie.
 2. The client repeats Allocate with the cookie and its opaque credential. Only then does the
-   native `Authorizer` (`Fn(&[u8], SocketAddr) -> Option<Grant>`) run.
+   native `Authorizer` (`Fn(&[u8], SocketAddr) -> Option<Grant>`) run, after the source has
+   passed its own rate bucket and the relay-wide credential-check budget (see
+   [rate limits](#limits-relaylimits-json-limits)).
 3. The `Grant` names a `ChannelId` (16 opaque bytes), a `Party` (`A` or `B`) and an optional
    hard deadline (`max_lifetime`).
 4. Each channel has exactly two party slots. A slot is bound to the source address that
@@ -243,14 +255,29 @@ TimedOut | Expired | Released)`.
 | `allocation_lifetime_secs` | 120 | lifetime per allocate/refresh (1..=3600) |
 | `allocation_bytes_per_second` / `allocation_packets_per_second` | 1 MiB / 2000 | forwarded per allocation (one-second burst) |
 | `global_bytes_per_second` / `global_packets_per_second` | 64 MiB / 100000 | forwarded in total |
-| `control_requests_per_second_per_ip` / `control_burst_per_ip` | 20 / 40 | binding, allocate and refresh per source IP |
-| `max_tracked_ips` | 4096 | limiter table; when it is full of active IPs, new IPs are refused (fail closed) |
+| `control_requests_per_second_per_ip` / `control_burst_per_ip` | 20 / 40 | control requests per source, charged by what the source proved (below). IPv4 sources are keyed by address, IPv6 sources by /64 (an IPv4-mapped IPv6 address by its IPv4 address) |
+| `max_tracked_ips` | 4096 | entries of each limiter table; when it is full of active sources, new sources are refused (fail closed) |
+| `global_authorizations_per_second` / `global_authorization_burst` | 200 / 400 | credential checks (`Authorizer` calls) across all sources |
 | `max_payload_bytes` | 1472 | largest relayed QUIC datagram (1200..=65000) |
 | `max_credential_bytes` | 512 | credential size accepted (wire maximum 1024) |
 | `cookie_lifetime_secs` | 10 | challenge window |
 
-Memory is bounded by `max_allocations` (a few hundred bytes each), `max_tracked_ips` and two
-fixed 64 KiB/2 KiB buffers in `RelayService`. Work per `poll(max)` is bounded by `max`.
+**What each control request is charged to.** The relay only spends a bucket that the source has
+earned the right to spend, because an unauthenticated source address can be forged and a forger
+must not be able to drain the budget its victim needs for authenticated traffic:
+
+| Request | Charged to | Why |
+| --- | --- | --- |
+| binding request | per-IP *binding* bucket | unauthenticated; a forger drains only the forged IP's binding budget |
+| allocate without a valid cookie (challenge) | per-IP *challenge* bucket (separate table) | unauthenticated; spoofed binding floods cannot starve a victim's allocation |
+| allocate with a valid cookie | per-source-address-and-port bucket, then the global credential-check bucket, then the `Authorizer` | the source received our cookie, so the address is genuine |
+| refresh with the right vport, bound address and key | the allocation's own control bucket | verified first, then charged: nobody can drain it without the key |
+| refresh that fails verification | the per-IP challenge bucket, then an `unauthorized` error | unauthenticated |
+| data | per-allocation and global byte/packet buckets | unchanged |
+
+Memory is bounded by `max_allocations` (a few hundred bytes each), `max_tracked_ips` (per table)
+and two fixed 64 KiB/2 KiB buffers in `RelayService`. Work per `poll(max)` is bounded by `max`, and
+the number of `Authorizer` calls per second is bounded by the global credential-check bucket.
 
 ## Reference server (`engine-relay-server`)
 
@@ -293,14 +320,32 @@ until they are removed, so prefer `hmac` mode with short expiries.
 Trusted:
 
 - The `Authorizer` and the issuer of credentials and punch secrets (the lobby/backend).
-- The lobby channel that carries `PunchSecret` and `CandidateSet`; it must be authenticated
-  and encrypted, as the online services' TLS is.
+- The lobby channel that carries the `PunchSecret` (inside `peer_intro`) and the host's
+  certificate fingerprint; it must be authenticated and encrypted, as the online services' TLS
+  is. `CandidateSet` blobs, by contrast, are public to every session member.
 - The relay operator's configuration.
 
 Untrusted: every network datagram, peers' candidate sets, and any party holding a valid
-credential, which is still bounded by its slot and rate limits. Peer identity is established
-by QUIC mutual TLS, not by this layer. A wrong or attacker-selected path can only make the
-QUIC handshake fail, never succeed against the wrong identity.
+credential, which is still bounded by its slot and rate limits.
+
+Peer identity is established by QUIC mutual TLS, not by this layer, and a wrong or
+attacker-selected network path can only make the handshake fail **when the joiner knows which
+certificate to expect**. A joiner that accepts any certificate chaining to a shared root would
+authenticate only "some trusted party answered", so a malicious session member could host an
+imposter. The online service closes that gap by publishing the host's registered game-server
+certificate fingerprint (session view, `host_changed`); the joiner pins it with
+`engine_online::pin::pinned_client_config` (a rustls verifier that accepts exactly that leaf
+certificate), see [pinning the host](online-services.md#pinning-the-hosts-game-server). Hole-punch
+secrets are per pair and never broadcast, so a third member cannot probe, answer or hijack a punch
+it is not part of.
+
+**Relay credentials are bearer credentials.** A relay sees no TLS certificate, so it cannot check a
+certificate binding, and an allocate request is retransmitted, so it cannot consume a nonce. Whoever
+holds the credential can occupy that one slot of that one channel until it expires. This is bounded
+by the credential's expiry (it is also the allocation's hard deadline), by the cookie (the
+allocation binds to an address the holder can receive on) and by the scoping of the online
+service's credentials to one pair and one slot; a squatted slot denies service but never exposes
+traffic (QUIC mutual TLS still runs end to end).
 
 **Amplification**: every reply goes to the request's source and is smaller than or equal to
 the request:
@@ -327,7 +372,8 @@ an aggregate control byte ratio out/in of **0.003**, and the worst single reply 
   server address.
 - Allocation requires return routability before any credential check, and allocations are
   bound to that address.
-- Refresh needs the 128-bit key.
+- Refresh needs the 128-bit key, and is charged to the allocation's own bucket only after the key
+  matched.
 - Data from a non-bound source is refused (`data_refused_source`).
 
 **Residual risks**:
@@ -347,10 +393,17 @@ an aggregate control byte ratio out/in of **0.003**, and the worst single reply 
   sessions run.
 - The 2^-32 per-connection-ID misclassification described for `DemuxSocket` remains until
   the proposed `engine-net-quic` change lands.
-- Per-IP control limits use fixed buckets keyed by IP. An attacker with many source IPs can
-  fill `max_tracked_ips`, after which new legitimate IPs are refused until entries go idle.
-  The global data buckets cap total relay egress, not Internet DoS. Use firewalls and
-  upstream rate limiting for public exposure.
+- Unauthenticated control requests are limited per source IP (IPv4 /32, IPv6 /64), and a source
+  address can be forged. A forger can therefore still drain the *unauthenticated* buckets of the
+  address it forges (binding and challenge, separate tables), so a victim that has not yet obtained
+  a cookie can be delayed from starting an allocation while the spoofing continues. Established
+  allocations (refresh, data) and cookie-bearing allocates are charged only after the source proved
+  itself and are not affected. An attacker with real addresses can rotate source ports to multiply
+  its verified budget; the global credential-check bucket bounds the total `Authorizer` work, at
+  the price that a sustained flood of genuine addresses can use that budget up.
+- An attacker with many source IPs (or many IPv6 /64 prefixes) can fill `max_tracked_ips`, after
+  which new legitimate sources are refused until entries go idle. The global data buckets cap total
+  relay egress, not Internet DoS. Use firewalls and upstream rate limiting for public exposure.
 - Credentials and allocation keys sit in process memory in the clear; there is no zeroizing.
 - Timing resolution is the caller's poll interval.
 
@@ -382,7 +435,9 @@ in-memory rcgen identities and contacts no external host:
   invalid credential, a foreign slot, capacity, an unpermitted destination, a spoofed source,
   an unknown vport and a wrong refresh key all refused; expiry and the refresh cap; the grant
   deadline cap; per-IP control and per-allocation byte limits; amplification measured over
-  20 000 inputs.
+  20 000 inputs; spoofed binding and challenge floods from a victim's IP leaving the victim's
+  refresh and allocation intact; the global credential-check and per-address buckets; IPv6 /64 and
+  IPv4-mapped limiter keys; the redacted `Debug` of relay configuration.
 - A seeded fuzz of 30 000 inputs x 17 targets: every wire decoder, `CandidateSet`,
   credentials, both punch roles, the reflexive client, the relay server and `RelaySocket`
   control handling. There are no panics, and no forged ack is ever accepted.
