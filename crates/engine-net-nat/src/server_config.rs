@@ -39,7 +39,10 @@ impl Default for RelayServerConfig {
 }
 
 /// Credential mode.
-#[derive(Clone, Debug, Default, Deserialize)]
+///
+/// `Debug` is written by hand and redacts every secret: the inline HMAC secret and the static
+/// token list print as placeholders. The environment variable *name* is not a secret.
+#[derive(Clone, Default, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RelayAuthConfig {
     /// Every allocation is refused.
@@ -57,6 +60,26 @@ pub enum RelayAuthConfig {
         #[serde(default)]
         secret_hex: Option<String>,
     },
+}
+
+impl std::fmt::Debug for RelayAuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disabled => f.write_str("Disabled"),
+            Self::Static { credentials } => f
+                .debug_struct("Static")
+                .field("credentials", &format!("[{} redacted]", credentials.len()))
+                .finish(),
+            Self::Hmac {
+                secret_env,
+                secret_hex,
+            } => f
+                .debug_struct("Hmac")
+                .field("secret_env", secret_env)
+                .field("secret_hex", &secret_hex.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -150,6 +173,28 @@ impl RelayServerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Security finding L1: `derive(Debug)` printed the HMAC secret into logs and panics.
+    #[test]
+    fn debug_output_never_contains_the_hmac_secret() {
+        let secret = "ab".repeat(32);
+        let text = format!(r#"{{"auth":{{"mode":"hmac","secret_hex":"{secret}"}}}}"#);
+        let config = RelayServerConfig::from_json(&text).unwrap();
+        for rendered in [
+            format!("{config:?}"),
+            format!("{config:#?}"),
+            format!("{:?}", config.auth),
+        ] {
+            assert!(!rendered.contains(&secret), "{rendered}");
+            assert!(!rendered.contains("abab"), "{rendered}");
+        }
+        // The non-secret shape stays visible for diagnostics.
+        assert!(format!("{:?}", config.auth).contains("Hmac"));
+        let named =
+            RelayServerConfig::from_json(r#"{"auth":{"mode":"hmac","secret_env":"RELAY_SECRET"}}"#)
+                .unwrap();
+        assert!(format!("{named:?}").contains("RELAY_SECRET"));
+    }
 
     #[test]
     fn configs_parse_validate_and_fail_closed() {

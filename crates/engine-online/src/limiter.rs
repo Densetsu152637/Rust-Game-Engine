@@ -52,6 +52,13 @@ impl FailureWindow {
             count: 0,
         }
     }
+    /// A window that starts at `now_ms` rather than at time zero.
+    pub(crate) fn starting_at(max: u32, window_ms: u64, now_ms: u64) -> Self {
+        Self {
+            start_ms: now_ms,
+            ..Self::new(max, window_ms)
+        }
+    }
     fn roll(&mut self, now_ms: u64) {
         if now_ms.saturating_sub(self.start_ms) >= self.window_ms {
             self.start_ms = now_ms;
@@ -69,6 +76,14 @@ impl FailureWindow {
     }
     pub(crate) fn failures(&self) -> u32 {
         self.count
+    }
+    /// True when the window has run out and forgetting it changes nothing.
+    pub(crate) fn is_stale(&self, now_ms: u64) -> bool {
+        self.count == 0 || now_ms.saturating_sub(self.start_ms) >= self.window_ms
+    }
+    /// Start of the current window (used to evict the oldest tracked window first).
+    pub(crate) fn started_ms(&self) -> u64 {
+        self.start_ms
     }
 }
 

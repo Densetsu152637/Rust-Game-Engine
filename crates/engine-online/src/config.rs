@@ -72,6 +72,9 @@ pub struct TokenSettings {
     pub relay_audience: Option<String>,
     #[serde(default = "default_join_ttl")]
     pub join_token_ttl_secs: u64,
+    /// Lifetime of relay credentials (also the hard end of the relay allocation made with one).
+    #[serde(default = "default_relay_ttl")]
+    pub relay_token_ttl_secs: u64,
     #[serde(default = "yes")]
     pub connect_token_single_use: bool,
     #[serde(default = "default_max_lifetime")]
@@ -80,6 +83,9 @@ pub struct TokenSettings {
     pub clock_skew_secs: u64,
     #[serde(default = "default_replay_entries")]
     pub replay_cache_entries: usize,
+    /// Most live replay entries one certificate fingerprint may hold (its own oldest are evicted).
+    #[serde(default = "default_replay_per_fingerprint")]
+    pub replay_per_fingerprint: usize,
     /// Additional trusted verification keys (the signing key's own public half is implicit).
     #[serde(default)]
     pub verify_keys: Vec<VerifyKey>,
@@ -92,6 +98,12 @@ fn default_game_audience() -> String {
 }
 fn default_join_ttl() -> u64 {
     120
+}
+fn default_relay_ttl() -> u64 {
+    3600
+}
+fn default_replay_per_fingerprint() -> usize {
+    1024
 }
 fn yes() -> bool {
     true
@@ -170,7 +182,10 @@ impl ServerFileConfig {
                 "max_connections must be 1..=4096".into(),
             ));
         }
-        if self.tokens.join_token_ttl_secs == 0 || self.tokens.max_token_lifetime_secs == 0 {
+        if self.tokens.join_token_ttl_secs == 0
+            || self.tokens.relay_token_ttl_secs == 0
+            || self.tokens.max_token_lifetime_secs == 0
+        {
             return Err(OnlineError::Config(
                 "token lifetimes must be nonzero".into(),
             ));
@@ -304,6 +319,7 @@ pub fn build_server(config: &ServerFileConfig) -> Result<BuiltServer, OnlineErro
             max_lifetime_secs: config.tokens.max_token_lifetime_secs,
             clock_skew_secs: config.tokens.clock_skew_secs,
             replay_capacity: config.tokens.replay_cache_entries,
+            replay_per_fingerprint: config.tokens.replay_per_fingerprint,
         },
         keys,
     )?);
@@ -314,6 +330,7 @@ pub fn build_server(config: &ServerFileConfig) -> Result<BuiltServer, OnlineErro
             game_audience: config.tokens.game_audience.clone(),
             relay_audience: config.tokens.relay_audience.clone(),
             join_token_ttl_secs: config.tokens.join_token_ttl_secs,
+            relay_token_ttl_secs: config.tokens.relay_token_ttl_secs,
             connect_token_single_use: config.tokens.connect_token_single_use,
             modes: config.modes.clone(),
         },

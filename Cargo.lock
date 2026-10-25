@@ -1642,6 +1642,7 @@ name = "engine-online"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "engine-net-nat",
  "engine-net-quic",
  "engine-network",
  "rcgen",

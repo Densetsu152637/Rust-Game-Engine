@@ -7,9 +7,12 @@ host migration on top of the engine's authenticated transports
 `engine-online-server`. Everything runs from this repository: there is no third-party hosted
 service, and no account database (a trait boundary, `PlayerDirectory`, is the integration point).
 
-NAT traversal and relay forwarding are **not** here (they live in the NAT/relay crate); this crate
-only carries what they need: an opaque per-member *connectivity candidates* blob exchanged
-through the lobby, and relay-allocation tokens.
+NAT traversal and relay forwarding are **not** here (they live in the NAT/relay crate,
+[NAT traversal and relay](online-nat-relay.md)); this crate only carries what they need: an opaque
+per-member *connectivity candidates* blob exchanged through the lobby, a server-derived **per-pair
+punch secret** delivered to exactly the two members, **pair-scoped relay credentials** with an
+adapter (`relay::relay_authorizer`) that plugs into the relay, and the host's **game-certificate
+fingerprint** that joiners pin.
 
 ## Architecture
 
@@ -60,7 +63,8 @@ u8  len | audience    1..=64  ASCII identifier        u8 len | subject   1..=64 
 u8  has_session | [u64 BE session]
 [32] SHA-256 of the client's TLS leaf certificate DER
 u64 BE issued_at | u64 BE expires_at (unix seconds) | [16] random nonce
-u8  scope count 1..=8 | scopes: 1 Connect | 2 JoinSession{session, epoch} | 3 Relay{session} | 4 Custom(name)
+u8  scope count 1..=8 | scopes: 1 Connect | 2 JoinSession{session, epoch}
+    | 3 Relay{session, [16] channel, party A|B} | 4 Custom(name)
 [64] Ed25519 signature over "engine-online/token/v1\0" || everything above
 ```
 
@@ -80,13 +84,19 @@ already-validated strings.
   to both ends), maximum lifetime (default 24 h regardless of what was signed), exact required scope,
   **certificate binding** (constant time) and finally **replay**.
 * The replay cache stores the nonce of *single-use* tokens until `expires_at + skew`. It is bounded
-  (`replay_capacity`, default 65 536); when full, single-use tokens are rejected (fail closed). A
-  nonce is consumed only after every other check passed, so a stranger presenting your token on the
-  wrong certificate cannot burn it.
+  (`replay_capacity`, default 65 536) and **per certificate fingerprint** (`replay_per_fingerprint`,
+  default 1 024, never more than half of the capacity): a fingerprint over its share evicts *its own*
+  oldest nonce instead of taking space from others, so one certificate cannot fill the cache and
+  lock everybody else out for the token lifetime (up to 24 h). The price is that the evicted token
+  can be replayed again, but only by the holder of the certificate it is bound to. When the cache is
+  full of many fingerprints' entries, single-use tokens are rejected (fail closed). A nonce is
+  consumed only after every other check passed, so a stranger presenting your token on the wrong
+  certificate cannot burn it.
 * **Rotation**: `add_key` the new public key on every verifier, switch the signer, wait for the
   old tokens to expire, `remove_key` the old one. Removal takes effect immediately.
 * Scopes are exact. `JoinSession { session, epoch }` carries the host epoch (see
-  [host migration](#host-migration)); `Relay { session }` is the relay-allocation credential.
+  [host migration](#host-migration)); `Relay { session, channel, party }` is a pair-scoped
+  relay-allocation credential (see [relay credentials](#relay-credentials-and-nat-introductions)).
 
 ### Binding tokens to the live connection
 
@@ -139,6 +149,16 @@ host migration tokens of the previous epoch stop working at the new host. Replay
 verifier instance; a fleet of game servers behind one name needs a shared nonce store or must accept
 that each instance remembers its own.
 
+Session IDs are drawn from the OS CSPRNG (uniform in `1..2^53`, collision-checked, never zero, exactly
+representable as a JSON number), **not** counted from 1. A counter would restart at 1 with epoch 1
+after a restart and in every sibling instance, so a join token from a previous run or another
+instance sharing the signing key could name a session and epoch that exist again and admit a
+non-member. With random IDs that coincidence is a 2^-53 event. As defence in depth the **game host
+should also check that the token's subject is a current lobby member** (it receives `member_joined`
+and `member_left` through the lobby connection of the host player, or from the operator's own
+lobby feed for a dedicated server): the token proves "the service minted this for subject S, bound to
+this certificate", the lobby membership proves "S is in this session now".
+
 Where connect tokens come from: the reference server verifies tokens signed by its own key (and any
 configured `verify_keys`). *Authenticating a player to get a connect token (passwords, platform
 login) is the operator's account system.* `engine-online-server issue-token` mints one for a given
@@ -155,18 +175,113 @@ that calls `TokenIssuer::issue` after real authentication.
 | `list_sessions` | **public sessions only**, ascending id, cursor paging (`after`, `limit` ≤ 25), filters: mode, exact attribute match (≤ 4), `has_space`, name prefix |
 | `join_session` | by id (public only) or by private join code; duplicate subject, duplicate membership and a full session are refused; a private session addressed by id answers exactly like a missing one |
 | `leave_session`, `set_ready`, `set_candidates` | members only; changes are broadcast to the other members |
-| `kick`, `set_attributes`, `upload_migration_state` | **host only** and the request must carry the session's current `epoch` |
-| `request_join_token`, `request_relay_token` | members only; fresh cert-bound token for the current epoch |
+| `kick`, `set_attributes`, `upload_migration_state`, `rotate_code` | **host only** and the request must carry the session's current `epoch`; a kick is sticky (below) |
+| `request_join_token` | members only; fresh cert-bound token for the current epoch |
+| `request_relay_token { session_id, peer }` | members only, `peer` must be another member; pair-scoped relay credential ([below](#relay-credentials-and-nat-introductions)) |
+| `request_peer_intro { session_id, peer }` | members only; the peer's candidates plus the pair's punch secret |
+| `set_game_identity { session_id, cert_sha256 }` | members only, own identity; the fingerprint joiners pin when this member is host |
 
 Join codes are 16 characters from a 32-letter alphabet (80 bits from the OS RNG). Lookup compares
 the supplied code with *every* private session's code in constant time (no early exit), only the
-host sees the code, and guessing is throttled: 5 failures per peer and 100 per server per minute
-(configurable) lock joins-by-code out *before* any comparison, with disconnect at twice the limit.
+host sees the code, and guessing is throttled **per authenticated subject**: 5 failed guesses per
+minute (configurable) lock that subject out of joins-by-code *before* any comparison, with
+disconnect at twice the limit. The failure window belongs to the subject, not to the connection, and
+lives in a bounded table (`max_tracked_guessers`, default 4 096; expired windows are dropped first,
+then the oldest), so reconnecting does not reset the allowance, while a subject with no recent
+failures is never affected by anybody else's guessing. The old server-wide limit (100 failures per
+minute) is now **telemetry only**: reaching `join_code_failures_global` increments the
+`join_code_alarms` counter and blocks nobody. It added no protection (80-bit codes cannot be
+guessed at 5 attempts per minute per account) and gave any single account a way to deny every
+private-code join. Failed guesses are counted in `join_code_failures`.
+
+**Kicks are sticky and codes rotate.** `kick` adds the subject to the session's kicked list (bounded
+by `max_kicked_per_session`, default 64; past the bound the *oldest* ban is forgotten) and `join`
+refuses a kicked subject with `forbidden`, for as long as the session exists. A kick also rotates a
+private session's join code (the kicked member may have known it) and tells the host the new one
+(`code_changed`). Every host change rotates the code too (the deposed host and anyone it shared the
+code with lose it; the new host receives the new code in `host_changed`), and the host can rotate
+on demand with `rotate_code` (`code_rotated`).
+
+Session names, attribute values and player names reject control characters **and invisible Unicode
+format characters**: bidirectional embeddings, overrides, isolates and marks (U+202A..U+202E,
+U+2066..U+2069, U+200E/F, U+061C), zero-width characters and joiners (U+200B..U+200D, U+2060..U+2064,
+U+FEFF), the soft hyphen, line and paragraph separators, interlinear annotation anchors and the tag
+block. A name can no longer render as something else in a lobby UI. (This also rules out zero-width
+joiner emoji sequences.)
 
 Every session member can publish an opaque **connectivity candidates** blob (≤ 512 bytes). It is
 stored per member, returned in session views, and broadcast on change; the NAT layer defines its
 content. The lobby never interprets it and the consumer must treat it as hostile input (see
-[residual risks](#threat-model-and-residual-risks)).
+[residual risks](#threat-model-and-residual-risks)). The candidates blob is **not** secret: it goes
+to every member. The secret that keys hole punching is delivered separately, to the pair only.
+
+### Relay credentials and NAT introductions
+
+**Pair introduction (`request_peer_intro`).** A member names another member and receives
+`peer_intro { peer, candidates, punch_secret, controlling }`. The 32-byte `punch_secret` is
+`HMAC-SHA256(server key, label || session || (subject, join order) of the earlier joiner || (subject,
+join order) of the later joiner)`, with a server key generated at start-up. It is therefore the same
+for both members of the pair (each obtains it by asking), different for every other pair (a third
+member can only ever ask for pairs that include itself), fresh after a leave and rejoin, never
+broadcast, and not derivable by clients. Feed it to `engine_net_nat::PunchSecret::from_bytes`.
+`controlling` tells you which `PunchRole` to take; the two sides always get opposite values (the host
+is controlled, otherwise the later joiner controls). The secret travels in the response over the
+authenticated, encrypted lobby connection, so it inherits that connection's confidentiality; its
+`Debug` output is redacted everywhere (`Blob` prints a length, `PairIntro` omits it).
+
+**Relay credentials (`request_relay_token`).** The request names the other member of the pair. The
+credential carries `Scope::Relay { session, channel, party }` for the relay audience:
+
+* `channel` = `SHA-256("engine-online/relay-channel/v1" || session || lower subject || higher
+  subject)` truncated to 16 bytes (subjects sorted by their bytes), so both members derive the same
+  channel and nobody else can name it;
+* `party` = `A` for the lower subject, `B` for the higher one, so each member of a pair can take only
+  its own slot;
+* lifetime `relay_token_ttl_secs` (default 3 600 s) and it is the **hard end of the relay
+  allocation** (the relay's grant deadline), so make it cover a match and request a new credential
+  before it ends.
+
+The relay accepts these through `engine_online::relay::relay_authorizer(verifier, "engine-relay")`
+(or `relay_authorizer_with_clock` for tests), which plugs straight into
+`engine_net_nat::RelayServer::new`: it verifies signature, issuer, audience, expiry and the `Relay`
+scope, and returns that credential's channel and party with `max_lifetime` equal to the time left.
+
+*Relay credentials are bearer credentials.* A relay sees no TLS certificate, so it cannot check the
+certificate binding that join tokens enforce and (since an allocate request is retransmitted) it
+cannot consume a nonce. Whoever holds the credential bytes can occupy that one slot of that one
+channel until it expires. The exposure is bounded by (1) the expiry, (2) the relay's
+return-routability cookie (the allocation binds to an address the holder can receive on), (3) the
+pair scoping above (a stolen credential names one slot of one pair, never a session-wide pool), and
+(4) the fact that a squatted slot is a denial of service, not interception: the relayed QUIC session
+still needs mutual TLS with the expected certificates end to end. Treat the credential like a
+password for its lifetime and keep the lifetime short.
+
+### Pinning the host's game server
+
+A joiner needs to know *which certificate* the host's game server presents. Each member registers
+the SHA-256 of the certificate its game server would present if it were host (`set_game_identity`,
+own identity only). The service exposes only the **current host's** fingerprint: in the session view
+(`host_fingerprint`, in `created`, `joined`, `match_found`), in `host_changed` (the new host's), and
+as `host_identity_changed` when the current host registers a new one. A member can therefore only
+ever vouch for itself, and a fingerprint registered by a non-host is revealed only if that member is
+elected.
+
+The joiner pins it with `engine_online::pin`:
+
+```rust
+let pin = engine_online::pin::fingerprint_from_bytes(&view.host_fingerprint.ok_or("host has not registered")?.0)
+    .ok_or("malformed fingerprint")?;
+let tls = engine_online::pin::pinned_client_config(pin, my_chain, my_key)?; // TLS 1.3, client certificate
+let security = engine_net_quic::QuicClientSecurity::from_rustls_config(tls, "game-host")?;
+// or engine_network::ClientSecurity::from_rustls_config(tls, "game-host")? for the TCP transport
+```
+
+`HostCertPin` is a rustls `ServerCertVerifier` that accepts exactly one leaf certificate (SHA-256
+compared in constant time) and still verifies the handshake signature against that certificate's key,
+so a self-signed game-server certificate is fine: no CA, hostname or validity period is checked, the
+lobby vouches for the key. The server name only feeds SNI. A joiner must re-pin after
+`host_changed`/`host_identity_changed`. Without a registered fingerprint (`host_fingerprint` is
+`None`) the joiner has nothing to pin and must not fall back to trusting any certificate.
 
 Per-peer protections: a token bucket (default 20 requests/s, burst 40; rate-limited requests get
 an error, persistent abuse of 200 violations disconnects), at most `max_memberships_per_peer` (1)
@@ -233,16 +348,21 @@ For `Hosting::Player` sessions the lobby tracks `host` and `epoch` (starts at 1)
    an unresponsive host that is still connected).
 2. **Election** (`elect_host`, deterministic, independent of order): lowest RTT, then earliest join,
    then lowest peer ID. RTT is the round trip between the member and the *online service*, measured
-   by the transport (`OnlineServer` copies `LinkStats::rtt_ms` into the service every 500 ms);
-   clients cannot report their own RTT, so a member cannot win the election by lying. Unmeasured
-   members rank after measured ones. For a forced migration the outgoing host is excluded.
+   by the transport (`OnlineServer` copies `LinkStats::rtt_ms` into the service every 500 ms, only
+   when it is above zero); clients cannot report their own RTT, so a member cannot win the election
+   by lying. Unmeasured members rank after measured ones. **Only the QUIC transport measures an RTT.**
+   The TCP transport reports `rtt_ms = 0`, which is treated as "unmeasured", so over TCP every member
+   is unmeasured and the election falls back to join order (then peer ID). For a forced migration the
+   outgoing host is excluded.
 3. **Fencing**: `epoch` increments by one. Host-only requests must carry the current epoch;
    a deposed host's requests fail with `stale_epoch` (checked before the role check, so it learns
    why), and with the new epoch they fail with `forbidden`. Join tokens carry the epoch, so a
    game server running epoch *n* rejects tokens minted for another epoch.
 4. **Notification**: every member receives `host_changed { epoch, host, you_are_host, candidates,
-   join_token }`; the `join_token` is a fresh epoch-bound token for that member. The new host also
-   receives the join code (private sessions) and the migrated state.
+   host_fingerprint, join_token }`; the `join_token` is a fresh epoch-bound token for that member and
+   `host_fingerprint` is the new host's registered game-certificate fingerprint to pin. The join code
+   of a private session is **rotated** at every host change; the new host receives the new code and
+   the migrated state, so the deposed host's copy is dead.
 5. **State hook**: the host uploads bounded opaque state (`upload_migration_state`, ≤ 32 KiB,
    current epoch, host only). The `MigrationState` trait (`accept`, `restore`, `discard`; default
    `InMemoryMigrationState`) decides what is kept and what the new host receives. Implement it to
@@ -272,11 +392,12 @@ limit, and `OnlineLimits::validate` re-checks that for custom limits.
 
 Requests: `hello`, `create_session`, `list_sessions`, `join_session`, `leave_session`, `set_ready`,
 `kick`, `set_attributes`, `set_candidates`, `request_join_token`, `request_relay_token`,
-`upload_migration_state`, `enqueue_ticket`, `cancel_ticket`. Responses echo the request `id`
-(`hello_ok`, `session_created`, `session_list`, `joined`, `left`, `token`, `ticket_queued`,
+`rotate_code`, `set_game_identity`, `request_peer_intro`, `upload_migration_state`,
+`enqueue_ticket`, `cancel_ticket`. Responses echo the request `id` (`hello_ok`, `session_created`,
+`session_list`, `joined`, `left`, `token`, `code_rotated`, `peer_intro`, `ticket_queued`,
 `ticket_cancelled`, `ack`, `error`). Notifications: `member_joined`, `member_left`, `member_ready`,
-`member_candidates`, `attributes_changed`, `host_changed`, `kicked`, `match_found`,
-`ticket_expired`. Error codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `full`,
+`member_candidates`, `attributes_changed`, `host_changed`, `host_identity_changed`, `code_changed`,
+`kicked`, `match_found`, `ticket_expired`. Error codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `full`,
 `rate_limited`, `limit_exceeded`, `conflict`, `stale_epoch`, `unsupported`, `internal`. Errors
 for requests that parsed echo the `id`; unparseable messages are answered with id 0.
 
@@ -339,10 +460,12 @@ certificate in `--client-cert`.
     "game_audience": "engine-game",
     "relay_audience": "engine-relay",
     "join_token_ttl_secs": 120,
+    "relay_token_ttl_secs": 3600,
     "connect_token_single_use": true,
     "max_token_lifetime_secs": 86400,
     "clock_skew_secs": 30,
     "replay_cache_entries": 65536,
+    "replay_per_fingerprint": 1024,
     "verify_keys": [{"key_id": "idp-1", "issuer": "my-idp", "public_key": "<32 bytes base64url>"}]
   },
   "limits": { "max_sessions": 1024, "requests_per_second": 20 },
@@ -385,7 +508,13 @@ signing key and the CA that issues client certificates are trusted.
 | Expired / future / over-long tokens | validity window with bounded skew, verifier-side maximum lifetime |
 | Unauthenticated resource use | transport-level handshake caps; `auth_timeout_ms`; one failure disconnects; unauthenticated peers get no lobby state |
 | Oversized, malformed, deeply nested messages | size cap before parse, strict schema, depth limit, field bounds, strike counter; seeded fuzzing (20 000 hostile payloads, 12 000 token mutations, 15 000 service operations, no panic, invariants intact) |
-| Enumeration and guessing of private sessions | private sessions unlisted, by-id join indistinguishable from "missing", 80-bit constant-time-compared codes, per-peer and global guess throttles |
+| Enumeration and guessing of private sessions | private sessions unlisted, by-id join indistinguishable from "missing", 80-bit constant-time-compared codes, a per-subject guess throttle that survives reconnects (the server-wide count is telemetry only, so one account cannot lock everyone out), codes rotated on kick, on host change and on request |
+| Join token from a previous run or sibling instance admitting a non-member | random 53-bit session IDs from the OS CSPRNG (collision-checked), epoch- and certificate-bound tokens; game hosts should also check the token subject against lobby membership |
+| Squatting a relay slot / reaching another pair's channel | pair-scoped relay credentials (channel from session + both subjects, party from subject order), short lifetime that is also the allocation's hard end, return-routability cookie at the relay |
+| Interception of a hole-punch by a third member | per-pair punch secret derived under a server-only key and delivered only to the two members; probes are HMAC-authenticated with it |
+| Impersonating the host's game server | host's certificate fingerprint registered with the lobby and pinned by joiners (`pin::pinned_client_config`) |
+| Kicked member returning | sticky kicked list per session plus code rotation |
+| One certificate exhausting the token replay cache | per-fingerprint share of the replay cache; global backstop fails closed |
 | Privilege escalation inside a session | host-only operations check membership, epoch and role in that order; non-members see `not_found` |
 | Stale / deposed host | epoch fencing in requests and in join tokens; host election cannot be influenced by client-reported RTT |
 | Memory exhaustion | every table is bounded (sessions, members, attributes, candidates, migration state, tickets, replay cache, binding table, rate-limit state); slow consumers are disconnected rather than buffered |
@@ -394,7 +523,18 @@ Residual risks and limits:
 
 * **Fleet-wide replay**: the nonce cache is local to one verifier process. A token can be replayed
   at a *different* game-server instance holding its own cache, but only by the holder of the
-  certificate it is bound to.
+  certificate it is bound to. For the same reason, a certificate that exceeds its replay share
+  can replay its own oldest tokens.
+* **Relay credentials are bearer tokens** (see above): bounded by expiry, return routability and
+  pair scoping; a stolen credential can deny a slot, not read traffic.
+* **The kicked list and the guess table are bounded**: past `max_kicked_per_session` the oldest ban
+  is forgotten (a griefer with that many throwaway accounts can un-ban the first one; private
+  sessions rotate their code on every kick, which still locks it out), and past
+  `max_tracked_guessers` the oldest guess window is evicted (an attacker cycling through that many
+  accounts can reset another guesser's history, at one account per eviction).
+* **Fingerprints are self-asserted by members**: the service relays what a member registered. Joiners
+  only ever see the *current host's* value and trust the lobby for it; a compromised host account
+  can register any fingerprint it controls the key for, which is exactly the host's own identity.
 * **Clock dependence**: token validity uses wall-clock seconds; skew (default 30 s) is accepted on
   both ends, so a token can be used up to 30 s after expiry. A clock set before 1970 makes every
   token invalid (fail closed).
@@ -425,7 +565,14 @@ Residual risks and limits:
 * Unit tests in every module (tokens, binding, gate, lobby, matchmaking, migration, protocol,
   limits, config, PEM).
 * `tests/service.rs`: deterministic behaviour of the whole service (auth failures, deadline,
-  replay, rate limits, join-code lockout, capacity, matchmaking, relay tokens, migration, fencing).
+  replay, rate limits, join-code lockout across reconnects, capacity, matchmaking, pair-scoped relay
+  tokens, pair introductions, host fingerprints, sticky kicks and code rotation, random session IDs,
+  migration, fencing).
+* `tests/pin.rs`: a real loopback QUIC handshake where the joiner is pinned to the host's registered
+  certificate fingerprint: the host connects, a same-name imposter and an unknown pin do not.
+* `tests/relay.rs`: pair credentials through a real `RelayServer` over loopback UDP via
+  `relay_authorizer` (allocate, pair, forward; third member and stolen credential refused; wrong
+  audience, wrong kind and expired credentials refused).
 * `tests/e2e.rs`: real loopback QUIC and TLS-over-TCP (`127.0.0.1:0`, synthetic in-memory
   identities): authenticate, create, browse, join by code, match, game-server verification,
   expired / wrong-audience / wrong-key / tampered / replayed / other-certificate tokens, abuse,

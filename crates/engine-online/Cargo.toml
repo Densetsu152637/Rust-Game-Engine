@@ -15,6 +15,7 @@ path = "src/bin/engine-online-server.rs"
 
 [dependencies]
 base64 = "=0.22.1"
+engine-net-nat = { path = "../engine-net-nat" }
 engine-net-quic = { path = "../engine-net-quic" }
 engine-network = { path = "../engine-network" }
 ring = "=0.17.14"

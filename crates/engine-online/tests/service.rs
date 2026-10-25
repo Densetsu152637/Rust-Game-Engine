@@ -836,55 +836,398 @@ fn entering_a_lobby_session_leaves_the_matchmaking_queue() {
     )));
 }
 
-#[test]
-fn relay_tokens_are_scoped_audience_checked_and_optional() {
-    let mut sim = Sim::new(|_| {});
-    sim.login(1, "alice");
-    let (session, _) = create(&mut sim, 1, "room", false, 2);
-    let ServerBody::Token { token, kind, .. } = sim.request(
-        1,
+fn relay_token(sim: &mut Sim, peer: u64, session: u64, with: &str) -> ServerBody {
+    sim.request(
+        peer,
         ClientBody::RequestRelayToken {
-            session_id: session.id,
+            session_id: session,
+            peer: with.into(),
         },
-    ) else {
-        panic!("relay token expected");
+    )
+}
+fn token_bytes(body: ServerBody) -> Vec<u8> {
+    match body {
+        ServerBody::Token {
+            token,
+            kind: TokenKind::Relay,
+            ..
+        } => token.0,
+        other => panic!("relay token expected, got {other:?}"),
+    }
+}
+
+/// M4: a session-wide relay token named no channel or party, so any member could squat either
+/// slot of any pair. Credentials now name exactly one pair and one slot.
+#[test]
+fn relay_tokens_are_pair_scoped_audience_checked_and_optional() {
+    use engine_online::{RelayParty, relay::relay_channel};
+    let mut sim = Sim::new(|_| {});
+    for (peer, name) in [(1, "alice"), (2, "bob"), (3, "carol"), (4, "dave")] {
+        sim.login(peer, name);
+    }
+    let (session, _) = create(&mut sim, 1, "room", false, 4);
+    for peer in [2u64, 3] {
+        assert!(matches!(
+            join_by_id(&mut sim, peer, session.id),
+            ServerBody::Joined { .. }
+        ));
+    }
+    let (other_session, _) = {
+        sim.login(5, "erin");
+        create(&mut sim, 5, "elsewhere", false, 2)
     };
-    assert_eq!(kind, TokenKind::Relay);
-    let relay = sim.auth.verifier();
+    let verifier = sim.auth.verifier();
+    let now = sim.now().unix_secs;
+    let claims = |token: &[u8]| verifier.verify_relay(token, "engine-relay", now).unwrap();
+
+    let alice_bob = token_bytes(relay_token(&mut sim, 1, session.id, "bob"));
+    let bob_alice = token_bytes(relay_token(&mut sim, 2, session.id, "alice"));
+    let carol_alice = token_bytes(relay_token(&mut sim, 3, session.id, "alice"));
+    let carol_bob = token_bytes(relay_token(&mut sim, 3, session.id, "bob"));
+    let channel = relay_channel(session.id, "alice", "bob");
+    let (a, b) = (claims(&alice_bob), claims(&bob_alice));
+    assert_eq!(
+        (a.channel, a.party, a.subject.as_str()),
+        (channel, RelayParty::A, "alice")
+    );
+    assert_eq!(
+        (b.channel, b.party, b.subject.as_str()),
+        (channel, RelayParty::B, "bob")
+    );
+    assert_eq!((a.session, a.expires_at), (session.id, now + 3600));
+    // A third member can only ever obtain credentials for channels it is party to.
+    let (ca, cb) = (claims(&carol_alice), claims(&carol_bob));
+    assert_ne!(ca.channel, channel);
+    assert_ne!(cb.channel, channel);
+    assert_ne!(ca.channel, cb.channel);
+    assert_eq!(ca.channel, relay_channel(session.id, "carol", "alice"));
+    // The scope in the signed token is exactly the pair's, nothing broader.
     let scope = engine_online::Scope::Relay {
         session: session.id,
+        channel,
+        party: RelayParty::A,
     };
-    let print = Sim::print_for("alice");
-    let verify = |audience: &str, print: &_| {
-        relay.verify(
-            &token.0,
+    let verify = |audience: &str, print: &_, scope: &_| {
+        verifier.verify(
+            &alice_bob,
             &engine_online::token::Expect {
                 audience,
-                scope: &scope,
+                scope,
                 cert_sha256: print,
                 single_use: false,
             },
-            sim.now().unix_secs,
+            now,
         )
     };
-    assert!(verify("engine-relay", &print).is_ok());
-    assert_eq!(verify(GAME, &print).unwrap_err(), TokenError::WrongAudience);
+    let alice_print = Sim::print_for("alice");
+    assert!(verify("engine-relay", &alice_print, &scope).is_ok());
     assert_eq!(
-        verify("engine-relay", &Sim::print_for("bob")).unwrap_err(),
+        verify(GAME, &alice_print, &scope).unwrap_err(),
+        TokenError::WrongAudience
+    );
+    assert_eq!(
+        verify("engine-relay", &Sim::print_for("bob"), &scope).unwrap_err(),
         TokenError::WrongCertificate
     );
+    let as_party_b = engine_online::Scope::Relay {
+        session: session.id,
+        channel,
+        party: RelayParty::B,
+    };
+    assert_eq!(
+        verify("engine-relay", &alice_print, &as_party_b).unwrap_err(),
+        TokenError::MissingScope,
+        "alice's credential is not valid for bob's slot"
+    );
+    assert_eq!(
+        verifier.verify_relay(&alice_bob, GAME, now).unwrap_err(),
+        TokenError::WrongAudience
+    );
+
+    // Requests that do not name a member of the requester's own session are refused.
+    for (peer, with, session_id, expected) in [
+        (1, "nobody", session.id, ErrorCode::NotFound),
+        (1, "erin", session.id, ErrorCode::NotFound),
+        (1, "alice", session.id, ErrorCode::BadRequest),
+        (4, "alice", session.id, ErrorCode::NotFound),
+        (1, "bob", other_session.id, ErrorCode::NotFound),
+        (1, "bob", 424_242, ErrorCode::NotFound),
+    ] {
+        assert_eq!(
+            expect_error(relay_token(&mut sim, peer, session_id, with)),
+            expected,
+            "{peer} -> {with} in {session_id}"
+        );
+    }
     // Without a configured relay audience the request is refused.
     let mut plain = Sim::new(|c| c.relay_audience = None);
     plain.login(1, "alice");
+    plain.login(2, "bob");
     let (session, _) = create(&mut plain, 1, "room", false, 2);
+    join_by_id(&mut plain, 2, session.id);
     assert_eq!(
-        expect_error(plain.request(
-            1,
-            ClientBody::RequestRelayToken {
-                session_id: session.id
+        expect_error(relay_token(&mut plain, 1, session.id, "bob")),
+        ErrorCode::Unsupported
+    );
+}
+
+/// L2: nothing distributed the punch secret except the broadcast candidates blob. Now the
+/// server derives a secret per pair and hands it to the two members only.
+#[test]
+fn a_third_member_never_receives_a_pairs_punch_secret() {
+    let mut sim = Sim::new(|_| {});
+    for (peer, name) in [(1, "alice"), (2, "bob"), (3, "carol")] {
+        sim.login(peer, name);
+    }
+    let (session, _) = create(&mut sim, 1, "room", false, 4);
+    for peer in [2u64, 3] {
+        join_by_id(&mut sim, peer, session.id);
+    }
+    let intro = |sim: &mut Sim, peer: u64, with: &str| match sim.request(
+        peer,
+        ClientBody::RequestPeerIntro {
+            session_id: session.id,
+            peer: with.into(),
+        },
+    ) {
+        ServerBody::PeerIntro {
+            peer,
+            candidates,
+            punch_secret,
+            controlling,
+            ..
+        } => (peer, candidates, punch_secret.0, controlling),
+        other => panic!("peer intro expected, got {other:?}"),
+    };
+    for peer in 1..=3 {
+        sim.take(peer);
+    }
+    let (peer_of_alice, bob_candidates, alice_secret, alice_controls) = intro(&mut sim, 1, "bob");
+    let (peer_of_bob, alice_candidates, bob_secret, bob_controls) = intro(&mut sim, 2, "alice");
+    assert_eq!(
+        (peer_of_alice.as_str(), peer_of_bob.as_str()),
+        ("bob", "alice")
+    );
+    assert_eq!(alice_secret.len(), 32);
+    assert_eq!(alice_secret, bob_secret, "the pair shares one secret");
+    assert_ne!(alice_controls, bob_controls, "and takes opposite roles");
+    assert_eq!(
+        bob_candidates,
+        Some(Blob(vec![2; 8])),
+        "the peer's candidates ride along"
+    );
+    assert_eq!(alice_candidates, Some(Blob(vec![1; 8])));
+    // Carol is a member too, but everything she can obtain involves herself, so it differs.
+    let (_, _, carol_with_alice, _) = intro(&mut sim, 3, "alice");
+    let (_, _, carol_with_bob, _) = intro(&mut sim, 3, "bob");
+    assert_ne!(carol_with_alice, alice_secret);
+    assert_ne!(carol_with_bob, alice_secret);
+    assert_ne!(carol_with_alice, carol_with_bob);
+    // The secret travels in the responses to the two members only: nothing was broadcast, and
+    // the third member's inbox holds no copy of it.
+    for note in sim.take(3) {
+        let text = format!("{note:?}");
+        assert!(!text.contains("punch_secret"), "{text}");
+    }
+    assert!(sim.take(1).is_empty() && sim.take(2).is_empty());
+    // Strangers and non-members get nothing.
+    for (peer, with, expected) in [
+        (1, "nobody", ErrorCode::NotFound),
+        (1, "alice", ErrorCode::BadRequest),
+    ] {
+        assert_eq!(
+            expect_error(sim.request(
+                peer,
+                ClientBody::RequestPeerIntro {
+                    session_id: session.id,
+                    peer: with.into()
+                }
+            )),
+            expected
+        );
+    }
+    sim.login(4, "dave");
+    assert_eq!(
+        expect_error(sim.request(
+            4,
+            ClientBody::RequestPeerIntro {
+                session_id: session.id,
+                peer: "alice".into()
             }
         )),
-        ErrorCode::Unsupported
+        ErrorCode::NotFound
+    );
+}
+
+/// L2: joiners had no way to learn which certificate the host's game server presents.
+#[test]
+fn the_hosts_game_certificate_fingerprint_reaches_joiners_and_follows_migration() {
+    let mut sim = Sim::new(|_| {});
+    for (peer, name) in [(1, "alice"), (2, "bob"), (3, "carol")] {
+        sim.login(peer, name);
+    }
+    let (session, _) = create(&mut sim, 1, "room", false, 4);
+    assert_eq!(session.host_fingerprint, None, "nothing registered yet");
+    let register = |sim: &mut Sim, peer: u64, bytes: Vec<u8>| {
+        sim.request(
+            peer,
+            ClientBody::SetGameIdentity {
+                session_id: session.id,
+                cert_sha256: Blob(bytes),
+            },
+        )
+    };
+    assert_eq!(register(&mut sim, 1, vec![0xA1; 32]), ServerBody::Ack {});
+    let ServerBody::Joined { session: view, .. } = join_by_id(&mut sim, 2, session.id) else {
+        panic!("join failed");
+    };
+    assert_eq!(view.host_fingerprint, Some(Blob(vec![0xA1; 32])));
+    join_by_id(&mut sim, 3, session.id);
+    // Bob and carol register what their servers would present if they were elected.
+    assert_eq!(register(&mut sim, 2, vec![0xB2; 32]), ServerBody::Ack {});
+    assert_eq!(register(&mut sim, 3, vec![0xC3; 32]), ServerBody::Ack {});
+    // The wrong size is refused at the protocol boundary, and outsiders cannot register.
+    sim.login(4, "dave");
+    assert_eq!(
+        expect_error(register(&mut sim, 4, vec![1; 32])),
+        ErrorCode::NotFound
+    );
+    let payload = format!(
+        r#"{{"v":1,"id":9,"body":{{"type":"set_game_identity","session_id":{},"cert_sha256":"AAAA"}}}}"#,
+        session.id
+    );
+    sim.send_raw(1, payload.as_bytes());
+    assert!(matches!(
+        sim.take(1).last(),
+        Some(ServerBody::Error {
+            code: ErrorCode::BadRequest,
+            ..
+        })
+    ));
+    // The host changes its certificate: everybody else is told.
+    sim.take(2);
+    sim.take(3);
+    assert_eq!(register(&mut sim, 1, vec![0xA2; 32]), ServerBody::Ack {});
+    for peer in [2u64, 3] {
+        assert!(sim.take(peer).iter().any(|n| matches!(
+            n,
+            ServerBody::HostIdentityChanged { host_fingerprint, .. }
+                if *host_fingerprint == Blob(vec![0xA2; 32])
+        )));
+    }
+    // The host leaves: HostChanged carries the new host's fingerprint, never the old host's.
+    sim.service.set_rtt(2, 10);
+    sim.service.set_rtt(3, 90);
+    sim.drop_peer(1);
+    for (peer, expected) in [(2u64, vec![0xB2; 32]), (3, vec![0xB2; 32])] {
+        let changed = sim
+            .take(peer)
+            .into_iter()
+            .find_map(|n| match n {
+                ServerBody::HostChanged {
+                    host,
+                    host_fingerprint,
+                    ..
+                } => Some((host, host_fingerprint)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("peer {peer} missed HostChanged"));
+        assert_eq!(changed.0, "bob");
+        assert_eq!(changed.1, Some(Blob(expected)));
+    }
+    // A joiner arriving now sees the new host's pin in the session view.
+    sim.login(5, "erin");
+    let ServerBody::Joined { session: view, .. } = join_by_id(&mut sim, 5, session.id) else {
+        panic!("join failed");
+    };
+    assert_eq!(view.host.as_deref(), Some("bob"));
+    assert_eq!(view.host_fingerprint, Some(Blob(vec![0xB2; 32])));
+}
+
+/// L3: the host can rotate the private code on demand, and every host change rotates it.
+#[test]
+fn rotating_the_join_code_invalidates_the_old_one() {
+    let mut sim = Sim::new(|_| {});
+    for (peer, name) in [(1, "host"), (2, "friend"), (3, "latecomer")] {
+        sim.login(peer, name);
+    }
+    let (private, _) = create(&mut sim, 1, "secret", true, 4);
+    let old = private.code.clone().unwrap();
+    assert!(matches!(
+        join_by_code(&mut sim, 2, &old),
+        ServerBody::Joined { .. }
+    ));
+    // A member cannot rotate it; a stale epoch is told so.
+    for (peer, epoch, expected) in [
+        (2, 1, ErrorCode::Forbidden),
+        (1, 9, ErrorCode::StaleEpoch),
+        (3, 1, ErrorCode::NotFound),
+    ] {
+        assert_eq!(
+            expect_error(sim.request(
+                peer,
+                ClientBody::RotateCode {
+                    session_id: private.id,
+                    epoch
+                }
+            )),
+            expected
+        );
+    }
+    let ServerBody::CodeRotated { code: new, .. } = sim.request(
+        1,
+        ClientBody::RotateCode {
+            session_id: private.id,
+            epoch: 1,
+        },
+    ) else {
+        panic!("rotation failed");
+    };
+    assert_ne!(new, old);
+    assert_eq!(
+        expect_error(join_by_code(&mut sim, 3, &old)),
+        ErrorCode::NotFound,
+        "the old code is dead"
+    );
+    assert!(matches!(
+        join_by_code(&mut sim, 3, &new),
+        ServerBody::Joined { .. }
+    ));
+    // Kicking tells the host the new code; the kicked member is refused either way.
+    sim.take(1);
+    assert_eq!(
+        sim.request(
+            1,
+            ClientBody::Kick {
+                session_id: private.id,
+                epoch: 1,
+                player: "friend".into()
+            }
+        ),
+        ServerBody::Ack {}
+    );
+    let kicked_note = sim.take(1).into_iter().find_map(|n| match n {
+        ServerBody::CodeChanged { code, .. } => Some(code),
+        _ => None,
+    });
+    let after_kick = kicked_note.expect("the host is told the rotated code");
+    assert_ne!(after_kick, new);
+    assert_eq!(
+        expect_error(join_by_code(&mut sim, 2, &after_kick)),
+        ErrorCode::Forbidden
+    );
+    // A public session has no code to rotate.
+    sim.login(4, "other");
+    let (public, _) = create(&mut sim, 4, "open", false, 2);
+    assert_eq!(
+        expect_error(sim.request(
+            4,
+            ClientBody::RotateCode {
+                session_id: public.id,
+                epoch: 1
+            }
+        )),
+        ErrorCode::BadRequest
     );
 }
 
@@ -1083,6 +1426,248 @@ fn forced_migration_deposes_a_live_host_and_fences_it() {
             }
         )),
         ErrorCode::Forbidden
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Security repairs (findings M1, M2, L3)
+// ---------------------------------------------------------------------------------------------
+
+/// Sends a join-by-code request and discards whatever comes back (the peer may already have
+/// been dropped for persistent guessing).
+fn guess_code(sim: &mut Sim, peer: u64, code: &str) {
+    let payload = engine_online::ClientEnvelope {
+        v: engine_online::protocol::PROTOCOL_VERSION,
+        id: 77,
+        body: ClientBody::JoinSession {
+            target: JoinTarget::Code { code: code.into() },
+            candidates: None,
+        },
+    }
+    .encode(&sim.limits)
+    .unwrap();
+    sim.send_raw(peer, &payload);
+    sim.take(peer);
+}
+
+/// M1: session IDs were sequential from 1 with epoch 1 everywhere, so a join token from a
+/// previous run or a sibling instance named an ID/epoch that existed again and admitted a
+/// non-member.
+#[test]
+fn join_token_from_a_previous_or_sibling_instance_admits_a_non_member() {
+    let mut sim = Sim::new(|_| {});
+    sim.login(1, "alice");
+    let (_alice_session, alice_token) = create(&mut sim, 1, "alice-room", true, 4);
+    // A restart (or a sibling instance sharing the signing key) starts again.
+    sim.service = service(&sim.auth, |_| {});
+    sim.login(2, "bob");
+    let (bob, _) = create(&mut sim, 2, "bob-private", true, 4);
+    let r = sim.auth.verifier().verify_join(
+        &alice_token,
+        GAME,
+        bob.id,
+        bob.epoch,
+        b"sim-cert-alice",
+        sim.now().unix_secs,
+    );
+    assert!(r.is_err(), "alice's old token must not open bob's session");
+}
+
+#[test]
+fn session_ids_are_random_nonzero_and_json_safe() {
+    let mut sim = Sim::new(|c| c.limits.max_sessions = 64);
+    let mut ids = std::collections::BTreeSet::new();
+    for peer in 1..=40u64 {
+        sim.login(peer, &format!("p{peer}"));
+        let (session, _) = create(&mut sim, peer, "r", false, 2);
+        assert!(session.id != 0);
+        assert!(
+            session.id < (1 << 53),
+            "ids stay exactly representable as JSON numbers"
+        );
+        assert!(ids.insert(session.id));
+    }
+    let sequential = ids.iter().zip(ids.iter().skip(1)).all(|(a, b)| b - a == 1);
+    assert!(!sequential && *ids.iter().max().unwrap() > 1000);
+}
+
+/// M2: the per-connection guess window reset on reconnect and a global window of failures
+/// blocked everyone, so one account reconnecting could deny every private-code join.
+#[test]
+fn a_reconnecting_guesser_cannot_lock_everyone_out_of_private_code_joins() {
+    let mut sim = Sim::new(|_| {});
+    sim.login(1, "host");
+    sim.login(2, "alice");
+    let (private, _) = create(&mut sim, 1, "secret", true, 4);
+    let code = private.code.clone().expect("host sees the code");
+    let mut peer = 100;
+    for _ in 0..20 {
+        sim.login(peer, "mallory");
+        for _ in 0..5 {
+            guess_code(&mut sim, peer, "ABCDEFGHJKLMNPQR");
+        }
+        peer += 1;
+    }
+    let stats = sim.service.stats().clone();
+    assert_eq!(
+        stats.join_code_failures, 5,
+        "only the first window's guesses reached the comparison; every reconnect stays locked out"
+    );
+    assert!(stats.rate_limited >= 20, "{stats:?}");
+    assert_eq!(
+        stats.join_code_alarms, 0,
+        "the global count is telemetry only"
+    );
+    let ServerBody::Joined { session, .. } = join_by_code(&mut sim, 2, &code) else {
+        panic!("alice must still be able to join with the correct code");
+    };
+    assert_eq!(session.members.len(), 2);
+    // Mallory, though, stays locked out across reconnects even with the right code.
+    sim.login(peer, "mallory");
+    assert_eq!(
+        expect_error(join_by_code(&mut sim, peer, &code)),
+        ErrorCode::RateLimited
+    );
+    // Once the window passes she may try again.
+    sim.advance(61_000);
+    sim.login(peer + 1, "mallory");
+    assert!(matches!(
+        join_by_code(&mut sim, peer + 1, &code),
+        ServerBody::Joined { .. }
+    ));
+}
+
+#[test]
+fn the_global_guess_count_raises_an_alarm_but_blocks_nobody() {
+    let mut sim = Sim::new(|c| {
+        c.limits.join_code_failures_global = 3;
+        c.limits.join_code_failures_per_peer = 100;
+    });
+    sim.login(1, "host");
+    sim.login(2, "alice");
+    sim.login(3, "mallory");
+    let (private, _) = create(&mut sim, 1, "secret", true, 4);
+    let code = private.code.clone().unwrap();
+    for _ in 0..5 {
+        guess_code(&mut sim, 3, "ABCDEFGHJKLMNPQR");
+    }
+    let stats = sim.service.stats();
+    assert_eq!((stats.join_code_failures, stats.join_code_alarms), (5, 1));
+    assert!(matches!(
+        join_by_code(&mut sim, 2, &code),
+        ServerBody::Joined { .. }
+    ));
+}
+
+#[test]
+fn guess_tracking_is_bounded_even_with_many_subjects() {
+    let mut sim = Sim::new(|c| {
+        c.limits.max_peers = 16;
+        c.limits.max_tracked_guessers = 8;
+        c.limits.requests_per_second = 1_000_000;
+        c.limits.request_burst = 1_000_000;
+    });
+    sim.login(1, "host");
+    let (private, _) = create(&mut sim, 1, "secret", true, 4);
+    let code = private.code.clone().unwrap();
+    // Far more distinct guessing subjects than the table holds: the service stays bounded and
+    // a fresh honest subject still gets through.
+    for n in 0..500u64 {
+        let peer = 1000 + n;
+        sim.login(peer, &format!("guesser{n}"));
+        guess_code(&mut sim, peer, "ABCDEFGHJKLMNPQR");
+        sim.drop_peer(peer);
+        assert!(sim.service.tracked_code_guessers() <= 8);
+    }
+    assert_eq!(sim.service.tracked_code_guessers(), 8);
+    sim.login(9, "honest");
+    assert!(matches!(
+        join_by_code(&mut sim, 9, &code),
+        ServerBody::Joined { .. }
+    ));
+}
+
+/// L3: kicking was not sticky and join codes never rotated, so a kicked member walked straight
+/// back in.
+#[test]
+fn a_kicked_member_cannot_rejoin_and_the_old_code_stops_working() {
+    let mut sim = Sim::new(|_| {});
+    for (peer, name) in [(1, "host"), (2, "bob"), (3, "carol")] {
+        sim.login(peer, name);
+    }
+    // Public session: the kick is sticky.
+    let (public, _) = create(&mut sim, 1, "open", false, 4);
+    assert!(matches!(
+        join_by_id(&mut sim, 2, public.id),
+        ServerBody::Joined { .. }
+    ));
+    assert_eq!(
+        sim.request(
+            1,
+            ClientBody::Kick {
+                session_id: public.id,
+                epoch: 1,
+                player: "bob".into()
+            }
+        ),
+        ServerBody::Ack {}
+    );
+    assert_eq!(
+        expect_error(join_by_id(&mut sim, 2, public.id)),
+        ErrorCode::Forbidden,
+        "kicked members stay out"
+    );
+    // A different member is unaffected.
+    assert!(matches!(
+        join_by_id(&mut sim, 3, public.id),
+        ServerBody::Joined { .. }
+    ));
+    sim.request(
+        3,
+        ClientBody::LeaveSession {
+            session_id: public.id,
+        },
+    );
+    sim.request(
+        1,
+        ClientBody::LeaveSession {
+            session_id: public.id,
+        },
+    );
+
+    // Private session: kicking also rotates the code, so the kicked member's copy is dead.
+    sim.login(4, "dave");
+    let (private, _) = create(&mut sim, 1, "secret", true, 4);
+    let old_code = private.code.clone().unwrap();
+    assert!(matches!(
+        join_by_code(&mut sim, 4, &old_code),
+        ServerBody::Joined { .. }
+    ));
+    sim.take(1);
+    assert_eq!(
+        sim.request(
+            1,
+            ClientBody::Kick {
+                session_id: private.id,
+                epoch: 1,
+                player: "dave".into()
+            }
+        ),
+        ServerBody::Ack {}
+    );
+    assert!(
+        !matches!(
+            join_by_code(&mut sim, 4, &old_code),
+            ServerBody::Joined { .. }
+        ),
+        "dave cannot come back with the code he already had"
+    );
+    assert!(
+        !matches!(
+            join_by_code(&mut sim, 3, &old_code),
+            ServerBody::Joined { .. }
+        ),
+        "the old code is dead for everybody"
     );
 }
 

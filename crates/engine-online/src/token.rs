@@ -10,8 +10,8 @@
 //! [32] SHA-256 of the client's TLS leaf certificate DER
 //! u64 BE issued_at (unix seconds) | u64 BE expires_at | [16] random nonce
 //! u8  scope count (1..=8) | scopes
-//!       1 Connect | 2 JoinSession u64 session, u64 epoch | 3 Relay u64 session
-//!       4 Custom u8 len (1..=32) identifier
+//!       1 Connect | 2 JoinSession u64 session, u64 epoch
+//!       3 Relay u64 session, [16] channel, u8 party (0 A | 1 B) | 4 Custom u8 len (1..=32) id
 //! [64] Ed25519 signature over "engine-online/token/v1\0" || everything above
 //! ```
 //!
@@ -105,11 +105,40 @@ pub enum Scope {
     /// Join `session` while its host epoch is `epoch`; game servers reject other epochs, which
     /// fences a deposed host after migration.
     JoinSession { session: u64, epoch: u64 },
-    /// Use a relay allocation for `session` (consumed by the relay service).
-    Relay { session: u64 },
+    /// Take one party slot of one relay channel (consumed by the relay service through
+    /// [`crate::relay::relay_authorizer`]). A credential names a *pair*, not a session: the
+    /// channel is derived from the session and the two members' subjects, and the party is fixed
+    /// by subject order, so a holder can occupy exactly one slot of exactly one channel.
+    Relay {
+        session: u64,
+        channel: [u8; 16],
+        party: RelayParty,
+    },
     /// Application-defined scope identifier.
     Custom(String),
 }
+/// Which of a relay channel's two slots a relay credential may take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelayParty {
+    A,
+    B,
+}
+impl RelayParty {
+    fn code(self) -> u8 {
+        match self {
+            Self::A => 0,
+            Self::B => 1,
+        }
+    }
+    fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::A),
+            1 => Some(Self::B),
+            _ => None,
+        }
+    }
+}
+
 impl Scope {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), TokenError> {
         match self {
@@ -119,9 +148,15 @@ impl Scope {
                 out.extend_from_slice(&session.to_be_bytes());
                 out.extend_from_slice(&epoch.to_be_bytes());
             }
-            Self::Relay { session } => {
+            Self::Relay {
+                session,
+                channel,
+                party,
+            } => {
                 out.push(3);
                 out.extend_from_slice(&session.to_be_bytes());
+                out.extend_from_slice(channel);
+                out.push(party.code());
             }
             Self::Custom(name) => {
                 if !valid_ident(name, MAX_CUSTOM_SCOPE_BYTES) {
@@ -141,7 +176,12 @@ impl Scope {
                 session: r.u64()?,
                 epoch: r.u64()?,
             },
-            3 => Self::Relay { session: r.u64()? },
+            3 => Self::Relay {
+                session: r.u64()?,
+                channel: r.array()?,
+                party: RelayParty::from_code(r.u8()?)
+                    .ok_or(TokenError::Malformed("relay party"))?,
+            },
             4 => Self::Custom(r.ident(MAX_CUSTOM_SCOPE_BYTES)?),
             _ => return Err(TokenError::Malformed("unknown scope")),
         })
@@ -482,6 +522,11 @@ pub struct VerifierConfig {
     pub clock_skew_secs: u64,
     /// Most single-use nonces remembered; a full cache rejects single-use tokens (fail closed).
     pub replay_capacity: usize,
+    /// Most live nonces remembered per certificate fingerprint. A fingerprint over its share
+    /// evicts its own oldest nonce instead of taking space from others, so one certificate can
+    /// never fill the cache and lock every other certificate out. The effective share is
+    /// clamped to half of `replay_capacity` so at least two fingerprints always coexist.
+    pub replay_per_fingerprint: usize,
 }
 impl Default for VerifierConfig {
     fn default() -> Self {
@@ -489,6 +534,7 @@ impl Default for VerifierConfig {
             max_lifetime_secs: 24 * 3600,
             clock_skew_secs: 30,
             replay_capacity: 65_536,
+            replay_per_fingerprint: 1024,
         }
     }
 }
@@ -511,38 +557,102 @@ pub struct VerifiedToken {
     pub claims: Claims,
 }
 
+/// What a verified relay credential allows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelayClaims {
+    /// The member the credential was minted for.
+    pub subject: String,
+    pub session: u64,
+    pub channel: [u8; 16],
+    pub party: RelayParty,
+    /// Unix seconds; the allocation must end by then.
+    pub expires_at: u64,
+}
+
+struct ReplayEntry {
+    expiry: u64,
+    fingerprint: CertFingerprint,
+    seq: u64,
+}
 #[derive(Default)]
 struct ReplayCache {
-    by_nonce: HashMap<[u8; NONCE_BYTES], u64>,
+    by_nonce: HashMap<[u8; NONCE_BYTES], ReplayEntry>,
     by_expiry: BTreeSet<(u64, [u8; NONCE_BYTES])>,
+    /// Each fingerprint's live nonces in insertion order (oldest first).
+    by_fingerprint: HashMap<CertFingerprint, BTreeMap<u64, [u8; NONCE_BYTES]>>,
+    next_seq: u64,
 }
 impl ReplayCache {
+    fn remove(&mut self, nonce: [u8; NONCE_BYTES]) {
+        let Some(entry) = self.by_nonce.remove(&nonce) else {
+            return;
+        };
+        self.by_expiry.remove(&(entry.expiry, nonce));
+        if let Some(live) = self.by_fingerprint.get_mut(&entry.fingerprint) {
+            live.remove(&entry.seq);
+            if live.is_empty() {
+                self.by_fingerprint.remove(&entry.fingerprint);
+            }
+        }
+    }
     fn prune(&mut self, now: u64) {
         while let Some(&(expiry, nonce)) = self.by_expiry.first() {
             if expiry >= now {
                 break;
             }
-            self.by_expiry.pop_first();
-            self.by_nonce.remove(&nonce);
+            self.remove(nonce);
         }
     }
-    /// Remembers `nonce` until `retain_until`; false when already present or the cache is full.
+    fn live_for(&self, fingerprint: &CertFingerprint) -> usize {
+        self.by_fingerprint
+            .get(fingerprint)
+            .map_or(0, BTreeMap::len)
+    }
+    /// Remembers `nonce` until `retain_until`. Fails when already present, or when the cache is
+    /// full of other fingerprints' nonces. A fingerprint at its share evicts its own oldest
+    /// nonce first (that old token becomes replayable again, but only by the holder of the
+    /// certificate it is bound to).
     fn insert(
         &mut self,
         nonce: [u8; NONCE_BYTES],
+        fingerprint: CertFingerprint,
         retain_until: u64,
         now: u64,
-        capacity: usize,
+        limits: (usize, usize),
     ) -> Result<(), TokenError> {
+        let (capacity, per_fingerprint) = limits;
         self.prune(now);
         if self.by_nonce.contains_key(&nonce) {
             return Err(TokenError::Replayed);
         }
+        let share = per_fingerprint.clamp(1, (capacity / 2).max(1));
+        if self.live_for(&fingerprint) >= share
+            && let Some(oldest) = self
+                .by_fingerprint
+                .get(&fingerprint)
+                .and_then(|live| live.first_key_value())
+                .map(|(_, &nonce)| nonce)
+        {
+            self.remove(oldest);
+        }
         if self.by_nonce.len() >= capacity {
             return Err(TokenError::ReplayCacheFull);
         }
-        self.by_nonce.insert(nonce, retain_until);
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.by_nonce.insert(
+            nonce,
+            ReplayEntry {
+                expiry: retain_until,
+                fingerprint,
+                seq,
+            },
+        );
         self.by_expiry.insert((retain_until, nonce));
+        self.by_fingerprint
+            .entry(fingerprint)
+            .or_default()
+            .insert(seq, nonce);
         Ok(())
     }
 }
@@ -558,7 +668,10 @@ impl TokenVerifier {
         config: VerifierConfig,
         keys: impl IntoIterator<Item = TrustedKey>,
     ) -> Result<Self, TokenError> {
-        if config.max_lifetime_secs == 0 || config.replay_capacity == 0 {
+        if config.max_lifetime_secs == 0
+            || config.replay_capacity == 0
+            || config.replay_per_fingerprint == 0
+        {
             return Err(TokenError::InvalidRequest("verifier config"));
         }
         let verifier = Self {
@@ -595,15 +708,14 @@ impl TokenVerifier {
             .map(|keys| keys.keys().cloned().collect())
             .unwrap_or_default()
     }
-    /// Checks, in order: encoding, key, signature, issuer, audience, validity window and
-    /// lifetime, scope, certificate binding (constant time) and finally replay. The nonce is
-    /// consumed only when every other check passed.
-    pub fn verify(
+    /// Encoding, key, signature, issuer, audience, validity window and lifetime: everything
+    /// that does not depend on what the token is used for.
+    fn verify_signed(
         &self,
         token: &[u8],
-        expect: &Expect<'_>,
+        audience: &str,
         now_unix: u64,
-    ) -> Result<VerifiedToken, TokenError> {
+    ) -> Result<Claims, TokenError> {
         let (claims, payload, signature) = parse(token)?;
         let key = self
             .keys
@@ -618,7 +730,7 @@ impl TokenVerifier {
         if claims.issuer != key.issuer {
             return Err(TokenError::WrongIssuer);
         }
-        if claims.audience != expect.audience {
+        if claims.audience != audience {
             return Err(TokenError::WrongAudience);
         }
         let skew = self.config.clock_skew_secs;
@@ -631,6 +743,18 @@ impl TokenVerifier {
         if claims.expires_at - claims.issued_at > self.config.max_lifetime_secs {
             return Err(TokenError::LifetimeTooLong);
         }
+        Ok(claims)
+    }
+    /// Checks, in order: encoding, key, signature, issuer, audience, validity window and
+    /// lifetime, scope, certificate binding (constant time) and finally replay. The nonce is
+    /// consumed only when every other check passed.
+    pub fn verify(
+        &self,
+        token: &[u8],
+        expect: &Expect<'_>,
+        now_unix: u64,
+    ) -> Result<VerifiedToken, TokenError> {
+        let claims = self.verify_signed(token, expect.audience, now_unix)?;
         if !claims.scopes.iter().any(|scope| scope == expect.scope) {
             return Err(TokenError::MissingScope);
         }
@@ -643,18 +767,55 @@ impl TokenVerifier {
             return Err(TokenError::WrongCertificate);
         }
         if expect.single_use {
+            let skew = self.config.clock_skew_secs;
             let retain_until = claims.expires_at.saturating_add(skew);
             self.replay
                 .lock()
                 .map_err(|_| TokenError::Internal)?
                 .insert(
                     claims.nonce,
+                    claims.cert_sha256,
                     retain_until,
                     now_unix,
-                    self.config.replay_capacity,
+                    (
+                        self.config.replay_capacity,
+                        self.config.replay_per_fingerprint,
+                    ),
                 )?;
         }
         Ok(VerifiedToken { claims })
+    }
+    /// Verifies a relay credential for `audience`: signature, issuer, audience, validity and the
+    /// `Relay` scope. A relay sees no TLS certificate of the holder, so unlike
+    /// [`verify`](Self::verify) this checks **no certificate binding and consumes no nonce**
+    /// (allocate requests are retransmitted). The credential is a bearer secret bounded by its
+    /// expiry and by the relay's return-routability cookie; see `docs/online-nat-relay.md`.
+    pub fn verify_relay(
+        &self,
+        token: &[u8],
+        audience: &str,
+        now_unix: u64,
+    ) -> Result<RelayClaims, TokenError> {
+        let claims = self.verify_signed(token, audience, now_unix)?;
+        let (session, channel, party) = claims
+            .scopes
+            .iter()
+            .find_map(|scope| match scope {
+                Scope::Relay {
+                    session,
+                    channel,
+                    party,
+                } => Some((*session, *channel, *party)),
+                _ => None,
+            })
+            .ok_or(TokenError::MissingScope)?;
+        Ok(RelayClaims {
+            subject: claims.subject,
+            session,
+            channel,
+            party,
+            expires_at: claims.expires_at,
+        })
     }
     /// Convenience for a game server admitting a joiner: the token must carry
     /// `JoinSession { session, epoch }` for this server's audience and be bound to the
@@ -685,6 +846,13 @@ impl TokenVerifier {
         self.replay
             .lock()
             .map(|cache| cache.by_nonce.len())
+            .unwrap_or(0)
+    }
+    /// Live replay entries of one certificate fingerprint (for tests and telemetry).
+    pub fn replay_entries_for(&self, fingerprint: &CertFingerprint) -> usize {
+        self.replay
+            .lock()
+            .map(|cache| cache.live_for(fingerprint))
             .unwrap_or(0)
     }
 }
@@ -729,6 +897,18 @@ mod tests {
             scope,
             cert_sha256: cert,
             single_use,
+        }
+    }
+    fn expect_for<'a>(
+        audience: &'a str,
+        scope: &'a Scope,
+        cert: &'a CertFingerprint,
+    ) -> Expect<'a> {
+        Expect {
+            audience,
+            scope,
+            cert_sha256: cert,
+            single_use: false,
         }
     }
 
@@ -802,7 +982,11 @@ mod tests {
         let mut e = expect(&Scope::Connect, &cert, false);
         e.audience = "other";
         assert_eq!(v.verify(&token, &e, NOW), Err(TokenError::WrongAudience));
-        let missing = Scope::Relay { session: 7 };
+        let missing = Scope::Relay {
+            session: 7,
+            channel: [1; 16],
+            party: RelayParty::A,
+        };
         assert_eq!(
             v.verify(&token, &expect(&missing, &cert, false), NOW),
             Err(TokenError::MissingScope)
@@ -897,7 +1081,6 @@ mod tests {
     #[test]
     fn replay_cache_is_bounded_and_fails_closed() {
         let signer = issuer("k1");
-        let cert = fingerprint(b"cert");
         let v = TokenVerifier::new(
             VerifierConfig {
                 replay_capacity: 3,
@@ -906,17 +1089,194 @@ mod tests {
             [signer.trusted_key()],
         )
         .unwrap();
-        let e = expect(&Scope::Connect, &cert, true);
-        for _ in 0..3 {
-            let token = signer.issue(&request(cert), NOW).unwrap();
-            assert!(v.verify(&token, &e, NOW).is_ok());
+        // Three different certificates fill the cache; a fourth is refused (fail closed).
+        let certs = [
+            fingerprint(b"cert-1"),
+            fingerprint(b"cert-2"),
+            fingerprint(b"cert-3"),
+            fingerprint(b"cert-4"),
+        ];
+        for cert in &certs[..3] {
+            let token = signer.issue(&request(*cert), NOW).unwrap();
+            assert!(
+                v.verify(&token, &expect(&Scope::Connect, cert, true), NOW)
+                    .is_ok()
+            );
         }
-        let token = signer.issue(&request(cert), NOW).unwrap();
-        assert_eq!(v.verify(&token, &e, NOW), Err(TokenError::ReplayCacheFull));
+        let token = signer.issue(&request(certs[3]), NOW).unwrap();
+        assert_eq!(
+            v.verify(&token, &expect(&Scope::Connect, &certs[3], true), NOW),
+            Err(TokenError::ReplayCacheFull)
+        );
         assert_eq!(v.replay_entries(), 3);
         // Once the earlier tokens expire (plus skew) capacity returns.
-        let fresh = signer.issue(&request(cert), NOW + 200).unwrap();
-        assert!(v.verify(&fresh, &e, NOW + 200).is_ok());
+        let fresh = signer.issue(&request(certs[3]), NOW + 200).unwrap();
+        assert!(
+            v.verify(&fresh, &expect(&Scope::Connect, &certs[3], true), NOW + 200)
+                .is_ok()
+        );
+    }
+
+    /// L4: one certificate used to be able to fill the global replay cache, which made every
+    /// other certificate's single-use tokens fail until the entries expired (up to 24 h).
+    #[test]
+    fn one_fingerprint_cannot_fill_the_replay_cache_for_everyone() {
+        let signer = issuer("k1");
+        let v = TokenVerifier::new(
+            VerifierConfig {
+                replay_capacity: 6,
+                ..VerifierConfig::default()
+            },
+            [signer.trusted_key()],
+        )
+        .unwrap();
+        let (a, b) = (fingerprint(b"cert-a"), fingerprint(b"cert-b"));
+        let expect_a = expect(&Scope::Connect, &a, true);
+        for _ in 0..10 {
+            let token = signer.issue(&request(a), NOW).unwrap();
+            let _ = v.verify(&token, &expect_a, NOW);
+        }
+        assert!(v.replay_entries() <= 6);
+        let token = signer.issue(&request(b), NOW).unwrap();
+        assert!(
+            v.verify(&token, &expect(&Scope::Connect, &b, true), NOW)
+                .is_ok(),
+            "another certificate's login is unaffected"
+        );
+    }
+
+    #[test]
+    fn a_fingerprint_over_its_share_evicts_only_its_own_oldest_nonce() {
+        let signer = issuer("k1");
+        let v = TokenVerifier::new(
+            VerifierConfig {
+                replay_capacity: 100,
+                replay_per_fingerprint: 3,
+                ..VerifierConfig::default()
+            },
+            [signer.trusted_key()],
+        )
+        .unwrap();
+        let (a, b) = (fingerprint(b"cert-a"), fingerprint(b"cert-b"));
+        let mine: Vec<Vec<u8>> = (0..5)
+            .map(|_| signer.issue(&request(a), NOW).unwrap())
+            .collect();
+        let theirs = signer.issue(&request(b), NOW).unwrap();
+        let e_a = expect(&Scope::Connect, &a, true);
+        let e_b = expect(&Scope::Connect, &b, true);
+        assert!(v.verify(&theirs, &e_b, NOW).is_ok());
+        for token in &mine {
+            assert!(v.verify(token, &e_a, NOW).is_ok());
+        }
+        assert_eq!(v.replay_entries_for(&a), 3, "capped at its share");
+        assert_eq!(
+            v.replay_entries_for(&b),
+            1,
+            "the other fingerprint is untouched"
+        );
+        // Recent tokens stay replay-protected; only the oldest were forgotten.
+        assert_eq!(v.verify(&mine[4], &e_a, NOW), Err(TokenError::Replayed));
+        assert_eq!(v.verify(&theirs, &e_b, NOW), Err(TokenError::Replayed));
+        assert!(
+            v.verify(&mine[0], &e_a, NOW).is_ok(),
+            "the evicted nonce is the owner's own oldest"
+        );
+        assert!(v.replay_entries() <= 4);
+    }
+
+    #[test]
+    fn relay_credentials_are_pair_scoped_bearer_tokens_without_certificate_binding() {
+        let signer = issuer("k1");
+        let v = verifier(&signer);
+        let scope = Scope::Relay {
+            session: 9,
+            channel: [5; 16],
+            party: RelayParty::B,
+        };
+        let mint = |scopes: Vec<Scope>, audience: &'static str| {
+            signer
+                .issue(
+                    &TokenRequest {
+                        audience,
+                        subject: "bob",
+                        session: Some(9),
+                        cert_sha256: fingerprint(b"bob-cert"),
+                        lifetime_secs: 60,
+                        scopes,
+                    },
+                    NOW,
+                )
+                .unwrap()
+        };
+        let token = mint(vec![scope.clone()], "relay");
+        let claims = v.verify_relay(&token, "relay", NOW + 1).unwrap();
+        assert_eq!(
+            (
+                claims.session,
+                claims.channel,
+                claims.party,
+                claims.expires_at
+            ),
+            (9, [5; 16], RelayParty::B, NOW + 60)
+        );
+        assert_eq!(claims.subject, "bob");
+        // Retransmitted allocate requests present the credential repeatedly.
+        assert!(v.verify_relay(&token, "relay", NOW + 2).is_ok());
+        assert_eq!(v.replay_entries(), 0);
+        // The exact scope (channel and party) is part of what the signature covers.
+        let cert = fingerprint(b"bob-cert");
+        assert!(
+            v.verify(&token, &expect_for("relay", &scope, &cert), NOW)
+                .is_ok()
+        );
+        let other_party = Scope::Relay {
+            session: 9,
+            channel: [5; 16],
+            party: RelayParty::A,
+        };
+        assert_eq!(
+            v.verify(&token, &expect_for("relay", &other_party, &cert), NOW),
+            Err(TokenError::MissingScope)
+        );
+        let other_channel = Scope::Relay {
+            session: 9,
+            channel: [6; 16],
+            party: RelayParty::B,
+        };
+        assert_eq!(
+            v.verify(&token, &expect_for("relay", &other_channel, &cert), NOW),
+            Err(TokenError::MissingScope)
+        );
+        // Audience, expiry, signature and scope are still enforced.
+        assert_eq!(
+            v.verify_relay(&token, "game", NOW).unwrap_err(),
+            TokenError::WrongAudience
+        );
+        assert_eq!(
+            v.verify_relay(&token, "relay", NOW + 60 + 30).unwrap_err(),
+            TokenError::Expired
+        );
+        let connect_only = mint(vec![Scope::Connect], "relay");
+        assert_eq!(
+            v.verify_relay(&connect_only, "relay", NOW).unwrap_err(),
+            TokenError::MissingScope
+        );
+        let mut forged = token.clone();
+        let last = forged.len() - 1;
+        forged[last] ^= 1;
+        assert!(v.verify_relay(&forged, "relay", NOW).is_err());
+        let mut tampered = token;
+        tampered[40] ^= 1;
+        assert!(v.verify_relay(&tampered, "relay", NOW).is_err());
+        // An unknown party byte is malformed, not silently A.
+        let mut bytes = vec![3];
+        bytes.extend_from_slice(&1u64.to_be_bytes());
+        bytes.extend_from_slice(&[0; 16]);
+        bytes.push(2);
+        assert!(matches!(
+            Scope::decode(&mut Reader(&bytes)),
+            Err(TokenError::Malformed("relay party"))
+        ));
     }
 
     #[test]
