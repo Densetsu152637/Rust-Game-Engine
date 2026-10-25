@@ -45,7 +45,7 @@ clients take the same `command` and `args`.
 
 | Level | Flag | Tools | What it can do |
 | --- | --- | --- | --- |
-| Read | always on | 22 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
+| Read | always on | 24 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
 | Write | `--allow-write` | `entity_create`, `entity_update`, `entity_delete`, `component_set`, `component_remove`, `file_write` | Change scenes and text files inside the project root. |
 | Exec | `--allow-exec` | `project_build`, `project_run_headless`, `render_screenshot` | Compile and run the project's native game code. |
 
@@ -153,6 +153,8 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `tilemap_info` | `path` (asset ID or file) | Summary of a tileset (texture, tile and collision counts, rule tiles) or tilemap (bounds, per-layer z order, visibility, opacity, chunk and cell counts). See [World tilemaps](world-tilemap.md). |
 | `tilemap_query` | `path`, `tileset`, `layer`, `mode` (`cell`, `rect`, `collision`), `cell`, `rect` | Painted and displayed tile (rule tiles resolved as the runtime does), a rectangle listing of up to 4096 cells, or the merged collision boxes and outline loops of a layer. |
 | `terrain_info` | `path` (asset ID or `.terrain` file), `samples` (at most 256 `[x, z]`) | Terrain summary (samples, spacing, extent, height range, layers, hole count, content hash) and per-point triangulated height, normal, slope, hole flag and layer weights. See [Heightmap terrain](terrain.md). |
+| `water_sample` | `scene`, `points` (at most 256 `[x, y, z]`), `water`, `ticks` (1-3600), `dt` | Runs the scene headless (no game code) and reports every `engine.WaterBody` (kind, wave model, steepness bound, FFT significant wave height, river discharge, notes) and, per point, the covering body, surface height, depth, underwater flag with fog colour/density/transmittance, normal, flow velocity, crest and shore foam and wave amplitude. See [Water](world-water.md). |
+| `water_spectrum` | one of `water` (with `scene`), `ocean`, `gerstner` (+ `depth`); `time` | Wave statistics without running a scene: FFT variance, significant height, continuum variance, peak wavelength/period, slope, energy by wavelength and frame height stats; Gerstner dispersion per wave, steepness scale and Lipschitz bound. |
 | `pcg_validate` | `path`, `kinds`, `run`, `seed`, `center`, `size`, `origin_offset`, `ground_height`, `max_instances`, `sample` | Validates a procedural generation graph against the built-in node library with precise `problems` (code, node, port, message); `kinds` adds the node catalog; `run` adds a bounded dry run on flat ground (counts, per-asset totals, bounds, content hash, sample). See [Procedural content generation](pcg.md). |
 | `streaming_info` | `manifest`, `offset`, `limit`, `position`, `radius` | Summary of a world-partition manifest: grid, cell, entity and byte counts, data layers, HLOD coverage, key bounds, missing cell files and a page of cells; with `position` and `radius` the cells within that distance, nearest first (what a source there would load). See [Level streaming](streaming.md). |
 | `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |

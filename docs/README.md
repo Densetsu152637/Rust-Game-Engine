@@ -136,5 +136,9 @@
   crack-free CDLOD geomorphing, sculpt/paint/hole brushes, `engine.Terrain` collider
   tiles, PCG surfaces and navigation input, the CPU chunk fallback, the `world.terrain`
   GPU feature (`engine-world-render`) and the `terrain_*` MCP tools.
+- [Ocean, lake and river water](world-water.md): Gerstner waves and the Tessendorf FFT
+  ocean (`engine-water`), spline rivers with a flow field, `engine.WaterBody` shoreline
+  attenuation over terrain, `engine.Buoyancy`, underwater fog, the CPU surface fallback,
+  the `world.water` GPU features and the `water_*` MCP tools.
 
 Per-crate details are in `crates/*/README.md`.
