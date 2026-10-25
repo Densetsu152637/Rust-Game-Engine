@@ -167,7 +167,10 @@ mod tests {
         };
         let allowed = (0..20).filter(|&n| limiter.allow(t0, at(n, 4000))).count();
         assert_eq!(allowed, 2, "rotating the interface id does not help");
-        assert!(limiter.allow(t0, at(1, 4001)), "another port is another flow");
+        assert!(
+            limiter.allow(t0, at(1, 4001)),
+            "another port is another flow"
+        );
         assert_eq!(limiter.tracked(), 2);
     }
 
