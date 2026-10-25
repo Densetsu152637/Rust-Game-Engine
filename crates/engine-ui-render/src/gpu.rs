@@ -144,7 +144,8 @@ impl TextureUploads {
             [texture.width, texture.height],
             &texture.pixels,
         )?;
-        self.entries.insert(key, (texture.clone(), uploaded.clone()));
+        self.entries
+            .insert(key, (texture.clone(), uploaded.clone()));
         Ok(uploaded)
     }
 
@@ -231,7 +232,10 @@ mod tests {
     #[test]
     fn geometry_ranges_follow_the_pushed_meshes() {
         let mut geometry = Geometry::default();
-        let a = geometry.push(&mesh(4, &[0, 1, 2, 0, 2, 3])).unwrap().unwrap();
+        let a = geometry
+            .push(&mesh(4, &[0, 1, 2, 0, 2, 3]))
+            .unwrap()
+            .unwrap();
         let b = geometry.push(&mesh(3, &[0, 1, 2])).unwrap().unwrap();
         assert_eq!((a.first_index, a.index_count, a.base_vertex), (0, 6, 0));
         assert_eq!((b.first_index, b.index_count, b.base_vertex), (6, 3, 4));

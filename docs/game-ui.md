@@ -450,7 +450,10 @@ opacity/scale and world-space panels are described in
   selecting text backend (shaped `font_face` families, then bitmap fonts) and
   the frame's `dt`.
 - It includes the UI draws in both 2D and combined 3D/HUD extraction, and the
-  world-space draws of `engine.WorldText` components.
+  world-space draws of `engine.WorldText` components. When the `engine-ui-render`
+  features are prepared on the renderer, SDF screen text, world panels and world text
+  are routed to them instead of the 2D draw list (`UiGpuQueue`; status in
+  `RuntimeSnapshot.ui_render`); see [ui-render.md](ui-render.md).
 - Scene changes and shutdown clear `GameUi`.
 
 Game configuration must not call `ui_tree::register` again. `register`,

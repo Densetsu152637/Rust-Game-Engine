@@ -10,7 +10,7 @@
 //! UI scale.
 use crate::{
     gpu::{
-        GrowBuffer, Geometry, MeshRange, TextureUploads, UI_VERTEX_LAYOUT, linear_sampler,
+        Geometry, GrowBuffer, MeshRange, TextureUploads, UI_VERTEX_LAYOUT, linear_sampler,
         texture_key,
     },
     layout::{UiFit, ui_clip_from_pixels},
@@ -230,11 +230,15 @@ impl PipelineFeature for SdfTextFeature {
             return Ok(());
         };
         if frame.sdf_text.is_empty() {
-            self.queue.report(UiGpuFeature::SdfText, UiFeatureReport::default());
+            self.queue
+                .report(UiGpuFeature::SdfText, UiFeatureReport::default());
             return Ok(());
         }
         self.upload(ctx, &frame)?;
-        let device = self.device.as_mut().context("ui.sdf_text was not prepared")?;
+        let device = self
+            .device
+            .as_mut()
+            .context("ui.sdf_text was not prepared")?;
         if !device.pipelines.iter().any(|(f, _)| *f == target.format) {
             let built = pipeline(&ctx.gpu.device, device, target.format);
             device.pipelines.push((target.format, built));
@@ -257,24 +261,26 @@ impl PipelineFeature for SdfTextFeature {
             let texture = self.uploads.get(ctx.gpu, &run.texture)?;
             binds.push((
                 key,
-                ctx.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("ui sdf page"),
-                    layout: &device.layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: uniform.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&texture.linear_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::Sampler(&device.sampler),
-                        },
-                    ],
-                }),
+                ctx.gpu
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("ui sdf page"),
+                        layout: &device.layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: uniform.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&texture.linear_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Sampler(&device.sampler),
+                            },
+                        ],
+                    }),
             ));
         }
         let mut pass = ctx
@@ -313,7 +319,11 @@ impl PipelineFeature for SdfTextFeature {
                 continue;
             };
             let key = texture_key(&run.texture);
-            let bind = &binds.iter().find(|(k, _)| *k == key).expect("bound above").1;
+            let bind = &binds
+                .iter()
+                .find(|(k, _)| *k == key)
+                .expect("bound above")
+                .1;
             pass.set_scissor_rect(x, y, w, h);
             pass.set_bind_group(0, bind, &[]);
             let first = run.range.first_index;

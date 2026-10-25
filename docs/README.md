@@ -90,6 +90,9 @@
 - [UI styling](ui-styling.md): themes with tokens and selector rules (kind, class, id, state
   pseudo-classes), cascade and specificity, transitions and keyframe animation with
   reduced motion, data binding with a string-resolver seam, world-space UI panels.
+- [UI render features](ui-render.md): the `engine-ui-render` crate (SDF screen text, depth-tested
+  world panels and world text in `Camera3D` scenes, the colour-vision filter), its routing rule,
+  status and GPU measurements.
 - [Text engine](text.md): the `engine-text` crate (font fallback, shaping, bidi, line
   breaking, rich-text markup, caret geometry, coverage/SDF glyph atlases) and its game UI
   integration: `font_face`/`font_config` assets, the shaping `UiTextBackend`, rich labels

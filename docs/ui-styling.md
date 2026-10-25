@@ -348,14 +348,20 @@ so focus, popups and capture are independent of the screen UI and of other
 panels. Without `keyboard`, `ui_*` actions other than `ui_click` are removed.
 Events are delivered with the panel entity as source, like screen roots.
 
-**Limitation (3D scenes).** `Draw::World` meshes are composited by the 2D
-sprite pass with the `Camera2D`. In a scene with a `Camera3D` the panel's
-geometry is correct in world space (and `pointer: "camera3d"` picks it), but it
-is not depth-tested against the 3D scene: a presenter that supports it must
-consume the same `Draw` list (or `world_mesh`) through the render extension
-API. Until then billboarding and 3D pointer picking are verified by geometry
-tests, not by a rendered 3D frame. VR controller rays are not read from input;
-a presenter can call `UiWorldPanel::pick` with its own ray.
+**3D scenes.** Without the `ui.world` render feature of
+[engine-ui-render](ui-render.md) the panel is emitted as `Draw::World` meshes that the
+2D sprite pass composites with the `Camera2D`: the geometry is correct in world space
+(and `pointer: "camera3d"` picks it) but is not depth-tested against a 3D scene. With the
+feature registered and prepared and a `Camera3D` active, the panel is drawn in the 3D
+frame instead (Transparent stage): panel-local geometry placed by the entity matrix,
+`billboard` (`full` faces the view's camera, `yaw` stays upright) computed per view in
+the vertex shader, depth-tested against the scene depth, sorted back to front and blended
+into linear HDR colour. The 2D meshes are not emitted then (the
+[routing rule](ui-render.md#routing-rule-no-double-drawing)), so nothing is drawn twice;
+without a `Camera3D`, or with `Camera3D.render_features` `{"ui.world": false}`, the 2D
+path stays. The panel's text keeps a coverage atlas rasterised at `pixelsPerUnit`.
+Pointer picking is unchanged (`UiWorldPanel::pick`, CPU). VR controller rays are not
+read from input; a presenter can call `UiWorldPanel::pick` with its own ray.
 
 ## Limits and error codes
 
@@ -426,14 +432,17 @@ repeated rows.
 - **Per-item text at draw time.** A virtual list replicates one template node,
   so per-item text cannot be written into the tree; a small `UiItemTexts` hook in
   `UiRenderState` substitutes text for each replica while drawing.
-- **World panels on `Draw`.** The render extension API is not part of this
-  branch; extracting `DrawSpace::World` meshes keeps the panel working on every
-  presenter that draws `Draw` lists and leaves 3D composition to the rendering
-  domain.
+- **World panels on `Draw`, with a 3D feature on top.** Extracting
+  `DrawSpace::World` meshes keeps the panel working on every presenter that draws
+  `Draw` lists. The render extension API is now available, so `engine-ui-render`
+  draws the same panels in 3D from panel-local geometry published through a shared
+  queue ([ui-render.md](ui-render.md)); the `Draw` path stays as the fallback.
 
 ## Known gaps
 
-- World panels are not depth-composited into 3D scenes (see above).
+- World panels are depth-composited into 3D scenes only through `ui.world`
+  (see [ui-render.md](ui-render.md#uiworld) for its limits: per-item sorting, no
+  interleaving with built-in transparent meshes, no mip-mapping).
 - `scale` does not affect hit areas or layout; opacity/scale apply to a virtual
   list's replicas through their template only.
 - Only the eight listed properties transition or animate; layout properties

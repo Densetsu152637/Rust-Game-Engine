@@ -180,7 +180,11 @@ impl FilterUniform {
 mod tests {
     use super::*;
 
-    fn settings(kind: ColorFilterKind, mode: ColorFilterMode, strength: f32) -> ColorFilterSettings {
+    fn settings(
+        kind: ColorFilterKind,
+        mode: ColorFilterMode,
+        strength: f32,
+    ) -> ColorFilterSettings {
         ColorFilterSettings {
             kind,
             mode,
@@ -198,15 +202,26 @@ mod tests {
     fn strength_zero_and_no_filter_are_the_identity() {
         for kind in ColorFilterKind::ALL {
             for mode in [ColorFilterMode::Simulate, ColorFilterMode::Correct] {
-                assert_eq!(filter_matrix(settings(kind, mode, 0.0)), IDENTITY, "{kind:?}");
+                assert_eq!(
+                    filter_matrix(settings(kind, mode, 0.0)),
+                    IDENTITY,
+                    "{kind:?}"
+                );
             }
         }
         assert_eq!(
-            filter_matrix(settings(ColorFilterKind::None, ColorFilterMode::Simulate, 1.0)),
+            filter_matrix(settings(
+                ColorFilterKind::None,
+                ColorFilterMode::Simulate,
+                1.0
+            )),
             IDENTITY
         );
         close(
-            apply_linear([0.2, 0.5, 0.9], settings(ColorFilterKind::Tritanopia, ColorFilterMode::Simulate, 0.0)),
+            apply_linear(
+                [0.2, 0.5, 0.9],
+                settings(ColorFilterKind::Tritanopia, ColorFilterMode::Simulate, 0.0),
+            ),
             [0.2, 0.5, 0.9],
         );
     }
@@ -216,23 +231,38 @@ mod tests {
         use ColorFilterMode::Simulate;
         // Pure red is the first matrix column, pure green the second, blue the third.
         close(
-            apply_linear([1.0, 0.0, 0.0], settings(ColorFilterKind::Protanopia, Simulate, 1.0)),
+            apply_linear(
+                [1.0, 0.0, 0.0],
+                settings(ColorFilterKind::Protanopia, Simulate, 1.0),
+            ),
             [0.152286, 0.114503, 0.0], // third component -0.003882 clamps to 0
         );
         close(
-            apply_linear([0.0, 1.0, 0.0], settings(ColorFilterKind::Protanopia, Simulate, 1.0)),
+            apply_linear(
+                [0.0, 1.0, 0.0],
+                settings(ColorFilterKind::Protanopia, Simulate, 1.0),
+            ),
             [1.052583, 0.786281, 0.0],
         );
         close(
-            apply_linear([1.0, 0.0, 0.0], settings(ColorFilterKind::Deuteranopia, Simulate, 1.0)),
+            apply_linear(
+                [1.0, 0.0, 0.0],
+                settings(ColorFilterKind::Deuteranopia, Simulate, 1.0),
+            ),
             [0.367322, 0.280085, 0.0],
         );
         close(
-            apply_linear([0.0, 1.0, 0.0], settings(ColorFilterKind::Deuteranopia, Simulate, 1.0)),
+            apply_linear(
+                [0.0, 1.0, 0.0],
+                settings(ColorFilterKind::Deuteranopia, Simulate, 1.0),
+            ),
             [0.860646, 0.672501, 0.042940],
         );
         close(
-            apply_linear([0.0, 0.0, 1.0], settings(ColorFilterKind::Tritanopia, Simulate, 1.0)),
+            apply_linear(
+                [0.0, 0.0, 1.0],
+                settings(ColorFilterKind::Tritanopia, Simulate, 1.0),
+            ),
             [0.0, 0.147602, 0.303900],
         );
     }
@@ -246,7 +276,14 @@ mod tests {
             }
         }
         close(
-            apply_linear([0.5, 0.5, 0.5], settings(ColorFilterKind::Deuteranopia, ColorFilterMode::Simulate, 1.0)),
+            apply_linear(
+                [0.5, 0.5, 0.5],
+                settings(
+                    ColorFilterKind::Deuteranopia,
+                    ColorFilterMode::Simulate,
+                    1.0,
+                ),
+            ),
             [0.5, 0.5, 0.5],
         );
     }
@@ -255,7 +292,11 @@ mod tests {
     fn achromatopsia_is_rec709_luminance() {
         let out = apply_linear(
             [0.2, 0.4, 0.6],
-            settings(ColorFilterKind::Achromatopsia, ColorFilterMode::Simulate, 1.0),
+            settings(
+                ColorFilterKind::Achromatopsia,
+                ColorFilterMode::Simulate,
+                1.0,
+            ),
         );
         let y = 0.2126 * 0.2 + 0.7152 * 0.4 + 0.0722 * 0.6;
         close(out, [y, y, y]);
@@ -263,8 +304,22 @@ mod tests {
 
     #[test]
     fn strength_blends_linearly_from_the_identity() {
-        let full = apply_linear([1.0, 0.0, 0.0], settings(ColorFilterKind::Deuteranopia, ColorFilterMode::Simulate, 1.0));
-        let half = apply_linear([1.0, 0.0, 0.0], settings(ColorFilterKind::Deuteranopia, ColorFilterMode::Simulate, 0.5));
+        let full = apply_linear(
+            [1.0, 0.0, 0.0],
+            settings(
+                ColorFilterKind::Deuteranopia,
+                ColorFilterMode::Simulate,
+                1.0,
+            ),
+        );
+        let half = apply_linear(
+            [1.0, 0.0, 0.0],
+            settings(
+                ColorFilterKind::Deuteranopia,
+                ColorFilterMode::Simulate,
+                0.5,
+            ),
+        );
         close(half, [0.5 * (1.0 + full[0]), 0.5 * full[1], 0.5 * full[2]]);
     }
 
@@ -274,16 +329,28 @@ mod tests {
         // correction adds the lost error to G and B, so the corrected red is
         // distinguishable (more blue than the plain red) while keeping R.
         let red = [1.0, 0.0, 0.0];
-        let corrected = apply_linear(red, settings(ColorFilterKind::Deuteranopia, ColorFilterMode::Correct, 1.0));
-        assert!((corrected[0] - 1.0).abs() < 1e-5, "red channel is untouched: {corrected:?}");
+        let corrected = apply_linear(
+            red,
+            settings(ColorFilterKind::Deuteranopia, ColorFilterMode::Correct, 1.0),
+        );
+        assert!(
+            (corrected[0] - 1.0).abs() < 1e-5,
+            "red channel is untouched: {corrected:?}"
+        );
         assert!(corrected[1] > 0.1 && corrected[2] > 0.4, "{corrected:?}");
         // White is unchanged: it has no simulation error.
         close(
-            apply_linear([1.0, 1.0, 1.0], settings(ColorFilterKind::Deuteranopia, ColorFilterMode::Correct, 1.0)),
+            apply_linear(
+                [1.0, 1.0, 1.0],
+                settings(ColorFilterKind::Deuteranopia, ColorFilterMode::Correct, 1.0),
+            ),
             [1.0, 1.0, 1.0],
         );
         // Tritanopia correction moves blue error into red and green.
-        let blue = apply_linear([0.0, 0.0, 1.0], settings(ColorFilterKind::Tritanopia, ColorFilterMode::Correct, 1.0));
+        let blue = apply_linear(
+            [0.0, 0.0, 1.0],
+            settings(ColorFilterKind::Tritanopia, ColorFilterMode::Correct, 1.0),
+        );
         assert!(blue[0] > 0.3 && blue[2] > 0.5, "{blue:?}");
     }
 

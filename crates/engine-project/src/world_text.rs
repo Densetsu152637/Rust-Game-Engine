@@ -213,7 +213,6 @@ pub(crate) struct WorldTextDraw {
     pub position: [f32; 3],
 }
 
-
 fn rotation_free(matrix: Mat4) -> Mat4 {
     let (scale, _, translation) = matrix.to_scale_rotation_translation();
     Mat4::from_scale_rotation_translation(scale, Quat::IDENTITY, translation)

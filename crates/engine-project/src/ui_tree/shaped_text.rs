@@ -10,12 +10,12 @@
 //! Atlas pages are CPU `Arc<Texture>` snapshots. A page's snapshot is
 //! re-published only when the atlas reports it dirty, so the renderer (which
 //! keys uploads on `Arc` identity) uploads a page once per change, not per frame.
+use super::gpu::{UiFeatureState, UiGpuFeature, UiGpuQueue};
 use super::*;
 use crate::content::{
     DEFAULT_FONT_SIZE, FONT_SIZE_RANGE, FontAtlasMode, FontConfig, FontFace, FontFamilySettings,
     Texture,
 };
-use super::gpu::{UiFeatureState, UiGpuFeature, UiGpuQueue};
 use engine_text::{
     AtlasConfig, CaretMove, Color, FallbackConfig, FontLibrary, FontStyle, GlyphAtlas, GlyphQuad,
     LayoutOptions, MarkupOptions, RichText, TextAlign, TextError, TextLayout, TextStyle,
@@ -727,10 +727,7 @@ impl EngineTextBackend {
         sdf: bool,
     ) -> Result<(Arc<Shaped>, Arc<Laid>)> {
         let (shaped_key, shaped) = self.shape(inner, request, align)?;
-        let key = Key {
-            sdf,
-            ..shaped_key
-        };
+        let key = Key { sdf, ..shaped_key };
         if let Some(laid) = inner
             .laid
             .get(&key)

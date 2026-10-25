@@ -245,6 +245,10 @@ impl UiGpuQueue {
         let mut shared = self.lock();
         let slot = &mut shared.slots[feature.index()];
         *slot = FeatureSlot::default();
+        if !shared.slots.iter().any(|s| s.registered) {
+            // Release the textures and meshes of the last published frame.
+            shared.frame = Arc::default();
+        }
     }
 
     /// The feature was prepared on a device (`true`) or dropped (`false`).
@@ -287,9 +291,8 @@ impl UiGpuQueue {
         let world_ui = ready(&shared, UiGpuFeature::World)
             && camera3d_overrides.is_some()
             && !disabled(UiGpuFeature::World);
-        shared.sdf_off = (!sdf_text && ready(&shared, UiGpuFeature::SdfText)).then(|| {
-            "disabled for the active camera through Camera3D.render_features".to_owned()
-        });
+        shared.sdf_off = (!sdf_text && ready(&shared, UiGpuFeature::SdfText))
+            .then(|| "disabled for the active camera through Camera3D.render_features".to_owned());
         shared.world_off = if world_ui || !ready(&shared, UiGpuFeature::World) {
             None
         } else if camera3d_overrides.is_none() {
@@ -334,13 +337,13 @@ impl UiGpuQueue {
             match feature {
                 UiGpuFeature::SdfText => shared.sdf_off.clone(),
                 UiGpuFeature::World => shared.world_off.clone(),
-                UiGpuFeature::ColorFilter => (shared.frame.color_filter.is_active()
-                    && slot.frames == 0)
-                    .then(|| {
+                UiGpuFeature::ColorFilter => {
+                    (shared.frame.color_filter.is_active() && slot.frames == 0).then(|| {
                         "requested, but the filter is a PostProcess feature and no 3D frame has \
                          run it yet (2D-only frames have no post-process stage)"
                             .to_owned()
-                    }),
+                    })
+                }
             }
         };
         let state = if reason.is_some() {
@@ -460,7 +463,10 @@ mod tests {
         queue.report(UiGpuFeature::World, UiFeatureReport { draws: 5, items: 4 });
         let status = queue.status();
         let world = status.feature(UiGpuFeature::World).unwrap();
-        assert_eq!((world.frames, world.last_draws, world.last_items), (2, 5, 4));
+        assert_eq!(
+            (world.frames, world.last_draws, world.last_items),
+            (2, 5, 4)
+        );
         queue.set_ready(UiGpuFeature::World, false);
         let status = queue.status();
         assert_eq!(status.feature(UiGpuFeature::World).unwrap().frames, 0);
@@ -513,7 +519,10 @@ mod tests {
         assert!(is_sdf_draw(&draw("game-ui:6162!00001:s00")));
         assert!(!is_sdf_draw(&draw("game-ui:6162!00001:200")));
         assert!(!is_sdf_draw(&draw("game-ui:6162!00001:2~000")));
-        assert!(!is_sdf_draw(&draw("sprite:a:s00")), "entity IDs cannot spoof it");
+        assert!(
+            !is_sdf_draw(&draw("sprite:a:s00")),
+            "entity IDs cannot spoof it"
+        );
         assert!(!is_sdf_draw(&draw("game-ui:6162!00001:sword")));
     }
 }

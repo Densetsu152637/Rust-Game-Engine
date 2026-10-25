@@ -104,7 +104,11 @@ impl WorldUiFeature {
         {
             return Ok(());
         }
-        let stride = self.device.as_ref().context("ui.world was not prepared")?.item_stride;
+        let stride = self
+            .device
+            .as_ref()
+            .context("ui.world was not prepared")?
+            .item_stride;
         let mut geometry = Geometry::default();
         let mut batches = Vec::new();
         let mut item_batches = Vec::with_capacity(frame.world.len());
@@ -163,8 +167,9 @@ impl PipelineFeature for WorldUiFeature {
 
     fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
         let device = &setup.gpu.device;
-        let item_stride =
-            ITEM_BYTES.next_multiple_of(u64::from(device.limits().min_uniform_buffer_offset_alignment));
+        let item_stride = ITEM_BYTES.next_multiple_of(u64::from(
+            device.limits().min_uniform_buffer_offset_alignment,
+        ));
         let item_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("ui world item layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -261,7 +266,8 @@ impl PipelineFeature for WorldUiFeature {
         }
         let frame = self.queue.frame();
         if frame.world.is_empty() {
-            self.queue.report(UiGpuFeature::World, UiFeatureReport::default());
+            self.queue
+                .report(UiGpuFeature::World, UiFeatureReport::default());
             return Ok(());
         }
         self.upload(ctx, &frame)?;
@@ -269,18 +275,21 @@ impl PipelineFeature for WorldUiFeature {
         let device = self.device.as_ref().context("ui.world was not prepared")?;
         let prepared = self.prepared.as_ref().expect("uploaded above");
         let item_buffer = self.items.get().expect("uploaded above");
-        let item_bind = ctx.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ui world items"),
-            layout: &device.item_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: item_buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(ITEM_BYTES),
-                }),
-            }],
-        });
+        let item_bind = ctx
+            .gpu
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ui world items"),
+                layout: &device.item_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: item_buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(ITEM_BYTES),
+                    }),
+                }],
+            });
         // One texture bind group per distinct (page, kind); `None` is white.
         let mut binds: Vec<((Option<usize>, bool), wgpu::BindGroup)> = Vec::new();
         for batch in &prepared.batches {
@@ -299,20 +308,22 @@ impl PipelineFeature for WorldUiFeature {
             };
             binds.push((
                 key,
-                ctx.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("ui world texture"),
-                    layout: &device.texture_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&device.sampler),
-                        },
-                    ],
-                }),
+                ctx.gpu
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("ui world texture"),
+                        layout: &device.texture_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&device.sampler),
+                            },
+                        ],
+                    }),
             ));
         }
         let mut pass = ctx.scene_pass("ui world")?;
@@ -328,11 +339,23 @@ impl PipelineFeature for WorldUiFeature {
             for batch_index in prepared.item_batches[item].clone() {
                 let batch = &prepared.batches[batch_index];
                 let key = (batch.texture.as_ref().map(texture_key), batch.sdf);
-                let bind = &binds.iter().find(|(k, _)| *k == key).expect("bound above").1;
-                pass.set_bind_group(1, &item_bind, &[batch_index as u32 * device.item_stride as u32]);
+                let bind = &binds
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .expect("bound above")
+                    .1;
+                pass.set_bind_group(
+                    1,
+                    &item_bind,
+                    &[batch_index as u32 * device.item_stride as u32],
+                );
                 pass.set_bind_group(2, bind, &[]);
                 let first = batch.range.first_index;
-                pass.draw_indexed(first..first + batch.range.index_count, batch.range.base_vertex, 0..1);
+                pass.draw_indexed(
+                    first..first + batch.range.index_count,
+                    batch.range.base_vertex,
+                    0..1,
+                );
                 draws += 1;
             }
         }

@@ -378,9 +378,7 @@ impl Runtime {
         let queue = world.get_resource::<crate::ui_tree::UiGpuQueue>();
         let routing = queue
             .map(|q| {
-                q.route(
-                    render3d::active_camera3d(world).map(|(_, camera)| &camera.render_features),
-                )
+                q.route(render3d::active_camera3d(world).map(|(_, camera)| &camera.render_features))
             })
             .unwrap_or_default();
         let mut world_items = vec![];

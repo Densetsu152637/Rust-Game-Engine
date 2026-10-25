@@ -9,9 +9,7 @@
 use crate::color::{FilterUniform, filter_matrix};
 use crate::gpu::uniform_buffer;
 use anyhow::{Context, Result};
-use engine_project::ui_tree::{
-    FEATURE_COLOR_FILTER, UiFeatureReport, UiGpuFeature, UiGpuQueue,
-};
+use engine_project::ui_tree::{FEATURE_COLOR_FILTER, UiFeatureReport, UiGpuFeature, UiGpuQueue};
 use engine_render_pipeline::{
     FeatureContext, FeatureDescriptor, FeatureSetup, HDR_FORMAT, PipelineFeature, Stage, ViewKind,
     names,
@@ -147,20 +145,23 @@ impl PipelineFeature for ColorFilterFeature {
             device.uploaded = uniform;
         }
         let (source, destination) = ctx.post_process_io()?;
-        let bind = ctx.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ui color filter"),
-            layout: &device.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&source),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: device.uniform.as_entire_binding(),
-                },
-            ],
-        });
+        let bind = ctx
+            .gpu
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ui color filter"),
+                layout: &device.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: device.uniform.as_entire_binding(),
+                    },
+                ],
+            });
         let mut pass = ctx
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {

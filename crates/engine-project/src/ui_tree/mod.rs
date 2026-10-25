@@ -71,11 +71,11 @@ pub use render::{UI_DIALOG_LAYER, UI_POPUP_LAYER, UiRenderState};
 pub use resolve::{UiStyleRuntime, UiStyleSettings};
 pub use schema::descriptor;
 pub use selector::{MAX_SELECTOR_COMPOUNDS, MAX_SELECTOR_LEN, MAX_SELECTOR_LIST};
+pub(crate) use shaped_text::PlacedText;
 pub use shaped_text::{
     EngineTextBackend, SdfPathStatus, TextRenderState, TextRenderStatus, UiTextStats,
     validate_markup,
 };
-pub(crate) use shaped_text::PlacedText;
 pub use style::{
     MAX_GRID_TRACKS, MAX_UI_EXTENT, UiAlign, UiEdges, UiGridFlow, UiGridPlacement, UiInset,
     UiJustify, UiLayout, UiLength, UiPosition, UiStyle, UiTrack, UiTrackSize, UiWrap,

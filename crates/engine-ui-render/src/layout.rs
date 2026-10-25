@@ -213,7 +213,12 @@ mod tests {
         };
         Arc::new(Mesh {
             normals: vec![],
-            vertices: vec![v(-half, -half), v(half, -half), v(half, half), v(-half, half)],
+            vertices: vec![
+                v(-half, -half),
+                v(half, -half),
+                v(half, half),
+                v(-half, half),
+            ],
             indices: vec![0, 1, 2, 0, 2, 3],
         })
     }
@@ -234,7 +239,8 @@ mod tests {
     }
 
     fn view(position: Vec3, target: Vec3) -> ViewData {
-        let world_from_view = glam::camera::rh::view::look_at_mat4(position, target, Vec3::Y).inverse();
+        let world_from_view =
+            glam::camera::rh::view::look_at_mat4(position, target, Vec3::Y).inverse();
         ViewData::new(
             ViewId::MAIN,
             world_from_view,
@@ -323,14 +329,14 @@ mod tests {
             "yaw keeps the up axis"
         );
         let normal = yaw.z_axis.truncate().normalize();
-        assert!(normal.y.abs() < 1e-5, "yaw normal is horizontal: {normal:?}");
+        assert!(
+            normal.y.abs() < 1e-5,
+            "yaw normal is horizontal: {normal:?}"
+        );
         let screen = billboard_matrix(world, &basis, WorldBillboard::Screen);
         assert!(screen.x_axis.truncate().normalize().dot(basis.right) > 0.9999);
         assert!(screen.y_axis.truncate().normalize().dot(basis.up) > 0.9999);
-        assert_eq!(
-            billboard_matrix(world, &basis, WorldBillboard::None),
-            world
-        );
+        assert_eq!(billboard_matrix(world, &basis, WorldBillboard::None), world);
     }
 
     #[test]
@@ -362,7 +368,12 @@ mod tests {
         let letterboxed = UiFit::new([320, 180], [1000, 720]).unwrap();
         assert_eq!(letterboxed.scale, 3.0);
         assert_eq!(
-            (letterboxed.x, letterboxed.y, letterboxed.width, letterboxed.height),
+            (
+                letterboxed.x,
+                letterboxed.y,
+                letterboxed.width,
+                letterboxed.height
+            ),
             (20, 90, 960, 540)
         );
         let small = UiFit::new([320, 180], [160, 90]).unwrap();
