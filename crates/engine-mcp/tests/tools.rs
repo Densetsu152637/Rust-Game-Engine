@@ -357,6 +357,7 @@ fn component_schema_lists_all_components_and_rules() {
         .collect();
     let mut expected = engine_mcp::COMPONENT_NAMES.to_vec();
     expected.extend([
+        "engine.AbsolutePosition",
         "engine.AcousticEnvironment",
         "engine.AcousticGeometry",
         "engine.AcousticMaterial",
@@ -372,6 +373,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.Destructible3D",
         "engine.FluidVolume",
         "engine.Foliage",
+        "engine.LargeWorld",
         "engine.NavigationAgent",
         "engine.NetworkReplica",
         "engine.PcgVolume",
