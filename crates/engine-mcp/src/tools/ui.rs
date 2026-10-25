@@ -36,8 +36,8 @@ const THEME_COMPONENT: &str = "engine.UiTheme";
 const DEFAULT_VIEWPORT: [u32; 2] = [1280, 720];
 /// Pixels a returned preview image may have.
 const MAX_PREVIEW_PIXELS: u64 = 2048 * 2048;
-/// PNG bytes a returned preview may have.
-const MAX_PREVIEW_BYTES: usize = 6 * 1024 * 1024;
+/// Output-message bytes kept for the structured result around the image.
+const PREVIEW_ENVELOPE: usize = 16 * 1024;
 const STATE_FLAGS: [&str; 7] = [
     "hovered", "pressed", "focused", "disabled", "checked", "open", "selected",
 ];
@@ -688,11 +688,22 @@ fn ui_preview(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     let preview = render_preview(&view.root, &view.entity, &view.assets, &options)
         .map_err(|e| font_hint(ui_failure(e)))?;
     let png = preview.image.to_png().map_err(ui_failure)?;
-    if png.len() > MAX_PREVIEW_BYTES {
+    // The base64 image travels in one message with the result.
+    let budget = cx
+        .limits
+        .max_output_message_bytes
+        .saturating_sub(PREVIEW_ENVELOPE)
+        / 4
+        * 3;
+    if png.len() > budget {
         return Err(ToolFailure::new(
             "ui.preview.size",
-            "the encoded preview exceeds 6 MiB; lower `viewport` or `scale`",
-        ));
+            format!(
+                "the encoded preview is {} bytes but the server's output limit allows about {budget}",
+                png.len()
+            ),
+        )
+        .with_hint("Lower `viewport` or `scale`, or start the server with a larger output limit."));
     }
     let result = json!({
         "scene": view.loaded.path,

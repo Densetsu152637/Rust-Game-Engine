@@ -398,6 +398,39 @@ fn invalid_operations_leave_the_document_unchanged() {
 }
 
 #[test]
+fn a_virtual_list_and_its_template_are_added_in_one_batch() {
+    let mut doc = base();
+    // The list is only valid once its template child exists.
+    assert!(
+        doc.apply(UiOp::AddNode {
+            id: "items".into(),
+            widget: json!({"kind": "virtual_list", "itemCount": 50, "itemExtent": 24,
+                "template": "item"}),
+            parent: Some("panel".into()),
+            index: None,
+            node: None,
+        })
+        .is_err()
+    );
+    doc.apply_batch(ops(json!([
+        {"op": "add_node", "id": "items", "parent": "panel",
+            "widget": {"kind": "virtual_list", "itemCount": 50, "itemExtent": 24, "template": "item"}},
+        {"op": "add_node", "id": "item", "parent": "items", "widget": "button"},
+    ])))
+    .unwrap();
+    assert_eq!(doc.undo_depth(), 1);
+    // Renaming the template keeps the list valid; removing it alone does not.
+    doc.apply(UiOp::RenameNode {
+        id: "item".into(),
+        new_id: "entry".into(),
+    })
+    .unwrap();
+    assert!(doc.apply(UiOp::RemoveNode { id: "entry".into() }).is_err());
+    doc.apply(UiOp::RemoveNode { id: "items".into() }).unwrap();
+    assert!(doc.root().tree.find("entry").is_none());
+}
+
+#[test]
 fn no_op_edits_do_not_create_history() {
     let mut doc = base();
     doc.apply(UiOp::SetClasses {
@@ -1240,4 +1273,53 @@ fn referenced_textures_cover_images_nine_slices_and_inline_images() {
     .unwrap();
     let keys: Vec<String> = referenced_textures(&root).into_iter().collect();
     assert_eq!(keys, ["tex:a", "tex:b", "tex:c", "tex:d"]);
+}
+
+/// With `UI_AUTHORING_DUMP=<file.png>` set, writes a sample preview there for a
+/// manual look (the vision check in `docs/ui-authoring.md`); otherwise a no-op.
+#[test]
+fn dump_a_sample_preview_when_requested() {
+    let Ok(path) = std::env::var("UI_AUTHORING_DUMP") else {
+        return;
+    };
+    let mut engine = EngineTextBackend::new(AtlasConfig::default()).unwrap();
+    engine
+        .register_font(
+            epaint_default_fonts::UBUNTU_LIGHT.to_vec(),
+            "ui",
+            FontFamilySettings {
+                size: Some(18.0),
+                atlas: FontAtlasMode::Coverage,
+            },
+        )
+        .unwrap();
+    let assets = UiPreviewAssets {
+        engine: Some(Arc::new(engine)),
+        ..Default::default()
+    };
+    let root: UiRoot = serde_json::from_value(json!({"version": 1, "tree": {"nodes": [
+        {"id": "panel", "style": {"width": px(300.0), "height": px(190.0), "layout": "column",
+            "padding": 12, "gap": 8, "font": "ui"}},
+        {"id": "title", "parent": "panel", "widget": {"kind": "label", "text": "Settings"},
+            "style": {"width": {"unit": "fill"}, "height": px(26.0), "padding": 0}},
+        {"id": "music", "parent": "panel", "widget": {"kind": "toggle", "text": "Music", "checked": true},
+            "style": {"width": {"unit": "fill"}, "height": px(26.0)}},
+        {"id": "volume", "parent": "panel", "widget": {"kind": "slider", "value": 0.6, "min": 0,
+            "max": 1, "step": 0.1}, "style": {"width": {"unit": "fill"}, "height": px(22.0)}},
+        {"id": "load", "parent": "panel", "widget": {"kind": "progress", "value": 0.4, "min": 0,
+            "max": 1}, "style": {"width": {"unit": "fill"}, "height": px(14.0)}},
+        {"id": "apply", "parent": "panel", "widget": {"kind": "button", "text": "Apply"},
+            "style": {"width": px(100.0), "height": px(32.0)}},
+    ]}}))
+    .unwrap();
+    let mut options = UiPreviewOptions::new([324, 214]);
+    options.scale = 2.0;
+    options.view.default_font = Some("ui");
+    options.view.states.insert("apply".into(), {
+        let mut flags = UiStateFlags::default();
+        flags.insert(UiStateFlags::FOCUSED);
+        flags
+    });
+    let preview = render_preview(&root, "demo", &assets, &options).unwrap();
+    std::fs::write(path, preview.image.to_png().unwrap()).unwrap();
 }

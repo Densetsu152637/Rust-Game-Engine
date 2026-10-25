@@ -45,7 +45,7 @@ clients take the same `command` and `args`.
 
 | Level | Flag | Tools | What it can do |
 | --- | --- | --- | --- |
-| Read | always on | 12 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
+| Read | always on | 20 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
 | Write | `--allow-write` | `entity_create`, `entity_update`, `entity_delete`, `component_set`, `component_remove`, `file_write` | Change scenes and text files inside the project root. |
 | Exec | `--allow-exec` | `project_build`, `project_run_headless`, `render_screenshot` | Compile and run the project's native game code. |
 
@@ -151,6 +151,8 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `locale_list` | `max_missing` | The `locale_config`, default locale and per locale: string_table files (with hashes), key count, translation coverage, missing and extra keys. See [Localization tools](#localization-tools). |
 | `locale_messages` | `locale` (required), `key`, `prefix`, `args`, `offset`, `limit` | A locale's messages with exact Fluent source, file and line; `key` adds a formatted preview (plural `args`, fallback). |
 | `locale_pseudo_preview` | `text` or `key` (+ `locale`, `args`), `options` | Pseudo-localized text (accents, expansion, markers, RTL mirror) with placeables and markup preserved. |
+| `ui_inspect` | `scene`, `entity` (required), `viewport`, `theme`, `locale`, `states`, `font`, `point`, `offset`, `limit` | The computed layout of an entity's `engine.UiRoot` in paint order (boxes, parent, children, widget kind), nodes without a box, layout issues (overflow, zero size, clipped away, unreachable focus, non-focusable navigation targets), an optional hit test, and the `ui_hash` for `ui_edit`. See [UI authoring tools](#ui-authoring-tools). |
+| `ui_preview` | `scene`, `entity` (required), `viewport`, `scale`, `theme`, `locale`, `states`, `font`, `background`, `sampling` | A PNG of the entity's `engine.UiRoot` from the headless CPU rasterizer, returned as MCP image content with size and digest. At most 2048 x 2048 pixels and within the output message limit; coverage text only. |
 | `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |
 | `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
 | `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob` (at most 512 bytes), `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
@@ -175,10 +177,10 @@ nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
 | `file_write` | `path`, `content`, `expected_hash` | yes / yes | Creates or overwrites a UTF-8 text file. |
 | `navigation_bake` | `meshes` (1-128 mesh assets), `output`, `settings`, `obstacles` | no / no | Bakes world-space floor meshes and box obstacles into a new navigation JSON file (never overwrites) and returns the asset entry to add to `project.json`. |
 | `acoustics_bake` | `scene`, `output`, `include` (`meshes`, `proxy2d`, `volumes`) | no / no | Writes the scene's acoustic source geometry (meshes, instances, volumes, proxy footprints and resolved materials) as a sealed `AcousticWorldDocument` JSON file after replaying it through the world builder; never overwrites. Returns `path`, `triangles`, `hash` (of the file), `content_hash` (the document's own) and the `acoustics` asset entry to add to `project.json`. |
-
 | `locale_set_message` | `locale`, `ftl` (required), `file`, `expected_hash` | yes / yes | Adds or replaces one Fluent message or term in a locale's `.ftl` file; validated with the Fluent parser first. |
 | `locale_remove_message` | `locale`, `id` (required), `file`, `expected_hash` | yes / no | Removes one message or term and its attached comment from a locale's `.ftl` file. |
 | `locale_add_locale` | `locale`, `path` (required), `asset_id`, `copy_from` | no / no | Creates a new `.ftl` file (never overwrites), registers it as a `string_table` asset and in the `locale_config` (creating `localization.json` if the project has none). |
+| `ui_edit` | `entity`, `operations` (required), `expected_hash`, plus the scene arguments | yes / no | Applies a batch of UI document operations (add, remove, move, duplicate, rename nodes; patch widget, style, node flags, classes, accessibility, bindings, root fields) to the entity's `engine.UiRoot` atomically, validated as a whole and saved through the scene revision check. See [UI authoring tools](#ui-authoring-tools). |
 
 All write tools carry `readOnlyHint: false` and `openWorldHint: false`.
 
@@ -246,6 +248,26 @@ The `locale_*` tools manage the project's [string tables](localization.md#projec
   rules (`path_invalid`, `path_protected`).
 - After a write the project is reloaded; if it no longer validates, every touched file is
   restored and the failure carries `details.rolled_back: true`.
+
+### UI authoring tools
+
+`ui_inspect` and `ui_preview` are read tools; `ui_edit` needs `--allow-write` and is hidden (and
+rejected) without it. They work on the `engine.UiRoot` component of one entity (`scene` +
+`entity`) and share their operation vocabulary, layout code and rasterizer with the editor; the
+full reference (operations, patch semantics, issue codes, preview fidelity and limits) is in
+[UI authoring](ui-authoring.md).
+
+- `ui_inspect` returns `ui_hash`; passing it back as `expected_hash` turns an edit based on a
+  stale UI root into `ui_conflict`, next to the usual `expected_revision` check
+  (`revision_conflict`).
+- `ui_edit` applies `operations` in order to a copy of the root, validates the result as a whole
+  and saves it as a `component_set` would. A failing operation, an invalid result or a scene that
+  no longer validates leaves the file unchanged; operation errors carry `ui.op.*` codes
+  (`ui.op.unknown_node`, `ui.op.cycle`, `ui.op.duplicate_id`, ...) and the failing operation index.
+- `ui_preview` returns the image after the structured result as a second content block
+  (`{"type":"image","mimeType":"image/png","data":"<base64>"}`).
+- Other codes: `ui_root_missing`, `ui_root_invalid`, `ui_conflict`, `ui_theme_invalid`,
+  `ui.theme.unknown`, `ui_locale_unavailable`, `ui.preview.size`, `render.font.unknown`.
 
 ### Execution tools (`--allow-exec`)
 

@@ -326,6 +326,25 @@ fn ui_preview_applies_themes_states_and_bounds_the_image() {
     }
 }
 
+#[test]
+fn ui_preview_respects_the_output_message_limit() {
+    let dir = fixture();
+    add_fonts(dir.path());
+    set_ui(dir.path(), menu("Hello"));
+    let args = json!({"scene":START,"entity":"player","viewport":[200,80]});
+    // Roomy: fine. Too small for the base64 image: a precise error instead of
+    // the generic `output_too_large` replacement.
+    let ok = result(dir.path(), "ui_preview", args.clone());
+    let png = ok["structuredContent"]["png_bytes"].as_u64().unwrap() as usize;
+    let tight = engine_mcp::ServerConfig::new().with_limits(engine_mcp::Limits {
+        max_output_message_bytes: 16 * 1024 + png / 2,
+        ..Default::default()
+    });
+    let failed = result_with(dir.path(), tight, "ui_preview", args)["structuredContent"].clone();
+    assert_eq!(error_code(&failed), "ui.preview.size", "{failed}");
+    assert!(failed["error"]["hint"].as_str().unwrap().contains("scale"));
+}
+
 // ---- ui_edit ----
 
 fn edit(root: &Path, revision: &str, extra: Value) -> Value {

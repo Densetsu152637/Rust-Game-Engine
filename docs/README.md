@@ -90,6 +90,10 @@
 - [UI styling](ui-styling.md): themes with tokens and selector rules (kind, class, id, state
   pseudo-classes), cascade and specificity, transitions and keyframe animation with
   reduced motion, data binding with a string-resolver seam, world-space UI panels.
+- [UI authoring](ui-authoring.md): the editable `UiDocument` (one serializable operation
+  vocabulary, atomic validated batches, bounded undo/redo, selection, change notifications,
+  diff), layout inspection with hit testing and issues, the headless CPU preview rasterizer and
+  PNG output, and the `ui_inspect`/`ui_preview`/`ui_edit` MCP tools.
 - [UI render features](ui-render.md): the `engine-ui-render` crate (SDF screen text, depth-tested
   world panels and world text in `Camera3D` scenes, the colour-vision filter), its routing rule,
   status and GPU measurements.
