@@ -131,7 +131,7 @@ impl Lut3d {
 }
 
 /// IEEE half-precision bits of `value` (round to nearest, saturating).
-pub(crate) fn f32_to_f16_bits(value: f32) -> u16 {
+pub fn f32_to_f16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
     let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
