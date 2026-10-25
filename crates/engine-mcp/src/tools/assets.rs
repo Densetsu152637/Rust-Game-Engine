@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 17] = [
+const KINDS: [&str; 18] = [
     "script",
     "mesh",
     "texture",
@@ -29,6 +29,7 @@ const KINDS: [&str; 17] = [
     "tilemap",
     "pcg",
     "partition",
+    "terrain",
 ];
 const MAX_USES: usize = 200;
 
@@ -229,6 +230,12 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
                 .map(|l| json!({"name":l.name,"cells":l.filled_cells()}))
                 .collect();
             json!({"bounds":{"min":map.bounds().min,"max":map.bounds().max},"layers":layers})
+        }
+        "terrain" => {
+            let field = engine_project::world::terrain::load_terrain(project, &asset.id)?;
+            let layers: Vec<_> = field.layers().iter().map(|l| l.name.clone()).collect();
+            json!({"samples":[field.columns(), field.rows()],"spacing":field.spacing(),
+                "height_range":field.height_range(),"layers":layers,"holes":field.hole_count()})
         }
         "pcg" => {
             let graph = engine_project::world::pcg::load_graph(project, &asset.id)?;

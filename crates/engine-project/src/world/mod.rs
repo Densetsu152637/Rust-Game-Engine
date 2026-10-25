@@ -55,8 +55,8 @@ pub fn install(world: &mut World) -> Result<()> {
 pub fn pre_simulation(world: &mut World, dt: f32) -> Result<()> {
     coordinates::pre_simulation(world, dt)?;
     streaming::pre_simulation(world, dt)?;
-    pcg::pre_simulation(world, dt)?;
     terrain::pre_simulation(world, dt)?;
+    pcg::pre_simulation(world, dt)?;
     water::pre_simulation(world, dt)?;
     foliage::pre_simulation(world, dt)?;
     tilemap::pre_simulation(world, dt)

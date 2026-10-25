@@ -383,6 +383,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.SkinBinding",
         "engine.SoftBody",
         "engine.StreamingSource",
+        "engine.Terrain",
         "engine.Tilemap",
         "engine.UiRoot",
         "engine.Vehicle3D",

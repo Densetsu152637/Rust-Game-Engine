@@ -132,5 +132,9 @@
 - [Level streaming](streaming.md): world partition cells, streaming sources, hysteresis
   and budgets, data layers, HLOD proxies, `engine.WorldPartition`, the native API and
   the `streaming_*` MCP tools (`engine-streaming`).
+- [Heightmap terrain](terrain.md): the `.terrain` heightfield asset (`engine-terrain`),
+  crack-free CDLOD geomorphing, sculpt/paint/hole brushes, `engine.Terrain` collider
+  tiles, PCG surfaces and navigation input, the CPU chunk fallback, the `world.terrain`
+  GPU feature (`engine-world-render`) and the `terrain_*` MCP tools.
 
 Per-crate details are in `crates/*/README.md`.
