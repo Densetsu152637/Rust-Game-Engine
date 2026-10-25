@@ -173,9 +173,30 @@ pub enum ClientBody {
     RequestJoinToken {
         session_id: SessionId,
     },
-    /// Relay-allocation token (members only; requires a configured relay audience).
+    /// Relay credential for the pair (you, `peer`): both must be members of the session. The
+    /// credential names the channel derived from the session and the two subjects and the slot
+    /// (A or B) fixed by subject order, so it cannot be used for any other pair or slot.
+    /// Requires a configured relay audience.
     RequestRelayToken {
         session_id: SessionId,
+        peer: String,
+    },
+    /// Host only: replaces the private join code (the old one stops working).
+    RotateCode {
+        session_id: SessionId,
+        epoch: u64,
+    },
+    /// Registers the SHA-256 (32 bytes) of the certificate your game server presents when you
+    /// are the session's host. Joiners pin the current host's fingerprint.
+    SetGameIdentity {
+        session_id: SessionId,
+        cert_sha256: Blob,
+    },
+    /// Introduces you to the member `peer` for NAT traversal: their candidates plus a punch
+    /// secret derived for exactly your pair. Both sides obtain the same secret by asking.
+    RequestPeerIntro {
+        session_id: SessionId,
+        peer: String,
     },
     /// Host only: newest game state for host migration.
     UploadMigrationState {
@@ -242,6 +263,10 @@ pub struct SessionView {
     /// Host epoch; increments on every host change.
     pub epoch: u64,
     pub host: Option<String>,
+    /// SHA-256 of the certificate the current host's game server presents, once the host
+    /// registered it (`SetGameIdentity`). Joiners pin this value.
+    #[serde(default)]
+    pub host_fingerprint: Option<Blob>,
     pub attributes: Attributes,
     pub members: Vec<MemberView>,
     /// Private join code, shown only to the current host.
@@ -294,6 +319,21 @@ pub enum ServerBody {
         epoch: u64,
         token: Blob,
     },
+    /// Answer to `RotateCode`: the new join code.
+    CodeRotated {
+        session_id: SessionId,
+        epoch: u64,
+        code: String,
+    },
+    /// Answer to `RequestPeerIntro`. `punch_secret` (32 bytes) is known only to the two members
+    /// of the pair and the service; `controlling` is the role you take when punching.
+    PeerIntro {
+        session_id: SessionId,
+        peer: String,
+        candidates: Option<Blob>,
+        punch_secret: Blob,
+        controlling: bool,
+    },
     TicketQueued {
         ticket: TicketId,
     },
@@ -325,17 +365,33 @@ pub enum ServerBody {
         epoch: u64,
         attributes: Attributes,
     },
-    /// The host changed. Carries a join token for the new epoch and, to the new host only, the
-    /// newest migration state and the join code.
+    /// The host changed. Carries a join token for the new epoch, the new host's registered game
+    /// certificate fingerprint (if any) and, to the new host only, the newest migration state
+    /// and the *rotated* join code (the old code stops working at every host change).
     HostChanged {
         session_id: SessionId,
         epoch: u64,
         host: String,
         you_are_host: bool,
         candidates: Option<Blob>,
+        #[serde(default)]
+        host_fingerprint: Option<Blob>,
         join_token: Option<Blob>,
         state: Option<Blob>,
         code: Option<String>,
+    },
+    /// The current host registered or changed its game certificate fingerprint.
+    HostIdentityChanged {
+        session_id: SessionId,
+        epoch: u64,
+        host_fingerprint: Blob,
+    },
+    /// To the host after a kick: the join code was rotated because the kicked member may
+    /// have known it.
+    CodeChanged {
+        session_id: SessionId,
+        epoch: u64,
+        code: String,
     },
     Kicked {
         session_id: SessionId,
@@ -518,8 +574,18 @@ impl ClientBody {
             Self::LeaveSession { .. }
             | Self::SetReady { .. }
             | Self::RequestJoinToken { .. }
-            | Self::RequestRelayToken { .. }
+            | Self::RotateCode { .. }
             | Self::CancelTicket { .. } => {}
+            Self::RequestRelayToken { peer, .. } | Self::RequestPeerIntro { peer, .. } => {
+                if !valid_text(peer, crate::token::MAX_NAME_BYTES) {
+                    return Err("peer");
+                }
+            }
+            Self::SetGameIdentity { cert_sha256, .. } => {
+                if cert_sha256.0.len() != 32 {
+                    return Err("certificate fingerprint");
+                }
+            }
             Self::Kick { player, .. } => {
                 if !valid_text(player, crate::token::MAX_NAME_BYTES) {
                     return Err("player");
@@ -635,6 +701,52 @@ mod tests {
     }
 
     #[test]
+    fn session_names_reject_bidi_controls_and_zero_width_characters() {
+        let name = |name: &str| {
+            let text = serde_json::json!({"v":1,"id":1,"body":{
+                "type":"create_session","name":name,"mode":"m","capacity":2}});
+            decode(&text.to_string())
+        };
+        assert!(name("Friday night 🎮").is_ok());
+        for bad in [
+            "evil\u{202E}gnp.exe",
+            "a\u{200B}b",
+            "a\u{200D}b",
+            "a\u{2066}b",
+            "\u{FEFF}lead",
+        ] {
+            assert!(name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn peer_and_identity_fields_are_validated() {
+        for ok in [
+            r#"{"v":1,"id":1,"body":{"type":"request_relay_token","session_id":1,"peer":"bob"}}"#,
+            r#"{"v":1,"id":1,"body":{"type":"request_peer_intro","session_id":1,"peer":"bob"}}"#,
+            r#"{"v":1,"id":1,"body":{"type":"rotate_code","session_id":1,"epoch":1}}"#,
+        ] {
+            assert!(decode(ok).is_ok(), "{ok}");
+        }
+        let fingerprint = |bytes: usize| {
+            let blob = URL_SAFE_NO_PAD.encode(vec![7u8; bytes]);
+            format!(
+                r#"{{"v":1,"id":1,"body":{{"type":"set_game_identity","session_id":1,"cert_sha256":"{blob}"}}}}"#
+            )
+        };
+        assert!(decode(&fingerprint(32)).is_ok());
+        assert!(decode(&fingerprint(31)).is_err());
+        assert!(decode(&fingerprint(33)).is_err());
+        for bad in [
+            r#"{"v":1,"id":1,"body":{"type":"request_relay_token","session_id":1}}"#,
+            r#"{"v":1,"id":1,"body":{"type":"request_relay_token","session_id":1,"peer":""}}"#,
+            r#"{"v":1,"id":1,"body":{"type":"request_peer_intro","session_id":1,"peer":"a\nb"}}"#,
+        ] {
+            assert!(decode(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn rejects_out_of_bounds_fields() {
         let big_name = "n".repeat(limits().max_name_bytes + 1);
         let cases = [
@@ -712,6 +824,7 @@ mod tests {
             hosting: Hosting::Player,
             epoch: u64::MAX,
             host: Some("h".repeat(64)),
+            host_fingerprint: Some(Blob(vec![0xFF; 32])),
             attributes: (0..l.max_attributes)
                 .map(|i| {
                     (
@@ -743,6 +856,7 @@ mod tests {
                 host: "h".repeat(64),
                 you_are_host: true,
                 candidates: Some(Blob(vec![0xFF; l.max_candidates_bytes])),
+                host_fingerprint: Some(Blob(vec![0xFF; 32])),
                 join_token: Some(Blob(vec![0xFF; MAX_TOKEN_BYTES])),
                 state: Some(Blob(vec![0xFF; l.max_migration_state_bytes])),
                 code: Some("A".repeat(16)),

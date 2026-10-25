@@ -50,11 +50,21 @@ fn blob(rng: &mut Rng, max: u64) -> Option<Blob> {
     rng.chance(60).then(|| Blob(rng.some_bytes(max)))
 }
 
-fn random_body(rng: &mut Rng, codes: &[String]) -> ClientBody {
-    let session_id = 1 + rng.below(30);
+/// A session ID the fuzzer has seen the service hand out (most of the time) or a random one.
+/// IDs are unguessable, so blind guessing would never hit a live session.
+fn pick_session(rng: &mut Rng, ids: &[u64]) -> u64 {
+    if !ids.is_empty() && rng.chance(85) {
+        ids[rng.below(ids.len() as u64) as usize]
+    } else {
+        1 + rng.below(1 << 40)
+    }
+}
+
+fn random_body(rng: &mut Rng, codes: &[String], ids: &[u64]) -> ClientBody {
+    let session_id = pick_session(rng, ids);
     let epoch = rng.below(4);
     let player = format!("p{}", rng.below(12));
-    match rng.below(60) {
+    match rng.below(66) {
         0..=7 => ClientBody::CreateSession(CreateSession {
             name: format!("room{}", rng.below(50)),
             mode: ["duel", "ffa"][rng.below(2) as usize].into(),
@@ -109,7 +119,10 @@ fn random_body(rng: &mut Rng, codes: &[String]) -> ClientBody {
             candidates: Blob(rng.some_bytes(600)),
         },
         40..=42 => ClientBody::RequestJoinToken { session_id },
-        43..=44 => ClientBody::RequestRelayToken { session_id },
+        43..=44 => ClientBody::RequestRelayToken {
+            session_id,
+            peer: player,
+        },
         45..=47 => ClientBody::UploadMigrationState {
             session_id,
             epoch,
@@ -126,6 +139,18 @@ fn random_body(rng: &mut Rng, codes: &[String]) -> ClientBody {
         }),
         56..=58 => ClientBody::CancelTicket {
             ticket: rng.below(100),
+        },
+        59..=60 => ClientBody::RotateCode { session_id, epoch },
+        61..=62 => {
+            let len = if rng.chance(80) { 32 } else { 5 };
+            ClientBody::SetGameIdentity {
+                session_id,
+                cert_sha256: Blob(rng.bytes(len)),
+            }
+        }
+        63..=64 => ClientBody::RequestPeerIntro {
+            session_id,
+            peer: player,
         },
         _ => ClientBody::Hello {
             token: Blob(rng.some_bytes(300)),
@@ -176,7 +201,7 @@ fn wire_decoders_survive_20k_hostile_payloads() {
     let limits = OnlineLimits::default();
     let mut rng = Rng(0x00C0_FFEE_D00D_F00D);
     let seeds: Vec<Vec<u8>> = (0..400)
-        .map(|_| encode(random_body(&mut rng, &[]), &limits))
+        .map(|_| encode(random_body(&mut rng, &[], &[]), &limits))
         .filter(|payload| !payload.is_empty())
         .collect();
     assert!(seeds.len() > 100);
@@ -240,6 +265,22 @@ fn token_verifier_rejects_every_mutation_of_a_valid_token() {
 
 const PLAYERS: u64 = 12;
 
+/// Remembers the ID of a session the service just described, bounded to 48 entries.
+fn remember_session(body: &engine_online::ServerBody, ids: &mut Vec<u64>, rng: &mut Rng) {
+    let id = match body {
+        engine_online::ServerBody::SessionCreated { session, .. }
+        | engine_online::ServerBody::Joined { session, .. }
+        | engine_online::ServerBody::MatchFound { session, .. } => session.id,
+        _ => return,
+    };
+    if ids.len() < 48 {
+        ids.push(id);
+    } else {
+        let slot = rng.below(48) as usize;
+        ids[slot] = id;
+    }
+}
+
 #[test]
 fn service_survives_15k_random_operations_with_bounded_state_and_intact_invariants() {
     let mut sim = Sim::new(|c| {
@@ -265,17 +306,18 @@ fn service_survives_15k_random_operations_with_bounded_state_and_intact_invarian
         next_peer += 1;
     }
     let mut codes: Vec<String> = Vec::new();
+    let mut ids: Vec<u64> = Vec::new();
     let (mut ok_replies, mut error_replies, mut notifications) = (0u64, 0u64, 0u64);
     for iteration in 0..15_000u32 {
         let slot = rng.below(PLAYERS) as usize;
         let peer = peers[slot];
         match rng.below(100) {
             0..=59 => {
-                let payload = encode(random_body(&mut rng, &codes), &limits);
+                let payload = encode(random_body(&mut rng, &codes, &ids), &limits);
                 sim.send_raw(peer, &payload);
             }
             60..=79 => {
-                let seed = encode(random_body(&mut rng, &codes), &limits);
+                let seed = encode(random_body(&mut rng, &codes, &ids), &limits);
                 let payload = mutate(&mut rng, &seed);
                 sim.send_raw(peer, &payload);
             }
@@ -294,13 +336,16 @@ fn service_survives_15k_random_operations_with_bounded_state_and_intact_invarian
                 next_peer += 1;
             }
             _ => {
-                let _ = sim.service.force_migrate(1 + rng.below(30), sim.now());
+                let _ = sim
+                    .service
+                    .force_migrate(pick_session(&mut rng, &ids), sim.now());
                 sim.pump();
             }
         }
         // Account for replies, harvest join codes, then discard.
         for (_, queue) in std::mem::take(&mut sim.inbox) {
             for envelope in queue {
+                remember_session(&envelope.body, &mut ids, &mut rng);
                 match envelope.body {
                     engine_online::ServerBody::Error { .. } => error_replies += 1,
                     engine_online::ServerBody::SessionCreated { ref session, .. } => {
@@ -311,6 +356,7 @@ fn service_survives_15k_random_operations_with_bounded_state_and_intact_invarian
                             codes.push(code.clone());
                         }
                     }
+
                     ref body if envelope.id == 0 => {
                         notifications += 1;
                         let _ = body;

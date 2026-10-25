@@ -157,6 +157,37 @@ fn full_journey_authenticate_browse_join_match_and_game_server_verification() {
         })
     });
 
+    // Relay credentials are pair-scoped tokens: the host and bob each get one slot of the
+    // channel they share, and the relay-side adapter turns them into grants.
+    let relay_credential = |net: &mut Net, c: &mut Vec<Conn>, who: usize, with: &str| {
+        let ServerBody::Token { token, .. } = net.call(
+            c,
+            who,
+            ClientBody::RequestRelayToken {
+                session_id: private.id,
+                peer: with.into(),
+            },
+        ) else {
+            panic!("relay token");
+        };
+        token.0
+    };
+    let host_credential = relay_credential(&mut net, &mut c, 0, "player1");
+    let bob_credential = relay_credential(&mut net, &mut c, 1, "player0");
+    let authorize = engine_online::relay::relay_authorizer_with_clock(
+        net.auth.verifier(),
+        "engine-relay",
+        Net::unix_now,
+    );
+    let from = SocketAddr::from(([127, 0, 0, 1], 9));
+    let (host_grant, bob_grant) = (
+        authorize(&host_credential, from).expect("host credential"),
+        authorize(&bob_credential, from).expect("bob credential"),
+    );
+    assert_eq!(host_grant.channel, bob_grant.channel);
+    assert_ne!(host_grant.party, bob_grant.party);
+    assert!(authorize(b"garbage", from).is_none());
+
     // A non-host cannot kick; the host can.
     let reply = net.call(
         &mut c,
@@ -228,34 +259,6 @@ fn full_journey_authenticate_browse_join_match_and_game_server_verification() {
         );
     }
 
-    // Relay credentials are scoped tokens too.
-    let ServerBody::Token { token, .. } = net.call(
-        &mut c,
-        0,
-        ClientBody::RequestRelayToken {
-            session_id: private.id,
-        },
-    ) else {
-        panic!("relay token");
-    };
-    let relay = net.auth.verifier();
-    let scope = engine_online::Scope::Relay {
-        session: private.id,
-    };
-    assert!(
-        relay
-            .verify(
-                &token.0,
-                &engine_online::token::Expect {
-                    audience: "engine-relay",
-                    scope: &scope,
-                    cert_sha256: &net.ids[0].fingerprint(),
-                    single_use: true,
-                },
-                Net::unix_now()
-            )
-            .is_ok()
-    );
     assert_eq!(net.server.service().stats().auth_failures, 0);
 }
 

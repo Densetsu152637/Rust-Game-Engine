@@ -16,6 +16,7 @@ use crate::{
         Blob, ClientBody, ClientEnvelope, ErrorCode, JoinTarget, PROTOCOL_VERSION, ProtocolError,
         ServerBody, ServerEnvelope, SessionId, TicketId, TokenKind,
     },
+    relay::{relay_channel, relay_party},
     token::{CertFingerprint, Scope, TokenIssuer, TokenRequest, TokenVerifier},
 };
 use engine_network::PeerId;
@@ -85,6 +86,10 @@ pub struct ServiceConfig {
     /// Audience of relay tokens; `None` disables `RequestRelayToken`.
     pub relay_audience: Option<String>,
     pub join_token_ttl_secs: u64,
+    /// Lifetime of relay credentials. It is also the hard limit of the relay allocation made
+    /// with the credential (refreshes cannot extend past it), so it should cover a match;
+    /// clients request a new credential before it ends.
+    pub relay_token_ttl_secs: u64,
     /// Consume connect-token nonces so a captured token cannot be replayed.
     pub connect_token_single_use: bool,
     pub modes: Vec<ModeRules>,
@@ -97,6 +102,7 @@ impl Default for ServiceConfig {
             game_audience: "engine-game".into(),
             relay_audience: None,
             join_token_ttl_secs: 120,
+            relay_token_ttl_secs: 3600,
             connect_token_single_use: true,
             modes: crate::matchmaking::default_modes(),
         }
@@ -119,6 +125,9 @@ pub struct ServiceStats {
     pub malformed: u64,
     pub rate_limited: u64,
     pub join_code_failures: u64,
+    /// Windows in which failed guesses across the server reached
+    /// `OnlineLimits::join_code_failures_global` (an alert signal; it blocks nobody).
+    pub join_code_alarms: u64,
     pub sessions_created: u64,
     pub matches_formed: u64,
     pub tickets_expired: u64,
@@ -131,7 +140,6 @@ struct PeerState {
     bucket: TokenBucket,
     rate_violations: u32,
     malformed: u32,
-    code_failures: FailureWindow,
     rtt_ms: Option<u32>,
 }
 
@@ -144,6 +152,10 @@ pub struct OnlineService {
     directory: Box<dyn PlayerDirectory>,
     peers: BTreeMap<PeerId, PeerState>,
     by_subject: BTreeMap<String, PeerId>,
+    /// Failed join-code guesses per authenticated subject. Survives reconnects, so dropping and
+    /// re-establishing the connection does not reset the allowance. Bounded.
+    guessers: BTreeMap<String, FailureWindow>,
+    /// Server-wide failed-guess count; telemetry only (see `join_code_failures_global`).
     global_code_failures: FailureWindow,
     next_match_ms: u64,
     actions: Vec<Action>,
@@ -160,6 +172,9 @@ impl OnlineService {
         cfg.limits.validate()?;
         if cfg.join_token_ttl_secs == 0 || cfg.join_token_ttl_secs > issuer.max_lifetime_secs() {
             return Err(OnlineError::Invalid("join token lifetime"));
+        }
+        if cfg.relay_token_ttl_secs == 0 || cfg.relay_token_ttl_secs > issuer.max_lifetime_secs() {
+            return Err(OnlineError::Invalid("relay token lifetime"));
         }
         let gate = SessionGate::new(
             GateConfig {
@@ -192,6 +207,7 @@ impl OnlineService {
             issuer,
             peers: BTreeMap::new(),
             by_subject: BTreeMap::new(),
+            guessers: BTreeMap::new(),
             next_match_ms: 0,
             actions: Vec::new(),
             stats: ServiceStats::default(),
@@ -218,6 +234,10 @@ impl OnlineService {
     }
     pub fn authenticated_peers(&self) -> usize {
         self.peers.len()
+    }
+    /// Subjects with a remembered failed-guess window (bounded by `max_tracked_guessers`).
+    pub fn tracked_code_guessers(&self) -> usize {
+        self.guessers.len()
     }
     pub fn tracked_peers(&self) -> usize {
         self.gate.len()
@@ -493,10 +513,6 @@ impl OnlineService {
             ),
             rate_violations: 0,
             malformed: 0,
-            code_failures: FailureWindow::new(
-                limits.join_code_failures_per_peer,
-                limits.join_code_window_ms,
-            ),
             rtt_ms: None,
         });
         self.stats.auth_success = self.stats.auth_success.saturating_add(1);
@@ -518,6 +534,7 @@ impl OnlineService {
         audience: &str,
         session: SessionId,
         scope: Scope,
+        lifetime_secs: u64,
         now: Now,
     ) -> Result<Blob, ErrorCode> {
         let state = self.peers.get(&peer).ok_or(ErrorCode::Unauthorized)?;
@@ -528,7 +545,7 @@ impl OnlineService {
                     subject: &state.subject,
                     session: Some(session),
                     cert_sha256: state.fingerprint,
-                    lifetime_secs: self.cfg.join_token_ttl_secs,
+                    lifetime_secs,
                     scopes: vec![scope],
                 },
                 now.unix_secs,
@@ -543,6 +560,7 @@ impl OnlineService {
             &self.cfg.game_audience,
             session,
             Scope::JoinSession { session, epoch },
+            self.cfg.join_token_ttl_secs,
             now,
         )
     }
@@ -564,6 +582,7 @@ impl OnlineService {
             LobbyError::Conflict => (ErrorCode::Conflict, "conflict"),
             LobbyError::LimitExceeded => (ErrorCode::LimitExceeded, "limit exceeded"),
             LobbyError::StaleEpoch => (ErrorCode::StaleEpoch, "stale host epoch"),
+            LobbyError::Kicked => (ErrorCode::Forbidden, "removed from this session"),
             LobbyError::Invalid(why) => (ErrorCode::BadRequest, why),
             LobbyError::Internal => (ErrorCode::Internal, "internal error"),
         };
@@ -668,9 +687,52 @@ impl OnlineService {
             ClientBody::RequestJoinToken { session_id } => {
                 self.handle_token_request(peer, id, session_id, TokenKind::Join, now);
             }
-            ClientBody::RequestRelayToken { session_id } => {
-                self.handle_token_request(peer, id, session_id, TokenKind::Relay, now);
+            ClientBody::RequestRelayToken {
+                session_id,
+                peer: other,
+            } => self.handle_relay_token_request(peer, id, session_id, &other, now),
+            ClientBody::RotateCode { session_id, epoch } => {
+                match self.lobby.rotate_code(peer, session_id, epoch) {
+                    Ok(code) => self.push_send(
+                        peer,
+                        id,
+                        ServerBody::CodeRotated {
+                            session_id,
+                            epoch,
+                            code,
+                        },
+                    ),
+                    Err(error) => self.lobby_error(peer, id, error),
+                }
             }
+            ClientBody::SetGameIdentity {
+                session_id,
+                cert_sha256,
+            } => {
+                let result = <[u8; 32]>::try_from(cert_sha256.0.as_slice())
+                    .map_err(|_| LobbyError::Invalid("certificate fingerprint"))
+                    .and_then(|fingerprint| {
+                        self.lobby.set_game_identity(peer, session_id, fingerprint)
+                    });
+                self.ack(peer, id, result);
+            }
+            ClientBody::RequestPeerIntro {
+                session_id,
+                peer: other,
+            } => match self.lobby.pair_intro(peer, session_id, &other) {
+                Ok(intro) => self.push_send(
+                    peer,
+                    id,
+                    ServerBody::PeerIntro {
+                        session_id,
+                        peer: intro.peer,
+                        candidates: intro.candidates,
+                        punch_secret: Blob(intro.punch_secret.to_vec()),
+                        controlling: intro.controlling,
+                    },
+                ),
+                Err(error) => self.lobby_error(peer, id, error),
+            },
             ClientBody::UploadMigrationState {
                 session_id,
                 epoch,
@@ -707,39 +769,29 @@ impl OnlineService {
         now: Now,
     ) {
         let by_code = matches!(target, JoinTarget::Code { .. });
-        if by_code {
-            // Lock out guessing before the code is even compared.
-            let global_open = self.global_code_failures.open(now.mono_ms);
-            let peer_open = self
-                .peers
-                .get_mut(&peer)
-                .is_some_and(|p| p.code_failures.open(now.mono_ms));
-            if !global_open || !peer_open {
-                self.stats.rate_limited = self.stats.rate_limited.saturating_add(1);
-                // Attempts made while locked out count too, so persistent guessing escalates
-                // to a disconnect.
-                if let Some(state) = self.peers.get_mut(&peer) {
-                    state.code_failures.record_failure(now.mono_ms);
-                }
-                let abusive = self.peers.get(&peer).is_some_and(|p| {
-                    p.code_failures.failures()
-                        >= self
-                            .cfg
-                            .limits
-                            .join_code_failures_per_peer
-                            .saturating_mul(2)
-                });
-                if abusive {
-                    return self.reject(
-                        peer,
-                        id,
-                        ErrorCode::RateLimited,
-                        "too many join attempts",
-                        now,
-                    );
-                }
-                return self.error(peer, id, ErrorCode::RateLimited, "too many join attempts");
+        if by_code && !self.guess_window_open(&actor.subject, now.mono_ms) {
+            // Lock out guessing before the code is even compared. The allowance belongs to the
+            // subject, not the connection, so reconnecting does not reset it.
+            self.stats.rate_limited = self.stats.rate_limited.saturating_add(1);
+            // Attempts made while locked out count too, so persistent guessing escalates
+            // to a disconnect.
+            self.record_guess_failure(&actor.subject, now.mono_ms);
+            let abusive = self.guess_failures(&actor.subject)
+                >= self
+                    .cfg
+                    .limits
+                    .join_code_failures_per_peer
+                    .saturating_mul(2);
+            if abusive {
+                return self.reject(
+                    peer,
+                    id,
+                    ErrorCode::RateLimited,
+                    "too many join attempts",
+                    now,
+                );
             }
+            return self.error(peer, id, ErrorCode::RateLimited, "too many join attempts");
         }
         match self.lobby.join(actor, target, candidates) {
             Ok(session) => {
@@ -749,13 +801,58 @@ impl OnlineService {
             Err(error) => {
                 if by_code && error == LobbyError::NotFound {
                     self.stats.join_code_failures = self.stats.join_code_failures.saturating_add(1);
-                    self.global_code_failures.record_failure(now.mono_ms);
-                    if let Some(state) = self.peers.get_mut(&peer) {
-                        state.code_failures.record_failure(now.mono_ms);
-                    }
+                    self.record_guess_failure(&actor.subject, now.mono_ms);
+                    self.note_global_code_failure(now.mono_ms);
                 }
                 self.lobby_error(peer, id, error);
             }
+        }
+    }
+
+    /// Whether `subject` may still try a join code in the current window. Subjects with no
+    /// recorded failures are always allowed; no state is created for them.
+    fn guess_window_open(&mut self, subject: &str, now_ms: u64) -> bool {
+        self.guessers
+            .get_mut(subject)
+            .is_none_or(|window| window.open(now_ms))
+    }
+    fn guess_failures(&self, subject: &str) -> u32 {
+        self.guessers
+            .get(subject)
+            .map_or(0, FailureWindow::failures)
+    }
+    fn record_guess_failure(&mut self, subject: &str, now_ms: u64) {
+        let limits = &self.cfg.limits;
+        if !self.guessers.contains_key(subject)
+            && self.guessers.len() >= limits.max_tracked_guessers
+        {
+            // Forget windows that no longer restrict anybody, then, if the table is still full
+            // of active ones, the oldest. An attacker cycling through accounts can only push out
+            // other guessers' history at the cost of one account per eviction.
+            self.guessers.retain(|_, window| !window.is_stale(now_ms));
+            if self.guessers.len() >= limits.max_tracked_guessers
+                && let Some(oldest) = self
+                    .guessers
+                    .iter()
+                    .min_by_key(|(_, window)| window.started_ms())
+                    .map(|(subject, _)| subject.clone())
+            {
+                self.guessers.remove(&oldest);
+            }
+        }
+        let (max, window_ms) = (
+            limits.join_code_failures_per_peer,
+            limits.join_code_window_ms,
+        );
+        self.guessers
+            .entry(subject.to_owned())
+            .or_insert_with(|| FailureWindow::starting_at(max, window_ms, now_ms))
+            .record_failure(now_ms);
+    }
+    fn note_global_code_failure(&mut self, now_ms: u64) {
+        self.global_code_failures.record_failure(now_ms);
+        if self.global_code_failures.failures() == self.cfg.limits.join_code_failures_global {
+            self.stats.join_code_alarms = self.stats.join_code_alarms.saturating_add(1);
         }
     }
 
@@ -773,22 +870,80 @@ impl OnlineService {
         let Some(epoch) = self.lobby.epoch(session) else {
             return self.error(peer, id, ErrorCode::NotFound, "not found");
         };
-        let minted = match kind {
-            TokenKind::Join => self.join_token(peer, session, now),
-            TokenKind::Relay => {
-                let Some(audience) = self.cfg.relay_audience.clone() else {
-                    return self.error(peer, id, ErrorCode::Unsupported, "relay is not configured");
-                };
-                self.mint(peer, &audience, session, Scope::Relay { session }, now)
-            }
-        };
-        match minted {
+        match self.join_token(peer, session, now) {
             Ok(token) => self.push_send(
                 peer,
                 id,
                 ServerBody::Token {
                     session_id: session,
                     kind,
+                    epoch,
+                    token,
+                },
+            ),
+            Err(code) => self.error(peer, id, code, "could not issue a token"),
+        }
+    }
+
+    /// Mints a relay credential for the pair (requester, `other`). Both must be members of the
+    /// session; the credential carries the channel derived from the session and the two subjects
+    /// and the slot fixed by subject order, so a member can never obtain a credential that
+    /// reaches a channel it is not party to, or the other member's slot.
+    fn handle_relay_token_request(
+        &mut self,
+        peer: PeerId,
+        id: u32,
+        session: SessionId,
+        other: &str,
+        now: Now,
+    ) {
+        if !self.lobby.is_member(peer, session) {
+            return self.error(peer, id, ErrorCode::NotFound, "not found");
+        }
+        let Some(epoch) = self.lobby.epoch(session) else {
+            return self.error(peer, id, ErrorCode::NotFound, "not found");
+        };
+        let Some(audience) = self.cfg.relay_audience.clone() else {
+            return self.error(peer, id, ErrorCode::Unsupported, "relay is not configured");
+        };
+        let Some(me) = self.subject_of(peer).map(str::to_owned) else {
+            return self.error(peer, id, ErrorCode::Unauthorized, "authenticate first");
+        };
+        if me == other {
+            return self.error(
+                peer,
+                id,
+                ErrorCode::BadRequest,
+                "name another member of the session",
+            );
+        }
+        if !self
+            .lobby
+            .members(session)
+            .iter()
+            .any(|(_, subject)| subject == other)
+        {
+            return self.error(peer, id, ErrorCode::NotFound, "not found");
+        }
+        let scope = Scope::Relay {
+            session,
+            channel: relay_channel(session, &me, other),
+            party: relay_party(&me, other),
+        };
+        match self.mint(
+            peer,
+            &audience,
+            session,
+            scope,
+            self.cfg.relay_token_ttl_secs,
+            now,
+        ) {
+            Ok(token) => self.push_send(
+                peer,
+                id,
+                ServerBody::Token {
+                    session_id: session,
+                    kind: TokenKind::Relay,
                     epoch,
                     token,
                 },
@@ -963,7 +1118,14 @@ impl OnlineService {
                         epoch: *epoch,
                     };
                     *join_token = self
-                        .mint(recipient, &self.cfg.game_audience, *session_id, scope, now)
+                        .mint(
+                            recipient,
+                            &self.cfg.game_audience,
+                            *session_id,
+                            scope,
+                            self.cfg.join_token_ttl_secs,
+                            now,
+                        )
                         .ok();
                 }
                 self.push_send(recipient, 0, body);

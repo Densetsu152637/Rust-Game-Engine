@@ -34,8 +34,18 @@ pub struct OnlineLimits {
     pub max_malformed_messages: u32,
     /// Failed join-code guesses per peer / for the whole server inside `join_code_window_ms`.
     pub join_code_failures_per_peer: u32,
+    /// Failed guesses across the whole server inside `join_code_window_ms` that raise the
+    /// `join_code_alarms` counter. **Telemetry only**: it never blocks anybody. With 80-bit codes
+    /// a global lockout adds no protection (the per-subject limit already caps guessing at a
+    /// rate that cannot reach the code space) and only hands any one account a lever to lock
+    /// every honest player out of private-code joins.
     pub join_code_failures_global: u32,
     pub join_code_window_ms: u64,
+    /// Subjects whose failed-guess windows are remembered across reconnects. When full, expired
+    /// windows are dropped first, then the oldest.
+    pub max_tracked_guessers: usize,
+    /// Subjects the host kicked that a session remembers (oldest forgotten first).
+    pub max_kicked_per_session: usize,
     pub max_tickets: usize,
     pub max_tickets_per_mode: usize,
     pub max_party_size: u8,
@@ -69,6 +79,8 @@ impl Default for OnlineLimits {
             join_code_failures_per_peer: 5,
             join_code_failures_global: 100,
             join_code_window_ms: 60_000,
+            max_tracked_guessers: 4096,
+            max_kicked_per_session: 64,
             max_tickets: 4096,
             max_tickets_per_mode: 1024,
             max_party_size: 8,
@@ -103,6 +115,8 @@ impl OnlineLimits {
             && self.join_code_failures_per_peer > 0
             && self.join_code_failures_global > 0
             && self.join_code_window_ms > 0
+            && (1..=1_000_000).contains(&self.max_tracked_guessers)
+            && (1..=1024).contains(&self.max_kicked_per_session)
             && self.max_tickets > 0
             && self.max_tickets_per_mode > 0
             && (1..=16).contains(&self.max_party_size)

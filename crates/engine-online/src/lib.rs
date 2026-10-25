@@ -5,6 +5,8 @@
 //! Layering (see `docs/online-services.md`):
 //! - sans-IO cores: [`token`], [`gate`], [`lobby`], [`matchmaking`], [`migration`] and the
 //!   combined [`service::OnlineService`] take explicit time and return data;
+//! - [`relay`] derives pair-scoped relay credentials and adapts them to an `engine-net-nat`
+//!   relay; [`pin`] pins a session host's game-server certificate;
 //! - thin drivers: [`server::OnlineServer`] and [`client::OnlineClient`] pump an endpoint;
 //! - the reference server `engine-online-server` and its JSON [`config`].
 //!
@@ -20,7 +22,9 @@ pub mod lobby;
 pub mod matchmaking;
 pub mod migration;
 pub mod pem;
+pub mod pin;
 pub mod protocol;
+pub mod relay;
 pub mod server;
 pub mod service;
 mod text;
@@ -30,7 +34,7 @@ pub use binding::CertificateBinding;
 pub use client::{ClientEvent, OnlineClient};
 pub use gate::{GateConfig, GateError, Identity, Now, SessionGate};
 pub use limits::OnlineLimits;
-pub use lobby::{Lobby, LobbyError};
+pub use lobby::{Lobby, LobbyError, PairIntro};
 pub use matchmaking::{Matchmaker, ModeRules};
 pub use migration::{InMemoryMigrationState, MigrationState, elect_host};
 pub use protocol::{ClientBody, ClientEnvelope, ServerBody, ServerEnvelope};
@@ -39,8 +43,8 @@ pub use service::{
     Action, InMemoryDirectory, OnlineService, PlayerDirectory, ServiceConfig, ServiceStats,
 };
 pub use token::{
-    CertFingerprint, Claims, Scope, TokenError, TokenIssuer, TokenVerifier, TrustedKey,
-    VerifierConfig, fingerprint,
+    CertFingerprint, Claims, RelayClaims, RelayParty, Scope, TokenError, TokenIssuer,
+    TokenVerifier, TrustedKey, VerifierConfig, fingerprint,
 };
 
 use std::fmt;
