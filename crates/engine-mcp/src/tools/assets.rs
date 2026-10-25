@@ -11,13 +11,15 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 13] = [
+const KINDS: [&str; 15] = [
     "script",
     "mesh",
     "texture",
     "font",
     "font_face",
     "font_config",
+    "string_table",
+    "locale_config",
     "audio",
     "scene",
     "shader",
@@ -191,6 +193,32 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
             let config = content::load_font_config(&file)?;
             json!({"default_family": config.default_family, "default_size": config.default_size,
                 "faces": config.faces.len(), "families": config.families.len()})
+        }
+        "string_table" => {
+            let table = engine_project::localization::load_string_table(&file)?;
+            let locales = engine_project::localization::locale_config(project)?
+                .map(|info| {
+                    info.settings
+                        .resources
+                        .iter()
+                        .filter(|r| {
+                            r.paths
+                                .iter()
+                                .any(|p| p.replace('\\', "/") == slash(&asset.path))
+                        })
+                        .map(|r| r.locale.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            json!({"entries": table.entries, "bytes": table.text.len(), "locales": locales})
+        }
+        "locale_config" => {
+            let config = engine_project::localization::load_locale_config(&file)?;
+            json!({"default_locale": config.default_locale,
+                "available_locales": config.available_locales,
+                "string_tables": config.resources.iter().map(|r| r.paths.len()).sum::<usize>(),
+                "pseudo_enabled": config.pseudo.enabled,
+                "locales_with_assets": config.assets.len()})
         }
         "script" => {
             let bytes = paths::read_bounded(&file, cx.limits.max_file_scan_bytes)

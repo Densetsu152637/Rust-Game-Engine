@@ -18,6 +18,7 @@ use std::{
 };
 
 mod events;
+mod locale;
 mod render;
 mod render3d;
 mod resources;
@@ -50,6 +51,9 @@ pub struct Runtime {
     elapsed: f64,
     scene_revision: u64,
     geometry: RefCell<BTreeMap<String, (blake3::Hash, Arc<Mesh>)>>,
+    /// Localization generation last applied to the text engine, and its locale.
+    localized_generation: u64,
+    localized_locale: String,
 }
 impl Runtime {
     /// Prepare authored entities. Register native systems/scripts before start or first tick.
@@ -65,7 +69,7 @@ impl Runtime {
         simulation: Option<crate::simulation::SimulationConfig>,
     ) -> Result<Self> {
         project.validate_scene(&project.scene)?;
-        let content = Content::load(&project)?;
+        let mut content = Content::load(&project)?;
         let scene = project.scene.clone();
         let mut app = EngineApp::new();
         app.world_mut()
@@ -89,6 +93,12 @@ impl Runtime {
             ui.set_font_metrics(id.clone(), Arc::new(move |c| font.glyph(c).advance));
         }
         app.world_mut().insert_resource(ui);
+        let localization = content.localization.take().unwrap_or_default();
+        let localized_locale = localization.locale();
+        app.world_mut()
+            .resource_mut::<crate::ui_tree::UiBindingState>()
+            .set_resolver(localization.resolver());
+        app.world_mut().insert_resource(localization);
         app.world_mut()
             .insert_resource(gameplay2d::World::default());
         app.world_mut().insert_resource(TriggerEvents::default());
@@ -118,7 +128,10 @@ impl Runtime {
             elapsed: 0.0,
             scene_revision: 0,
             geometry: RefCell::new(BTreeMap::new()),
+            localized_generation: u64::MAX,
+            localized_locale,
         };
+        runtime.sync_localization()?;
         let id = crate::persistence::project_id(&runtime.project.name);
         if let Ok(root) = PersistenceStore::default_user_data_root(&id) {
             runtime.set_user_data_root(root)?;
@@ -232,6 +245,7 @@ impl Runtime {
         result
     }
     fn tick_inner(&mut self, dt: f32, input: InputSnapshot) -> Result<()> {
+        self.sync_localization()?;
         let input = crate::input::poll_devices(self.app.world_mut(), input);
         {
             let world = self.app.world_mut();

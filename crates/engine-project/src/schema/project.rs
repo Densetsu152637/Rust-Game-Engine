@@ -36,6 +36,8 @@ impl Project {
                 "font",
                 "font_face",
                 "font_config",
+                "string_table",
+                "locale_config",
                 "audio",
                 "scene",
                 "shader",
@@ -212,12 +214,15 @@ impl Project {
                         .collect();
                     config.validate_against(&faces)?;
                 }
+                "string_table" => {
+                    crate::localization::load_string_table(&file)?;
+                }
                 "script" => {
                     read_bounded(&file, 1024 * 1024)?;
                 }
                 _ => {}
             }
         }
-        Ok(())
+        crate::localization::validate_project(self)
     }
 }

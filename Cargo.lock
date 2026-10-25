@@ -1316,6 +1316,7 @@ dependencies = [
  "engine-assets",
  "engine-audio",
  "engine-core",
+ "engine-locale",
  "engine-navigation",
  "engine-network",
  "engine-physics",

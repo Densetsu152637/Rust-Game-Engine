@@ -5,6 +5,7 @@ mod assets;
 mod components;
 mod edit;
 mod files;
+mod locale;
 mod model_import;
 mod navigation;
 mod project;
@@ -75,6 +76,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(files::write_tools());
     tools.extend(model_import::tools());
     tools.extend(navigation::tools());
+    tools.extend(locale::tools());
     tools
 }
 

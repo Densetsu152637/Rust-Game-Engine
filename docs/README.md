@@ -67,8 +67,11 @@
   breaking, rich-text markup, caret geometry, coverage/SDF glyph atlases) and its game UI
   integration: `font_face`/`font_config` assets, the shaping `UiTextBackend`, rich labels
   with links and inline images, IME and typed text, world-space text and SDF status.
-- [Localization](localization.md): the standalone `engine-locale` crate: Fluent string tables,
-  plurals, locale fallback, runtime language switch, pseudo-localization and settings.
+- [Localization](localization.md): the `engine-locale` crate (Fluent string tables, plurals,
+  locale fallback, pseudo-localization, settings) and its project integration:
+  `string_table`/`locale_config` assets, `@key` text references in the game UI, message
+  bindings with plural arguments, the runtime language switch, per-locale fonts and asset
+  overrides and the `locale_*` MCP tools.
 - [Multiplayer](networking.md): authoritative sessions, mutual-TLS 1.3 transport,
   replication, ownership, runtime integration and plaintext trusted-LAN limits.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,

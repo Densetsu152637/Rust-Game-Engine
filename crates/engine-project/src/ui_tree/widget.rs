@@ -315,7 +315,7 @@ impl UiWidget {
         }
     }
     /// Every authored string, for the per-root text budget.
-    fn strings(&self) -> Vec<&str> {
+    pub(super) fn strings(&self) -> Vec<&str> {
         match self {
             Self::Container | Self::Progress { .. } | Self::Slider { .. } => vec![],
             Self::Label { text } | Self::Button { text, .. } | Self::Toggle { text, .. } => {

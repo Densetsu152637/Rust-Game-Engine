@@ -5,6 +5,7 @@
 //! clipped on the CPU and re-emitted as `DrawSpace::World` meshes. See
 //! `docs/ui-styling.md` for the 3D-composition limitation.
 use super::{
+    localize,
     resolve::{any_themed, effective_for_render, states_by_root},
     world::{self, TickParts},
     *,
@@ -455,6 +456,7 @@ pub(super) fn extract(
     let states = world.get_resource::<UiWorldPanels>();
     let data = world.get_resource::<UiDataContext>();
     let bindings = world.get_resource::<UiBindingState>();
+    let localization = world.get_resource::<crate::localization::Localization>();
     for panel in panels(world)? {
         panel.panel.validate()?;
         let ui = states.and_then(|s| s.states.get(&panel.id));
@@ -465,6 +467,8 @@ pub(super) fn extract(
         };
         let effective = effective_for_render(world, &panel.id, &panel.root, &by_root)?;
         let root = effective.as_ref().unwrap_or(&panel.root);
+        let localized = localization.and_then(|l| localize::localize_root(root, l));
+        let root = localized.as_ref().unwrap_or(root);
         let mut state = ui.map(|u| u.render_state(&panel.id)).unwrap_or_default();
         state.themed = effective.is_some();
         if let (Some(data), Some(bindings)) = (data, bindings) {

@@ -42,7 +42,8 @@ rejected rather than dropped.
 
 Each asset has a stable `id`, a project-relative `path` and a `kind`. Kinds are
 `script`, `mesh`, `texture`, `font`, `font_face`, `font_config`, `audio`, `scene` and `shader`
-(plus `prefab`, `model`, `animation` and `navigation`; see their pages).
+(plus `prefab`, `model`, `animation`, `navigation`, `string_table` and `locale_config`; see
+their pages).
 
 - IDs are stable authored identifiers (non-empty, at most 256 bytes, no control
   characters). Moving or renaming a file changes only `path`; scenes keep the ID.
@@ -56,7 +57,9 @@ Each asset has a stable `id`, a project-relative `path` and a `kind`. Kinds are
   assets are WAV; `scene` assets are scene JSON for runtime room changes; `shader`
   assets are WGSL. `font_face` assets are TrueType/OpenType files (`.ttf`, `.otf`, `.ttc`,
   `.otc`, up to 32 MiB) and `font_config` assets configure their families and fallback
-  chains (see [Text engine](text.md#font-assets)).
+  chains (see [Text engine](text.md#font-assets)). `string_table` assets are Project Fluent
+  `.ftl` files (at most 1 MiB) and the single `locale_config` asset lists which tables make up
+  which locale (see [Localization](localization.md#project-integration)).
 - All referenced files must exist inside the project root. Absolute paths, `..`
   traversal and symlink or junction targets outside the root are rejected.
   `Project::load` loads and validates every declared mesh, texture, font and scene.
