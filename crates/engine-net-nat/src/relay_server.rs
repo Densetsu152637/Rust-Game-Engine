@@ -57,12 +57,14 @@ impl Party {
     }
 }
 
-/// What a validated credential allows: one party slot of one channel, optionally for a
-/// bounded time (for example the credential's own expiry).
+/// What a validated credential allows: one party slot of one channel, optionally until a
+/// hard deadline (for example the credential's own expiry) that refreshes cannot extend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Grant {
     pub channel: ChannelId,
     pub party: Party,
+    /// Absolute allocation lifetime from the allocate request; `None` lets refreshes extend
+    /// the allocation indefinitely.
     pub max_lifetime: Option<Duration>,
 }
 
@@ -205,7 +207,8 @@ struct Allocation {
     bound: SocketAddr,
     key: [u8; KEY_LEN],
     expires: Instant,
-    max_lifetime: Duration,
+    /// Hard end from the grant; refreshes never extend past it.
+    deadline: Option<Instant>,
     bytes: TokenBucket,
     packets: TokenBucket,
 }
@@ -426,9 +429,10 @@ impl RelayServer {
         let Some(grant) = grant else {
             return self.refuse(out, &txid, RelayRefusal::Unauthorized);
         };
-        let max_lifetime = Duration::from_secs(u64::from(self.limits.allocation_lifetime_secs))
-            .min(grant.max_lifetime.unwrap_or(Duration::MAX));
-        if max_lifetime < Duration::from_secs(1) {
+        if grant
+            .max_lifetime
+            .is_some_and(|lifetime| lifetime < Duration::from_secs(1))
+        {
             return self.refuse(out, &txid, RelayRefusal::Unauthorized);
         }
         let existing = self
@@ -441,7 +445,7 @@ impl RelayServer {
             Some(vport) if self.allocations.contains_key(&vport) => {
                 return self.refuse(out, &txid, RelayRefusal::PartyTaken);
             }
-            _ => match self.create(now, from, grant, max_lifetime) {
+            _ => match self.create(now, from, grant) {
                 Some(vport) => vport,
                 None => return self.refuse(out, &txid, RelayRefusal::Capacity),
             },
@@ -463,13 +467,16 @@ impl RelayServer {
         true
     }
 
-    fn create(
-        &mut self,
-        now: Instant,
-        from: SocketAddr,
-        grant: Grant,
-        lifetime: Duration,
-    ) -> Option<u16> {
+    /// `now + min(requested, server lifetime)`, never past the grant deadline.
+    fn expiry(&self, now: Instant, requested: Duration, deadline: Option<Instant>) -> Instant {
+        let lifetime = requested.min(Duration::from_secs(u64::from(
+            self.limits.allocation_lifetime_secs,
+        )));
+        let expires = now + lifetime;
+        deadline.map_or(expires, |deadline| expires.min(deadline))
+    }
+
+    fn create(&mut self, now: Instant, from: SocketAddr, grant: Grant) -> Option<u16> {
         if self.allocations.len() >= self.limits.max_allocations {
             return None;
         }
@@ -478,6 +485,8 @@ impl RelayServer {
             .filter_map(|_| wire::random_bytes::<2>().ok())
             .map(u16::from_be_bytes)
             .find(|&p| p != 0 && !self.allocations.contains_key(&p))?;
+        let deadline = grant.max_lifetime.map(|lifetime| now + lifetime);
+        let expires = self.expiry(now, Duration::MAX, deadline);
         let bytes_rate = self.limits.allocation_bytes_per_second as f64;
         let packet_rate = f64::from(self.limits.allocation_packets_per_second);
         self.allocations.insert(
@@ -487,8 +496,8 @@ impl RelayServer {
                 party: grant.party,
                 bound: from,
                 key,
-                expires: now + lifetime,
-                max_lifetime: lifetime,
+                expires,
+                deadline,
                 bytes: TokenBucket::new(now, bytes_rate, bytes_rate),
                 packets: TokenBucket::new(now, packet_rate, packet_rate),
             },
@@ -530,14 +539,19 @@ impl RelayServer {
             (0, 0)
         } else {
             let counterpart = self.counterpart(now, request.vport).unwrap_or(0);
+            let requested = Duration::from_secs(u64::from(request.lifetime_secs));
+            let deadline = self
+                .allocations
+                .get(&request.vport)
+                .and_then(|a| a.deadline);
+            let expires = self.expiry(now, requested, deadline);
             let Some(allocation) = self.allocations.get_mut(&request.vport) else {
                 return false;
             };
-            let lifetime =
-                Duration::from_secs(u64::from(request.lifetime_secs)).min(allocation.max_lifetime);
-            allocation.expires = now + lifetime;
+            allocation.expires = expires;
             self.stats.refreshes += 1;
-            (lifetime.as_secs().max(1) as u16, counterpart)
+            let lifetime = expires.saturating_duration_since(now).as_secs();
+            (lifetime.clamp(1, u64::from(u16::MAX)) as u16, counterpart)
         };
         wire::encode_refresh_ok(
             out,

@@ -4,7 +4,7 @@
 //! nonsecret statistics as JSON lines on stderr, and never logs credentials or secrets.
 use engine_net_nat::{RelayServerConfig, RelayService};
 use std::{
-    io::Write,
+    io::{Read, Write},
     net::{SocketAddr, UdpSocket},
     process::ExitCode,
     thread,
@@ -12,11 +12,13 @@ use std::{
 };
 
 const USAGE: &str = "usage: engine-relay-server [--config PATH] [--bind ADDR]\n\
-  --config PATH  JSON config (bind, limits, auth); see docs/online-nat-relay.md\n\
+  --config PATH  JSON config (bind, limits, auth), - for stdin; see docs/online-nat-relay.md\n\
   --bind ADDR    overrides the configured bind address (default 127.0.0.1:0)";
 
 /// Datagrams handled per loop iteration before checking timers again.
 const DATAGRAMS_PER_POLL: usize = 256;
+/// Largest config read from stdin.
+const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
 
 fn main() -> ExitCode {
     match run() {
@@ -28,9 +30,18 @@ fn main() -> ExitCode {
     }
 }
 
+/// Reads the config from `path`, or from stdin when `path` is `-` (keeps secrets off disk).
 fn load(path: &str) -> Result<RelayServerConfig, String> {
-    let text =
-        std::fs::read_to_string(path).map_err(|e| format!("cannot read config: {}", e.kind()))?;
+    let text = if path == "-" {
+        let mut text = String::new();
+        std::io::stdin()
+            .take(MAX_CONFIG_BYTES)
+            .read_to_string(&mut text)
+            .map(|_| text)
+    } else {
+        std::fs::read_to_string(path)
+    }
+    .map_err(|e| format!("cannot read config: {}", e.kind()))?;
     RelayServerConfig::from_json(&text).map_err(|e| {
         match RelayServerConfig::json_error_position(&text) {
             Some((line, column)) => format!("{e} (line {line}, column {column})"),

@@ -9,7 +9,7 @@ use ring::hmac;
 use serde::Serialize;
 use std::{
     cmp::Reverse,
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fmt,
     net::SocketAddr,
     time::{Duration, Instant},
@@ -131,6 +131,9 @@ pub struct PunchStats {
     /// Authenticated acknowledgements matching no outstanding probe on that address
     /// (replays, late duplicates, wrong source).
     pub rejected_unmatched: u64,
+    /// Authenticated probes whose transaction ID was already seen (replayed from a captured
+    /// probe, possibly with a spoofed source). They get no answer and trigger no checks.
+    pub rejected_replay: u64,
     /// Probes left unanswered by the acknowledgement rate limit.
     pub rate_limited: u64,
 }
@@ -144,6 +147,9 @@ const TAG_LEN: usize = 32;
 pub(crate) const PUNCH_LEN: usize = SIGNED_LEN + TAG_LEN;
 const OUTSTANDING_PER_CANDIDATE: usize = 4;
 const MAX_PENDING_ACKS: usize = 16;
+/// Probe transaction IDs remembered for replay rejection; covers a peer's whole probe budget
+/// at default settings (60 probes x 16 candidates plus nominations).
+const SEEN_PROBES: usize = 1024;
 
 /// Structural view of a probe or acknowledgement (before authentication).
 #[derive(Debug, PartialEq, Eq)]
@@ -238,6 +244,8 @@ pub struct PunchSession {
     first_success: Option<Instant>,
     observed_by_peer: Option<SocketAddr>,
     pending_acks: VecDeque<Transmit>,
+    seen: HashSet<TxId>,
+    seen_order: VecDeque<TxId>,
     datagrams: TokenBucket,
     acks: TokenBucket,
     stats: PunchStats,
@@ -277,6 +285,8 @@ impl PunchSession {
             first_success: None,
             observed_by_peer: None,
             pending_acks: VecDeque::new(),
+            seen: HashSet::new(),
+            seen_order: VecDeque::new(),
             datagrams: TokenBucket::new(now, pps, (pps / 10.0).max(8.0)),
             acks: TokenBucket::new(now, aps, (aps / 4.0).max(4.0)),
             stats: PunchStats::default(),
@@ -341,7 +351,25 @@ impl PunchSession {
         matches!(self.state, State::Checking | State::Nominating { .. })
     }
 
+    /// Records a probe transaction ID; false when it was already seen.
+    fn first_sighting(&mut self, txid: TxId) -> bool {
+        if !self.seen.insert(txid) {
+            return false;
+        }
+        if self.seen_order.len() >= SEEN_PROBES
+            && let Some(oldest) = self.seen_order.pop_front()
+        {
+            self.seen.remove(&oldest);
+        }
+        self.seen_order.push_back(txid);
+        true
+    }
+
     fn on_probe(&mut self, now: Instant, from: SocketAddr, packet: &PunchPacket) {
+        if !self.first_sighting(packet.txid) {
+            self.stats.rejected_replay += 1;
+            return;
+        }
         self.stats.probes_received += 1;
         if self.pending_acks.len() >= MAX_PENDING_ACKS || !self.acks.try_take(now, 1.0) {
             self.stats.rate_limited += 1;
@@ -694,6 +722,10 @@ mod tests {
 
         // A genuine ack is accepted once; its replay matches no outstanding transaction.
         assert!(b.handle(t0, addr(1000), &probe.payload));
+        // A replayed probe (even from a spoofed source) is not answered again.
+        assert!(b.handle(t0, addr(6667), &probe.payload));
+        assert_eq!(b.stats().rejected_replay, 1);
+        assert_eq!(b.pending_acks.len(), 1);
         let ack = b.poll_transmit(t0).unwrap();
         assert!(a.handle(t0, addr(2000), &ack.payload));
         assert!(a.handle(t0, addr(2000), &ack.payload));
@@ -736,7 +768,7 @@ mod tests {
             max_acks_per_second: 8,
             ..PunchConfig::default()
         };
-        let mut a = PunchSession::new(
+        let a = PunchSession::new(
             t0,
             PunchRole::Controlling,
             &secret,
@@ -752,17 +784,18 @@ mod tests {
             config,
         )
         .unwrap();
-        let probe = a.poll_transmit(t0).unwrap();
-        for _ in 0..100 {
-            b.handle(t0, addr(1000), &probe.payload);
+        // 100 distinct authentic probes (fresh transaction IDs) in one instant.
+        for i in 0..100_u8 {
+            let probe = a.encode(kind::PUNCH_PROBE, FLAG_CONTROLLING, &[i; TXID_LEN], None);
+            assert!(b.handle(t0, addr(1000), &probe));
         }
         let mut acks = 0;
         while let Some(t) = b.poll_transmit(t0) {
-            assert!(t.payload.len() <= probe.payload.len(), "no amplification");
+            assert_eq!(t.payload.len(), PUNCH_LEN, "no amplification");
             acks += usize::from(decode_punch(&t.payload).unwrap().kind == kind::PUNCH_ACK);
         }
-        assert!(acks <= 4, "burst bounded, got {acks}");
-        assert!(b.stats().rate_limited >= 96);
+        assert_eq!(acks, 4, "burst bounded");
+        assert_eq!(b.stats().rate_limited, 96);
     }
 
     #[test]

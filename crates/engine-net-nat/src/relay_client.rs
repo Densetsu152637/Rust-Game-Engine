@@ -232,20 +232,20 @@ impl<S: DatagramSocket> RelaySocket<S> {
         let Some(allocation) = self.allocations.get_mut(id.0) else {
             return;
         };
-        if let Phase::Active { vport, key, .. } = allocation.phase {
-            if let Ok(txid) = wire::random_bytes() {
-                wire::encode_refresh(
-                    &mut self.out,
-                    &Refresh {
-                        txid,
-                        vport,
-                        key,
-                        lifetime_secs: 0,
-                    },
-                );
-                let _ = self.inner.send_to(&self.out, self.relay);
-                self.stats.control_sent += 1;
-            }
+        if let Phase::Active { vport, key, .. } = allocation.phase
+            && let Ok(txid) = wire::random_bytes()
+        {
+            wire::encode_refresh(
+                &mut self.out,
+                &Refresh {
+                    txid,
+                    vport,
+                    key,
+                    lifetime_secs: 0,
+                },
+            );
+            let _ = self.inner.send_to(&self.out, self.relay);
+            self.stats.control_sent += 1;
         }
         allocation.phase = Phase::Failed(RelayFailure::Released);
         allocation.request = None;

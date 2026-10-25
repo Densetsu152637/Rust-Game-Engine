@@ -38,9 +38,15 @@ struct Harness {
 }
 impl Harness {
     fn new(limits: RelayLimits) -> Self {
+        Self::with_authorizer(limits, credentials().into_authorizer())
+    }
+    fn with_authorizer(
+        limits: RelayLimits,
+        authorize: impl Fn(&[u8], SocketAddr) -> Option<Grant> + Send + Sync + 'static,
+    ) -> Self {
         let now = Instant::now();
         Self {
-            server: RelayServer::new(now, limits, credentials().into_authorizer()).unwrap(),
+            server: RelayServer::new(now, limits, authorize).unwrap(),
             now,
             out: Vec::new(),
         }
@@ -215,6 +221,30 @@ fn relay_allocations_expire_unless_refreshed() {
     let stats = h.server.stats();
     assert_eq!(stats.allocations_active, 0);
     assert_eq!(stats.allocations_expired, 2);
+}
+
+#[test]
+fn relay_grant_deadline_caps_refreshes() {
+    let mut h = Harness::with_authorizer(RelayLimits::default(), |credential, _| {
+        Some(Grant {
+            channel: CHANNEL_1,
+            party: if credential == b"a" {
+                Party::A
+            } else {
+                Party::B
+            },
+            max_lifetime: Some(Duration::from_secs(5)),
+        })
+    });
+    let a = h.allocate(addr(3101), b"a").unwrap();
+    assert_eq!(
+        a.lifetime_secs, 5,
+        "server lifetime 120 s capped by the grant"
+    );
+    h.now += Duration::from_secs(3);
+    assert_eq!(h.refresh(addr(3101), &a, 120).unwrap().lifetime_secs, 2);
+    h.now += Duration::from_millis(2100);
+    assert!(h.refresh(addr(3101), &a, 120).is_none(), "deadline passed");
 }
 
 #[test]
@@ -462,7 +492,7 @@ impl DatagramSocket for ScriptedSocket {
 #[test]
 fn seeded_fuzz_of_every_decoder_never_panics() {
     const INPUTS: usize = 30_000;
-    let mut rng = Rng(0x5EED_0F_FA22);
+    let mut rng = Rng(0x005E_ED0F_FA22);
     let samples = valid_samples();
     let now = Instant::now();
     let secret = PunchSecret::from_bytes([6; 32]);

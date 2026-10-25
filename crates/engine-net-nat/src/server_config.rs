@@ -1,7 +1,7 @@
 //! JSON configuration of the reference `engine-relay-server` binary.
 use crate::{
-    ChannelId, Error, Grant, HmacCredentials, RelayLimits, RelayServer, Result, StaticCredentials,
-    credential::unix_now,
+    Authorizer, ChannelId, Error, HmacCredentials, RelayLimits, RelayServer, Result,
+    StaticCredentials, credential::unix_now,
 };
 use serde::Deserialize;
 use std::{net::SocketAddr, time::Instant};
@@ -77,12 +77,13 @@ impl std::fmt::Debug for StaticCredentialConfig {
 pub(crate) fn decode_hex(text: &str) -> Option<Vec<u8>> {
     let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
     let bytes = text.as_bytes();
-    if bytes.len() % 2 != 0 {
+    let (pairs, rest) = bytes.as_chunks::<2>();
+    if !rest.is_empty() {
         return None;
     }
-    bytes
-        .chunks_exact(2)
-        .map(|pair| Some(digit(pair[0])? << 4 | digit(pair[1])?))
+    pairs
+        .iter()
+        .map(|&[high, low]| Some(digit(high)? << 4 | digit(low)?))
         .collect()
 }
 
@@ -101,10 +102,7 @@ impl RelayServerConfig {
             .map(|e| (e.line(), e.column()))
     }
     /// The native authorizer for the configured mode. `env` resolves `secret_env`.
-    pub fn authorizer(
-        &self,
-        env: impl Fn(&str) -> Option<String>,
-    ) -> Result<Box<dyn Fn(&[u8], SocketAddr) -> Option<Grant> + Send + Sync>> {
+    pub fn authorizer(&self, env: impl Fn(&str) -> Option<String>) -> Result<Box<Authorizer>> {
         Ok(match &self.auth {
             RelayAuthConfig::Disabled => Box::new(|_: &[u8], _| None),
             RelayAuthConfig::Static { credentials } => {

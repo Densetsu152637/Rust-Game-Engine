@@ -382,6 +382,16 @@ pub(crate) fn decode_data(datagram: &[u8]) -> Option<(u16, u16, &[u8])> {
     ))
 }
 
+// Every reply fits inside the request it answers (no amplification), checked at compile time.
+const _: () = {
+    assert!(BINDING_RESPONSE_LEN <= BINDING_REQUEST_LEN);
+    assert!(CHALLENGE_LEN <= ALLOCATE_MIN_LEN);
+    assert!(ALLOCATE_OK_LEN <= ALLOCATE_MIN_LEN);
+    assert!(ERROR_LEN <= ALLOCATE_MIN_LEN);
+    assert!(REFRESH_OK_LEN <= REFRESH_LEN);
+    assert!(ERROR_LEN <= REFRESH_LEN);
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,17 +434,6 @@ mod tests {
         let mut out = Vec::new();
         put_addr(&mut out, SocketAddr::from(([0, 0, 0, 0], 9)), None);
         assert_eq!(read_addr(&out, None), None, "unspecified rejected");
-    }
-
-    #[test]
-    fn responses_never_exceed_their_requests() {
-        assert!(BINDING_RESPONSE_LEN <= BINDING_REQUEST_LEN);
-        for response in [CHALLENGE_LEN, ALLOCATE_OK_LEN, ERROR_LEN] {
-            assert!(response <= ALLOCATE_MIN_LEN);
-        }
-        for response in [REFRESH_OK_LEN, ERROR_LEN] {
-            assert!(response <= REFRESH_LEN);
-        }
     }
 
     #[test]

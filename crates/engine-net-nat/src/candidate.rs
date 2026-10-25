@@ -159,7 +159,8 @@ impl CandidateSet {
             return Err(invalid);
         }
         let mut set = Self::new();
-        for entry in entries.chunks_exact(ENTRY_LEN) {
+        let (entries, _) = entries.as_chunks::<ENTRY_LEN>();
+        for entry in entries {
             let kind = CandidateKind::from_code(entry[0])
                 .ok_or(Error::Invalid("unknown candidate kind"))?;
             let addr = wire::read_addr(&entry[1..], None)
