@@ -184,7 +184,7 @@ impl<S: PredictedSimulation> PredictionClient<S> {
             return Err(ReconcileRejection::OutsideHistory);
         }
         let error = self.sim.divergence(predicted, authoritative);
-        let corrected = !(error <= self.config.tolerance);
+        let corrected = error.is_nan() || error > self.config.tolerance;
         let mut replayed = 0u32;
         if corrected {
             let mut state = authoritative.clone();

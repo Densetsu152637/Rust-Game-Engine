@@ -446,7 +446,7 @@ pub struct KeyValidator {
 }
 impl KeyValidator {
     pub fn new(config: KeyValidatorConfig) -> Result<Self> {
-        if config.window < 64 || config.window > 65536 || config.window % 64 != 0 {
+        if config.window < 64 || config.window > 65536 || !config.window.is_multiple_of(64) {
             return Err(PredictError::Invalid(
                 "window must be 64..=65536 and a multiple of 64",
             ));

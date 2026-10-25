@@ -124,6 +124,10 @@
   overrides and the `locale_*` MCP tools.
 - [Multiplayer](networking.md): authoritative sessions, mutual-TLS 1.3 transport,
   replication, ownership, runtime integration and plaintext trusted-LAN limits.
+- [Prediction, rollback and lag compensation](networking-prediction.md): the sans-IO
+  `engine-net-predict` crate (client prediction and reconciliation, redundant input
+  transport, prediction keys for abilities, GGPO-style rollback, rewound hitbox queries),
+  its limits and trust model.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,
   typed adapters, hierarchy, events, batches and prefabs shared with MCP.
 - [Scheduled events](scheduled-events.md): CLI/MCP event injection, callback

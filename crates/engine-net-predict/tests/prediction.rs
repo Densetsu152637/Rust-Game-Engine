@@ -251,3 +251,27 @@ fn tick_ring_is_bounded_and_windowed() {
     assert!(ring.is_empty());
     assert!(TickRing::<u8>::new(0).is_err());
 }
+
+struct NanDivergence;
+impl PredictedSimulation for NanDivergence {
+    type State = f32;
+    type Input = f32;
+    fn step(&mut self, state: &mut f32, input: &f32, _tick: u64) {
+        *state += *input;
+    }
+    fn divergence(&self, _: &f32, _: &f32) -> f32 {
+        f32::NAN
+    }
+}
+
+#[test]
+fn nan_divergence_counts_as_misprediction() {
+    let mut client =
+        PredictionClient::new(NanDivergence, PredictionConfig::default(), 0, 0.0).unwrap();
+    for _ in 0..3 {
+        client.predict(1.0).unwrap();
+    }
+    let report = client.reconcile(1, &5.0, Some(1)).unwrap();
+    assert!(report.corrected);
+    assert_eq!(*client.state(), 7.0);
+}

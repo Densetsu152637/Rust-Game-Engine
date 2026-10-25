@@ -41,6 +41,9 @@ fn pad(tick: u64) -> Pad {
 
 const LEAD: u64 = 8;
 
+/// Messages in flight with their delivery tick.
+type InFlight = Vec<(u64, Vec<u8>)>;
+
 /// Client sends one redundant message per tick over a lossy, jittery (0..=3 tick, reordering)
 /// uplink; the server consumes tick `now - LEAD` and acks over a lossy downlink.
 fn run_link(
@@ -64,7 +67,8 @@ fn run_link(
         0,
     )
     .unwrap();
-    let (mut up, mut down): (Vec<(u64, Vec<u8>)>, Vec<(u64, Vec<u8>)>) = (vec![], vec![]);
+    let mut up: InFlight = vec![];
+    let mut down: InFlight = vec![];
     let (mut sent, mut lost, mut missing) = (0u64, 0u64, 0u64);
     for now in 0..ticks + LEAD {
         // The client keeps playing after the measured window (pushes continue), so the
