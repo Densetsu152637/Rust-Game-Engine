@@ -6,8 +6,21 @@
 //! per terrain. The vertex shader reads heights from an `R32Float` texture and geomorphs them
 //! exactly like `engine_terrain::lod::morphed_height`; the fragment shader blends up to eight
 //! splat layers (tint x optional tiled albedo texture) and lights them with `engine::lighting`.
-//! Holes are discarded per fragment. `world.terrain.normals` writes the same surface into the
-//! normals target (and scene depth) in the `Prepass` stage when a feature needs normals.
+//! Holes are discarded per fragment.
+//!
+//! Four features share one GPU cache:
+//!
+//! - `world.terrain.shadow` (`Shadow` stage) renders terrain depth into a per-view terrain
+//!   shadow map, one layer per cascade of the first directional light, with the engine's own
+//!   cascade matrices (`engine_shadows`). The colour pass samples it with the engine's cascade
+//!   selection, bias and blend, so terrain shadows terrain. The engine shadow atlas itself is
+//!   not reachable from a feature, so engine meshes do not receive terrain shadows.
+//! - `world.terrain.normals` (`Prepass`) writes the surface into the normals target (and scene
+//!   depth) when a feature needs normals.
+//! - `world.terrain` (`Opaque`) is the colour pass.
+//! - `world.terrain.motion` (`Opaque`, after `world.terrain`) writes current-to-previous motion
+//!   (camera, terrain transform and geomorph changes) into the motion target when a feature or
+//!   the host (DLSS) needs motion, where terrain is the visible surface.
 //!
 //! The features read `engine_project::world::terrain::TerrainRenderSet` from the extracted
 //! world; [`install`] adds the extraction and the `TerrainGpuRenderer` marker that keeps
@@ -16,7 +29,7 @@ mod extract;
 mod gpu;
 
 pub use extract::extract_terrain;
-pub use gpu::TerrainInstance;
+pub use gpu::{SHADOW_MAP_SIZE, TerrainInstance};
 
 use crate::names;
 use anyhow::Result;
@@ -25,7 +38,7 @@ use engine_render_pipeline::{
     DrawStats, FeatureContext, FeatureDescriptor, FeatureSetup, Grouping, InstanceBatcher,
     PipelineFeature, PipelineFeatures, Stage, names as engine_names,
 };
-use gpu::Shared;
+use gpu::{PassKind, Shared};
 use std::sync::{Arc, Mutex};
 
 /// What the terrain features did in the last view they ran for.
@@ -44,6 +57,16 @@ pub struct TerrainRenderStatus {
     pub uploads: u64,
     /// Whether the normals prepass ran in the last frame.
     pub normals_pass: bool,
+    /// Whether `world.terrain.shadow` rendered the view's terrain shadow map in the last
+    /// frame, and its draw calls (one per terrain and cascade layer).
+    pub shadow_pass: bool,
+    pub shadow_draw_calls: usize,
+    /// Whether the last colour pass sampled the terrain shadow map (false when the shadow
+    /// feature did not run for the view, for example disabled per camera).
+    pub shadowed: bool,
+    /// Whether `world.terrain.motion` wrote terrain motion in the last frame (only when a
+    /// feature or the host needs motion vectors).
+    pub motion_pass: bool,
     /// Why something was not drawn.
     pub notes: Vec<String>,
 }
@@ -75,23 +98,70 @@ pub struct TerrainNormalsFeature {
     batcher: InstanceBatcher<TerrainInstance>,
     status: TerrainRenderStatusHandle,
 }
+/// The terrain shadow map (`world.terrain.shadow`, `Shadow` stage after `engine.shadows`).
+pub struct TerrainShadowFeature {
+    shared: Arc<Mutex<Shared>>,
+    batcher: InstanceBatcher<TerrainInstance>,
+    status: TerrainRenderStatusHandle,
+}
+/// Terrain motion vectors (`world.terrain.motion`, `Opaque` stage after `world.terrain`).
+pub struct TerrainMotionFeature {
+    shared: Arc<Mutex<Shared>>,
+    batcher: InstanceBatcher<TerrainInstance>,
+    status: TerrainRenderStatusHandle,
+}
+
+/// The four terrain features over one shared GPU cache, in registration order.
+pub struct TerrainFeatures {
+    pub shadow: TerrainShadowFeature,
+    pub normals: TerrainNormalsFeature,
+    pub color: TerrainFeature,
+    pub motion: TerrainMotionFeature,
+}
 
 impl TerrainFeature {
-    /// The pair of features over one shared GPU cache.
+    /// The colour and normals features over one shared GPU cache (no shadow map, no motion);
+    /// [`TerrainFeature::all`] returns every terrain feature.
     pub fn pair(status: TerrainRenderStatusHandle) -> (TerrainFeature, TerrainNormalsFeature) {
+        let all = Self::all(status);
+        (all.color, all.normals)
+    }
+
+    /// Every terrain feature over one shared GPU cache.
+    pub fn all(status: TerrainRenderStatusHandle) -> TerrainFeatures {
         let shared = Arc::new(Mutex::new(Shared::default()));
-        (
-            TerrainFeature {
+        TerrainFeatures {
+            shadow: TerrainShadowFeature {
+                shared: shared.clone(),
+                batcher: InstanceBatcher::new("world.terrain.shadow instances"),
+                status: status.clone(),
+            },
+            normals: TerrainNormalsFeature {
+                shared: shared.clone(),
+                batcher: InstanceBatcher::new("world.terrain.normals instances"),
+                status: status.clone(),
+            },
+            color: TerrainFeature {
                 shared: shared.clone(),
                 batcher: InstanceBatcher::new("world.terrain instances"),
                 status: status.clone(),
             },
-            TerrainNormalsFeature {
+            motion: TerrainMotionFeature {
                 shared,
-                batcher: InstanceBatcher::new("world.terrain.normals instances"),
+                batcher: InstanceBatcher::new("world.terrain.motion instances"),
                 status,
             },
-        )
+        }
+    }
+}
+
+impl TerrainFeatures {
+    /// Registers the four features (shadow, normals, colour, motion).
+    pub fn register(self, features: &mut PipelineFeatures) -> Result<()> {
+        features.register(self.shadow)?;
+        features.register(self.normals)?;
+        features.register(self.color)?;
+        features.register(self.motion)
     }
 }
 
@@ -110,7 +180,9 @@ impl PipelineFeature for TerrainFeature {
     }
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
         let mut shared = lock(&self.shared)?;
-        let frame = shared.collect(ctx, &mut self.batcher)?;
+        let frame = shared.collect(ctx, &mut self.batcher, PassKind::Color)?;
+        // Consume this frame's shadow map even when nothing is drawn.
+        let (receiver, shadowed) = shared.take_receiver(ctx.view.id)?;
         self.status.update(|s| {
             s.views += 1;
             s.terrains = frame.terrains;
@@ -119,6 +191,7 @@ impl PipelineFeature for TerrainFeature {
             s.uploads += frame.uploads;
             s.notes = frame.notes.clone();
             s.draw_calls = 0;
+            s.shadowed = false;
         });
         if frame.nodes == 0 {
             return Ok(());
@@ -127,10 +200,20 @@ impl PipelineFeature for TerrainFeature {
             .finish(&ctx.gpu.device, &ctx.gpu.queue, Grouping::ByKey)?;
         let view_group = ctx.view_bind_group;
         let mut pass = ctx.scene_pass("world.terrain")?;
-        let stats = shared.draw(&mut pass, view_group, &self.batcher, false)?;
+        let stats = shared.draw(
+            &mut pass,
+            view_group,
+            &self.batcher,
+            PassKind::Color,
+            Some((&receiver, &[])),
+        )?;
         drop(pass);
+        shared.mark_colored(ctx.view.id);
         ctx.record_draws(stats);
-        self.status.update(|s| s.draw_calls = stats.draw_calls);
+        self.status.update(|s| {
+            s.draw_calls = stats.draw_calls;
+            s.shadowed = shadowed;
+        });
         Ok(())
     }
 }
@@ -149,7 +232,7 @@ impl PipelineFeature for TerrainNormalsFeature {
         };
         let depth = ctx.depth()?.view.clone();
         let mut shared = lock(&self.shared)?;
-        let frame = shared.collect(ctx, &mut self.batcher)?;
+        let frame = shared.collect(ctx, &mut self.batcher, PassKind::Normals)?;
         self.status.update(|s| s.uploads += frame.uploads);
         if frame.nodes == 0 {
             return Ok(());
@@ -161,27 +244,18 @@ impl PipelineFeature for TerrainNormalsFeature {
             .encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("world.terrain.normals"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &normals,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
+                color_attachments: &[Some(color_attachment(&normals))],
+                depth_stencil_attachment: Some(depth_attachment(&depth, wgpu::LoadOp::Load)),
                 ..Default::default()
             })
             .forget_lifetime();
-        let stats: DrawStats = shared.draw(&mut pass, view_group, &self.batcher, true)?;
+        let stats: DrawStats = shared.draw(
+            &mut pass,
+            view_group,
+            &self.batcher,
+            PassKind::Normals,
+            None,
+        )?;
         drop(pass);
         ctx.record_draws(stats);
         self.status.update(|s| s.normals_pass = true);
@@ -189,11 +263,136 @@ impl PipelineFeature for TerrainNormalsFeature {
     }
 }
 
+impl PipelineFeature for TerrainShadowFeature {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new(names::TERRAIN_SHADOW, Stage::Shadow).after(engine_names::SHADOWS)
+    }
+    fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
+        lock(&self.shared)?.prepare(setup)
+    }
+    fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
+        let mut shared = lock(&self.shared)?;
+        let frame = shared.collect(ctx, &mut self.batcher, PassKind::Shadow)?;
+        self.status.update(|s| {
+            s.uploads += frame.uploads;
+            s.shadow_pass = false;
+            s.shadow_draw_calls = 0;
+        });
+        if frame.nodes == 0 {
+            return Ok(());
+        }
+        self.batcher
+            .finish(&ctx.gpu.device, &ctx.gpu.queue, Grouping::ByKey)?;
+        let layers = shared.shadow_layers(ctx.gpu, ctx.view.id)?;
+        let (cascades, offsets) = shared.cascades()?;
+        let view_group = ctx.view_bind_group;
+        let mut stats = DrawStats::default();
+        // Every layer is cleared and drawn: the light's cascade count lives on the GPU, where
+        // the vertex shader clips cascades the light does not have.
+        for (layer, offset) in layers.iter().zip(&offsets) {
+            let mut pass = ctx
+                .encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("world.terrain.shadow"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(depth_attachment(
+                        layer,
+                        wgpu::LoadOp::Clear(1.0),
+                    )),
+                    ..Default::default()
+                })
+                .forget_lifetime();
+            stats += shared.draw(
+                &mut pass,
+                view_group,
+                &self.batcher,
+                PassKind::Shadow,
+                Some((&cascades, std::slice::from_ref(offset))),
+            )?;
+        }
+        ctx.record_draws(stats);
+        self.status.update(|s| {
+            s.shadow_pass = true;
+            s.shadow_draw_calls = stats.draw_calls;
+        });
+        Ok(())
+    }
+}
+
+impl PipelineFeature for TerrainMotionFeature {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new(names::TERRAIN_MOTION, Stage::Opaque).after(names::TERRAIN)
+    }
+    fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
+        lock(&self.shared)?.prepare(setup)
+    }
+    fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
+        let mut shared = lock(&self.shared)?;
+        // Only over terrain the colour pass drew this frame (its depth is the test).
+        let colored = shared.take_colored(ctx.view.id);
+        let Some(motion) = ctx.motion().map(|t| t.view.clone()) else {
+            self.status.update(|s| s.motion_pass = false);
+            return Ok(());
+        };
+        if !colored {
+            self.status.update(|s| s.motion_pass = false);
+            return Ok(());
+        }
+        let depth = ctx.depth()?.view.clone();
+        let frame = shared.collect(ctx, &mut self.batcher, PassKind::Motion)?;
+        if frame.nodes == 0 {
+            self.status.update(|s| s.motion_pass = false);
+            return Ok(());
+        }
+        self.batcher
+            .finish(&ctx.gpu.device, &ctx.gpu.queue, Grouping::ByKey)?;
+        let view_group = ctx.view_bind_group;
+        let mut pass = ctx
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("world.terrain.motion"),
+                color_attachments: &[Some(color_attachment(&motion))],
+                depth_stencil_attachment: Some(depth_attachment(&depth, wgpu::LoadOp::Load)),
+                ..Default::default()
+            })
+            .forget_lifetime();
+        let stats = shared.draw(&mut pass, view_group, &self.batcher, PassKind::Motion, None)?;
+        drop(pass);
+        ctx.record_draws(stats);
+        self.status.update(|s| s.motion_pass = true);
+        Ok(())
+    }
+}
+
+fn color_attachment(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> {
+    wgpu::RenderPassColorAttachment {
+        view,
+        depth_slice: None,
+        resolve_target: None,
+        ops: wgpu::Operations {
+            load: wgpu::LoadOp::Load,
+            store: wgpu::StoreOp::Store,
+        },
+    }
+}
+
+fn depth_attachment(
+    view: &wgpu::TextureView,
+    load: wgpu::LoadOp<f32>,
+) -> wgpu::RenderPassDepthStencilAttachment<'_> {
+    wgpu::RenderPassDepthStencilAttachment {
+        view,
+        depth_ops: Some(wgpu::Operations {
+            load,
+            store: wgpu::StoreOp::Store,
+        }),
+        stencil_ops: None,
+    }
+}
+
 pub(crate) fn register(features: &mut PipelineFeatures) -> Result<TerrainRenderStatusHandle> {
     let status = TerrainRenderStatusHandle::default();
-    let (color, normals) = TerrainFeature::pair(status.clone());
-    features.register(normals)?;
-    features.register(color)?;
+    TerrainFeature::all(status.clone()).register(features)?;
     Ok(status)
 }
 

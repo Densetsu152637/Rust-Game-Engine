@@ -379,3 +379,321 @@ fn gpu_geomorphing_matches_the_cpu_chunk_meshes() -> Result<()> {
     );
     Ok(())
 }
+
+/// Every terrain feature registered on a fresh pipeline.
+fn full_pipeline(
+    gpu: &GpuContext,
+) -> Result<(
+    ScenePipeline,
+    engine_world_render::TerrainRenderStatusHandle,
+)> {
+    let mut pipeline = ScenePipeline::new(gpu.clone())?;
+    let status = engine_world_render::TerrainRenderStatusHandle::default();
+    let all = TerrainFeature::all(status.clone());
+    pipeline.register(all.shadow)?;
+    pipeline.register(all.normals)?;
+    pipeline.register(all.color)?;
+    pipeline.register(all.motion)?;
+    Ok((pipeline, status))
+}
+
+/// `columns` x `columns` samples (spacing 1) from `height(local x, local z)`.
+fn field_of(columns: u32, height: impl Fn(f32, f32) -> f32) -> Arc<Heightfield> {
+    let heights = (0..columns * columns)
+        .map(|i| height((i % columns) as f32, (i / columns) as f32))
+        .collect();
+    Arc::new(Heightfield::from_heights(columns, columns, 1.0, heights).unwrap())
+}
+
+/// A shadow-casting sun; `toward` points from surfaces to the light.
+fn shadowed_sun(toward: Vec3) -> LightList {
+    LightList {
+        lights: vec![
+            Light::directional(-toward.normalize(), Vec3::ONE, 1.0)
+                .with_shadow(ShadowSettings::default()),
+        ],
+    }
+}
+
+fn render_once(
+    pipeline: &mut ScenePipeline,
+    gpu: &GpuContext,
+    view: &ViewData,
+    meshes: &[SceneMesh<'_>],
+    lights: &LightList,
+    world: &World,
+) -> Result<(ViewReport, Vec<u8>)> {
+    let target = offscreen(gpu);
+    let report = pipeline.render_view(
+        &SceneFrame {
+            view,
+            meshes,
+            lights,
+            world: Some(world),
+        },
+        &target.target,
+        &mut NoHost,
+    )?;
+    gpu.check_errors()?;
+    let pixels = engine_render_wgpu::read_texture_rgba(gpu, &target.texture, SIZE[0], SIZE[1])?;
+    Ok((report, pixels))
+}
+
+/// A wall-like ridge (12 m high, along Z at local x = 32) on flat ground casts a terrain shadow
+/// onto the flat ground on the side away from the light; disabling `world.terrain.shadow` per
+/// view removes it.
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn a_terrain_ridge_shadows_the_terrain_behind_it() -> Result<()> {
+    let gpu = gpu()?;
+    let (mut pipeline, status) = full_pipeline(&gpu)?;
+    let field = field_of(65, |x, _| (12.0 - 3.0 * (x - 32.0).abs()).max(0.0));
+    // Local (0, 0) at world (-32, 0, -32): the ridge crest runs along world x = 0.
+    let world = world_with(&field, Mat4::from_translation(Vec3::new(-32.0, 0.0, -32.0)));
+    // Sun toward +X, 31 degrees up: the ridge shadow reaches 12 / tan(31) = 20 m toward -X.
+    let lights = shadowed_sun(Vec3::new(1.0, 0.6, 0.0));
+    let eye = Vec3::new(0.0, 50.0, 45.0);
+    let camera = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y).inverse();
+    let mut view = ViewData::new(ViewId::MAIN, camera, projection(), SIZE, SIZE)?;
+    view.ambient = Vec3::splat(0.05);
+    let (report, pixels) = render_once(&mut pipeline, &gpu, &view, &[], &lights, &world)?;
+    let state = status.get();
+    eprintln!("status {state:?}");
+    assert_eq!(
+        report.features.get(names::TERRAIN_SHADOW).unwrap().activity,
+        Activity::Ran
+    );
+    assert!(state.shadow_pass && state.shadowed, "{state:?}");
+    // One call per terrain and cascade layer (4 layers).
+    assert_eq!(state.shadow_draw_calls, 4);
+    // Flat ground at world x = -10 (inside the shadow) and x = +18 (lit), z = 0.
+    let shadowed = pixel_of(&view, Vec3::new(-10.0, 0.0, 0.0));
+    let lit = pixel_of(&view, Vec3::new(18.0, 0.0, 0.0));
+    let (s, l) = (
+        pixel(&pixels, shadowed.0, shadowed.1),
+        pixel(&pixels, lit.0, lit.1),
+    );
+    let ratio = luminance(s) / luminance(l);
+    eprintln!("shadowed {s:?} at {shadowed:?}, lit {l:?} at {lit:?}, ratio {ratio:.3}");
+    assert!(covered(s) && covered(l));
+    // Shadowed ground keeps only the ambient term: albedo 0.8 x ambient 0.05 = 0.04 linear,
+    // against 0.04 + 0.8 / pi x n.l 0.51 = 0.17 in the light.
+    assert!(
+        (luminance(s) - 0.04).abs() < 0.01,
+        "shadowed luminance {}",
+        luminance(s)
+    );
+    assert!(ratio < 0.3, "shadowed / lit luminance {ratio}");
+    // Ground beyond the shadow on the same side is lit again (28 m from the crest).
+    let beyond = pixel_of(&view, Vec3::new(-28.0, 0.0, 0.0));
+    let beyond_ratio = luminance(pixel(&pixels, beyond.0, beyond.1)) / luminance(l);
+    eprintln!("beyond the shadow {beyond_ratio:.3}");
+    assert!(beyond_ratio > 0.8, "beyond {beyond_ratio}");
+
+    // The same frame with the shadow feature disabled for the view: no terrain shadow.
+    view.features.set(names::TERRAIN_SHADOW, false);
+    let (report, pixels) = render_once(&mut pipeline, &gpu, &view, &[], &lights, &world)?;
+    assert_eq!(
+        report.features.get(names::TERRAIN_SHADOW).unwrap().activity,
+        Activity::Disabled
+    );
+    assert!(!status.get().shadowed);
+    let unshadowed =
+        luminance(pixel(&pixels, shadowed.0, shadowed.1)) / luminance(pixel(&pixels, lit.0, lit.1));
+    eprintln!("ratio with world.terrain.shadow disabled {unshadowed:.3}");
+    assert!(unshadowed > 0.9, "unshadowed ratio {unshadowed}");
+    Ok(())
+}
+
+/// A unit cube: 24 vertices (outward normals, counter-clockwise faces) and 36 indices.
+fn cube() -> (Vec<EngineVertex>, Vec<u32>) {
+    let faces = [
+        (Vec3::X, Vec3::Y, Vec3::Z),
+        (Vec3::NEG_X, Vec3::Z, Vec3::Y),
+        (Vec3::Y, Vec3::Z, Vec3::X),
+        (Vec3::NEG_Y, Vec3::X, Vec3::Z),
+        (Vec3::Z, Vec3::X, Vec3::Y),
+        (Vec3::NEG_Z, Vec3::Y, Vec3::X),
+    ];
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for (n, u, v) in faces {
+        let base = vertices.len() as u32;
+        for (a, b) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            vertices.push(EngineVertex {
+                position: ((n + u * a + v * b) * 0.5).to_array(),
+                uv: [0.0; 2],
+                color: [1.0; 4],
+                normal: n.to_array(),
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    (vertices, indices)
+}
+
+/// A floating engine box casts its (engine shadow atlas) shadow onto flat terrain.
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn an_engine_box_shadows_the_terrain() -> Result<()> {
+    let gpu = gpu()?;
+    let (mut pipeline, _status) = full_pipeline(&gpu)?;
+    let field = field_of(65, |_, _| 0.0);
+    let world = world_with(&field, Mat4::from_translation(Vec3::new(-32.0, 0.0, -32.0)));
+    // Light at 45 degrees toward +X: the box (x -15..-9, y 5..11) shadows the ground at
+    // x - y, so x -26..-14, in view past the box.
+    let lights = shadowed_sun(Vec3::new(1.0, 1.0, 0.0));
+    let (vertices, indices) = cube();
+    let mesh = GpuMesh::from_engine_vertices(&gpu.device, "box", &vertices, &indices)?;
+    let meshes = [SceneMesh {
+        id: "box",
+        mesh,
+        world_from_local: Mat4::from_scale_rotation_translation(
+            Vec3::splat(6.0),
+            glam::Quat::IDENTITY,
+            Vec3::new(-12.0, 8.0, 0.0),
+        ),
+        shader: None,
+        params: MaterialParams::default(),
+        base_color: None,
+        metallic_roughness: None,
+        normal_map: None,
+    }];
+    let eye = Vec3::new(0.0, 50.0, 45.0);
+    let camera = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y).inverse();
+    let mut view = ViewData::new(ViewId::MAIN, camera, projection(), SIZE, SIZE)?;
+    view.ambient = Vec3::splat(0.05);
+    let (_report, pixels) = render_once(&mut pipeline, &gpu, &view, &meshes, &lights, &world)?;
+    let shadowed = pixel_of(&view, Vec3::new(-20.0, 0.0, 0.0));
+    let lit = pixel_of(&view, Vec3::new(12.0, 0.0, 0.0));
+    let (s, l) = (
+        pixel(&pixels, shadowed.0, shadowed.1),
+        pixel(&pixels, lit.0, lit.1),
+    );
+    let ratio = luminance(s) / luminance(l);
+    eprintln!("box shadow {s:?} at {shadowed:?}, lit {l:?} at {lit:?}, ratio {ratio:.3}");
+    assert!(covered(s) && covered(l));
+    // Ambient only (0.04 linear) against 0.04 + 0.8 / pi x n.l 0.71 = 0.22 in the light.
+    assert!(
+        (luminance(s) - 0.04).abs() < 0.01,
+        "shadowed luminance {}",
+        luminance(s)
+    );
+    assert!(ratio < 0.3, "shadowed / lit luminance {ratio}");
+    Ok(())
+}
+
+/// The view's motion vector at a world point's pixel.
+fn motion_at(pipeline: &ScenePipeline, view: &ViewData, p: Vec3) -> Result<[f32; 2]> {
+    let motion = pipeline.read_motion(ViewId::MAIN)?;
+    let (x, y) = pixel_of(view, p);
+    let m = motion.pixel(x, y);
+    Ok([m[0], m[1]])
+}
+
+/// Render-pixel position of a world point.
+fn pixel_position(view: &ViewData, p: Vec3) -> [f32; 2] {
+    let clip = view.clip_from_world() * p.extend(1.0);
+    let ndc = clip.truncate() / clip.w;
+    [
+        (ndc.x + 1.0) * 0.5 * SIZE[0] as f32,
+        (1.0 - ndc.y) * 0.5 * SIZE[1] as f32,
+    ]
+}
+
+/// Expected current-to-previous motion of a world point that was at `before` in the previous
+/// frame (seen by `previous`) and is at `now` (seen by `current`).
+fn expected_motion(current: &ViewData, now: Vec3, previous: &ViewData, before: Vec3) -> [f32; 2] {
+    let (c, p) = (
+        pixel_position(current, now),
+        pixel_position(previous, before),
+    );
+    [p[0] - c[0], p[1] - c[1]]
+}
+
+/// With motion needed (as DLSS requests it), `world.terrain.motion` writes camera motion for
+/// terrain pixels (matching the analytic reprojection) and terrain-transform motion when the
+/// terrain moves under a static camera; disabled, terrain pixels keep zero motion.
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn terrain_motion_vectors_follow_the_camera_and_the_terrain_transform() -> Result<()> {
+    let gpu = gpu()?;
+    let (mut pipeline, status) = full_pipeline(&gpu)?;
+    let field = field_of(65, |_, _| 0.0);
+    let origin = Mat4::from_translation(Vec3::new(-32.0, 0.0, -32.0));
+    let world = world_with(&field, origin);
+    let lights = sun();
+    let look = |x: f32| -> Result<ViewData> {
+        let eye = Vec3::new(x, 30.0, 30.0);
+        let camera =
+            glam::camera::rh::view::look_at_mat4(eye, Vec3::new(x, 0.0, 0.0), Vec3::Y).inverse();
+        let mut view = ViewData::new(ViewId::MAIN, camera, projection(), SIZE, SIZE)?;
+        view.host_needs.motion = true;
+        Ok(view)
+    };
+    let first = look(0.0)?;
+    render_once(&mut pipeline, &gpu, &first, &[], &lights, &world)?;
+    // The camera pans 2 m toward +X: terrain moves left on screen, so previous - current > 0.
+    let second = look(2.0)?;
+    let (report, pixels) = render_once(&mut pipeline, &gpu, &second, &[], &lights, &world)?;
+    assert!(status.get().motion_pass, "{:?}", status.get());
+    assert_eq!(
+        report.features.get(names::TERRAIN_MOTION).unwrap().activity,
+        Activity::Ran
+    );
+    let mut worst = 0.0_f32;
+    for p in [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(-10.0, 0.0, 5.0),
+        Vec3::new(12.0, 0.0, -8.0),
+    ] {
+        let (x, y) = pixel_of(&second, p);
+        assert!(covered(pixel(&pixels, x, y)));
+        let measured = motion_at(&pipeline, &second, p)?;
+        let expected = expected_motion(&second, p, &first, p);
+        eprintln!("camera motion at {p}: measured {measured:?}, expected {expected:?}");
+        assert!(measured[0] > 1.0, "positive x motion {measured:?}");
+        worst = worst
+            .max((measured[0] - expected[0]).abs())
+            .max((measured[1] - expected[1]).abs());
+    }
+    eprintln!("worst camera-motion error {worst:.3} px");
+    // Within a pixel: the sampled pixel centre is up to half a pixel from the point.
+    assert!(worst < 1.0, "worst error {worst}");
+    // Sky keeps the cleared zero motion.
+    let sky = pipeline.read_motion(ViewId::MAIN)?.pixel(SIZE[0] / 2, 1);
+    assert_eq!([sky[0], sky[1]], [0.0, 0.0]);
+
+    // Static camera, terrain moved 1.5 m toward -Z between frames: motion = projected shift.
+    render_once(&mut pipeline, &gpu, &second, &[], &lights, &world)?;
+    let moved = world_with(
+        &field,
+        Mat4::from_translation(Vec3::new(0.0, 0.0, -1.5)) * origin,
+    );
+    render_once(&mut pipeline, &gpu, &second, &[], &lights, &moved)?;
+    let p = Vec3::new(2.0, 0.0, 0.0);
+    let measured = motion_at(&pipeline, &second, p)?;
+    // The terrain point now at p was at p + 1.5 z in the previous frame.
+    let expected = expected_motion(&second, p, &second, p + Vec3::new(0.0, 0.0, 1.5));
+    eprintln!("terrain-transform motion: measured {measured:?}, expected {expected:?}");
+    assert!(
+        measured[1] > 1.0,
+        "the terrain moved away: it was lower on screen"
+    );
+    assert!(
+        (measured[0] - expected[0]).abs() < 1.0 && (measured[1] - expected[1]).abs() < 1.0,
+        "measured {measured:?} expected {expected:?}"
+    );
+
+    // world.terrain.motion disabled: the engine motion prepass leaves terrain pixels at zero.
+    let mut disabled = look(4.0)?;
+    disabled.features.set(names::TERRAIN_MOTION, false);
+    let (report, _) = render_once(&mut pipeline, &gpu, &disabled, &[], &lights, &moved)?;
+    assert_eq!(
+        report.features.get(names::TERRAIN_MOTION).unwrap().activity,
+        Activity::Disabled
+    );
+    let still = motion_at(&pipeline, &disabled, Vec3::new(4.0, 0.0, 0.0))?;
+    assert_eq!(still, [0.0, 0.0], "no terrain motion without the feature");
+    Ok(())
+}

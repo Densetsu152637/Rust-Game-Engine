@@ -208,6 +208,9 @@ engine_world_render::install(app); // extraction + both GPU markers
 // or enable(app)? for both parts; status.foliage.get() reports the last view.
 ```
 
+The desktop host registers and installs it by default (`engine_desktop::install_default_render_features`);
+`Camera3D.render_features` can disable `world.foliage` per camera.
+
 Verified on this machine (RTX 5080, Vulkan,
 `cargo test -p engine-world-render --test gpu_foliage -- --ignored --test-threads=1`):
 
@@ -222,9 +225,15 @@ Verified on this machine (RTX 5080, Vulkan,
 
 ### Limits
 
-- Opaque stage only. The render extension API has no way for a feature to add casters to the
-  shadow atlas, so foliage casts no shadows (it receives them); it writes no normals or motion
-  vectors (DLSS and TAA see it as static).
+- Opaque stage only. Foliage casts no shadows (it receives the engine atlas's): a feature
+  cannot render casters into the engine shadow atlas, because `FeatureContext` exposes
+  neither the atlas layer views nor the per-light shadow draw rectangles (`Atlas` /
+  `ShadowDraw` / `ViewLighting::atlas` are crate-private in
+  `engine-render-pipeline/src/lighting.rs`, and the `engine.shadows` node in
+  `pipeline.rs::run_builtin` clears each atlas page itself). Terrain works around this with its
+  own map, which only the terrain colour pass samples (see
+  [terrain.md](terrain.md#gpu-rendering-engine-world-render)); foliage neither casts into it nor
+  receives it. Foliage writes no normals or motion vectors (DLSS and TAA see it as static).
 - Culling is on the CPU per view over every instance of the visible cells (up to 262 144
   instances per field). No GPU culling, no Hi-Z occlusion.
 - The GPU path does not blend LOD levels (no cross-fade); impostors are a single card, not a
