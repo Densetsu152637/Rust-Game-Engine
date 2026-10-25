@@ -495,12 +495,42 @@ impl Default for UiScaling {
 }
 
 impl UiScaling {
-    /// The scaling in force for `world` (identity without the resource).
+    /// The scaling in force for `world` (identity without the resource). The
+    /// settings are a public field and may never have been validated, so the
+    /// values are brought into their validated ranges here: a `uiScale` of 0
+    /// would otherwise produce an infinite layout viewport.
     pub fn of(world: &World) -> Self {
         world
             .get_resource::<AccessibilityControl>()
-            .map(|c| c.settings.scaling())
+            .map(|c| c.settings.scaling().sanitized())
             .unwrap_or_default()
+    }
+
+    /// The scalings clamped to the ranges `AccessibilitySettings::validate`
+    /// accepts; a non-finite value becomes the identity.
+    pub fn sanitized(self) -> Self {
+        let clamp = |v: f32, lo: f32, hi: f32, identity: f32| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                identity
+            }
+        };
+        Self {
+            ui_scale: clamp(self.ui_scale, MIN_UI_SCALE, MAX_UI_SCALE, 1.0),
+            text_scale: clamp(self.text_scale, MIN_TEXT_SCALE, MAX_TEXT_SCALE, 1.0),
+            min_text_size: clamp(self.min_text_size, 0.0, MAX_MIN_TEXT_SIZE, 0.0),
+        }
+    }
+
+    /// The scaling for a surface the UI scale does not apply to (world
+    /// panels): text scale and the text-size floor stay, and the floor is in
+    /// that surface's own pixels rather than window pixels divided by the UI scale.
+    pub fn unscaled_surface(self) -> Self {
+        Self {
+            ui_scale: 1.0,
+            ..self
+        }
     }
 
     pub fn is_identity(&self) -> bool {

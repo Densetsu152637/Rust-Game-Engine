@@ -6,9 +6,9 @@ use engine_project::{
     ActionFrame, ComponentCatalog, CustomValue, Project, Result, Runtime,
     accessibility::{AccessibilityControl, AccessibilitySettings},
     captions::{
-        AdHocCue, CAPTION_LAYER, CaptionCategory, CaptionClock, CaptionSettings, CaptionSpeaker,
-        Captions, PlayOptions, build_root, cue_markup, import::import_captions, load_caption_track,
-        parse_caption_track, visible,
+        AdHocCue, CAPTION_LAYER, CAPTION_ROOT_ID, CaptionCategory, CaptionClock, CaptionSettings,
+        CaptionSpeaker, Captions, PlayOptions, build_root, cue_markup, import::import_captions,
+        load_caption_track, parse_caption_track, visible,
     },
     runtime::{Draw, DrawSpace},
     ui_tree::*,
@@ -593,7 +593,9 @@ fn the_live_region_carries_the_active_cue_text_in_the_access_tree() {
     tick(&mut runtime, 0.1);
     let ui = runtime.app().world().resource::<GameUi>();
     let tree = ui.accessibility_tree().expect("tree");
-    let region = tree.find("captions", "captions").expect("caption region");
+    let region = tree
+        .find(CAPTION_ROOT_ID, "captions")
+        .expect("caption region");
     assert_eq!(region.live, AccessLive::Polite);
     assert_eq!(region.role, AccessRole::Status);
     let names: Vec<_> = region
@@ -822,5 +824,31 @@ fn srt_import_reads_comma_timings_and_multiple_lines() {
     assert_eq!(
         code(import_captions("1\n00:00:05,000 --> 00:00:02,000\nhi\n")),
         "captions.cue.range"
+    );
+}
+
+#[test]
+fn a_scene_ui_root_named_captions_does_not_collide_with_the_caption_root() {
+    let own = UiRoot {
+        tree: UiTree {
+            nodes: vec![UiNode::container("panel", UiLayout::Column)],
+        },
+        ..Default::default()
+    };
+    let scene_ui = json!({"id":"captions","name":"captions","components":{"custom":{
+        "engine.UiRoot":{"version":1,"data":own}}}});
+    let (_dir, mut runtime) = Setup {
+        entities: vec![player(json!({})), scene_ui],
+        ..Setup::new()
+    }
+    .runtime();
+    // The first cue creates the generated root; with both keyed `captions` the
+    // UI tick failed with `Duplicate UI root ID`.
+    tick(&mut runtime, 0.1);
+    tick(&mut runtime, 0.1);
+    let frame = runtime.extract_frame().unwrap();
+    assert!(
+        frame.draws.iter().any(|d| d.layer == CAPTION_LAYER),
+        "the captions still draw"
     );
 }

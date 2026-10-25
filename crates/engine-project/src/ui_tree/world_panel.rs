@@ -475,10 +475,15 @@ fn panel_draws(
     let root = effective.as_ref().unwrap_or(&panel.root);
     let localized = localization.and_then(|l| localize::localize_root(root, l));
     let root = localized.as_ref().unwrap_or(root);
-    let scaled_text = crate::accessibility::UiScaling::of(world).text_scaled(root, text);
+    let scaling = crate::accessibility::UiScaling::of(world).unscaled_surface();
+    let scaled_text = scaling.text_scaled(root, text);
     let root = scaled_text.as_ref().unwrap_or(root);
     let mut state = ui.map(|u| u.render_state(&panel.id)).unwrap_or_default();
     state.themed = effective.is_some();
+    if let Some(control) = world.get_resource::<crate::accessibility::AccessibilityControl>() {
+        state.focus_thickness = control.settings.focus_thickness;
+        state.focus_contrast = control.settings.focus_high_contrast;
+    }
     if let (Some(data), Some(bindings)) = (data, bindings) {
         state.item_texts = bindings.item_texts(root, data);
     }

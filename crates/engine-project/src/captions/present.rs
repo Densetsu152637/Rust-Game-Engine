@@ -19,8 +19,14 @@ use bevy_ecs::prelude::{Entity, World};
 /// modal-dialog layer (`UI_DIALOG_LAYER`) and popup layer (`UI_POPUP_LAYER`) the
 /// UI draws dialogs and dropdown popups on.
 pub const CAPTION_LAYER: i32 = 1_000_000;
-/// Authored ID (and so the event/root key) of the generated root.
-pub const CAPTION_ROOT_ID: &str = "captions";
+/// Authored ID (and so the event/root key) of the generated root. Scene entity
+/// IDs cannot contain control characters, so no scene entity (for example a
+/// game's own `captions` UI) can share this key; the leading U+001F keeps the
+/// generated root from colliding with one (`Duplicate UI root ID`). The root
+/// node inside the tree is still `captions`.
+pub const CAPTION_ROOT_ID: &str = "\u{1f}captions";
+/// Display name of the generated root entity.
+const CAPTION_ROOT_NAME: &str = "captions";
 
 /// The caption preferences of `engine.AccessibilitySettings`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -331,7 +337,7 @@ fn publish(
             world
                 .spawn(AuthoredId {
                     id: CAPTION_ROOT_ID.into(),
-                    name: CAPTION_ROOT_ID.into(),
+                    name: CAPTION_ROOT_NAME.into(),
                 })
                 .id()
         }
