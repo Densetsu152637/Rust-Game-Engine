@@ -71,6 +71,8 @@
   adapters, transform authority and callback events.
 - [Physics core](physics.md): shapes, material combine rules, named collision layers,
   `engine.PhysicsSettings`, the native physics API and extension seams.
+- [Cloth (XPBD)](physics-cloth.md): engine-xpbd world, collider proxies with two-way impulses, cloth stretch/bending/tethers, wind and pins.
+- [Soft bodies (XPBD)](physics-softbody.md): tetrahedral edge/volume soft bodies, box tet generator and surface triangles.
 - [Navigation meshes](navigation.md): layered polygon NavMesh baking, bounded path
   queries, authored `NavigationAgent` data and MCP navigation tools.
 - [Physics library](../crates/engine-physics/README.md),

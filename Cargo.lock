@@ -1404,6 +1404,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-xpbd"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+]
+
+[[package]]
 name = "epaint"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
