@@ -1579,6 +1579,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-net-nat"
+version = "0.1.0"
+dependencies = [
+ "engine-net-quic",
+ "engine-network",
+ "rcgen",
+ "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-net-predict"
 version = "0.1.0"
 dependencies = [
