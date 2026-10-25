@@ -70,8 +70,9 @@ impl VoiceReceiver {
         self.speakers.remove(&speaker);
     }
 
-    /// Accepts one downlink payload that arrived at `now_ms`. New speakers beyond
-    /// `max_speakers` are refused (`Invalid`) until one is removed.
+    /// Accepts one downlink payload that arrived at `now_ms`. Pass only payloads received from
+    /// `SERVER_PEER`: the speaker ID inside is trusted because the router stamps it. New
+    /// speakers beyond `max_speakers` are refused (`Invalid`) until one is removed.
     pub fn receive(&mut self, bytes: &[u8], now_ms: f64) -> Result<()> {
         let packet = DownlinkPacket::decode(bytes, &self.limits)?;
         if !self.speakers.contains_key(&packet.speaker) {
@@ -127,7 +128,7 @@ impl VoiceReceiver {
                 Playout::Missing => concealed = true,
             }
             if concealed {
-                speaker.missing_run += 1;
+                speaker.missing_run = speaker.missing_run.saturating_add(1);
                 if !speaker.codec.conceal(&mut pcm) || pcm.len() != frame_samples {
                     pcm.clear();
                     self.concealment.conceal(

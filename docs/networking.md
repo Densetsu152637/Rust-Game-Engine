@@ -110,8 +110,11 @@ oversized snapshot fails without constructing an unbounded serialized buffer.
 A four-byte big-endian unsigned payload length precedes each UTF-8 JSON message
 or binary `MessageEndpoint` data frame.
 The server sends a version-2 welcome before snapshots; endpoints reject unexpected
-message directions and versions. TCP preserves reliable ordered delivery, with
-head-of-line blocking. Loss and latency simulation is available through
+message directions and versions. The first `poll` latches an endpoint to either
+the replication-event API or `MessageEndpoint::poll`; a message the latched API
+cannot represent disconnects the peer and nothing is retained for the other API
+([details](networking-transport.md#tcp-implementation)). TCP preserves
+reliable ordered delivery, with head-of-line blocking. Loss and latency simulation is available through
 `ConditionedEndpoint` ([network transports](networking-transport.md#network-simulation)).
 
 PollBudget bounds messages parsed per connection, bytes read per connection,

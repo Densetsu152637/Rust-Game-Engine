@@ -210,16 +210,8 @@ fn tls_trait_round_trips_and_authentication_precedes_connected() {
 }
 
 #[test]
-fn legacy_and_trait_polls_share_one_drain_without_losing_data() {
-    let limits = Limits {
-        max_queued_frames: 8,
-        ..Limits::default()
-    };
-    let mut server = Server::bind(ServerConfig {
-        limits: limits.clone(),
-        ..ServerConfig::default()
-    })
-    .unwrap();
+fn first_poll_latches_the_event_api_and_snapshots_still_apply_under_lanes() {
+    let mut server = Server::bind(ServerConfig::default()).unwrap();
     let mut client = Client::connect(ClientConfig::new(server.local_addr().unwrap())).unwrap();
     let mut peer = None;
     until(|| {
@@ -228,14 +220,20 @@ fn legacy_and_trait_polls_share_one_drain_without_losing_data() {
                 peer = Some(id);
             }
         }
-        client.poll(PollBudget::default()).unwrap();
+        poll(&mut client);
         peer.is_some() && client.is_connected()
     });
-    let peer = peer.unwrap();
-    server.assign_owner("hero", peer).unwrap();
-    // 20 payloads (more than the retention cap) plus one input, driven by the legacy API only.
-    let mut sent = 0_u32;
-    let mut inputs = 0;
+    // Each endpoint is now latched; the other poll fails closed without draining anything.
+    assert!(matches!(
+        MessageEndpoint::poll(&mut server, PollBudget::default()),
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        client.poll(PollBudget::default()),
+        Err(Error::Invalid(_))
+    ));
+    // Legacy input still works on the legacy-latched server.
+    server.assign_owner("hero", peer.unwrap()).unwrap();
     client
         .send_input(InputCommand {
             tick: 1,
@@ -244,49 +242,16 @@ fn legacy_and_trait_polls_share_one_drain_without_losing_data() {
             buttons: 0,
         })
         .unwrap();
-    let deadline = Instant::now() + Duration::from_millis(300);
-    while Instant::now() < deadline {
-        if sent < 20
-            && client
-                .send(
-                    SERVER_PEER,
-                    Lane::RPC,
-                    Delivery::ReliableOrdered,
-                    &sent.to_be_bytes(),
-                )
-                .is_ok()
-        {
-            sent += 1;
-        }
-        client.poll(PollBudget::default()).unwrap();
+    let mut inputs = 0;
+    until(|| {
+        poll(&mut client);
         for event in server.poll(PollBudget::default()).unwrap() {
             assert!(!matches!(event, ServerEvent::Disconnected { .. }));
             inputs += usize::from(matches!(event, ServerEvent::Input { .. }));
         }
-        thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(sent, 20);
-    assert_eq!(inputs, 1);
-    // The trait poll returns every payload, in order, including the retained ones.
-    let mut received = Vec::new();
-    until(|| {
-        client.poll(PollBudget::default()).unwrap();
-        received.extend(payloads(
-            MessageEndpoint::poll(&mut server, PollBudget::default()).unwrap(),
-        ));
-        received.len() >= 20
+        inputs == 1
     });
-    let expected: Vec<_> = (0..20_u32)
-        .map(|i| {
-            (
-                Lane::RPC,
-                Delivery::ReliableOrdered,
-                i.to_be_bytes().to_vec(),
-            )
-        })
-        .collect();
-    assert_eq!(received, expected);
-    // A snapshot received through the trait poll is applied and its notification retained.
+    // A lane-latched client applies snapshots to its state; no notification exists to retain.
     let snapshot = Snapshot {
         tick: 2,
         entities: vec![],
@@ -294,16 +259,10 @@ fn legacy_and_trait_polls_share_one_drain_without_losing_data() {
     server.publish_snapshot(snapshot.clone()).unwrap();
     until(|| {
         server.poll(PollBudget::default()).unwrap();
-        MessageEndpoint::poll(&mut client, PollBudget::default()).unwrap();
+        assert!(payloads(poll(&mut client)).is_empty());
         client.state().latest() == Some(&snapshot)
     });
-    assert!(
-        client
-            .poll(PollBudget::default())
-            .unwrap()
-            .iter()
-            .any(|e| matches!(e, ClientEvent::Snapshot(2)))
-    );
+    assert!(client.is_connected());
 }
 
 #[test]
@@ -333,6 +292,185 @@ fn full_queue_rejects_reliable_and_counts_unreliable() {
     let stats = client.stats(SERVER_PEER).unwrap();
     assert_eq!(stats.dropped_unreliable, 1);
     assert!(stats.queued_bytes >= 2 * 8);
+}
+
+/// Limits for the slot-pinning tests: one peer slot and a short idle deadline.
+fn one_slot_limits() -> Limits {
+    Limits {
+        max_peers: 1,
+        idle_timeout: Duration::from_millis(400),
+        ..Limits::default()
+    }
+}
+/// Polls `server` through one API until it reports the peer's disconnect, failing after
+/// `idle_timeout` plus slack. Returns the reason.
+fn await_drop(mut poll_server: impl FnMut() -> Option<String>) -> String {
+    let deadline = Instant::now() + one_slot_limits().idle_timeout + Duration::from_secs(2);
+    loop {
+        if let Some(reason) = poll_server() {
+            return reason;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "peer kept its slot past idle_timeout"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn legacy_polled_server_drops_a_data_flooding_peer_and_reuses_its_slot() {
+    let limits = one_slot_limits();
+    let mut server = Server::bind(ServerConfig {
+        limits: limits.clone(),
+        ..ServerConfig::default()
+    })
+    .unwrap();
+    let addr = server.local_addr().unwrap();
+    let mut client = Client::connect(ClientConfig::new(addr)).unwrap();
+    let mut connected = false;
+    until(|| {
+        connected |= server
+            .poll(PollBudget::default())
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, ServerEvent::Connected(_)));
+        poll(&mut client);
+        connected && client.is_connected()
+    });
+    // 33 data frames (one more than the old retention cap) that the legacy API cannot
+    // represent, then the client goes idle.
+    let mut sent = 0;
+    until(|| {
+        while sent < 33
+            && client
+                .send(SERVER_PEER, Lane::RPC, Delivery::ReliableOrdered, b"d")
+                .is_ok()
+        {
+            sent += 1;
+        }
+        poll(&mut client);
+        sent == 33
+    });
+    for _ in 0..20 {
+        poll(&mut client);
+    }
+    let reason = await_drop(|| {
+        server
+            .poll(PollBudget::default())
+            .unwrap()
+            .into_iter()
+            .find_map(|e| match e {
+                ServerEvent::Disconnected { reason, .. } => Some(reason),
+                _ => None,
+            })
+    });
+    assert_eq!(server.peer_ids().count(), 0, "dropped peer: {reason}");
+    // The single slot is free again.
+    let mut second = Client::connect(ClientConfig::new(addr)).unwrap();
+    let mut reconnected = false;
+    until(|| {
+        reconnected |= server
+            .poll(PollBudget::default())
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, ServerEvent::Connected(_)));
+        second.poll(PollBudget::default()).unwrap();
+        reconnected && second.is_connected()
+    });
+}
+
+#[test]
+fn trait_polled_server_drops_an_input_flooding_peer_and_reuses_its_slot() {
+    let limits = one_slot_limits();
+    let mut server = Server::bind(ServerConfig {
+        limits: limits.clone(),
+        ..ServerConfig::default()
+    })
+    .unwrap();
+    let addr = server.local_addr().unwrap();
+    let mut client = Client::connect(ClientConfig::new(addr)).unwrap();
+    let mut connected = false;
+    until(|| {
+        connected |= poll(&mut server)
+            .iter()
+            .any(|e| matches!(e, LinkEvent::Connected(_)));
+        client.poll(PollBudget::default()).unwrap();
+        connected && client.is_connected()
+    });
+    let mut tick = 0;
+    until(|| {
+        while tick < 33
+            && client
+                .send_input(InputCommand {
+                    tick: tick + 1,
+                    entity_id: "hero".into(),
+                    movement: [0.0; 3],
+                    buttons: 0,
+                })
+                .is_ok()
+        {
+            tick += 1;
+        }
+        let _ = client.poll(PollBudget::default());
+        tick == 33
+    });
+    for _ in 0..20 {
+        let _ = client.poll(PollBudget::default());
+    }
+    let reason = await_drop(|| {
+        poll(&mut server).into_iter().find_map(|e| match e {
+            LinkEvent::Disconnected { reason, .. } => Some(reason),
+            _ => None,
+        })
+    });
+    assert!(
+        server.connected_peers().is_empty(),
+        "dropped peer: {reason}"
+    );
+    let mut second = Client::connect(ClientConfig::new(addr)).unwrap();
+    connect(&mut server, &mut second);
+}
+
+#[test]
+fn legacy_polled_client_drops_a_data_flooding_server() {
+    let mut server = Server::bind(ServerConfig::default()).unwrap();
+    let mut client = Client::connect(ClientConfig {
+        limits: one_slot_limits(),
+        ..ClientConfig::new(server.local_addr().unwrap())
+    })
+    .unwrap();
+    let mut peer = None;
+    until(|| {
+        for event in poll(&mut server) {
+            if let LinkEvent::Connected(id) = event {
+                peer = Some(id);
+            }
+        }
+        client.poll(PollBudget::default()).unwrap();
+        peer.is_some() && client.is_connected()
+    });
+    let peer = peer.unwrap();
+    let mut sent = 0;
+    let reason = await_drop(|| {
+        while sent < 33
+            && server
+                .send(peer, Lane::RPC, Delivery::ReliableOrdered, b"d")
+                .is_ok()
+        {
+            sent += 1;
+        }
+        poll(&mut server);
+        client
+            .poll(PollBudget::default())
+            .unwrap()
+            .into_iter()
+            .find_map(|e| match e {
+                ClientEvent::Disconnected(reason) => Some(reason),
+                _ => None,
+            })
+    });
+    assert!(!client.is_connected(), "dropped server: {reason}");
 }
 
 fn caller_server_config(

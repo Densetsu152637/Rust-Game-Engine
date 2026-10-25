@@ -410,3 +410,92 @@ fn clients_drop_rpcs_for_unknown_entities_or_wrong_direction() {
     s.pump.client(1).receive(&forged).unwrap();
     assert_eq!(s.pump.client(1).telemetry().rpc_dropped, 2);
 }
+
+#[test]
+fn one_peer_flooding_invalid_calls_cannot_evict_another_peers_valid_call() {
+    let mut s = setup();
+    let unknown = engine_net_replication_forge_raw(&s.pump, 99, None, &[]);
+    let wrong_way =
+        engine_net_replication_forge(&s.pump, s.ids.announce, None, &[Value::String("x".into())]);
+    // Peer 1 floods more invalid calls than the whole event queue holds, in one tick.
+    for i in 0..ReplicationLimits::default().max_pending_events + 200 {
+        let packet = if i % 2 == 0 { &unknown } else { &wrong_way };
+        s.pump.server.receive(1, packet).unwrap();
+    }
+    let valid = s
+        .pump
+        .client(2)
+        .call_server(s.ids.fire, Some(s.theirs), &fire_args())
+        .unwrap();
+    s.pump.server.receive(2, &valid.bytes).unwrap();
+    let events = s.pump.server.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ServerEvent::RpcReceived { peer: 2, .. })),
+        "peer 2's valid call was evicted by peer 1's rejections"
+    );
+    let t = s.pump.server.peer_telemetry(1).unwrap();
+    assert_eq!(t.rpc_rejected, 4296);
+    assert_eq!(s.pump.server.telemetry().events_dropped, 0);
+    // Peer 1 queued only its rejection cap (a quarter of its 64-event share); the rest were
+    // counted. Invalid ids drew from the 16-per-second invalid-call bucket.
+    let queued = events
+        .iter()
+        .filter(|e| matches!(e, ServerEvent::RpcRejected { peer: 1, .. }));
+    assert_eq!(queued.count(), 16);
+    assert_eq!(t.rpc_rejections_coalesced, 4296 - 16);
+    assert_eq!(t.rpc_rejected_by_reason["rate_limited"], 4296 - 16);
+    assert_eq!(t.rpc_packets_refused, 0);
+}
+
+#[test]
+fn a_full_event_share_refuses_rpc_packets_explicitly_instead_of_dropping_calls() {
+    let mut s = setup();
+    let share = s.pump.server.peer_event_capacity();
+    assert_eq!(share, 4096 / 64);
+    let poke = |s: &mut Setup| {
+        s.pump
+            .client(1)
+            .call_server(s.ids.poke, Some(s.mine), &[])
+            .unwrap()
+            .bytes
+    };
+    for _ in 0..share {
+        let bytes = poke(&mut s);
+        s.pump.server.receive(1, &bytes).unwrap();
+    }
+    // The share is full: the next packet is refused whole and counted, not dropped silently.
+    let refused = poke(&mut s);
+    assert_eq!(
+        s.pump.server.receive(1, &refused),
+        Err(ReplicationError::Backpressure(1))
+    );
+    assert_eq!(
+        s.pump.server.peer_telemetry(1).unwrap().rpc_packets_refused,
+        1
+    );
+    // Another peer's share is untouched.
+    let theirs = s
+        .pump
+        .client(2)
+        .call_server(s.ids.poke, Some(s.theirs), &[])
+        .unwrap();
+    s.pump.server.receive(2, &theirs.bytes).unwrap();
+    let events = s.pump.server.drain_events();
+    let received = |peer| {
+        events
+            .iter()
+            .filter(|e| matches!(e, ServerEvent::RpcReceived { peer: p, .. } if *p == peer))
+            .count()
+    };
+    assert_eq!((received(1), received(2)), (share, 1));
+    // After draining, the refused packet is accepted when offered again.
+    s.pump.server.receive(1, &refused).unwrap();
+    assert_eq!(s.pump.server.drain_events().len(), 1);
+    // Removing a peer discards its undrained events.
+    let bytes = poke(&mut s);
+    s.pump.server.receive(1, &bytes).unwrap();
+    assert!(s.pump.server.remove_peer(1));
+    assert!(s.pump.server.drain_events().is_empty());
+}

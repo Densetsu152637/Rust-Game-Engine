@@ -227,7 +227,7 @@ impl JitterBuffer {
             }
             return Some(Playout::Frame(packet));
         }
-        self.missing_run += 1;
+        self.missing_run = self.missing_run.saturating_add(1);
         if self.frames.is_empty() && self.missing_run >= self.config.max_missing_before_stop {
             self.playing = false;
             return None;

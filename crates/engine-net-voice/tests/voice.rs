@@ -347,3 +347,48 @@ fn receiver_bounds_speakers_and_buffers() {
     }
     assert_eq!(receiver.stats(2).unwrap().late, 0);
 }
+
+#[test]
+fn global_and_channel_routing_do_not_leak_speaker_positions() {
+    let limits = VoiceLimits::default();
+    let mut sender = VoiceSender::new(codec(), limits.clone(), 0).unwrap();
+    let samples = sender.frame_samples();
+    let bytes = sender
+        .encode_frame(&tone(0, samples), Some([9.0, 9.0, 9.0]), false)
+        .unwrap();
+    for routing in [VoiceRouting::Global, VoiceRouting::Channel] {
+        let mut r = router(routing, &[1, 2]);
+        for p in [1, 2] {
+            r.join_channel(p, 0).unwrap();
+        }
+        r.set_trust_client_positions(true);
+        r.set_position(1, Some([1.0, 2.0, 3.0])).unwrap();
+        let out = r.route(1, &bytes, 0.0).unwrap();
+        assert_eq!(out.len(), 1);
+        let down = DownlinkPacket::decode(&out[0].1, &limits).unwrap();
+        assert_eq!(
+            down.position, None,
+            "{routing:?} leaked the speaker position"
+        );
+        // Explicit opt-in restores spatial voice; the server position still wins.
+        r.set_send_positions(true);
+        let out = r.route(1, &bytes, 0.0).unwrap();
+        let down = DownlinkPacket::decode(&out[0].1, &limits).unwrap();
+        assert_eq!(down.position, Some([1.0, 2.0, 3.0]));
+    }
+    // Proximity routing sends positions by default and can opt out.
+    let mut r = router(VoiceRouting::Proximity { max_distance: 10.0 }, &[1, 2]);
+    r.set_position(1, Some([0.0; 3])).unwrap();
+    r.set_position(2, Some([1.0, 0.0, 0.0])).unwrap();
+    let out = r.route(1, &bytes, 0.0).unwrap();
+    assert_eq!(
+        DownlinkPacket::decode(&out[0].1, &limits).unwrap().position,
+        Some([0.0; 3])
+    );
+    r.set_send_positions(false);
+    let out = r.route(1, &bytes, 0.0).unwrap();
+    assert_eq!(
+        DownlinkPacket::decode(&out[0].1, &limits).unwrap().position,
+        None
+    );
+}

@@ -35,8 +35,9 @@ default `VoiceLimits::max_payload_bytes` is 1000.
    - Errors are soft and per packet (`Malformed`, `RateLimited`, `Invalid`). The application
      decides whether repeated failures justify a disconnect.
 3. **Listener**: `VoiceReceiver::new(limits, JitterConfig, codec_factory)`. Call
-   `receive(bytes, now_ms)` for each downlink payload, and `pull(now_ms)` once per frame
-   interval on the audio clock.
+   `receive(bytes, now_ms)` for each downlink payload received from `SERVER_PEER` (the
+   speaker ID inside is trusted because only the router stamps it; never feed payloads from
+   other peers), and `pull(now_ms)` once per frame interval on the audio clock.
    - `pull` returns at most one `VoiceOutput { speaker, pcm, position, concealed }` per
      active speaker.
    - The audio domain mixes and spatializes the output using `position`.
@@ -61,7 +62,13 @@ Positions come from the authoritative game through `set_position(peer, Some(pos)
   `set_trust_client_positions(true)` is set. Use that only for cooperative or trusted games,
   where the claim is used only when the server has no position.
 - A speaker or listener without a known position is never in proximity range.
-- Downlink packets carry the server-chosen speaker position for spatial voice.
+- Downlink packets carry the server-chosen speaker position for spatial voice only under
+  `Proximity`/`ChannelProximity` routing, where every listener is already within
+  `max_distance`. Under `Global`/`Channel` routing the position is omitted (`None`) unless
+  `set_send_positions(true)` is called, because it would reveal every speaker's position to
+  every listener, which is hidden information in most games. Even under proximity routing a
+  listener learns the exact position of in-range speakers; call `set_send_positions(false)` if
+  the game must not reveal it.
 
 Other controls:
 
@@ -148,7 +155,8 @@ Speakers beyond `max_speakers` are refused until `remove_speaker`.
 Peers are untrusted.
 
 - The server derives speaker identity from the authenticated transport peer and replaces
-  position claims with authoritative positions.
+  position claims with authoritative positions. Positions reach listeners only under
+  proximity routing or explicit `set_send_positions(true)`.
 - Rate limits bound forwarding amplification to about `max_frames_per_second × listeners`
   copies per speaker.
 - Confidentiality and integrity come from the transport (QUIC or TLS). The server sees voice
@@ -174,7 +182,8 @@ Not implemented here:
   under 2%, and concealment matches losses.
 - **Concealment**: the codec-native hook takes precedence over the fade fallback, and the fade
   attenuates as specified.
-- **Routing**: proximity routing uses server positions rather than client claims, and channel,
+- **Routing**: proximity routing uses server positions rather than client claims, `Global` and
+  `Channel` routing send no speaker position (even with trusted client claims), and channel,
   mute, moderation and rate-limit behaviour all hold.
 - **Bounds**: speaker and buffer bounds, and resynchronisation after a sender restart.
 - **Fuzzing**: 20,000 seeded mutated or truncated packets through decoders, the router and

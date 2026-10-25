@@ -23,6 +23,12 @@ use world::{Entity, EntityComp, PropState, World};
 
 pub use world::EntityRelevance;
 
+fn event_peer(event: &ServerEvent) -> PeerId {
+    match event {
+        ServerEvent::RpcReceived { peer, .. } | ServerEvent::RpcRejected { peer, .. } => *peer,
+    }
+}
+
 /// Result of a custom relevancy callback for one `(peer, entity)` pair.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Relevance {
@@ -78,7 +84,9 @@ pub enum ServerEvent {
         args: Vec<Value>,
     },
     /// A call failed validation. The peer stays connected; repeated rejections are the host's
-    /// signal to throttle or kick.
+    /// signal to throttle or kick. At most a quarter of the peer's event share holds
+    /// rejections between drains; later ones are only counted (`rpc_rejected`,
+    /// `rpc_rejections_coalesced`).
     RpcRejected {
         peer: PeerId,
         rpc: Option<RpcId>,
@@ -136,7 +144,6 @@ pub struct ReplicationServer {
     peers: std::collections::BTreeMap<PeerId, PeerState>,
     callback: Option<RelevanceFn>,
     events: VecDeque<ServerEvent>,
-    events_dropped: u64,
     tick: u32,
     scratch: Vec<u8>,
 }
@@ -168,7 +175,6 @@ impl ReplicationServer {
             peers: Default::default(),
             callback: None,
             events: VecDeque::new(),
-            events_dropped: 0,
             tick: 0,
             scratch: Vec::new(),
         })
@@ -453,18 +459,23 @@ impl ReplicationServer {
         if self.peers.len() >= self.limits.max_peers {
             return Err(ReplicationError::Limit("max_peers reached"));
         }
-        let state = PeerState::new(peer, self.registry.rpcs().len(), |i| {
-            self.registry.rpcs()[i].max_calls_per_sec.max(1) as f32
-        });
+        let state = PeerState::new(
+            peer,
+            self.registry.rpcs().len(),
+            self.invalid_calls_per_sec(),
+            |i| self.registry.rpcs()[i].max_calls_per_sec.max(1) as f32,
+        );
         self.peers.insert(peer, state);
         Ok(())
     }
 
-    /// Drops all replication state of a peer and clears ownership of its entities.
+    /// Drops all replication state of a peer, including its undrained events, and clears
+    /// ownership of its entities.
     pub fn remove_peer(&mut self, peer: PeerId) -> bool {
         if self.peers.remove(&peer).is_none() {
             return false;
         }
+        self.events.retain(|event| event_peer(event) != peer);
         let owned: Vec<NetId> = self
             .world
             .iter()
@@ -570,8 +581,15 @@ impl ReplicationServer {
     }
 
     /// Consumes bytes received from `peer` on `Lane::REPLICATION` (acknowledgements) or
-    /// `Lane::RPC` (client calls). `Err` means the bytes were not a valid packet; individual RPC
-    /// calls that fail validation are reported as `ServerEvent::RpcRejected` and return `Ok`.
+    /// `Lane::RPC` (client calls). Individual RPC calls that fail validation are reported as
+    /// `ServerEvent::RpcRejected` and return `Ok`.
+    ///
+    /// Each peer owns a reserved share of the event queue (see [`Self::peer_event_capacity`]),
+    /// so one peer can never displace another's events. An RPC packet whose calls might not fit
+    /// the sender's remaining share is refused whole with [`ReplicationError::Backpressure`]
+    /// and counted in `PeerTelemetry::rpc_packets_refused`; nothing in it is consumed. Call
+    /// [`Self::drain_events`] and offer the packet again (or stop reading that peer).
+    /// Any other `Err` means the bytes were not a valid packet.
     pub fn receive(&mut self, peer: PeerId, bytes: &[u8]) -> Result<()> {
         if bytes.len() > self.limits.max_packet_bytes {
             return Err(ReplicationError::Limit("packet above max_packet_bytes"));
@@ -594,6 +612,16 @@ impl ReplicationServer {
             }
             KIND_RPC => {
                 let calls = read_calls(&mut r, &self.limits)?;
+                let capacity = self.peer_event_capacity();
+                let st = self
+                    .peers
+                    .get_mut(&peer)
+                    .ok_or(ReplicationError::UnknownPeer(peer))?;
+                // Each call produces at most one event, so this reservation check is exact.
+                if st.pending_events + calls.len() > capacity {
+                    st.tel.rpc_packets_refused += 1;
+                    return Err(ReplicationError::Backpressure(peer));
+                }
                 for call in calls {
                     self.handle_call(peer, call);
                 }
@@ -605,16 +633,43 @@ impl ReplicationServer {
         }
     }
 
-    fn push_event(&mut self, event: ServerEvent) {
-        if self.events.len() >= self.limits.max_pending_events {
-            self.events_dropped += 1;
-        } else {
-            self.events.push_back(event);
-        }
+    /// Events one peer may have queued between [`Self::drain_events`] calls:
+    /// `max(max_pending_events / max_peers, max_rpcs_per_packet)`. The whole queue therefore
+    /// holds at most `max_peers` times this many events.
+    pub fn peer_event_capacity(&self) -> usize {
+        (self.limits.max_pending_events / self.limits.max_peers)
+            .max(self.limits.max_rpcs_per_packet)
     }
 
-    /// Takes the accumulated RPC events.
+    /// `RpcRejected` events one peer may have queued; further rejections are only counted
+    /// (`rpc_rejected`, `rpc_rejections_coalesced`), leaving the rest of the share for valid
+    /// calls.
+    fn rejection_event_capacity(&self) -> usize {
+        (self.peer_event_capacity() / 4).max(1)
+    }
+
+    /// Unknown-id and wrong-direction calls share one per-peer token bucket of this rate.
+    fn invalid_calls_per_sec(&self) -> f32 {
+        self.limits.max_rpcs_per_packet as f32
+    }
+
+    /// Callers have reserved capacity in `receive`, so this never drops.
+    fn push_event(&mut self, peer: PeerId, event: ServerEvent) {
+        if let Some(st) = self.peers.get_mut(&peer) {
+            st.pending_events += 1;
+            if matches!(event, ServerEvent::RpcRejected { .. }) {
+                st.pending_rejections += 1;
+            }
+        }
+        self.events.push_back(event);
+    }
+
+    /// Takes the accumulated RPC events and frees every peer's reserved share.
     pub fn drain_events(&mut self) -> Vec<ServerEvent> {
+        for st in self.peers.values_mut() {
+            st.pending_events = 0;
+            st.pending_rejections = 0;
+        }
         self.events.drain(..).collect()
     }
 
@@ -626,30 +681,42 @@ impl ReplicationServer {
                     st.tel.rpc_received += 1;
                 }
                 if let Some(rpc) = rpc_id {
-                    self.push_event(ServerEvent::RpcReceived {
+                    self.push_event(
                         peer,
-                        rpc,
-                        entity: call.entity,
-                        args,
-                    });
+                        ServerEvent::RpcReceived {
+                            peer,
+                            rpc,
+                            entity: call.entity,
+                            args,
+                        },
+                    );
                 }
             }
             Err(reason) => {
-                if let Some(st) = self.peers.get_mut(&peer) {
-                    st.tel.rpc_received += 1;
-                    st.tel.rpc_rejected += 1;
-                    *st.tel
-                        .rpc_rejected_by_reason
-                        .entry(reason.as_str())
-                        .or_default() += 1;
+                let cap = self.rejection_event_capacity();
+                let Some(st) = self.peers.get_mut(&peer) else {
+                    return;
+                };
+                st.tel.rpc_received += 1;
+                st.tel.rpc_rejected += 1;
+                *st.tel
+                    .rpc_rejected_by_reason
+                    .entry(reason.as_str())
+                    .or_default() += 1;
+                if st.pending_rejections >= cap {
+                    st.tel.rpc_rejections_coalesced += 1;
+                    return;
                 }
                 let known = rpc_id.filter(|id| self.registry.rpc(*id).is_some());
-                self.push_event(ServerEvent::RpcRejected {
+                self.push_event(
                     peer,
-                    rpc: known,
-                    entity: call.entity,
-                    reason,
-                });
+                    ServerEvent::RpcRejected {
+                        peer,
+                        rpc: known,
+                        entity: call.entity,
+                        reason,
+                    },
+                );
             }
         }
     }
@@ -661,25 +728,31 @@ impl ReplicationServer {
         call: &RawCall<'_>,
     ) -> std::result::Result<Vec<Value>, RpcRejectReason> {
         use RpcRejectReason as Why;
-        let def = rpc_id
-            .and_then(|id| self.registry.rpc(id))
-            .ok_or(Why::UnknownRpc)?;
-        if def.direction != RpcDirection::ClientToServer {
-            return Err(Why::WrongDirection);
-        }
         let tick = self.tick;
         let tick_rate = self.cfg.tick_rate_hz as f32;
+        let invalid_rate = self.invalid_calls_per_sec();
+        let def = rpc_id.and_then(|id| self.registry.rpc(id));
         let st = self.peers.get_mut(&peer).ok_or(Why::UnknownRpc)?;
-        // Every attempt, valid or not, consumes a token so malformed spam is throttled too.
+        // Every attempt consumes a token so malformed spam is throttled too: unknown-id and
+        // wrong-direction calls from the peer's shared invalid-call bucket, the rest from the
+        // RPC's own bucket.
+        let def = match def {
+            Some(def) if def.direction == RpcDirection::ClientToServer => def,
+            other => {
+                if !st.invalid_bucket.take(tick, tick_rate, invalid_rate) {
+                    return Err(Why::RateLimited);
+                }
+                return Err(if other.is_some() {
+                    Why::WrongDirection
+                } else {
+                    Why::UnknownRpc
+                });
+            }
+        };
         let bucket = &mut st.buckets[usize::from(rpc_id.map_or(0, |r| r.0))];
-        let per_sec = def.max_calls_per_sec.max(1) as f32;
-        let elapsed = tick.saturating_sub(bucket.last_tick) as f32;
-        bucket.tokens = (bucket.tokens + elapsed * per_sec / tick_rate).min(per_sec);
-        bucket.last_tick = tick;
-        if bucket.tokens < 1.0 {
+        if !bucket.take(tick, tick_rate, def.max_calls_per_sec.max(1) as f32) {
             return Err(Why::RateLimited);
         }
-        bucket.tokens -= 1.0;
         match (def.targets_entity, call.entity) {
             (true, None) => return Err(Why::MissingTarget),
             (false, Some(_)) => return Err(Why::UnexpectedTarget),
@@ -781,7 +854,8 @@ impl ReplicationServer {
             tick: self.tick,
             entities: self.world.len(),
             peers: self.peers.values().map(|p| p.tel.clone()).collect(),
-            events_dropped: self.events_dropped,
+            // Capacity is reserved per peer, so the server never drops an event.
+            events_dropped: 0,
         }
     }
 }

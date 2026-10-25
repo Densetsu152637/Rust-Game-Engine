@@ -244,7 +244,10 @@ checksum after that frame is reported; a mismatch with the local value raises `D
 `time_sync().recommended_wait_frames` is `max((local_advantage - remote_advantage) / 2)`
 over remote players, clamped to `[0, max_prediction]`; feed it to
 `FixedTimestep::delay` so the faster peer slows down. Symmetric link delay cancels out
-of this difference.
+of this difference. A message whose `sender_frame` lies beyond the input acceptance
+window (`current_frame + max_prediction + 2 * input_delay + 8`) is `Malformed` and
+changes nothing: a legitimate peer stalls before it gets that far ahead. Frame
+differences use saturating arithmetic, so hostile frame values cannot overflow.
 
 Measured (seeded link, 15 % loss, 1..=4 step delay and reordering, input delay 2,
 prediction window 8, 600 checked frames): every confirmed checksum on every peer equals
@@ -346,7 +349,8 @@ messages are counted and dropped (tested). Configuration is trusted application 
 states, smoothing decay, timestep, rings), `tests/input.rs` (loss tables above,
 receiver windows, codecs), `tests/keys.rs` (commit/reject/timeout/nesting, validator
 windows, wire round trip), `tests/rollback.rs` (lockstep equality over a lossy link for
-2 and 3 peers, stall, desync, time sync, malformed messages), `tests/lagcomp.rs` (rewound
+2 and 3 peers, stall, desync, time sync, malformed messages, hostile `sender_frame`
+values such as `1 << 63` without overflow), `tests/lagcomp.rs` (rewound
 hits and misses, clamping, bounds) and `tests/fuzz.rs` (20 000 random and mutated
 buffers per decoder, flood bounds). Use `-- --nocapture` to print the measured numbers.
 `cargo clippy -p engine-net-predict --all-targets --locked -- -D warnings` and
