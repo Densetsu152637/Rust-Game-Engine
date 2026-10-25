@@ -38,10 +38,15 @@ struct PeerVoice {
 
 /// Server-side voice forwarder. Speaker identity comes from the transport peer ID, never from
 /// packet bytes, and positions come from the authoritative game unless explicitly trusted.
+///
+/// Downlink packets carry the speaker's position only under proximity routing (or after
+/// [`VoiceRouter::set_send_positions`]): under `Global`/`Channel` routing every listener would
+/// otherwise learn every speaker's server position, which is hidden information in most games.
 pub struct VoiceRouter {
     limits: VoiceLimits,
     routing: VoiceRouting,
     trust_client_positions: bool,
+    send_positions: bool,
     peers: BTreeMap<PeerId, PeerVoice>,
     stats: RouterStats,
 }
@@ -60,6 +65,10 @@ impl VoiceRouter {
             limits,
             routing,
             trust_client_positions: false,
+            send_positions: matches!(
+                routing,
+                VoiceRouting::Proximity { .. } | VoiceRouting::ChannelProximity { .. }
+            ),
             peers: BTreeMap::new(),
             stats: RouterStats::default(),
         })
@@ -67,6 +76,13 @@ impl VoiceRouter {
     /// Accept speaker-claimed positions when the server has none (trusted/cooperative games only).
     pub fn set_trust_client_positions(&mut self, trust: bool) {
         self.trust_client_positions = trust;
+    }
+    /// Whether downlink packets carry the speaker's position for spatial voice. Defaults to
+    /// true only for `Proximity`/`ChannelProximity` routing, where listeners are already in
+    /// range. Enabling it under `Global`/`Channel` routing reveals every speaker's position to
+    /// every listener that hears them.
+    pub fn set_send_positions(&mut self, send: bool) {
+        self.send_positions = send;
     }
     pub fn stats(&self) -> RouterStats {
         self.stats
@@ -165,7 +181,7 @@ impl VoiceRouter {
             channel: uplink.channel,
             sequence: uplink.sequence,
             timestamp: uplink.timestamp,
-            position: speaker_position,
+            position: speaker_position.filter(|_| self.send_positions),
             end_of_talkspurt: uplink.end_of_talkspurt,
             payload: uplink.payload,
         }
