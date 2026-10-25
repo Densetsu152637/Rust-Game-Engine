@@ -107,11 +107,10 @@ error):
 
 ## Intact mesh of a fractured entity
 
-`PhysicsRenderExtract.fractured` lists the `Fractured` owners so a host can skip their
-intact mesh, but the engine's own mesh extraction does not read it yet: the intact mesh of a
-fractured entity keeps drawing alongside its fragments until the project's 3D scene
-extraction skips `Fractured` entities (a small `engine-project` / `engine-desktop` change,
-outside this crate's scope). Fragments use configured colours; the owner's `MeshMaterial`
+`PhysicsRenderExtract.fractured` lists the `Fractured` owners. The engine's own scene
+extraction (`Runtime::extract_scene_frame`) already skips the `MeshRenderer` of an entity
+carrying `Fractured`, so a fractured entity's intact mesh does not draw alongside its
+fragments; children with their own `MeshRenderer` still draw. Fragments use configured colours; the owner's `MeshMaterial`
 (texture, tint) is not applied.
 
 ## Verification

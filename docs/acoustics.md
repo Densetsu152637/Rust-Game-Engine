@@ -136,7 +136,9 @@ as an instance (`static` unless `AcousticGeometry.mode` says otherwise). Tips:
 `engine.AcousticEnvironment.proxy2d` synthesizes a 3D world in the background so
 2D games get the same propagation. Footprints are non-trigger `Collider2D`,
 non-sensor `engine.PhysicsBody2D` (box, ball, capsule, with the transform's
-rotation) and `engine.AcousticVolume` with `space: "proxy2d"` (a static solid
+rotation; `convex_hull` as its polygon, `trimesh` as one polygon per triangle, `compound` as
+its box, ball, capsule and hull parts; `cylinder`, `heightfield` and unsupported parts add a
+warning naming the entity and shape; the 2D schema does not author `cylinder`) and `engine.AcousticVolume` with `space: "proxy2d"` (a static solid
 box). Their `AcousticMaterial` applies, otherwise `proxy2d.material`. While a
 proxy is active 3D meshes and world-space volumes are ignored (the build lists
 them as warnings), and all propagation runs in proxy space.

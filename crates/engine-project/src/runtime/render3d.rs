@@ -58,6 +58,11 @@ impl Runtime {
             let Some(renderer) = entity.get::<MeshRenderer>() else {
                 continue;
             };
+            // A fractured destructible draws only through its fragments; hide the intact
+            // mesh of this entity (children carry their own `MeshRenderer` and still draw).
+            if entity.contains::<crate::simulation::physics::Fractured>() {
+                continue;
+            }
             if entity.get::<Transform>().is_none() {
                 continue;
             }
