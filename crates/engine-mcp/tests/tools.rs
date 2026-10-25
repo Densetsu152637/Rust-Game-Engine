@@ -375,6 +375,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.PhysicsJoint2D",
         "engine.PhysicsJoint3D",
         "engine.PhysicsSettings",
+        "engine.Ragdoll",
         "engine.SkinBinding",
         "engine.UiRoot",
         "engine.Vehicle3D",

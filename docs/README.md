@@ -76,6 +76,7 @@
 - [Physics joints](physics-joints.md): fixed, hinge, slider, ball, spring, distance, rope and 6-DoF joints with limits, motors and breakable constraints.
 - [Character controllers](physics-character.md): kinematic 2D/3D characters with slopes, steps, ground snapping, platform riding, pushing, gravity, jumps and ground/wall events.
 - [Raycast vehicles](physics-vehicles.md): `engine.Vehicle3D` with raycast suspension, a slip-based Pacejka tyre model, engine/gearbox/differential drivetrain, input mapping, wheel visuals and events.
+- [Skeleton ragdolls](physics-ragdoll.md): `engine.Ragdoll` bone bodies and joints, animated/ragdoll/powered modes, animation blend, get-up fade, hit reactions and settle events.
 - [Physics destruction](physics-destruction.md): Voronoi pre-fracture of convex and concave meshes, `engine.Destructible3D` thresholds and damage, debris pooling, sleeping and expiry.
 - [Cloth (XPBD)](physics-cloth.md): engine-xpbd world, collider proxies with two-way impulses, cloth stretch/bending/tethers, wind and pins.
 - [Soft bodies (XPBD)](physics-softbody.md): tetrahedral edge/volume soft bodies, box tet generator and surface triangles.

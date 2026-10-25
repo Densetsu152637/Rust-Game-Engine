@@ -22,7 +22,8 @@ profiler records this boundary as `PostUpdate`. Typed hydration precedes startup
 Shapes, materials, combine rules, named layers, `engine.PhysicsSettings`, the native
 `simulation::physics` API and the feature extension seams are documented in
 [Physics core](physics.md). Queries, the fixed-step accumulator and the debug view are in
-[Physics queries](physics-queries.md).
+[Physics queries](physics-queries.md). Skeleton ragdolls (`engine.Ragdoll`) that blend with
+animation are in [Skeleton ragdolls](physics-ragdoll.md).
 
 Example data: `{"motion":"dynamic","shape":"box","half_extents":[0.5,0.5]}`.
 3D half extents and velocity have three elements; angular velocity is scalar in
@@ -113,7 +114,10 @@ asset (see [Navigation meshes](navigation.md)). There is no crowd or dynamic obs
 avoidance.
 
 Animation cannot share any target with another animation, physics or navigation
-writer. Navigation may drive a kinematic body, but cannot share a fixed/dynamic
+writer, with one controlled exception: bones listed in an `engine.Ragdoll` keep animation as
+their writer and the ragdoll blends its simulated pose on top after the physics step (see
+[Skeleton ragdolls](physics-ragdoll.md#animation-ownership)); they still cannot carry
+`engine.PhysicsBody*` or a navigation agent. Navigation may drive a kinematic body, but cannot share a fixed/dynamic
 body. Native code must respect the same ownership when directly writing transforms.
 All simulation events use the existing bounded event queue and reach callbacks
 at the beginning of the next runtime tick. Overflow returns an error.

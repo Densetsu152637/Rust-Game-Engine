@@ -28,6 +28,7 @@ mod descriptors;
 mod destruction;
 mod joints;
 mod queries;
+mod ragdoll;
 mod request;
 mod settings;
 mod stepping;
@@ -52,6 +53,12 @@ pub use joints::{
     joint_state, joint_status, remove_joint, set_joint_break_limits, set_joint_motor,
 };
 pub use queries::*;
+pub use ragdoll::{
+    BoneJoint, BoneReadout, BoneShape, HitReaction, MAX_BONES, Ragdoll, RagdollBone, RagdollMode,
+    RagdollStatus, add_ragdoll, ragdoll_blend_out, ragdoll_bone_impulse, ragdoll_bone_state,
+    ragdoll_from_hierarchy, ragdoll_hit, ragdoll_joint_state, ragdoll_set_blend, ragdoll_set_mode,
+    ragdoll_set_strength, ragdoll_status,
+};
 pub use request::{
     MAX_QUERY_LIMIT, MAX_QUERY_TICKS, QueryRequest, debug_scene, query_scene, run_query,
 };
@@ -77,6 +84,7 @@ fn features() -> Vec<Box<dyn Feature>> {
         Box::new(character::Characters::new()),
         Box::new(destruction::Destruction),
         Box::new(vehicles::Vehicles::new()),
+        Box::new(ragdoll::Ragdolls::new()),
     ]
 }
 
@@ -255,7 +263,8 @@ impl Physics {
         Ok(())
     }
     pub fn step(&mut self, world: &mut World, dt: f32) -> Result<()> {
-        if self.bodies.is_empty() {
+        // Features such as ragdolls own engine-physics bodies without authored body components.
+        if self.bodies.is_empty() && self.worlds.two.is_empty() && self.worlds.three.is_empty() {
             return Ok(());
         }
         if let Some(step) = self.settings.fixed_timestep {
