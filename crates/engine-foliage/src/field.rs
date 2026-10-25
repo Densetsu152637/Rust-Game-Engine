@@ -19,6 +19,14 @@ pub struct CellKey {
     pub z: i32,
 }
 
+/// A revision base unique in this process: every new field starts in its own block of 2^32
+/// revisions, so a regenerated field never reuses the revision numbers of the one it replaces
+/// (renderers compare cell revisions to decide what is stale).
+fn fresh_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) << 32
+}
+
 /// One plant.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Instance {
@@ -146,7 +154,7 @@ impl FoliageField {
             cell_size,
             cells: BTreeMap::new(),
             count: 0,
-            revision: 0,
+            revision: fresh_revision(),
         })
     }
     pub fn cell_size(&self) -> f32 {
@@ -163,7 +171,7 @@ impl FoliageField {
     pub fn cell_count(&self) -> usize {
         self.cells.len()
     }
-    /// Incremented by every mutation.
+    /// Incremented by every mutation; starts at a value unique among all fields of the process.
     pub fn revision(&self) -> u64 {
         self.revision
     }

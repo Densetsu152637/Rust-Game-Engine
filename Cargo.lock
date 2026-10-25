@@ -1378,6 +1378,7 @@ dependencies = [
  "engine-core",
  "engine-destruction",
  "engine-fluids",
+ "engine-foliage",
  "engine-navigation",
  "engine-network",
  "engine-pcg",

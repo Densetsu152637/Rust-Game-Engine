@@ -48,6 +48,7 @@ impl Project {
                 "tileset",
                 "tilemap",
                 "terrain",
+                "foliage",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -199,6 +200,7 @@ impl Project {
         crate::world::pcg::validate_scene(self, scene)?;
         crate::world::streaming::validate_scene(self, scene)?;
         crate::world::terrain::validate_scene(self, scene)?;
+        crate::world::foliage::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.
@@ -236,6 +238,9 @@ impl Project {
                 }
                 "terrain" => {
                     crate::world::terrain::load_terrain(self, &asset.id)?;
+                }
+                "foliage" => {
+                    crate::world::foliage::load_foliage(self, &asset.id)?;
                 }
                 "tilemap" => {
                     // A map is validated against the tileset of the entities that use it.

@@ -239,10 +239,12 @@ pub struct FoliageType {
     /// Mesh asset ids of lower-detail models, LOD 1 and up.
     pub lod_meshes: Vec<String>,
     /// Texture asset id of the meshes' albedo.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub texture: Option<String>,
     /// Linear RGBA multiplier of the albedo.
     pub tint: [f32; 4],
     /// Billboard drawn beyond the last mesh band.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub impostor: Option<Impostor>,
     /// Instances per square metre before the density map (0..=64).
     #[serde(default = "default_density")]
@@ -276,8 +278,10 @@ pub struct FoliageType {
     /// Distances at which LOD `i` hands over to LOD `i + 1`; one per entry of `lod_meshes`.
     pub lod_distances: Vec<f32>,
     /// Distance beyond which the impostor replaces the last mesh (needs `impostor`).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub impostor_distance: Option<f32>,
     /// Distance beyond which instances are not drawn; `None` uses the set's culling distance.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cull_distance: Option<f32>,
     /// 0..=1: how strongly wind bends this type (0 = rigid, such as rocks).
     #[serde(default = "default_wind")]
