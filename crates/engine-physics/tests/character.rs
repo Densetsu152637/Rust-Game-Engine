@@ -456,6 +456,33 @@ macro_rules! character_tests {
         }
 
         #[test]
+        fn teleporting_moves_the_character_at_once_and_resets_its_ground_state() {
+            let mut world = world();
+            floor(&mut world);
+            hero(&mut world, [0., HALF + 0.05], CharacterDesc::default());
+            run(&mut world, 30);
+            assert!(world.character_state(HERO).unwrap().grounded);
+            world.set_character_velocity(HERO, p(2., 0.)).unwrap();
+            world.set_character_position(HERO, p(10., 5.)).unwrap();
+            let pose = world.pose(HERO).unwrap().position;
+            assert_eq!((pose[0], pose[1]), (10., 5.));
+            let state = world.character_state(HERO).unwrap();
+            assert!(!state.grounded && state.ground_body.is_none());
+            assert_eq!(state.vertical_speed, 0.);
+            // One step later it has fallen by one step of gravity and walked 2 m/s, not been
+            // pulled back to where it stood.
+            run(&mut world, 1);
+            assert!((x(&world) - (10. + 2. * DT)).abs() < 1e-4, "{}", x(&world));
+            assert!((y(&world) - 5.).abs() < 0.01, "{}", y(&world));
+            run(&mut world, 180);
+            let state = world.character_state(HERO).unwrap();
+            assert!(state.grounded);
+            assert!((y(&world) - (HALF + 0.05)).abs() < 0.06, "{}", y(&world));
+            assert!(world.set_character_position(GROUND, p(0., 0.)).is_err());
+            assert!(world.set_character_position(HERO, p(f32::NAN, 0.)).is_err());
+        }
+
+        #[test]
         fn rejects_invalid_characters() {
             let mut world = world();
             floor(&mut world);

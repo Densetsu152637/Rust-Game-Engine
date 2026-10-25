@@ -620,3 +620,293 @@ fn ragdolls_blend_with_a_playing_animation_that_shares_the_bones() {
         "arm angle {angle} vs {expected}"
     );
 }
+
+// ---- Critic fixes: per-frame pose, layers, rebuilds, inherited velocity ---------------------
+
+/// The 144 Hz render frame used with a 60 Hz physics step: about 58% of frames run no step.
+const FRAME: f32 = 1. / 144.;
+const STEP: f32 = 1. / 60.;
+
+impl Rig {
+    fn frames(&mut self, n: usize, dt: f32) {
+        for _ in 0..n {
+            self.runtime.tick(dt, InputSnapshot::default()).unwrap();
+        }
+    }
+    fn world_rotation(&self, id: &str) -> Quat {
+        let matrix = world_transform(self.world(), self.bone(id)).unwrap().matrix;
+        glam::Mat4::from_cols_array_2d(&matrix)
+            .to_scale_rotation_translation()
+            .1
+    }
+    fn world_position(&self, id: &str) -> Vec3 {
+        Vec3::from(
+            world_transform(self.world(), self.bone(id))
+                .unwrap()
+                .position(),
+        )
+    }
+}
+/// Angle between two rotations; `atan2` keeps full `f32` precision near zero (`acos` of a dot
+/// product near 1 only resolves about 1e-3 rad).
+fn angle(a: Quat, b: Quat) -> f32 {
+    let relative = a.inverse() * b;
+    2. * relative.xyz().length().atan2(relative.w.abs())
+}
+/// A limp ragdoll whose left arm is also driven by a looping animation clip.
+fn animated_ragdoll(physics_settings: Value) -> Rig {
+    let mut entities = skeleton();
+    entities[0]["components"]["custom"] = json!({
+        "engine.AnimationPlayer":value(json!({"clip":"clip","looping":true,"bindings":BONES})),
+        "engine.Ragdoll":value(json!({
+            "mode":"ragdoll",
+            "bones":BONES.iter().map(|b| json!({"bone":b})).collect::<Vec<_>>()
+        }))
+    });
+    entities.push(floor());
+    entities.push(settings(physics_settings));
+    let half = 0.4f32;
+    let clip = json!({"version":1,"duration":2.,"joints":11,"tracks":[
+        {"joint":3,"rotation":{"times":[0.,2.],"values":[[0.,0.,0.,1.],[0.,0.,half.sin(),half.cos()]],"interpolation":"linear"}}]});
+    start(entities, Some(clip))
+}
+
+/// H2: the animation service rewrites the bone `Transform`s every frame, so a frame without a
+/// physics step must still show the ragdoll pose. At 144 Hz frames and a 60 Hz step the
+/// animation pose used to flicker through on every frame that ran no step.
+#[test]
+fn the_ragdoll_pose_is_rewritten_on_frames_without_a_physics_step() {
+    let mut rig = animated_ragdoll(json!({"fixed_timestep":STEP}));
+    let mut idle_frames = 0;
+    let mut worst = 0f32;
+    for frame in 0..120 {
+        rig.frames(1, FRAME);
+        if frame < 10 {
+            continue;
+        }
+        idle_frames += usize::from(physics::step_status(rig.world()).unwrap().steps == 0);
+        for id in ["arm_l", "forearm_l", "spine"] {
+            let state = rig.bone_state(id);
+            worst = worst
+                .max(angle(rig.world_rotation(id), state.rotation))
+                .max((rig.world_position(id) - state.position).length());
+        }
+    }
+    println!("{idle_frames} frames without a step; worst pose difference {worst:.2e}");
+    assert!(idle_frames > 40, "{idle_frames}");
+    assert!(worst < 1e-5, "worst pose difference {worst}");
+}
+
+/// H2/D1: with interpolation the ragdoll pose is blended between the previous and the latest
+/// physics step on every frame, so the motion is smooth instead of stepping at 60 Hz.
+#[test]
+fn the_ragdoll_pose_is_interpolated_between_physics_steps() {
+    let mut rig = animated_ragdoll(json!({"fixed_timestep":STEP,"interpolation":"interpolate"}));
+    let (mut previous, mut latest) = (Vec3::ZERO, Vec3::ZERO);
+    let mut heights = vec![];
+    let mut worst = 0f32;
+    for frame in 0..60 {
+        rig.frames(1, FRAME);
+        let status = physics::step_status(rig.world()).unwrap();
+        if status.steps > 0 {
+            (previous, latest) = (latest, rig.bone_state("head").position);
+        }
+        if frame >= 10 {
+            let expected = previous.lerp(latest, status.alpha);
+            worst = worst.max((rig.world_position("head") - expected).length());
+            heights.push(rig.world_position("head").y);
+        }
+    }
+    println!("worst distance to the blended pose {worst:.2e}");
+    assert!(worst < 1e-5, "{worst}");
+    // The head keeps falling smoothly until it lands: no frame holds still.
+    assert!(
+        heights[..24].windows(2).all(|w| w[1] < w[0] - 1e-5),
+        "{heights:?}"
+    );
+}
+
+fn named_floor() -> Value {
+    json!({"id":"floor","name":"floor","components":{"Transform":{"position":[0,-0.5,0]},
+        "custom":{"engine.PhysicsBody3D":value(json!({"motion":"fixed","shape":"box",
+            "half_extents":[20.,0.5,20.],"material":{"layer_name":"world"}}))}}})
+}
+
+/// H3: ragdoll bones keep their authored collision groups, so they collide with a floor on a
+/// named layer, while bone-bone contacts stay off through the contact exclusion group.
+#[test]
+fn bones_collide_with_named_layer_floors_but_never_with_each_other() {
+    for layer_name in [None, Some("actors")] {
+        let mut entities = skeleton();
+        entities.push(named_floor());
+        entities.push(settings(
+            json!({"layers":["world","actors"],"solver_iterations":8}),
+        ));
+        let mut rig = start(entities, None);
+        let world = rig.runtime.app_mut().world_mut();
+        let mut ragdoll = physics::ragdoll_from_hierarchy(world, rig.rig).unwrap();
+        ragdoll.mode = RagdollMode::Ragdoll;
+        ragdoll.layer_name = layer_name.map(str::to_owned);
+        physics::add_ragdoll(world, rig.rig, ragdoll).unwrap();
+        let bindings = EventBindings {
+            bindings: vec![EventBinding {
+                event: "physics.contact.start".into(),
+                handler: "record".into(),
+            }],
+        };
+        for id in BONES {
+            let bone = rig.bone(id);
+            rig.world_mut().entity_mut(bone).insert(bindings.clone());
+        }
+        rig.ticks(150);
+        let lowest = BONES
+            .iter()
+            .map(|id| rig.bone_state(id).position.y)
+            .fold(f32::MAX, f32::min);
+        let contacts = rig.events("physics.contact.start");
+        let between_bones = contacts
+            .iter()
+            .filter(|c| BONES.contains(&c["other"].as_str().unwrap_or_default()))
+            .count();
+        println!(
+            "layer {layer_name:?}: lowest bone {lowest:.3} m, {} floor contacts, {between_bones} bone contacts",
+            contacts.len() - between_bones
+        );
+        assert!(
+            lowest > -0.05,
+            "{layer_name:?}: fell through the floor to {lowest}"
+        );
+        assert!(
+            contacts.len() > between_bones,
+            "{layer_name:?}: no floor contact"
+        );
+        assert_eq!(between_bones, 0, "{layer_name:?}");
+    }
+}
+
+/// M6: changing the settings layers or materials rebuilds ragdoll bodies with the new
+/// groups, keeping their pose. The floor is on raw layer bits, so only the bones' own
+/// (stale) groups decide whether they still stand on it.
+#[test]
+fn ragdolls_follow_layer_changes_in_the_physics_settings() {
+    let mut entities = skeleton();
+    entities.push(floor());
+    entities.push(settings(json!({"layers":["world","actors"]})));
+    let mut rig = start(entities, None);
+    let world = rig.runtime.app_mut().world_mut();
+    let mut ragdoll = physics::ragdoll_from_hierarchy(world, rig.rig).unwrap();
+    ragdoll.mode = RagdollMode::Ragdoll;
+    ragdoll.layer_name = Some("actors".into());
+    physics::add_ragdoll(world, rig.rig, ragdoll).unwrap();
+    rig.ticks(120);
+    let resting = rig.bone_state("pelvis").position;
+    assert!(resting.y > -0.05, "{resting}");
+    // Stop the actors layer from colliding with the world: the next tick rebuilds the bones
+    // at their current pose, and they now fall through.
+    let settings_entity = rig.runtime.entity("settings").unwrap();
+    rig.world_mut()
+        .get_mut::<physics::PhysicsSettings>(settings_entity)
+        .unwrap()
+        .disabled_pairs = vec![["world".into(), "actors".into()]];
+    rig.ticks(1);
+    let after_rebuild = rig.bone_state("pelvis");
+    assert!(
+        (after_rebuild.position - resting).length() < 0.05,
+        "the rebuild kept the pose: {} vs {resting}",
+        after_rebuild.position
+    );
+    rig.ticks(120);
+    let fallen = rig.bone_state("pelvis").position.y;
+    println!(
+        "pelvis {} m -> {fallen} m after the pair was disabled",
+        resting.y
+    );
+    assert!(fallen < -1.0, "bones kept their old groups: {fallen}");
+}
+
+/// L3: the velocity a ragdoll inherits from the animation is the pose change over the
+/// animation time between samples, however many physics steps the frame ran.
+#[test]
+fn inherited_animation_velocity_does_not_depend_on_the_physics_step_pattern() {
+    for lead_frames in 0..5 {
+        let mut entities = skeleton();
+        entities.push(settings(
+            json!({"fixed_timestep":STEP,"gravity_3d":[0.,0.,0.]}),
+        ));
+        let mut rig = start(entities, None);
+        let world = rig.runtime.app_mut().world_mut();
+        let ragdoll = physics::ragdoll_from_hierarchy(world, rig.rig).unwrap();
+        physics::add_ragdoll(world, rig.rig, ragdoll).unwrap();
+        let pelvis = rig.bone("pelvis");
+        let advance = |rig: &mut Rig| {
+            rig.world_mut()
+                .get_mut::<Transform>(pelvis)
+                .unwrap()
+                .position[0] += 1.0 * FRAME;
+        };
+        for _ in 0..(12 + lead_frames) {
+            advance(&mut rig);
+            rig.frames(1, FRAME);
+        }
+        advance(&mut rig);
+        rig.mode(RagdollMode::Ragdoll);
+        rig.frames(1, FRAME);
+        // Let any step pending in the accumulator run, with no further animation input.
+        rig.frames(3, FRAME);
+        let speeds: Vec<f32> = BONES
+            .iter()
+            .map(|id| rig.bone_state(id).linear_velocity.x)
+            .collect();
+        println!(
+            "lead {lead_frames}: pelvis {:.3} m/s, all {speeds:?}",
+            speeds[0]
+        );
+        for speed in speeds {
+            assert!(
+                (speed - 1.0).abs() < 0.08,
+                "lead {lead_frames}: inherited {speed} m/s"
+            );
+        }
+    }
+}
+
+/// L4: a ragdoll whose bones do not all fit in the body table is not built, says why in its
+/// status, and does not fail the tick.
+#[test]
+fn a_ragdoll_that_does_not_fit_the_body_table_waits_and_says_why() {
+    let mut entities = skeleton();
+    entities.push(floor());
+    let dir = fixture(entities, None);
+    let mut runtime = Runtime::new_with_simulation(
+        Project::load(dir.path().join("project.json")).unwrap(),
+        Some(engine_project::simulation::SimulationConfig {
+            body_capacity: 8,
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .insert_resource(Events::default());
+    register_event_handler(runtime.app_mut(), "record", record).unwrap();
+    runtime.start().unwrap();
+    let rig = runtime.entity("rig").unwrap();
+    let world = runtime.app_mut().world_mut();
+    let mut ragdoll = physics::ragdoll_from_hierarchy(world, rig).unwrap();
+    ragdoll.mode = RagdollMode::Ragdoll;
+    physics::add_ragdoll(world, rig, ragdoll).unwrap();
+    for _ in 0..5 {
+        runtime.tick(DT, InputSnapshot::default()).unwrap();
+    }
+    let status = physics::ragdoll_status(runtime.app().world(), rig).unwrap();
+    assert!(!status.active);
+    let reason = status.inactive_reason.unwrap();
+    assert!(reason.contains("capacity"), "{reason}");
+    let pressure = physics::pressure_status(runtime.app().world()).unwrap();
+    assert_eq!(
+        (pressure.bodies_3d, pressure.starved_bodies),
+        (1, 1),
+        "{pressure:?}"
+    );
+}

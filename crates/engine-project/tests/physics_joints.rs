@@ -626,3 +626,164 @@ fn a_generic_joint_frees_only_the_listed_axes() {
         .angular_velocity;
     assert!(spin.length() < 1e-2, "{spin:?}");
 }
+
+// ---- Critic fixes: bounded break history ----------------------------------------------------
+
+/// M2: engine-physics keeps the last 1024 break records. A joint whose record was evicted must
+/// stay broken, not be re-created (and break again) by the next sync.
+#[test]
+fn joints_evicted_from_the_break_history_are_not_re_created() {
+    const WAVE: usize = 400;
+    let mut entities = vec![
+        settings(json!({"gravity_3d":[0.,-9.81,0.]})),
+        entity(
+            "anchor",
+            [0.; 3],
+            body3(json!({"motion":"fixed","shape":"ball","radius":0.1})),
+        ),
+    ];
+    for i in 0..3 * WAVE {
+        let x = i as f32 * 3.;
+        entities.push(entity(
+            &format!("b{i}"),
+            [x, -1., 0.],
+            with(
+                body3(json!({"shape":"ball","radius":0.1,"material":{"density":1000.0}})),
+                "engine.PhysicsJoint3D",
+                json!({"kind":"fixed","body_b":"anchor","anchor_a":[0.,0.,0.],
+                    "anchor_b":[x, -1., 0.]}),
+            ),
+        ));
+    }
+    let (_dir, mut runtime) = started(entities);
+    ticks(&mut runtime, 3);
+    let status = |runtime: &Runtime, i: usize| {
+        let e = entity_of(runtime, &format!("b{i}"));
+        physics::joint_status(runtime.app().world(), e, Dimension::Three).unwrap()
+    };
+    assert_eq!(status(&runtime, 0), JointStatus::Active);
+    // Three waves of 400 break on successive ticks: 1200 breaks, 1024 records.
+    for wave in 0..3 {
+        for i in wave * WAVE..(wave + 1) * WAVE {
+            let e = entity_of(&runtime, &format!("b{i}"));
+            physics::set_joint_break_limits(
+                runtime.app_mut().world_mut(),
+                e,
+                Dimension::Three,
+                Some(1.),
+                None,
+            )
+            .unwrap();
+        }
+        ticks(&mut runtime, 1);
+    }
+    ticks(&mut runtime, 2);
+    let (_, three) = physics::physics_worlds(runtime.app().world()).unwrap();
+    println!(
+        "{} broken records after 1200 breaks, {} live joints",
+        three.broken_joints().len(),
+        three.joint_count()
+    );
+    assert_eq!(three.broken_joints().len(), 1024);
+    assert_eq!(three.joint_count(), 0);
+    // The oldest 176 records (the first wave breaks first) were evicted: those joints read as
+    // not simulated, all others as broken, and nothing re-creates them.
+    let statuses: Vec<JointStatus> = (0..3 * WAVE).map(|i| status(&runtime, i)).collect();
+    let inactive: Vec<usize> = (0..3 * WAVE)
+        .filter(|i| statuses[*i] == JointStatus::Inactive)
+        .collect();
+    assert_eq!(inactive.len(), 176, "{inactive:?}");
+    assert!(inactive.iter().all(|i| *i < WAVE), "{inactive:?}");
+    assert!(
+        statuses
+            .iter()
+            .filter(|s| **s != JointStatus::Inactive)
+            .all(|s| matches!(s, JointStatus::Broken { .. }))
+    );
+    for _ in 0..4 {
+        ticks(&mut runtime, 1);
+        let repeated = runtime
+            .snapshot()
+            .events
+            .iter()
+            .filter(|e| e.name == "physics.joints.broken")
+            .count();
+        assert_eq!(repeated, 0, "evicted joints broke again");
+    }
+    let (_, three) = physics::physics_worlds(runtime.app().world()).unwrap();
+    assert_eq!(three.joint_count(), 0);
+}
+
+/// L4: more events in one tick than the engine event queue holds are dropped in a bounded,
+/// counted way, with one warning event; the tick itself succeeds.
+#[test]
+fn an_event_flood_drops_events_with_a_counter_and_one_warning() {
+    const COUNT: usize = 700;
+    let mut settings_entity = settings(json!({"gravity_3d":[0.,-9.81,0.]}));
+    settings_entity["components"]["EventBindings"] =
+        json!({"bindings":[{"event":"physics.events.dropped","handler":"record"}]});
+    let mut entities = vec![
+        settings_entity,
+        entity(
+            "anchor",
+            [0.; 3],
+            body3(json!({"motion":"fixed","shape":"ball","radius":0.1})),
+        ),
+    ];
+    for i in 0..COUNT {
+        let x = i as f32 * 3.;
+        entities.push(entity(
+            &format!("b{i}"),
+            [x, -1., 0.],
+            with(
+                body3(json!({"shape":"ball","radius":0.1,"material":{"density":1000.0}})),
+                "engine.PhysicsJoint3D",
+                json!({"kind":"fixed","body_b":"anchor","anchor_a":[0.,0.,0.],
+                    "anchor_b":[x, -1., 0.],"break_force":1.0}),
+            ),
+        ));
+    }
+    let dir = fixture(entities);
+    let mut runtime =
+        Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .insert_resource(Broken::default());
+    register_event_handler(runtime.app_mut(), "record", record).unwrap();
+    runtime.start().unwrap();
+    // Every joint breaks in the first step: two events each (the body and the anchor) is more
+    // than the 1024-event queue holds. This used to abort the step with "Event queue capacity
+    // exceeded".
+    ticks(&mut runtime, 1);
+    let status = physics::pressure_status(runtime.app().world()).unwrap();
+    println!("{status:?}");
+    assert!(
+        status.events_dropped >= 2 * COUNT as u64 - 1024,
+        "{status:?}"
+    );
+    assert!(status.events_dropped < 2 * COUNT as u64, "{status:?}");
+    let (_, three) = physics::physics_worlds(runtime.app().world()).unwrap();
+    assert_eq!(three.broken_joints().len(), COUNT);
+    // The warning is delivered once, one tick later, with the count.
+    ticks(&mut runtime, 2);
+    ticks(&mut runtime, 1);
+    let warnings: Vec<_> = runtime
+        .app()
+        .world()
+        .resource::<Broken>()
+        .0
+        .iter()
+        .filter(|p| p.get("dropped").is_some())
+        .cloned()
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["dropped"], status.events_dropped);
+    assert_eq!(warnings[0]["target"], "settings");
+    assert_eq!(
+        physics::pressure_status(runtime.app().world())
+            .unwrap()
+            .events_dropped,
+        status.events_dropped
+    );
+}

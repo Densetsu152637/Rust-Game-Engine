@@ -5,12 +5,16 @@ use super::super::{Core, Extension, World};
 use super::{Angles, Dof, JointDesc, angular_from, angular_norm, lever, relative};
 use super::{GenericJoint, ImpulseJoint, ImpulseJointHandle, MotorModel, Position};
 use crate::{AxisMode, BreakLimits, Error, JointBroken, JointOptions, MotorDesc, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Most break records kept for [`World::broken_joint`] queries and pending drains.
 const MAX_BROKEN: usize = 1024;
 /// Damping gain of the armed minimum-distance motor; large enough to act as a hard stop.
 const MIN_DISTANCE_GAIN: f32 = 1.0e5;
+/// Approach speed (m/s) below which the bodies are not considered to be closing in.
+const APPROACH_EPSILON: f32 = 1.0e-3;
+/// Stop impulse (N*s, along the joint axis) above which the armed stop is holding a load.
+const HOLD_IMPULSE: f32 = 1.0e-7;
 
 struct Record {
     handle: ImpulseJointHandle,
@@ -27,6 +31,8 @@ struct Record {
 struct Joints {
     joints: BTreeMap<u64, Record>,
     broken: BTreeMap<u64, JointBroken>,
+    /// Joint IDs in `broken`, oldest break first, so the history evicts the oldest record.
+    broken_order: VecDeque<u64>,
     pending: Vec<JointBroken>,
     dt: f32,
 }
@@ -106,17 +112,25 @@ impl Extension for Joints {
             } else {
                 0.
             };
-            // Arm a hard velocity-level push once the next step would reach the minimum.
-            let active = dist + approach * dt < min + 1e-3;
+            // The stop is one-sided. It arms when the bodies close in and the next step would
+            // reach the minimum, and stays armed while it pushes the bodies apart (a load
+            // presses them together). A stop that would only hold the bodies together (gravity
+            // or another force pulling them apart at rest at the minimum) is released.
+            let axis_index = Dof::LinX.index();
+            let holding = record.min_active && joint.data.motors[axis_index].impulse > HOLD_IMPULSE;
+            let closing = approach < -APPROACH_EPSILON && dist + approach * dt < min + 1e-3;
+            let active = holding || closing;
             if active != record.min_active {
                 record.min_active = active;
                 if let Some(joint) = core.rapier.impulse_joints.get_mut(record.handle, true) {
                     let axis = Dof::LinX.axis();
                     if active {
+                        joint.data.motors[axis_index] = Default::default();
                         joint.data.set_motor(axis, min, 0., 0., MIN_DISTANCE_GAIN);
                         joint.data.set_motor_max_force(axis, f32::MAX);
                     } else {
                         joint.data.motor_axes.remove(axis.into());
+                        joint.data.motors[axis_index] = Default::default();
                     }
                 }
             }
@@ -155,11 +169,17 @@ impl Extension for Joints {
             if let Some(record) = self.joints.remove(&event.id) {
                 core.rapier.remove_impulse_joint(record.handle);
             }
-            self.broken.insert(event.id, event);
+            if self.broken.insert(event.id, event).is_some() {
+                self.broken_order.retain(|id| *id != event.id);
+            }
+            self.broken_order.push_back(event.id);
             self.pending.push(event);
         }
         while self.broken.len() > MAX_BROKEN {
-            self.broken.pop_first();
+            let Some(oldest) = self.broken_order.pop_front() else {
+                break;
+            };
+            self.broken.remove(&oldest);
         }
         if self.pending.len() > MAX_BROKEN {
             let excess = self.pending.len() - MAX_BROKEN;
@@ -247,7 +267,9 @@ impl World {
         let mut joint = desc.build()?;
         joint.set_contacts_enabled(options.contacts_enabled);
         let handle = core.rapier.insert_impulse_joint(a, b, joint);
-        table.broken.remove(&id);
+        if table.broken.remove(&id).is_some() {
+            table.broken_order.retain(|broken| *broken != id);
+        }
         table.joints.insert(
             id,
             Record {
@@ -263,7 +285,9 @@ impl World {
     }
     pub fn remove_joint(&mut self, id: u64) -> bool {
         let (core, table) = self.extension_mut::<Joints>();
-        table.broken.remove(&id);
+        if table.broken.remove(&id).is_some() {
+            table.broken_order.retain(|broken| *broken != id);
+        }
         if let Some(record) = table.joints.remove(&id) {
             core.rapier.remove_impulse_joint(record.handle);
             true

@@ -15,11 +15,45 @@ pub(crate) struct Record<T> {
     pub(crate) config: T,
     pub(crate) pose: Pose,
 }
+/// Live state of a dynamic 2D body, kept across a rebuild so editing its configuration does
+/// not teleport or stop it. `authored` is the authored velocity pair the body last had.
+#[derive(Clone, Copy)]
+struct Live2 {
+    position: [f32; 2],
+    rotation: f32,
+    velocity: [f32; 2],
+    angular: f32,
+    authored: ([f32; 2], f32),
+}
+/// Live state of a dynamic 3D body, see [`Live2`].
+#[derive(Clone, Copy)]
+struct Live3 {
+    position: [f32; 3],
+    rotation: [f32; 4],
+    velocity: [f32; 3],
+    angular: [f32; 3],
+    authored: ([f32; 3], [f32; 3]),
+}
+/// The motion of a kinematic body over the fixed steps of one frame: from the pose it had when
+/// the frame started to the pose its `Transform` asks for.
+struct Drive2 {
+    start: ([f32; 2], f32),
+    target: ([f32; 2], f32),
+}
+struct Drive3 {
+    start: (Vec3, Quat),
+    target: (Vec3, Quat),
+}
 /// Synced bodies by entity. The engine-physics body ID is `Entity::to_bits()`.
 #[derive(Default)]
 pub(crate) struct Bodies {
     pub(crate) two: BTreeMap<Entity, Record<PhysicsBody2D>>,
     pub(crate) three: BTreeMap<Entity, Record<PhysicsBody3D>>,
+    drives2: BTreeMap<Entity, Drive2>,
+    drives3: BTreeMap<Entity, Drive3>,
+    /// States captured by `clear`, consumed by the sync that rebuilds the bodies.
+    carry2: BTreeMap<Entity, Live2>,
+    carry3: BTreeMap<Entity, Live3>,
 }
 fn planar(rotation: Quat) -> Result<f32> {
     if rotation.x.abs() > 0.0001 || rotation.y.abs() > 0.0001 {
@@ -184,18 +218,65 @@ fn rebuild<T: PartialEq>(old: Option<&Record<T>>, config: &T, fixed: bool, pose:
             || fixed && old.pose != pose
     })
 }
+/// Angle `to` reached from `from` along the shortest way round.
+fn lerp_angle(from: f32, to: f32, t: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let delta = (to - from + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
+    from + delta * t
+}
+fn live2(worlds: &Worlds, id: u64, config: &PhysicsBody2D) -> Option<Live2> {
+    let pose = worlds.two.pose(id)?;
+    let velocity = worlds.two.velocity(id)?;
+    Some(Live2 {
+        position: pose.position,
+        rotation: pose.rotation,
+        velocity: velocity.linear,
+        angular: velocity.angular,
+        authored: (config.velocity, config.angular_velocity),
+    })
+}
+fn live3(worlds: &Worlds, id: u64, config: &PhysicsBody3D) -> Option<Live3> {
+    let pose = worlds.three.pose(id)?;
+    let velocity = worlds.three.velocity(id)?;
+    Some(Live3 {
+        position: pose.position,
+        rotation: pose.rotation,
+        velocity: velocity.linear,
+        angular: velocity.angular,
+        authored: (config.velocity, config.angular_velocity),
+    })
+}
+/// Notes that `entity` has no body because the world is full (once per episode).
+fn starve(worlds: &mut Worlds, entity: Entity) {
+    if worlds.starved.insert(entity) {
+        worlds.starved_new += 1;
+    }
+}
 impl Bodies {
     pub(crate) fn is_empty(&self) -> bool {
         self.two.is_empty() && self.three.is_empty()
     }
-    /// Removes every body so the next sync rebuilds them from authored data.
+    /// Removes every body so the next sync rebuilds them from authored data. Dynamic bodies
+    /// come back at the pose and velocity they have now.
     pub(crate) fn clear(&mut self, worlds: &mut Worlds) {
-        for e in std::mem::take(&mut self.two).into_keys() {
+        for (e, record) in std::mem::take(&mut self.two) {
+            if record.config.motion == Motion::Dynamic
+                && let Some(live) = live2(worlds, e.to_bits(), &record.config)
+            {
+                self.carry2.insert(e, live);
+            }
             worlds.two.remove(e.to_bits());
         }
-        for e in std::mem::take(&mut self.three).into_keys() {
+        for (e, record) in std::mem::take(&mut self.three) {
+            if record.config.motion == Motion::Dynamic
+                && let Some(live) = live3(worlds, e.to_bits(), &record.config)
+            {
+                self.carry3.insert(e, live);
+            }
             worlds.three.remove(e.to_bits());
         }
+        self.drives2.clear();
+        self.drives3.clear();
     }
     pub(crate) fn sync(
         &mut self,
@@ -212,6 +293,7 @@ impl Bodies {
         for e in removed {
             worlds.two.remove(e.to_bits());
             self.two.remove(&e);
+            self.drives2.remove(&e);
         }
         let removed: Vec<_> = self
             .three
@@ -222,7 +304,17 @@ impl Bodies {
         for e in removed {
             worlds.three.remove(e.to_bits());
             self.three.remove(&e);
+            self.drives3.remove(&e);
         }
+        // Starved entities that lost their component, or whose ragdoll went away, are no
+        // longer waiting for room.
+        worlds.starved.retain(|e| {
+            world.get::<PhysicsBody2D>(*e).is_some()
+                || world.get::<PhysicsBody3D>(*e).is_some()
+                || world.get::<super::Ragdoll>(*e).is_some()
+                || world.get::<super::PhysicsJoint2D>(*e).is_some()
+                || world.get::<super::PhysicsJoint3D>(*e).is_some()
+        });
         for entity in world.iter_entities() {
             let e = entity.id();
             if let Some(config) = entity.get::<PhysicsBody2D>() {
@@ -232,6 +324,8 @@ impl Bodies {
                 self.sync3(worlds, settings, world, e, config)?;
             }
         }
+        self.carry2.clear();
+        self.carry3.clear();
         Ok(())
     }
     fn sync2(
@@ -246,19 +340,55 @@ impl Bodies {
         let pose = world_pose(world, e)?;
         let (scale, rotation, position) = pose;
         let angle = planar(rotation)?;
-        if rebuild(
-            self.two.get(&e),
-            config,
-            config.motion == Motion::Fixed,
-            pose,
-        ) {
+        let old = self.two.get(&e);
+        if rebuild(old, config, config.motion == Motion::Fixed, pose) {
+            // A dynamic body that already exists keeps its simulated pose and velocity: the
+            // `Transform` may hold an interpolated pose, and the authored velocity is only
+            // the starting velocity (unless that field itself was edited).
+            let live = self
+                .carry2
+                .remove(&e)
+                .or_else(|| {
+                    old.filter(|o| o.config.motion == Motion::Dynamic)
+                        .and_then(|o| live2(worlds, id, &o.config))
+                })
+                .filter(|_| config.motion == Motion::Dynamic);
             worlds.two.remove(id);
+            self.two.remove(&e);
+            self.drives2.remove(&e);
+            if worlds.two.len() >= worlds.two.capacity() {
+                starve(worlds, e);
+                return Ok(());
+            }
+            let carried = live.is_some();
+            let (at, rotation_2d, velocity, angular) = match live {
+                Some(l) => (
+                    l.position,
+                    l.rotation,
+                    if l.authored.0 == config.velocity {
+                        l.velocity
+                    } else {
+                        config.velocity
+                    },
+                    if l.authored.1 == config.angular_velocity {
+                        l.angular
+                    } else {
+                        config.angular_velocity
+                    },
+                ),
+                None => (
+                    [position.x, position.y],
+                    angle,
+                    config.velocity,
+                    config.angular_velocity,
+                ),
+            };
             let desc = dim2::BodyDesc {
                 kind: config.motion.into(),
-                position: [position.x, position.y],
-                rotation: angle,
-                velocity: config.velocity,
-                angular_velocity: config.angular_velocity,
+                position: at,
+                rotation: rotation_2d,
+                velocity,
+                angular_velocity: angular,
                 ccd: config.ccd,
             };
             let shape = shape2(config, scale)?;
@@ -267,13 +397,28 @@ impl Bodies {
                 .two
                 .insert(id, desc, shape, material)
                 .map_err(mapped)?;
+            worlds.starved.remove(&e);
+            let pose = if carried {
+                (
+                    scale,
+                    Quat::from_rotation_z(rotation_2d),
+                    Vec3::new(at[0], at[1], position.z),
+                )
+            } else {
+                pose
+            };
             let config = config.clone();
             self.two.insert(e, Record { config, pose });
-        } else if config.motion == Motion::Kinematic {
-            worlds
-                .two
-                .set_kinematic_target(id, [position.x, position.y], angle)
-                .map_err(mapped)?;
+        } else if config.motion == Motion::Kinematic
+            && let Some(now) = worlds.two.pose(id)
+        {
+            self.drives2.insert(
+                e,
+                Drive2 {
+                    start: (now.position, now.rotation),
+                    target: ([position.x, position.y], angle),
+                },
+            );
         }
         Ok(())
     }
@@ -288,19 +433,53 @@ impl Bodies {
         let id = e.to_bits();
         let pose = world_pose(world, e)?;
         let (scale, rotation, position) = pose;
-        if rebuild(
-            self.three.get(&e),
-            config,
-            config.motion == Motion::Fixed,
-            pose,
-        ) {
+        let old = self.three.get(&e);
+        if rebuild(old, config, config.motion == Motion::Fixed, pose) {
+            // See `sync2`: an existing dynamic body keeps its simulated state.
+            let live = self
+                .carry3
+                .remove(&e)
+                .or_else(|| {
+                    old.filter(|o| o.config.motion == Motion::Dynamic)
+                        .and_then(|o| live3(worlds, id, &o.config))
+                })
+                .filter(|_| config.motion == Motion::Dynamic);
             worlds.three.remove(id);
+            self.three.remove(&e);
+            self.drives3.remove(&e);
+            if worlds.three.len() >= worlds.three.capacity() {
+                starve(worlds, e);
+                return Ok(());
+            }
+            let carried = live.is_some();
+            let (at, turn, velocity, angular) = match live {
+                Some(l) => (
+                    l.position,
+                    l.rotation,
+                    if l.authored.0 == config.velocity {
+                        l.velocity
+                    } else {
+                        config.velocity
+                    },
+                    if l.authored.1 == config.angular_velocity {
+                        l.angular
+                    } else {
+                        config.angular_velocity
+                    },
+                ),
+                None => (
+                    position.to_array(),
+                    rotation.to_array(),
+                    config.velocity,
+                    config.angular_velocity,
+                ),
+            };
             let desc = dim3::BodyDesc {
                 kind: config.motion.into(),
-                position: position.to_array(),
-                rotation: rotation.to_array(),
-                velocity: config.velocity,
-                angular_velocity: config.angular_velocity,
+                position: at,
+                rotation: turn,
+                velocity,
+                angular_velocity: angular,
                 ccd: config.ccd,
             };
             let shape = shape3(config, scale)?;
@@ -309,15 +488,64 @@ impl Bodies {
                 .three
                 .insert(id, desc, shape, material)
                 .map_err(mapped)?;
+            worlds.starved.remove(&e);
+            let pose = if carried {
+                (scale, Quat::from_array(turn), Vec3::from(at))
+            } else {
+                pose
+            };
             let config = config.clone();
             self.three.insert(e, Record { config, pose });
-        } else if config.motion == Motion::Kinematic {
-            worlds
-                .three
-                .set_kinematic_target(id, position.to_array(), rotation.to_array())
-                .map_err(mapped)?;
+        } else if config.motion == Motion::Kinematic
+            && let Some(now) = worlds.three.pose(id)
+        {
+            self.drives3.insert(
+                e,
+                Drive3 {
+                    start: (Vec3::from(now.position), Quat::from_array(now.rotation)),
+                    target: (position, rotation),
+                },
+            );
         }
         Ok(())
+    }
+    /// Moves every kinematic body toward its frame target: after step `index` of `steps` it
+    /// has covered `index / steps` of the way, so a body driven once per frame moves at the
+    /// same speed in every step of the frame instead of jumping in the first one.
+    pub(crate) fn drive_kinematics(&self, worlds: &mut Worlds, index: usize, steps: usize) {
+        let t = index as f32 / steps.max(1) as f32;
+        let last = index >= steps;
+        for (e, drive) in &self.drives2 {
+            let (position, angle) = if last {
+                drive.target
+            } else {
+                (
+                    [
+                        drive.start.0[0] + (drive.target.0[0] - drive.start.0[0]) * t,
+                        drive.start.0[1] + (drive.target.0[1] - drive.start.0[1]) * t,
+                    ],
+                    lerp_angle(drive.start.1, drive.target.1, t),
+                )
+            };
+            let _ = worlds
+                .two
+                .set_kinematic_target(e.to_bits(), position, angle);
+        }
+        for (e, drive) in &self.drives3 {
+            let (position, rotation) = if last {
+                drive.target
+            } else {
+                (
+                    drive.start.0.lerp(drive.target.0, t),
+                    drive.start.1.slerp(drive.target.1, t),
+                )
+            };
+            let _ = worlds.three.set_kinematic_target(
+                e.to_bits(),
+                position.to_array(),
+                rotation.to_array(),
+            );
+        }
     }
     /// Writes dynamic poses back, parents before children.
     pub(crate) fn write_back(&self, worlds: &Worlds, world: &mut World) -> Result<()> {

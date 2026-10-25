@@ -490,3 +490,58 @@ fn removing_the_component_returns_the_chassis_to_plain_physics() {
     ticks(&mut runtime, 120);
     assert!(position(&runtime, "car").y < 0.4);
 }
+
+// ---- Critic fixes: wheel visuals on frames without a physics step ---------------------------
+
+/// H2/D1: wheel visuals that are not children of the chassis follow the chassis pose on every
+/// frame, including frames that run no physics step (144 Hz frames, 60 Hz steps).
+#[test]
+fn wheel_visuals_stay_with_an_interpolated_chassis_on_frames_without_a_step() {
+    let mut wheels = Vec::new();
+    let mut visuals = Vec::new();
+    for (i, (x, z)) in [(-0.8, 1.3), (0.8, 1.3), (-0.8, -1.3), (0.8, -1.3)]
+        .into_iter()
+        .enumerate()
+    {
+        let id = format!("wheel_{i}");
+        wheels.push(json!({"mount":[x, 0., z],"steer":i < 2,"drive":i >= 2,"entity":id}));
+        visuals.push(entity(&id, [0., 0., 0.], json!({})));
+    }
+    let mut entities = vec![
+        settings(json!({"fixed_timestep":H,"interpolation":"interpolate"})),
+        floor(),
+        car(json!({"wheels":wheels,"throttle":1.0})),
+    ];
+    entities.extend(visuals);
+    let (_dir, mut runtime) = started(entities);
+    let car = chassis(&runtime);
+    let mut idle = 0;
+    let mut worst = 0f32;
+    for frame in 0..240 {
+        runtime.tick(1. / 144., InputSnapshot::default()).unwrap();
+        if frame < 90 {
+            continue;
+        }
+        idle += usize::from(physics::step_status(runtime.app().world()).unwrap().steps == 0);
+        let world = runtime.app().world();
+        let chassis_matrix =
+            glam::Mat4::from_cols_array_2d(&world_transform(world, car).unwrap().matrix);
+        let (_, chassis_rotation, chassis_position) =
+            chassis_matrix.to_scale_rotation_translation();
+        for (i, wheel) in physics::vehicle_wheels(world, car)
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let expected = chassis_position + chassis_rotation * wheel.local_position;
+            let at = position(&runtime, &format!("wheel_{i}"));
+            worst = worst.max((at - expected).length());
+        }
+    }
+    let speed = physics::vehicle_state(runtime.app().world(), car)
+        .unwrap()
+        .speed;
+    println!("{idle} idle frames at {speed:.1} m/s; worst wheel visual offset {worst:.2e} m");
+    assert!(idle > 40 && speed > 3., "{idle} idle frames at {speed} m/s");
+    assert!(worst < 1e-4, "wheel visuals lag the chassis by {worst} m");
+}

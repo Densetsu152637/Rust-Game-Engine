@@ -207,6 +207,14 @@ axle). A wheel mesh whose rolling axis is the chassis X axis can be used directl
 computed from the chassis `Transform`, so it also holds with interpolated stepping. The same
 data is readable without visuals through `vehicle_wheel_pose` / `WheelReadout`.
 
+The wheel entities are rewritten on **every** frame (the per-frame `after_frame` hook), from the
+chassis `Transform` as it is at the end of the frame. With `fixed_timestep` below the frame time
+and `interpolation` on, the chassis `Transform` is interpolated and moves on frames that ran no
+physics step; a wheel visual that is not a child of the chassis used to lag by up to one step
+there. Measured at 144 Hz frames, 60 Hz steps and 5.8 m/s: 87 of 150 frames ran no step; the
+visuals were up to 0.0778 m behind the chassis before and are within 5.4e-7 m now. A chassis
+that fractures (`Fractured`) stops being a vehicle and its wheel visuals stop being written.
+
 ## Native API
 
 engine-physics (`World3D`): `insert_vehicle`, `remove_vehicle`, `is_vehicle`, `vehicle_desc`,
@@ -241,9 +249,9 @@ From `crates/engine-physics/tests/vehicles.rs` (1500 kg car, 60 Hz, dev profile)
 | Check | Result |
 | --- | --- |
 | Rest compression `m g / (k n)` | 0.105 m predicted; rest height within 5 mm and drift under 1e-2 m over 5 s (ray and sphere casts) |
-| Full throttle | monotonic speed; upshifts 1-2 at 5785 rpm and 2-3 at 5796 rpm (configured 5800); top speed 46.6 m/s vs 47.8 m/s analytic (drag/gearing balance), -2.5% |
-| Braking from 19.8 m/s | 21.3 m of 18.2 m from `v^2 / (2 mu g)` (locked wheels slide on the curve tail, +17%) |
-| Steering 0.2 rad | turn radius 12.97 m vs 12.87 m from `sqrt((L / tan(delta))^2 + (L/2)^2)` |
+| Full throttle | monotonic speed; upshifts 1-2 at 5785 rpm and 2-3 at 5796 rpm (configured 5800); top speed 46.6 m/s vs 47.8 m/s analytic (drag/gearing balance), -2.50% (test bound 5%) |
+| Braking from 19.8 m/s | 21.3 m of 18.2 m from `v^2 / (2 mu g)` (locked wheels slide on the curve tail, +17.25%); the test accepts 0.97..1.2 times the estimate (it can never beat the friction limit) |
+| Steering 0.2 rad | turn radius 12.97 m vs 12.87 m from `sqrt((L / tan(delta))^2 + (L/2)^2)`, +0.60% (test bound 2%) |
 | Split mu, 4 s first gear | open: wheel on ice 120.6 rad/s vs 10.5 rad/s on grip, 7.7 m; locked: 109.5 rad/s on both, 25.7 m |
 | Drop from 3 m | no NaN, peak suspension force 24.2 kN under the 60 kN limit |
 

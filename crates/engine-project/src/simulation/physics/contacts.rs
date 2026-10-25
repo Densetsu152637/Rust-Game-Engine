@@ -1,6 +1,11 @@
 //! Reference feature: contact and sensor transitions become `physics.contact.start` and
 //! `physics.contact.stop` events, delivered to both entities after each substep.
-use super::{Context, Feature, emit};
+//!
+//! Fragments of one fracture touch each other from the moment they spawn, so contacts between
+//! sibling fragments (the same owner) are not reported: a 256-fragment fracture would
+//! otherwise queue thousands of events per step for pairs nobody listens to. Contacts of a
+//! fragment with anything else, including fragments of another fracture, are reported.
+use super::{Context, DebrisFragment, Feature, emit};
 use crate::Result;
 use bevy_ecs::prelude::*;
 
@@ -22,6 +27,13 @@ impl Feature for Contacts {
                 ) else {
                     continue;
                 };
+                if let (Some(a), Some(b)) = (
+                    world.get::<DebrisFragment>(first),
+                    world.get::<DebrisFragment>(second),
+                ) && a.owner == b.owner
+                {
+                    continue;
+                }
                 for (target, other) in [(first, second), (second, first)] {
                     if world.get_entity(target).is_err() {
                         continue;

@@ -16,7 +16,7 @@ use engine_physics::{
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_AXES: usize = 6;
 
@@ -685,6 +685,8 @@ trait Sim {
     fn set_break(&mut self, id: u64, limits: BreakLimits) -> Result<()>;
     fn delete(&mut self, id: u64) -> bool;
     fn live(&self, id: u64) -> bool;
+    /// No room for another joint.
+    fn full(&self) -> bool;
     fn broken(&self, id: u64) -> Option<JointBroken>;
     fn drain(&mut self) -> Vec<JointBroken>;
     fn has_body(bodies: &super::Bodies, entity: Entity) -> bool;
@@ -731,6 +733,9 @@ macro_rules! sim {
             fn live(&self, id: u64) -> bool {
                 self.has_joint(id)
             }
+            fn full(&self) -> bool {
+                self.joint_count() >= self.capacity().saturating_mul(4)
+            }
             fn broken(&self, id: u64) -> Option<JointBroken> {
                 self.broken_joint(id)
             }
@@ -770,6 +775,10 @@ struct Live<C> {
     config: C,
     first: Entity,
     second: Entity,
+    /// The joint broke. engine-physics keeps only the last 1024 break records, so the project
+    /// remembers the break itself: a broken joint stays broken until its component is edited,
+    /// even after its record was evicted.
+    broken: bool,
 }
 fn structure<C: Config>(config: &C) -> C {
     let mut copy = config.clone();
@@ -777,11 +786,14 @@ fn structure<C: Config>(config: &C) -> C {
     copy
 }
 
-/// Mirrors every authored joint of one dimension into its engine-physics world.
+/// Mirrors every authored joint of one dimension into its engine-physics world. A joint whose
+/// endpoint has no body (a body that is not simulated, or that fractured) is removed; a joint
+/// that does not fit in the joint table is "starved" until room appears.
 fn sync_dimension<S: Sim>(
     sim: &mut S,
     bodies: &super::Bodies,
     live: &mut BTreeMap<Entity, Live<S::Cfg>>,
+    starved: (&mut BTreeSet<Entity>, &mut usize),
     world: &World,
 ) -> Result<()> {
     let gone: Vec<Entity> = live
@@ -822,9 +834,10 @@ fn sync_dimension<S: Sim>(
                     current.config = config.clone();
                     continue;
                 }
-                if sim.broken(id).is_some() {
+                if current.broken || sim.broken(id).is_some() {
                     // Stays broken until the component is edited: structure or thresholds.
                     if current.config.break_limits() == config.break_limits() {
+                        current.broken = true;
                         current.config = config.clone();
                         continue;
                     }
@@ -835,6 +848,14 @@ fn sync_dimension<S: Sim>(
                 sim.delete(id);
             }
         }
+        if sim.full() {
+            live.remove(&entity);
+            if starved.0.insert(entity) {
+                *starved.1 += 1;
+            }
+            continue;
+        }
+        starved.0.remove(&entity);
         sim.create(id, first.to_bits(), second.to_bits(), config)?;
         live.insert(
             entity,
@@ -842,6 +863,7 @@ fn sync_dimension<S: Sim>(
                 config: config.clone(),
                 first,
                 second,
+                broken: false,
             },
         );
     }
@@ -866,7 +888,9 @@ fn check_scene<C: Config>(world: &World, has_body: impl Fn(&World, Entity) -> bo
             return Err(bad("must connect two different bodies"));
         }
         for body in named.into_iter().flatten() {
-            if !has_body(world, body) {
+            // A fractured body lost its engine.PhysicsBody on purpose: the joint is simply
+            // inactive (the sync removes it) and the scene stays valid.
+            if !has_body(world, body) && world.get::<super::Fractured>(body).is_none() {
                 return Err(bad(&format!(
                     "body entity has no engine.PhysicsBody{}D of the joint's dimension",
                     if C::DIMENSION == Dimension::Two { 2 } else { 3 }
@@ -910,8 +934,21 @@ impl Feature for Joints {
         check_scene::<PhysicsJoint3D>(world, |w, e| w.get::<super::PhysicsBody3D>(e).is_some())
     }
     fn sync(&mut self, cx: Context<'_>, world: &World) -> Result<()> {
-        sync_dimension(&mut cx.worlds.two, cx.bodies, &mut self.two, world)?;
-        sync_dimension(&mut cx.worlds.three, cx.bodies, &mut self.three, world)
+        let worlds = cx.worlds;
+        sync_dimension(
+            &mut worlds.two,
+            cx.bodies,
+            &mut self.two,
+            (&mut worlds.starved, &mut worlds.starved_new),
+            world,
+        )?;
+        sync_dimension(
+            &mut worlds.three,
+            cx.bodies,
+            &mut self.three,
+            (&mut worlds.starved, &mut worlds.starved_new),
+            world,
+        )
     }
     fn after_substep(&mut self, cx: Context<'_>, world: &mut World, _dt: f32) -> Result<()> {
         let events = [(2, cx.worlds.two.drain()), (3, cx.worlds.three.drain())];
@@ -925,6 +962,18 @@ impl Feature for Joints {
                 } else {
                     self.three.get(&joint).map(|l| (l.first, l.second))
                 };
+                match dimension {
+                    2 => {
+                        if let Some(live) = self.two.get_mut(&joint) {
+                            live.broken = true;
+                        }
+                    }
+                    _ => {
+                        if let Some(live) = self.three.get_mut(&joint) {
+                            live.broken = true;
+                        }
+                    }
+                }
                 let (first, second) = ends.unzip();
                 let payload = json!({
                     "dimension": dimension,

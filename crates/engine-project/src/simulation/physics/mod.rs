@@ -19,6 +19,7 @@ use super::{Services, SimulationConfig, invalid, mapped};
 use crate::Result;
 use bevy_ecs::prelude::*;
 use engine_physics::{World2D, World3D};
+use std::collections::BTreeSet;
 mod api;
 mod bodies;
 mod character;
@@ -28,6 +29,7 @@ mod deformables;
 mod descriptors;
 mod destruction;
 mod joints;
+mod pressure;
 mod queries;
 mod ragdoll;
 mod request;
@@ -59,6 +61,7 @@ pub use joints::{
     PhysicsJoint2D, PhysicsJoint3D, add_joint_2d, add_joint_3d, broken_joints, clear_joint_motor,
     joint_state, joint_status, remove_joint, set_joint_break_limits, set_joint_motor,
 };
+pub use pressure::{PressureStatus, pressure_status};
 pub use queries::*;
 pub use ragdoll::{
     BoneJoint, BoneReadout, BoneShape, HitReaction, MAX_BONES, Ragdoll, RagdollBone, RagdollMode,
@@ -100,6 +103,11 @@ fn features() -> Vec<Box<dyn Feature>> {
 pub(crate) struct Worlds {
     pub(crate) two: World2D,
     pub(crate) three: World3D,
+    /// Entities that could not get engine-physics bodies because a world was full; they are
+    /// retried every sync (see `pressure`).
+    pub(crate) starved: BTreeSet<Entity>,
+    /// Entities added to `starved` since the capacity warning last went out.
+    pub(crate) starved_new: usize,
 }
 /// What a feature hook may read and mutate.
 pub(crate) struct Context<'a> {
@@ -110,6 +118,22 @@ pub(crate) struct Context<'a> {
     /// Resolved `engine.PhysicsSettings` (layers, materials, gravity, iterations).
     #[allow(dead_code)] // Seam for feature leaves; the contacts reference feature needs none.
     pub(crate) settings: &'a Resolved,
+    /// Seconds of the current frame (the animation time since the last sync); 0 when the
+    /// scene is only being prepared.
+    pub(crate) frame_dt: f32,
+    /// In `before_substep`: the fraction of the frame's steps done once this one has run
+    /// (`1/n`, `2/n`, ... `1`). Elsewhere 1.
+    pub(crate) progress: f32,
+}
+/// What a frame did, passed to [`Feature::after_frame`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Frame {
+    /// Blend factor between the previous and the latest step: the accumulator fraction when
+    /// `interpolation` is on, 1 otherwise (the latest step).
+    pub(crate) alpha: f32,
+    /// Steps the frame ran (0 on frames shorter than the fixed step).
+    #[allow(dead_code)] // Seam for feature leaves.
+    pub(crate) steps: usize,
 }
 /// A physics feature plugged into sync and step. See the module docs for hook order.
 pub(crate) trait Feature: Send + Sync {
@@ -140,22 +164,17 @@ pub(crate) trait Feature: Send + Sync {
     fn after_substep(&mut self, _cx: Context<'_>, _world: &mut World, _dt: f32) -> Result<()> {
         Ok(())
     }
+    /// After dynamic poses were written back, on frames that ran at least one step.
     fn after_step(&mut self, _cx: Context<'_>, _world: &mut World) -> Result<()> {
         Ok(())
     }
+    /// Every frame after the step loop and `after_step`, including frames without a step.
+    /// Runs after interpolated body poses were written, so it may compose with them.
+    fn after_frame(&mut self, _cx: Context<'_>, _world: &mut World, _frame: Frame) -> Result<()> {
+        Ok(())
+    }
 }
-/// Emits `physics.<feature>.<event>` to `target`'s event bindings.
-pub(crate) fn emit(
-    world: &mut World,
-    feature: &dyn Feature,
-    event: &str,
-    target: Entity,
-    source: Option<Entity>,
-    payload: serde_json::Value,
-) -> Result<()> {
-    let name = format!("physics.{}.{event}", feature.name());
-    super::emit(world, target, source, &name, payload)
-}
+pub(crate) use pressure::{emit, emit_named};
 
 pub(crate) fn component_descriptors() -> Vec<crate::ComponentDescriptor> {
     let mut result = descriptors::component_descriptors();
@@ -208,14 +227,18 @@ pub(super) struct Physics {
     settings: Resolved,
     features: Vec<Box<dyn Feature>>,
     stepper: stepping::Stepper,
+    /// Delta of the last step, the fallback frame time when the app clock is not running.
+    last_dt: f32,
 }
 /// Reborrows the service parts as a hook [`Context`].
 macro_rules! context {
-    ($worlds:expr, $bodies:expr, $settings:expr) => {
+    ($worlds:expr, $bodies:expr, $settings:expr, $dt:expr, $progress:expr) => {
         Context {
             worlds: &mut *$worlds,
             bodies: &*$bodies,
             settings: &*$settings,
+            frame_dt: $dt,
+            progress: $progress,
         }
     };
 }
@@ -225,13 +248,25 @@ impl Physics {
             worlds: Worlds {
                 two: World2D::new(config.gravity_2d, config.body_capacity).map_err(mapped)?,
                 three: World3D::new(config.gravity_3d, config.body_capacity).map_err(mapped)?,
+                starved: BTreeSet::new(),
+                starved_new: 0,
             },
             bodies: Bodies::default(),
             settings: Resolved::new(&config, None)?,
             features: features(),
             stepper: stepping::Stepper::default(),
+            last_dt: 0.,
             config,
         })
+    }
+    /// Seconds of the frame being simulated: the app clock's delta, which the animation
+    /// service also advanced by, or the previous step's delta outside a running app.
+    fn frame_dt(&self, world: &World) -> f32 {
+        world
+            .get_resource::<engine_core::Time>()
+            .map(|time| time.dt)
+            .filter(|dt| dt.is_finite() && *dt > 0.)
+            .unwrap_or(self.last_dt)
     }
     pub fn sync(&mut self, world: &World) -> Result<()> {
         let resolved = Resolved::new(&self.config, settings::find(world)?)?;
@@ -257,12 +292,14 @@ impl Physics {
             if resolved.layers != self.settings.layers
                 || resolved.materials != self.settings.materials
             {
-                // Bodies are rebuilt from their authored data with the new groups/materials.
+                // Bodies are rebuilt from their authored data with the new groups/materials,
+                // at their current pose and velocity. Ragdolls notice the change themselves.
                 self.bodies.clear(worlds);
             }
         }
         self.settings = resolved;
         self.bodies.sync(&mut self.worlds, &self.settings, world)?;
+        let frame_dt = self.frame_dt(world);
         let Self {
             worlds,
             bodies,
@@ -271,7 +308,7 @@ impl Physics {
             ..
         } = self;
         for feature in features {
-            feature.sync(context!(worlds, bodies, settings), world)?;
+            feature.sync(context!(worlds, bodies, settings, frame_dt, 1.), world)?;
         }
         Ok(())
     }
@@ -284,6 +321,7 @@ impl Physics {
         {
             return Ok(());
         }
+        self.report_pressure(world)?;
         if let Some(step) = self.settings.fixed_timestep {
             return self.step_fixed(world, dt, step);
         }
@@ -291,6 +329,7 @@ impl Physics {
         if !dt.is_finite() || dt <= 0. || dt > 1. {
             return Err(invalid("Physics frame delta must be in (0,1] seconds"));
         }
+        self.last_dt = dt;
         let substeps = (dt / 0.016667).ceil() as usize;
         let h = dt / substeps as f32;
         let Self {
@@ -301,13 +340,28 @@ impl Physics {
             stepper,
             ..
         } = self;
-        for _ in 0..substeps {
-            substep(worlds, bodies, settings, features, world, h)?;
+        for k in 1..=substeps {
+            substep(
+                worlds,
+                bodies,
+                settings,
+                features,
+                world,
+                h,
+                (dt, k, substeps),
+            )?;
         }
         stepper.variable(substeps);
         bodies.write_back(worlds, world)?;
         for feature in features.iter_mut() {
-            feature.after_step(context!(worlds, bodies, settings), world)?;
+            feature.after_step(context!(worlds, bodies, settings, dt, 1.), world)?;
+        }
+        let frame = Frame {
+            alpha: 1.,
+            steps: substeps,
+        };
+        for feature in features.iter_mut() {
+            feature.after_frame(context!(worlds, bodies, settings, dt, 1.), world, frame)?;
         }
         Ok(())
     }
@@ -316,6 +370,7 @@ impl Physics {
         if !dt.is_finite() || dt <= 0. || dt > stepping::MAX_FIXED_FRAME {
             return Err(invalid("Physics frame delta must be in (0,10] seconds"));
         }
+        self.last_dt = dt;
         let Self {
             worlds,
             bodies,
@@ -326,11 +381,19 @@ impl Physics {
         } = self;
         let interpolate = settings.interpolation == Interpolation::Interpolate;
         let plan = stepper.plan(dt, step, settings.max_substeps);
-        for _ in 0..plan.steps {
+        for k in 1..=plan.steps {
             if interpolate {
                 stepper.capture(bodies, worlds);
             }
-            substep(worlds, bodies, settings, features, world, step)?;
+            substep(
+                worlds,
+                bodies,
+                settings,
+                features,
+                world,
+                step,
+                (dt, k, plan.steps),
+            )?;
         }
         if interpolate {
             stepper.write_interpolated(bodies, worlds, world)?;
@@ -339,13 +402,41 @@ impl Physics {
         }
         if plan.steps > 0 {
             for feature in features.iter_mut() {
-                feature.after_step(context!(worlds, bodies, settings), world)?;
+                feature.after_step(context!(worlds, bodies, settings, dt, 1.), world)?;
             }
+        }
+        let frame = Frame {
+            alpha: if interpolate {
+                stepper.status.alpha
+            } else {
+                1.
+            },
+            steps: plan.steps,
+        };
+        for feature in features.iter_mut() {
+            feature.after_frame(context!(worlds, bodies, settings, dt, 1.), world, frame)?;
         }
         stepper.report(world, &plan, settings.max_substeps)
     }
+    /// Delivers the warnings about events dropped and bodies starved since the last step.
+    fn report_pressure(&mut self, world: &mut World) -> Result<()> {
+        pressure::report_events(world)?;
+        if self.worlds.starved_new > 0
+            && pressure::report_capacity(
+                world,
+                self.config.body_capacity,
+                self.worlds.starved.len(),
+                self.worlds.starved_new,
+            )?
+        {
+            self.worlds.starved_new = 0;
+        }
+        Ok(())
+    }
 }
-/// One engine-physics step of `h` seconds with the feature hooks around it.
+/// One engine-physics step of `h` seconds with the feature hooks around it. `position` is
+/// `(frame delta, 1-based index of this step, steps in the frame)`; kinematic targets reach
+/// `index / steps` of their frame motion in this step.
 fn substep(
     worlds: &mut Worlds,
     bodies: &Bodies,
@@ -353,14 +444,18 @@ fn substep(
     features: &mut [Box<dyn Feature>],
     world: &mut World,
     h: f32,
+    position: (f32, usize, usize),
 ) -> Result<()> {
+    let (dt, index, steps) = position;
+    let progress = index as f32 / steps as f32;
+    bodies.drive_kinematics(worlds, index, steps);
     for feature in features.iter_mut() {
-        feature.before_substep(context!(worlds, bodies, settings), h)?;
+        feature.before_substep(context!(worlds, bodies, settings, dt, progress), h)?;
     }
     worlds.two.step(h).map_err(mapped)?;
     worlds.three.step(h).map_err(mapped)?;
     for feature in features.iter_mut() {
-        feature.after_substep(context!(worlds, bodies, settings), world, h)?;
+        feature.after_substep(context!(worlds, bodies, settings, dt, 1.), world, h)?;
     }
     Ok(())
 }
@@ -379,7 +474,7 @@ fn emit_step_clamped(world: &mut World, status: &StepStatus, max_substeps: usize
         "fixed_timestep": status.fixed_timestep,
         "clamped_frames": status.clamped_frames,
     });
-    super::emit(world, target, None, "physics.step.clamped", payload)
+    emit_named(world, "physics.step.clamped", target, None, payload)
 }
 /// The installed physics service, for native API functions.
 fn service(world: &World) -> Result<&Physics> {

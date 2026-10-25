@@ -111,9 +111,32 @@ settings entity while simulation services are disabled, fail scene start.
 - `debug`, `debug_aabbs`, `debug_max_items`: debug-view data toggle and caps.
 
 Changing gravity or iterations applies on the next tick and wakes sleeping bodies.
-Changing layers or materials rebuilds every body from its authored data (current pose,
-authored initial velocity). The component is MCP-editable through `component_set` like
+Changing layers or materials rebuilds every body from its authored data at the pose and
+velocity it has now (see [Authored simulation](simulation.md)); ragdoll bone bodies are rebuilt
+in place too, with the new groups. The component is MCP-editable through `component_set` like
 other catalog components.
+
+### Pressure and capacity
+
+The engine event queue holds 1024 events and the body table `SimulationConfig::body_capacity`
+(default 16384 per dimension, shared by authored bodies, fragments and ragdoll bones). Hitting
+either limit never fails a step; it degrades in a bounded, counted way and says so:
+
+- **Events.** `physics::emit` drops an event when the queue is full and counts it. The next step
+  delivers one `physics.events.dropped` event, `{dropped, total}`, to the entity carrying
+  `engine.PhysicsSettings` (broadcast when the scene has none). Example: 700 joints breaking in
+  one step queue 1400 events; 1024 are delivered, 376 are dropped and counted, and the step
+  succeeds (before: "Event queue capacity exceeded" aborted the step after the physics world had
+  stepped but before the poses were written back).
+- **Bodies.** A body, fragment or joint that does not fit is not inserted. Its entity is
+  *starved* and retried at every sync, so it simulates as soon as room appears (a ragdoll needs
+  room for all its bones at once and reports "physics body capacity exceeded" in its status).
+  The step after entities newly became starved delivers one `physics.capacity.exceeded`,
+  `{capacity, starved, new}`. Example: a capacity of 20 with 10 rocks and a 24-fragment fracture
+  leaves 14 fragments without a body, one warning, and ticks that keep succeeding; despawning
+  the rocks gives 10 of the 14 their bodies.
+- `physics::pressure_status(&World) -> PressureStatus { body_capacity, bodies_2d, bodies_3d,
+  starved_bodies, events_dropped }` reads the counters.
 
 ## Native API
 
@@ -200,9 +223,17 @@ dimension modules is deliberate.
    `validate(&World, &Resolved)` every prepare/step before sync; `sync(cx, &World)` after
    bodies were mirrored; `before_substep(cx, dt)` and `after_substep(cx, &mut World, dt)`
    around each engine-physics substep; `after_step(cx, &mut World)` after dynamic poses
-   were written to `Transform`s.
+   were written to `Transform`s on frames that ran a step; and `after_frame(cx, &mut World,
+   Frame { alpha, steps })` on **every** frame, including frames that ran no step, after the
+   interpolated body poses were written. Use `after_frame` for anything another writer
+   rewrites every frame (the animation service rewrites ragdoll bones) or that must follow an
+   interpolated body (wheel visuals, characters); `alpha` is the interpolation blend factor
+   (1 without interpolation). `Context` also carries `frame_dt` (the frame's delta, the
+   animation time since the last sync) and, in `before_substep`, `progress` (`k/n` after step
+   k of n, for spreading a per-frame target over the steps).
 5. Emit events with `physics::emit(world, self, "event", target, source, payload)`, which
-   names them `physics.<feature>.<event>`. The contacts feature (`physics/contacts.rs`)
+   names them `physics.<feature>.<event>` and drops them, counted, when the event queue is
+   full (see [Pressure and capacity](#pressure-and-capacity)). The contacts feature (`physics/contacts.rs`)
    is the reference and emits `physics.contact.start`/`stop`.
 6. Native API functions live in the feature module and are re-exported from
    `physics/mod.rs` with one `pub use foo::{...};` line; use the crate-internal

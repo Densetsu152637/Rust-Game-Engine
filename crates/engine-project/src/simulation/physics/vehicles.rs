@@ -9,7 +9,7 @@
 //! actions from the `ActionFrame` resource. Wheel poses are written to the optional per-wheel
 //! `entity` references after the step. See `docs/physics-vehicles.md`.
 use super::super::{invalid, mapped, world_pose, write_world_pose};
-use super::{Context, Feature, Resolved, Worlds, emit, service, service_mut};
+use super::{Context, Feature, Frame, Resolved, Worlds, emit, service, service_mut};
 use crate::{ActionFrame, Result};
 use bevy_ecs::prelude::*;
 use engine_physics::dim3;
@@ -539,6 +539,10 @@ fn check_scene(world: &World) -> Result<()> {
         config.desc()?;
         config.direct()?;
         let Some(body) = entity.get::<super::PhysicsBody3D>() else {
+            // A fractured chassis lost its body on purpose: the vehicle is inactive.
+            if entity.contains::<super::Fractured>() {
+                continue;
+            }
             return Err(invalid("A vehicle requires an engine.PhysicsBody3D"));
         };
         if body.motion != super::Motion::Dynamic {
@@ -585,6 +589,10 @@ fn sync_vehicles(
             continue;
         };
         if !bodies.three.contains_key(&e) {
+            // No body (starved, or fractured): the vehicle waits, or ends with its chassis.
+            if links.remove(&e).is_some() {
+                physics.remove_vehicle(e.to_bits());
+            }
             continue;
         }
         let id = e.to_bits();
@@ -682,9 +690,11 @@ impl Feature for Vehicles {
         }
         Ok(())
     }
-    fn after_step(&mut self, cx: Context<'_>, world: &mut World) -> Result<()> {
+    fn after_frame(&mut self, cx: Context<'_>, world: &mut World, _frame: Frame) -> Result<()> {
         // Wheel visuals: chassis world pose composed with the simulated wheel-local pose, so
-        // the result also holds when the chassis `Transform` is interpolated.
+        // the result also holds when the chassis `Transform` is interpolated. Runs every
+        // frame, so visuals that are not children of the chassis follow it on frames without
+        // a physics step too.
         let mut writes = Vec::new();
         for &entity in self.links.keys() {
             let Some(config) = world.get::<Vehicle3D>(entity) else {
