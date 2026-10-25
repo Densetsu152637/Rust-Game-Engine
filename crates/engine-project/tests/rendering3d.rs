@@ -529,3 +529,48 @@ fn texture_streams_resolve_for_mesh_materials_by_stream_name() {
     .unwrap();
     assert!(Project::load(dir.path().join("project.json")).is_err());
 }
+
+#[test]
+fn fractured_entities_hide_their_intact_mesh_but_intact_ones_draw() {
+    let dir = fixture();
+    let mut runtime =
+        Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    assert_eq!(runtime.extract_scene_frame().unwrap().meshes.len(), 1);
+    let mesh = runtime.entity("mesh").unwrap();
+    let marker = engine_project::simulation::physics::Fractured {
+        fragments: 4,
+        impulse: 1.0,
+        point: glam::Vec3::ZERO,
+    };
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(mesh)
+        .insert(marker);
+    let frame = runtime.extract_scene_frame().unwrap();
+    assert!(frame.meshes.is_empty(), "fractured mesh must not draw");
+    // Without a 3D camera the mesh would take the 2D draw path; it is hidden there too.
+    let camera = runtime.entity("camera").unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(camera)
+        .remove::<Camera3D>();
+    assert!(
+        runtime
+            .extract_scene_frame()
+            .unwrap()
+            .sprites
+            .draws
+            .is_empty()
+    );
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(mesh)
+        .remove::<engine_project::simulation::physics::Fractured>();
+    assert_eq!(
+        runtime.extract_scene_frame().unwrap().sprites.draws.len(),
+        1
+    );
+}

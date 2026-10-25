@@ -213,7 +213,10 @@ impl Runtime {
                     offset: [0.0; 3],
                 });
             }
-            if let Some(renderer) = entity.get::<MeshRenderer>() {
+            if let Some(renderer) = entity
+                .get::<MeshRenderer>()
+                .filter(|_| !entity.contains::<crate::simulation::physics::Fractured>())
+            {
                 let original = entity
                     .get::<crate::GeometryOverride>()
                     .map(|geometry| &geometry.0)

@@ -112,7 +112,9 @@ body shape. MCP editable through `component_set` like every catalog component.
    body-local space; `prefracture` uses the authored `impact_point` instead.
 3. The intact body's `PhysicsBody3D` is removed (the simulation drops the body at the next
    sync) and a runtime `Fractured { fragments, impulse, point }` marker is added to the entity.
-   Renderers should stop drawing the intact mesh for entities with `Fractured`.
+   The engine's scene extraction (`extract_scene_frame`, 3D and the 2D mesh path) skips the
+   `MeshRenderer` of an entity carrying `Fractured`, so only the fragments draw. Only that
+   entity is skipped; child entities with their own `MeshRenderer` keep drawing.
 4. One dynamic `convex_hull` body is spawned per fragment as an owned entity (`OwnedBy`
    the destructible, so it is despawned with it), registered in the entity lookup with the
    stable derived id `<destructible id>#f<fragment index>` (`...#f<index>.<n>` if that id is
