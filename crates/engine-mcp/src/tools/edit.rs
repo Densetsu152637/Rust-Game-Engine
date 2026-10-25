@@ -239,7 +239,11 @@ fn entity_from(value: Value, id: &str) -> Result<SceneEntity, ToolFailure> {
     serde_json::from_value(value).map_err(|error| invalid_entity(id, error))
 }
 
-fn find<'a>(scene: &'a Scene, id: &str, path: &str) -> Result<&'a SceneEntity, ToolFailure> {
+pub(super) fn find<'a>(
+    scene: &'a Scene,
+    id: &str,
+    path: &str,
+) -> Result<&'a SceneEntity, ToolFailure> {
     scene.entities.iter().find(|e| e.id == id).ok_or_else(|| {
         ToolFailure::new(
             "entity_not_found",
@@ -251,7 +255,7 @@ fn find<'a>(scene: &'a Scene, id: &str, path: &str) -> Result<&'a SceneEntity, T
 
 /// Runs one edit through a revisioned document. `plan` turns the loaded scene
 /// into the operation and the ID of the entity to report afterwards.
-fn apply_edit(
+pub(super) fn apply_edit(
     cx: &ToolContext<'_>,
     args: &Map<String, Value>,
     plan: impl FnOnce(&Loaded) -> Result<(EditOperation, Option<String>), ToolFailure>,

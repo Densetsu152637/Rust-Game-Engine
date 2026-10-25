@@ -1,10 +1,11 @@
 //! The pre-HUD temporal upscaling stage of [`super::GpuRenderer`].
 //!
-//! With DLSS Super Resolution requested and a ready device, a frame is:
-//! jittered HDR 3D color at the NGX render size, the engine depth/motion pass,
-//! a split into the NGX depth/motion inputs, `Session::evaluate`, a composite of
-//! the display-size output into the 3D viewport, then 2D sprites/UI at output
-//! resolution over it. Any DLSS setup or evaluation failure renders the frame
+//! With DLSS Super Resolution requested and a ready device, a frame is: the
+//! render pipeline's scene stages at the NGX render size with jitter (HDR
+//! colour, depth, motion), a copy/export into the NGX inputs from the
+//! pipeline's host upscale hook, `Session::evaluate`, then the pipeline's
+//! post-processing, output operator and overlays (2D sprites/UI) from the
+//! display-size output. Any DLSS setup or evaluation failure renders the frame
 //! natively and reports the reason; `Active` is reported only after a
 //! successful evaluation.
 
@@ -138,18 +139,6 @@ pub(super) mod dlss_stage {
     use engine_project::rendering3d::UpscalerQuality;
     use std::collections::HashMap;
 
-    const SPLIT_WGSL: &str = r"
-@group(0) @binding(0) var source: texture_2d<f32>;
-@vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
-    let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
-    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
-}
-struct Split { @location(0) depth: vec4<f32>, @location(1) motion: vec4<f32> }
-@fragment fn fs_main(@builtin(position) position: vec4<f32>) -> Split {
-    let value = textureLoad(source, vec2<i32>(position.xy), 0);
-    return Split(vec4<f32>(value.z, 0.0, 0.0, 1.0), vec4<f32>(value.xy, 0.0, 1.0));
-}
-";
     const COMPOSITE_WGSL: &str = r"
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> origin: vec4<f32>;
@@ -180,9 +169,6 @@ struct Split { @location(0) depth: vec4<f32>, @location(1) motion: vec4<f32> }
         paths: DlssPaths,
         context: Option<(engine_dlss::Context, engine_dlss::SessionOptions)>,
         pub session: Option<((UpscalerQuality, [u32; 2]), engine_dlss::Session)>,
-        motion: Option<([u32; 2], wgpu::TextureView)>,
-        split_layout: wgpu::BindGroupLayout,
-        split: wgpu::RenderPipeline,
         composite_layout: wgpu::BindGroupLayout,
         composite_module: wgpu::ShaderModule,
         composite: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
@@ -248,24 +234,6 @@ struct Split { @location(0) depth: vec4<f32>, @location(1) motion: vec4<f32> }
 
     impl DlssStage {
         pub fn new(device: &wgpu::Device, paths: DlssPaths) -> Self {
-            let split_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("DLSS input split"),
-                entries: &[texture_entry(0)],
-            });
-            let split_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("DLSS input split"),
-                source: wgpu::ShaderSource::Wgsl(SPLIT_WGSL.into()),
-            });
-            let split = pipeline(
-                device,
-                "DLSS input split",
-                &split_layout,
-                &split_module,
-                &[
-                    color_target(wgpu::TextureFormat::R32Float),
-                    color_target(wgpu::TextureFormat::Rg16Float),
-                ],
-            );
             let composite_layout =
                 device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("DLSS composite"),
@@ -297,9 +265,6 @@ struct Split { @location(0) depth: vec4<f32>, @location(1) motion: vec4<f32> }
                 paths,
                 context: None,
                 session: None,
-                motion: None,
-                split_layout,
-                split,
                 composite_layout,
                 composite_module,
                 composite: HashMap::new(),
@@ -357,72 +322,6 @@ struct Split { @location(0) depth: vec4<f32>, @location(1) motion: vec4<f32> }
                 .map_err(|e| format!("DLSS initialization failed: {e}"))?;
             self.context = Some((context.clone(), options.clone()));
             Ok((context, options))
-        }
-
-        /// The `Rgba32Float` motion/depth intermediate at the render size.
-        pub fn motion_view(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
-            if let Some((existing, view)) = &self.motion
-                && *existing == size
-            {
-                return view.clone();
-            }
-            let view = device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some("DLSS motion and depth"),
-                    size: wgpu::Extent3d {
-                        width: size[0],
-                        height: size[1],
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba32Float,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                })
-                .create_view(&Default::default());
-            self.motion = Some((size, view.clone()));
-            view
-        }
-
-        /// Write NGX depth (`R32Float`) and motion (`Rg16Float`) from the intermediate.
-        pub fn encode_split(
-            &self,
-            device: &wgpu::Device,
-            encoder: &mut wgpu::CommandEncoder,
-            source: &wgpu::TextureView,
-            depth: &wgpu::TextureView,
-            motion: &wgpu::TextureView,
-        ) {
-            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("DLSS input split"),
-                layout: &self.split_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source),
-                }],
-            });
-            let attachment = |view| {
-                Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })
-            };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("DLSS input split"),
-                color_attachments: &[attachment(depth), attachment(motion)],
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.split);
-            pass.set_bind_group(0, &bind, &[]);
-            pass.draw(0..3, 0..1);
         }
 
         /// Clear the whole target, then draw the upscaled scene into `viewport`.

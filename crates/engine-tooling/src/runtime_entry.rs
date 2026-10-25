@@ -89,6 +89,7 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Va
             inputs: arguments.inputs,
             events: arguments.events,
             user_data: arguments.user_data,
+            acoustics_backend: arguments.acoustics_backend,
             shutdown: Some(monitor.shutdown.clone()),
         },
         arguments.render_backend,
@@ -124,11 +125,11 @@ fn screenshot_on(
 ) -> Result<serde_json::Value> {
     use engine_desktop::{
         DlssConfig, DlssRequest, FIXED_DELTA, GpuContext, GpuRenderer, GpuRequirements,
-        NativeRenderPasses, OffscreenTarget, RenderLimits, WgpuOptions,
+        OffscreenTarget, PipelineFeatures, RenderLimits, WgpuOptions,
     };
     use engine_project::input::merge_input;
     use engine_project::rendering3d::{
-        FrameGenerationControl, FrameGenerationMode, UpscalerControl,
+        FrameGenerationControl, FrameGenerationMode, RenderPipelineControl, UpscalerControl,
     };
     let backends = backends?;
     let [width, height] = arguments.screenshot_size;
@@ -137,6 +138,7 @@ fn screenshot_on(
     }
     let mut audio = engine_audio::AudioEngine::offline(engine_audio::AudioConfig::default())?;
     runtime.set_audio(audio.control())?;
+    engine_desktop::configure_acoustics(&mut runtime, true, arguments.acoustics_backend)?;
     runtime.start()?;
     let mut event_trace = engine_project::EventTrace::default();
     let result = (|| -> Result<serde_json::Value> {
@@ -174,10 +176,10 @@ fn screenshot_on(
             .world_mut()
             .remove_resource::<GpuRequirements>()
             .unwrap_or_default();
-        let passes = runtime
+        let features = runtime
             .app_mut()
             .world_mut()
-            .remove_resource::<NativeRenderPasses>()
+            .remove_resource::<PipelineFeatures>()
             .unwrap_or_default();
         let dlss = runtime
             .app_mut()
@@ -185,17 +187,20 @@ fn screenshot_on(
             .remove_resource::<DlssConfig>()
             .unwrap_or_default();
         let request = DlssRequest::for_frame(&frame, &dlss);
-        let options = WgpuOptions {
+        let mut options = WgpuOptions {
             backends,
             requirements,
             ..Default::default()
         };
-        let (gpu, upscaler) = pollster::block_on(engine_desktop::request_upscaler_gpu(
-            GpuContext::instance_with(backends),
+        let instance = GpuContext::instance_with(backends);
+        let ray_tracing = pollster::block_on(engine_desktop::prepare_ray_tracing(
+            &instance,
             None,
-            &options,
-            &dlss,
-            request,
+            &mut options,
+            &frame,
+        ));
+        let (gpu, upscaler) = pollster::block_on(engine_desktop::request_upscaler_gpu(
+            instance, None, &options, &dlss, request,
         ))
         .map_err(|error| {
             engine_project::Error::new(
@@ -212,7 +217,8 @@ fn screenshot_on(
         let target = OffscreenTarget::new(&gpu, width, height)?;
         let mut renderer =
             GpuRenderer::with_upscaler_device(gpu, target.info, RenderLimits::default(), upscaler)?;
-        renderer.set_passes(passes)?;
+        renderer.set_features(features)?;
+        renderer.note_ray_tracing_request(ray_tracing);
         if let Some(previous) = &previous_frame {
             renderer.render_scene(previous, &target.view, Some(runtime.app().render_world()))?;
         }
@@ -223,6 +229,22 @@ fn screenshot_on(
         }
         if let Some(mut control) = world.get_resource_mut::<FrameGenerationControl>() {
             control.status = renderer.frame_generation_status().clone();
+        }
+        if let Some(mut control) = world.get_resource_mut::<RenderPipelineControl>() {
+            control.status = renderer.pipeline_status().clone();
+        }
+        if let Some(mut control) =
+            world.get_resource_mut::<engine_project::lights::LightingControl>()
+        {
+            control.status = renderer.lighting_status().clone();
+        }
+        if let Some(mut control) = world.get_resource_mut::<engine_project::post::PostControl>() {
+            control.status = renderer.post_status().clone();
+        }
+        if let Some(mut control) =
+            world.get_resource_mut::<engine_project::raytracing::RayTracingControl>()
+        {
+            control.status = renderer.ray_tracing_status().cloned();
         }
         // Generated frames before the final real frame, as sibling PNGs.
         let mut generated = Vec::new();
@@ -262,15 +284,18 @@ fn screenshot_on(
         Ok(json!({"width": width, "height": height, "bytes": png.len(),
             "path": path, "adapter": adapter, "ticks": ticks, "generated_frames": generated}))
     })();
+    let acoustics = runtime.acoustics_status();
     let cleanup = runtime.stop();
     audio.shutdown();
     let shot = result?;
     cleanup?;
+    let mut scene = runtime.try_snapshot()?;
+    scene.acoustics = acoustics;
     Ok(json!({
         "event_trace": event_trace,
         "ticks": shot["ticks"],
         "fixed_delta": FIXED_DELTA,
-        "scene": runtime.try_snapshot()?,
+        "scene": scene,
         "presented_frames": 0,
         "screenshot": shot,
     }))

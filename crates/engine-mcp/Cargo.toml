@@ -13,5 +13,9 @@ serde = "1"
 serde_json = "1"
 tempfile = "3"
 
+[dev-dependencies]
+# Test fonts (already used by engine-text and engine-project tests).
+epaint_default_fonts = "=0.37.0"
+
 [lints]
 workspace = true

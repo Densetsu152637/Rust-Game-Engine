@@ -205,4 +205,38 @@ pub struct Components {
         skip_serializing_if = "Option::is_none"
     )]
     pub collider_2d: Option<Collider2D>,
+    #[serde(rename = "AreaLight", default, skip_serializing_if = "Option::is_none")]
+    pub area_light: Option<crate::lights::AreaLight>,
+    #[serde(
+        rename = "DirectionalLight",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub directional_light: Option<crate::lights::DirectionalLight>,
+    #[serde(
+        rename = "PointLight",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub point_light: Option<crate::lights::PointLight>,
+    #[serde(rename = "SpotLight", default, skip_serializing_if = "Option::is_none")]
+    pub spot_light: Option<crate::lights::SpotLight>,
+    #[serde(
+        rename = "PostProcess",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub post_process: Option<crate::post::PostProcess>,
+    #[serde(
+        rename = "PostProcessVolume",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub post_process_volume: Option<crate::post::PostProcessVolume>,
+    #[serde(
+        rename = "RayTracing",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ray_tracing: Option<crate::raytracing::RayTracing>,
 }

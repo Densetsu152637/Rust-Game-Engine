@@ -1,14 +1,27 @@
 //! Opt-in authoritative replication over explicit trusted-LAN TCP or authenticated TLS 1.3.
 //! No socket is opened until `Server::bind` or `Client::connect` is called.
+pub mod channel;
+mod conditions;
 mod endpoint;
 mod framing;
 mod security;
 mod state;
 mod transport;
 
-pub use endpoint::{Client, ClientConfig, ClientEvent, Server, ServerConfig, ServerEvent};
+pub use channel::{
+    Delivery, Lane, LinkEvent, LinkStats, MessageEndpoint, SERVER_PEER, TransportKind,
+};
+pub use conditions::{ConditionedEndpoint, Conditioner, Fate, NetworkConditions};
+pub use endpoint::{
+    Client, ClientConfig, ClientEvent, PROTOCOL_VERSION, Server, ServerConfig, ServerEvent,
+};
+/// The exact rustls version this crate links, re-exported so callers of the
+/// `from_rustls_config` constructors build configurations without a version mismatch.
+pub use rustls;
 pub use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-pub use security::{ClientSecurity, SecurityLimits, ServerSecurity, TransportSecurity};
+pub use security::{
+    ClientSecurity, SecurityLimits, ServerSecurity, TCP_ALPN, TransportSecurity, tls,
+};
 use serde::{Deserialize, Serialize};
 pub use state::{EntitySnapshot, ReplicationState, Snapshot};
 use std::{fmt, io, time::Duration};
@@ -149,8 +162,22 @@ impl InputCommand {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub(crate) enum Message {
-    Welcome { version: u32, peer_id: PeerId },
+    Welcome {
+        version: u32,
+        peer_id: PeerId,
+    },
     Heartbeat,
     Input(InputCommand),
     Snapshot(Snapshot),
+    /// Generic payload; carried only by binary data frames, never by JSON.
+    #[serde(skip)]
+    Data(DataFrame),
+}
+
+/// One `MessageEndpoint` payload on the TCP protocol.
+#[derive(Debug)]
+pub(crate) struct DataFrame {
+    pub(crate) lane: Lane,
+    pub(crate) delivery: Delivery,
+    pub(crate) payload: Vec<u8>,
 }

@@ -185,7 +185,7 @@ impl FrameGeneration {
         &self,
         requested: FrameGenerationSettings,
         device: &UpscalerDevice,
-        native_passes: bool,
+        overlay_features: bool,
         sizes: ([u32; 2], [u32; 2]),
     ) -> Option<String> {
         if let Err(error) = requested.validate() {
@@ -194,10 +194,9 @@ impl FrameGeneration {
         if let Some(reason) = device.frame_generation_unavailable_reason() {
             return Some(reason);
         }
-        if native_passes {
+        if overlay_features {
             return Some(
-                "frame generation does not support native render passes yet: they target the \
-                 presentation format, while generated frames use the engine's Rgba8Unorm backbuffer"
+                "frame generation does not support overlay render features yet: they draw after the HUD, which generated frames do not contain"
                     .into(),
             );
         }
@@ -329,7 +328,9 @@ pub(super) mod stage {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
@@ -345,7 +346,8 @@ pub(super) mod stage {
         pub hudless: ColorTarget,
         pub backbuffer: ColorTarget,
         pub generated: Vec<ColorTarget>,
-        /// Depth/motion for frames without Super Resolution (output size).
+        /// Depth (`R32Float`) and motion (`Rg16Float`) at the render size,
+        /// exported from the render pipeline each real frame.
         pub depth: (wgpu::Texture, wgpu::TextureView),
         pub motion: (wgpu::Texture, wgpu::TextureView),
     }
@@ -381,13 +383,13 @@ pub(super) mod stage {
                 depth: data_texture(
                     &device,
                     "DLSS-G depth",
-                    output,
+                    render,
                     wgpu::TextureFormat::R32Float,
                 ),
                 motion: data_texture(
                     &device,
                     "DLSS-G motion",
-                    output,
+                    render,
                     wgpu::TextureFormat::Rg16Float,
                 ),
             })
@@ -450,7 +452,7 @@ mod tests {
         let mut state = FrameGeneration::new();
         let now = Instant::now();
         assert!(state.needs_reset(&camera, now), "first frame");
-        state.history.commit(&camera, Mat4::IDENTITY, &[]);
+        state.history.commit(&camera);
         state.finish_frame(now);
         assert!(!state.needs_reset(&camera, now + Duration::from_millis(16)));
         assert!(
@@ -459,7 +461,7 @@ mod tests {
         );
         state.request_reset();
         assert!(state.needs_reset(&camera, now), "explicit cut");
-        state.history.commit(&camera, Mat4::IDENTITY, &[]);
+        state.history.commit(&camera);
         state.off(FrameGenerationSettings::default());
         assert!(state.needs_reset(&camera, now), "frames without generation");
     }
@@ -501,7 +503,7 @@ mod tests {
 
     #[cfg(feature = "dlss")]
     #[test]
-    fn native_passes_and_sticky_failures_block_only_their_request() {
+    fn overlay_features_and_sticky_failures_block_only_their_request() {
         let mut state = FrameGeneration::new();
         let ready = UpscalerDevice(DeviceSupport::Ready(crate::dlss::DlssPaths {
             project_id: "p".into(),
@@ -515,7 +517,7 @@ mod tests {
             state
                 .precheck(fg(2), &ready, true, sizes)
                 .unwrap()
-                .contains("native render passes")
+                .contains("overlay render features")
         );
         state.remember_failure(fg(2), sizes, "runtime missing");
         assert_eq!(
@@ -578,7 +580,7 @@ mod tests {
             camera.world = Mat4::from_translation(Vec3::new(0.0, 1.0, 5.0)).to_cols_array_2d();
             vp
         };
-        let projection = super::super::scene::camera_projection(&camera, aspect).unwrap();
+        let projection = super::super::scene3d::camera_projection(&camera, aspect).unwrap();
         let constants = generation_camera(&camera, aspect, projection, current, previous);
         let from_rows = |rows: [[f32; 4]; 4]| Mat4::from_cols_array_2d(&rows).transpose();
         let point = Vec4::new(0.3, 0.2, 0.0, 1.0);

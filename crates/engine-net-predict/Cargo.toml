@@ -1,0 +1,14 @@
+[package]
+name = "engine-net-predict"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Sans-IO deterministic prediction: fixed timestep, client prediction and reconciliation, redundant input transport, prediction keys, rollback sessions and lag compensation"
+
+[dependencies]
+engine-network = { path = "../engine-network" }
+glam.workspace = true
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

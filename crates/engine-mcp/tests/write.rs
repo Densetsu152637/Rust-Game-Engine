@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 9] = [
+const WRITE_TOOLS: [&str; 15] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -30,6 +30,12 @@ const WRITE_TOOLS: [&str; 9] = [
     "file_write",
     "asset_import_model",
     "navigation_bake",
+    "acoustics_bake",
+    "locale_set_message",
+    "locale_remove_message",
+    "locale_add_locale",
+    "ui_edit",
+    "network_settings_set",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -83,17 +89,42 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 22);
+    assert_eq!(names.len(), 38);
     // Registration order: the 12 original read tools, the 8 original write
-    // tools, then the navigation pair (bake writes, query only reads).
+    // tools, the navigation pair (bake writes, query only reads), the
+    // acoustics tools (inspect and query read, bake writes), the physics pair
+    // (both read), then the locale tools (three reads, three writes), then the
+    // UI authoring tools (inspect and preview read, edit writes), then the
+    // networking tools (inspect reads, settings_set writes).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 13);
+    assert_eq!(read_only_names.len(), 23);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
     assert_eq!(names[21], "navigation_query");
+    assert_eq!(names[22], "acoustics_inspect");
+    assert_eq!(names[23], "acoustics_query");
+    assert_eq!(names[24], "acoustics_bake");
+    assert_eq!(names[25], "physics_query");
+    assert_eq!(names[26], "physics_debug");
+    assert_eq!(names[27..30], read_only_names[17..20]);
+    assert_eq!(names[30..33], WRITE_TOOLS[10..13]);
+    assert_eq!(names[33..35], read_only_names[20..22]);
+    assert_eq!(names[36], "network_inspect");
+    assert_eq!(names[37], "network_settings_set");
+    assert_eq!(read_only_names[22], "network_inspect");
+    assert_eq!(WRITE_TOOLS[14], "network_settings_set");
+    assert_eq!(names[35], "ui_edit");
+    assert_eq!(read_only_names[20], "ui_inspect");
+    assert_eq!(read_only_names[21], "ui_preview");
+    assert_eq!(WRITE_TOOLS[13], "ui_edit");
     assert_eq!(read_only_names[12], "navigation_query");
+    assert_eq!(read_only_names[13], "acoustics_inspect");
+    assert_eq!(read_only_names[14], "acoustics_query");
+    assert_eq!(read_only_names[15], "physics_query");
+    assert_eq!(read_only_names[16], "physics_debug");
     assert_eq!(WRITE_TOOLS[8], "navigation_bake");
+    assert_eq!(WRITE_TOOLS[9], "acoustics_bake");
 }
 
 #[test]
@@ -123,6 +154,7 @@ fn write_tool_annotations_are_accurate() {
     expect("component_remove", true, true);
     expect("file_write", true, true);
     expect("asset_import_model", false, false);
+    expect("ui_edit", true, false);
     for tool in tools
         .iter()
         .filter(|t| t["annotations"]["readOnlyHint"] == true)
@@ -1167,4 +1199,64 @@ fn component_set_edits_the_camera_upscaler_request() {
             "component":"Camera3D","value":{"upscaler":{"mode":"dlss5"}}}),
     );
     rejected(dir.path(), &bad, "component_invalid", &original);
+}
+
+// ---- lights -----------------------------------------------------------------------------
+
+#[test]
+fn component_set_adds_edits_and_validates_light_components() {
+    let dir = fixture();
+    let schema = data(
+        dir.path(),
+        "component_schema",
+        json!({"component":"SpotLight"}),
+    );
+    let properties = &schema["components"][0]["schema"]["properties"];
+    assert_eq!(
+        properties["shadows"]["properties"]["filter"]["enum"],
+        json!(["hard", "pcf", "pcss"])
+    );
+    assert_eq!(properties["lumens"]["default"], 800);
+    let set = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"SpotLight","value":{"lumens":1200,"range":9,
+            "shadows":{"enabled":true,"filter":"pcss","source_radius":0.2}}}),
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    let spot = &set["entity"]["components"]["SpotLight"];
+    assert_eq!(spot["lumens"], 1200.0);
+    assert_eq!(spot["shadows"]["filter"], "pcss");
+    let merged = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"SpotLight","value":{"outer_angle_radians":0.8},"merge":true}),
+    );
+    assert_eq!(merged["ok"], true, "{merged}");
+    assert_eq!(
+        merged["entity"]["components"]["SpotLight"]["outer_angle_radians"],
+        0.8
+    );
+    assert_eq!(
+        merged["entity"]["components"]["SpotLight"]["lumens"],
+        1200.0
+    );
+    let original = bytes(dir.path(), START);
+    let bad = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"SpotLight","value":{"inner_angle_radians":0.9,
+            "outer_angle_radians":0.5}}),
+    );
+    rejected(dir.path(), &bad, "light.spot.invalid", &original);
+    let bad = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"DirectionalLight","value":{"shadows":{"cascades":9}}}),
+    );
+    rejected(dir.path(), &bad, "light.shadows.invalid", &original);
 }

@@ -1,50 +1,7 @@
-//! The skeleton reports `acoustics.unimplemented` instead of fabricating results.
+//! Frozen layout sizes and documented defaults.
 
 use engine_acoustics::gpu_layout::{BvhNode, GpuInstance, GpuMaterial, GpuTriangle};
 use engine_acoustics::*;
-
-#[test]
-fn unimplemented_operations_return_structured_errors() {
-    let mut builder = AcousticWorldBuilder::new(WorldLimits::default());
-    let material = AcousticMaterial {
-        absorption: [0.1; BANDS],
-        scattering: 0.1,
-        transmission: [0.0; BANDS],
-    };
-    assert_eq!(
-        material.validate().unwrap_err().code,
-        "acoustics.unimplemented"
-    );
-    assert_eq!(
-        AcousticMaterial::preset(MaterialPreset::Concrete)
-            .unwrap_err()
-            .code,
-        "acoustics.unimplemented"
-    );
-    assert_eq!(
-        builder.add_material(material).unwrap_err().code,
-        "acoustics.unimplemented"
-    );
-    assert_eq!(
-        builder.build().err().unwrap().code,
-        "acoustics.unimplemented"
-    );
-    assert_eq!(
-        sabine_rt60(480.0, &[], [0.0; BANDS]).unwrap_err().code,
-        "acoustics.unimplemented"
-    );
-}
-
-#[test]
-fn cpu_backend_validates_threads_and_reports_unimplemented() {
-    assert!(CpuBackend::new(0).is_err() && CpuBackend::new(9).is_err());
-    let mut cpu = CpuBackend::new(2).unwrap();
-    assert_eq!(cpu.info().kind, BackendKind::Cpu);
-    assert_eq!(
-        cpu.initialize().unwrap_err().code,
-        "acoustics.unimplemented"
-    );
-}
 
 #[test]
 fn gpu_layouts_have_the_frozen_sizes() {

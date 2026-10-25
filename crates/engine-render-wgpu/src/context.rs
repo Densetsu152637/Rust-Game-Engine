@@ -1,17 +1,9 @@
 //! The shared native GPU context and the options that create it.
 
 use crate::backends::WgpuBackends;
-use anyhow::{Context, Result, bail};
-use bevy_ecs::prelude::Resource;
+use crate::requirements::{ComposedDevice, DeviceFeatureReport, GpuRequirements};
+use anyhow::{Context, Result, anyhow, bail};
 use std::sync::{Arc, Mutex};
-
-/// Insert before launching to request native features/limits needed by custom
-/// pipelines. Unsupported requirements fail device creation with diagnostics.
-#[derive(Resource, Clone, Debug, Default)]
-pub struct GpuRequirements {
-    pub features: wgpu::Features,
-    pub limits: wgpu::Limits,
-}
 
 /// How a backend finds its adapter and device.
 #[derive(Clone, Debug)]
@@ -19,7 +11,8 @@ pub struct WgpuOptions {
     /// Which wgpu graphics APIs may be used.
     pub backends: WgpuBackends,
     pub power_preference: wgpu::PowerPreference,
-    /// Extra device features and limits for custom pipelines.
+    /// Feature/limit requests of every contributing crate, merged at device
+    /// creation ([`GpuRequirements::compose`]).
     pub requirements: GpuRequirements,
     /// Frames the CPU may run ahead of the GPU (`1..=8`); also the surface's
     /// desired maximum frame latency.
@@ -59,7 +52,12 @@ pub struct GpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     errors: Arc<Mutex<Vec<GpuFailure>>>,
+    features: Arc<DeviceFeatureReport>,
+    lost_listeners: Arc<Mutex<Vec<LostListener>>>,
 }
+
+/// Called with the loss message when the device is lost.
+type LostListener = Box<dyn Fn(&str) + Send + Sync>;
 
 impl GpuContext {
     /// Instance over the primary graphics APIs (Vulkan, DX12, Metal).
@@ -105,11 +103,14 @@ impl GpuContext {
         options: &WgpuOptions,
     ) -> Result<Self> {
         let adapter = Self::request_adapter(&instance, surface, options).await?;
+        let composed = Self::compose_device(options, &adapter)?;
         let (device, queue) = adapter
-            .request_device(&Self::device_descriptor(options))
+            .request_device(&composed.descriptor("engine desktop device"))
             .await
             .context("GPU device creation failed")?;
-        Ok(Self::from_device(instance, adapter, device, queue))
+        let mut gpu = Self::from_device(instance, adapter, device, queue);
+        gpu.features = Arc::new(composed.report);
+        Ok(gpu)
     }
 
     /// The adapter [`Self::request_with_options`] would use.
@@ -129,14 +130,46 @@ impl GpuContext {
             .context("no compatible GPU adapter")
     }
 
-    /// The device descriptor carrying `options.requirements`.
-    pub fn device_descriptor(options: &WgpuOptions) -> wgpu::DeviceDescriptor<'static> {
-        wgpu::DeviceDescriptor {
-            label: Some("engine desktop device"),
-            required_features: options.requirements.features,
-            required_limits: options.requirements.limits.clone(),
-            ..Default::default()
-        }
+    /// Merge `options.requirements` against `adapter`. Use
+    /// [`ComposedDevice::descriptor`] when creating the device yourself (for
+    /// example with vendor extensions), then [`Self::adopt`] it.
+    pub fn compose_device(
+        options: &WgpuOptions,
+        adapter: &wgpu::Adapter,
+    ) -> Result<ComposedDevice> {
+        options
+            .requirements
+            .compose(adapter.features(), &adapter.limits())
+            .map_err(|reason| anyhow!("GPU device requirements: {reason}"))
+    }
+
+    /// Wrap a device the caller created outside the engine (for example an
+    /// OpenXR runtime's Vulkan device brought into wgpu through wgpu-hal's
+    /// `from_raw` constructors in the caller's crate) after checking it
+    /// against `requirements`: every required feature and limit must be
+    /// enabled on `device`, and the report lists which optional features it
+    /// has. This entry point is safe; any `unsafe` raw-handle wrapping stays in
+    /// the caller. `device` and `queue` must come from `adapter`, which must
+    /// come from `instance`.
+    pub fn adopt(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        requirements: &GpuRequirements,
+    ) -> Result<Self> {
+        let report = requirements
+            .verify_device(device.features(), &device.limits())
+            .map_err(|reason| anyhow!("adopted GPU device: {reason}"))?;
+        let mut gpu = Self::from_device(instance, adapter, device, queue);
+        gpu.features = Arc::new(report);
+        Ok(gpu)
+    }
+
+    /// Which requested features the device enabled. Devices wrapped by
+    /// [`Self::from_device`] report their features without requests.
+    pub fn feature_report(&self) -> &DeviceFeatureReport {
+        &self.features
     }
 
     /// Wrap a device created by the host from `adapter` (for example one with
@@ -172,16 +205,33 @@ impl GpuContext {
             }
         }));
         let sink = errors.clone();
+        let lost_listeners: Arc<Mutex<Vec<LostListener>>> = Arc::default();
+        let listeners = lost_listeners.clone();
         device.set_device_lost_callback(move |reason, message| {
-            if reason != wgpu::DeviceLostReason::Destroyed
-                && let Ok(mut errors) = sink.lock()
+            if reason == wgpu::DeviceLostReason::Destroyed {
+                return;
+            }
+            let message = format!("GPU device lost ({reason:?}): {message}");
+            if let Ok(mut errors) = sink.lock()
                 && errors.len() < MAX_RECORDED_FAILURES
             {
                 errors.push(GpuFailure {
                     lost: true,
-                    message: format!("GPU device lost ({reason:?}): {message}"),
+                    message: message.clone(),
                 });
             }
+            if let Ok(listeners) = listeners.lock() {
+                for listener in listeners.iter() {
+                    listener(&message);
+                }
+            }
+        });
+        let features = Arc::new(DeviceFeatureReport {
+            requests: Vec::new(),
+            device_features: device.features(),
+            experimental_enabled: device
+                .features()
+                .intersects(wgpu::Features::all_experimental_mask()),
         });
         Self {
             instance,
@@ -189,6 +239,18 @@ impl GpuContext {
             device,
             queue,
             errors,
+            features,
+            lost_listeners,
+        }
+    }
+
+    /// Also notify `listener` when the device is lost (the engine records the
+    /// loss for [`Self::check_errors`] either way). Lets subsystems that own
+    /// device-derived state (for example `engine-render-rt`'s `RtDevice`)
+    /// demote themselves. Destroying the device on purpose is not a loss.
+    pub fn on_device_lost(&self, listener: impl Fn(&str) + Send + Sync + 'static) {
+        if let Ok(mut listeners) = self.lost_listeners.lock() {
+            listeners.push(Box::new(listener));
         }
     }
 
