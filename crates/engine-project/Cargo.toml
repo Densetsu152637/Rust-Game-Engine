@@ -15,6 +15,7 @@ engine-physics = { path = "../engine-physics" }
 engine-animation = { path = "../engine-animation" }
 engine-navigation = { path = "../engine-navigation" }
 engine-xpbd = { path = "../engine-xpbd" }
+engine-tilemap = { path = "../engine-tilemap" }
 bevy_ecs = "=0.20.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

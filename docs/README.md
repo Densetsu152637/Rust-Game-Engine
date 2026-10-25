@@ -124,5 +124,8 @@
 
 - [World building overview](world.md): the `engine_project::world` module, its
   per-feature component, install and tick-hook contract, and the render adapter.
+- [2D tilemaps](world-tilemap.md): tilesets, chunked layers, rule tiles, merged
+  collision, the `engine.Tilemap` component, the tile render data handed to the sprite
+  path, native painting API and MCP tilemap tools.
 
 Per-crate details are in `crates/*/README.md`.

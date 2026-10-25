@@ -45,7 +45,7 @@ clients take the same `command` and `args`.
 
 | Level | Flag | Tools | What it can do |
 | --- | --- | --- | --- |
-| Read | always on | 17 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
+| Read | always on | 19 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
 | Write | `--allow-write` | `entity_create`, `entity_update`, `entity_delete`, `component_set`, `component_remove`, `file_write` | Change scenes and text files inside the project root. |
 | Exec | `--allow-exec` | `project_build`, `project_run_headless`, `render_screenshot` | Compile and run the project's native game code. |
 
@@ -150,6 +150,8 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `acoustics_query` | `scene`, `listener` (`position`, `forward`, `up`), `sources` (1-16 `{position, radius_m}`), `quality` | CPU-tier propagation from each source to the listener: `visible_fraction`, `direct_gain_db` per band (125, 500, 2000, 8000 Hz; occlusion only, without the distance law), `distance_m`, up to 16 early `reflections` (order, delay, length, gain, direction), the `reverb` (`rt60_s`, `level_db`, `predelay_ms`, `mean_free_path_m`, `escaped_fraction`) and a `room_estimate` when the listener is inside a `room` volume. Positions are in scene units and a 2D proxy maps them. Deterministic: identical calls return identical JSON. |
 | `physics_query` | `scene`, `kind` (`ray`, `shape_cast`, `overlap`, `point`), `dimension`, `ticks`, `dt`, `origin`/`direction`/`position`/`point`/`rotation`, `shape`, `max_distance`, `all`, `contains`, `limit`, `filter` | Loads a scene, starts its physics headless, advances `ticks` fixed ticks and runs one spatial query: `hits` sorted by distance then entity with authored entity ids, `point`/`normal` (ray, shape cast, point), `penetrating` (shape cast) or `inside` (point), `count` and `truncated`. Filters take named layers or a raw mask, authored ids to exclude, sensor handling and body kinds. See [Physics queries](physics-queries.md). Does not execute game code or write files. |
 | `physics_debug` | `scene`, `ticks`, `dt`, `max_items`, `aabbs`, `contacts`, `joints` | Bounded physics debug-view summary after `ticks` fixed ticks: uncapped `totals`, collider counts by `states` colour key, `line_segments` in the full wireframe, and up to `max_items` `colliders`, `contacts` and `anchors`; `truncated` reports cuts. Works whether or not `engine.PhysicsSettings.debug` is set. |
+| `tilemap_info` | `path` (asset ID or file) | Summary of a tileset (texture, tile and collision counts, rule tiles) or tilemap (bounds, per-layer z order, visibility, opacity, chunk and cell counts). See [World tilemaps](world-tilemap.md). |
+| `tilemap_query` | `path`, `tileset`, `layer`, `mode` (`cell`, `rect`, `collision`), `cell`, `rect` | Painted and displayed tile (rule tiles resolved as the runtime does), a rectangle listing of up to 4096 cells, or the merged collision boxes and outline loops of a layer. |
 | `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |
 | `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
 | `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob` (at most 512 bytes), `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
@@ -174,6 +176,10 @@ nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
 | `file_write` | `path`, `content`, `expected_hash` | yes / yes | Creates or overwrites a UTF-8 text file. |
 | `navigation_bake` | `meshes` (1-128 mesh assets), `output`, `settings`, `obstacles` | no / no | Bakes world-space floor meshes and box obstacles into a new navigation JSON file (never overwrites) and returns the asset entry to add to `project.json`. |
 | `acoustics_bake` | `scene`, `output`, `include` (`meshes`, `proxy2d`, `volumes`) | no / no | Writes the scene's acoustic source geometry (meshes, instances, volumes, proxy footprints and resolved materials) as a sealed `AcousticWorldDocument` JSON file after replaying it through the world builder; never overwrites. Returns `path`, `triangles`, `hash` (of the file), `content_hash` (the document's own) and the `acoustics` asset entry to add to `project.json`. |
+| `tilemap_create_tileset` | `output`, `texture`, `tile_size`, `name`, `tiles`, `grid` | no / no | Writes a new tileset JSON file (atlas rectangles, collision, properties) and returns the `tileset` asset entry. Never overwrites. |
+| `tilemap_create` | `output`, `tileset`, `bounds`, `layers` | no / no | Writes a new empty tilemap JSON file and returns the `tilemap` asset entry plus an `engine.Tilemap` component snippet. Never overwrites. |
+| `tilemap_define_rules` | `path`, `rule_tile` | yes / yes | Adds or replaces a rule tile (`blob47`, `four_neighbour16` or custom neighbour rules) in an existing tileset file, validated before an atomic rewrite. |
+| `tilemap_paint` | `path`, `tileset`, `layer`, `ops` (1-256) | yes / yes | Applies `set`, `erase`, `rect`, `flood` and `layer` edits to an existing tilemap file, all or nothing. |
 
 All write tools carry `readOnlyHint: false` and `openWorldHint: false`.
 

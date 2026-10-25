@@ -43,6 +43,8 @@ impl Project {
                 "navigation",
                 "acoustics",
                 "lut",
+                "tileset",
+                "tilemap",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -213,6 +215,17 @@ impl Project {
                     let bytes =
                         read_bounded(&file, crate::acoustics::MAX_BAKED_DOCUMENT_BYTES as u64)?;
                     crate::acoustics::validate_document(&asset.id, &bytes)?;
+                }
+                "tileset" => {
+                    crate::world::tilemap::load_tileset(self, &asset.id)?;
+                }
+                "tilemap" => {
+                    // A map is validated against the tileset of the entities that use it.
+                    engine_tilemap::Tilemap::from_json(
+                        &read_bounded(&file, 16 * 1024 * 1024)?,
+                        None,
+                    )
+                    .map_err(|e| Error::new(e.code, e.message))?;
                 }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;
