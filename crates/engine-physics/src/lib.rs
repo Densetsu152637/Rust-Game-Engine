@@ -13,6 +13,10 @@ mod layers;
 pub use dim2::World as World2D;
 pub use dim3::World as World3D;
 pub use layers::{CollisionLayers, MAX_LAYER_NAME, MAX_LAYERS};
+// Joint value types shared by both dimensions (docs/physics-joints.md).
+#[path = "features/joints/common.rs"]
+mod joint_types;
+pub use joint_types::{AxisMode, BreakLimits, JointBroken, JointOptions, MotorDesc};
 
 /// Most points accepted by a convex hull shape.
 pub const MAX_HULL_POINTS: usize = 4096;
@@ -117,6 +121,9 @@ fn valid_joint_limits(limits: Option<[f32; 2]>) -> bool {
     limits.is_none_or(|v| {
         finite(&v) && v[0] <= v[1] && v[0] >= -std::f32::consts::PI && v[1] <= std::f32::consts::PI
     })
+}
+fn valid_linear_limits(limits: [f32; 2]) -> bool {
+    finite(&limits) && limits[0] <= limits[1]
 }
 fn valid_hull<const N: usize>(points: &[[f32; N]]) -> Result<()> {
     if points.len() <= N || points.len() > MAX_HULL_POINTS {

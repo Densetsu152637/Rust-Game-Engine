@@ -41,14 +41,22 @@ poses in the host for render interpolation. Valid timesteps satisfy 0 < dt <=
 and density have explicit bounds to reject pathological simulation inputs.
 
 `insert_joint(joint_id, body1_id, body2_id, JointDesc)` creates a real Rapier
-fixed or revolute constraint. Joint IDs are independent of body IDs. Fixed
-joints lock local anchors together and align the local rotation frames;
-revolute joints keep their local anchors together while allowing hinge rotation.
-The 2D hinge rotates about Z. The 3D hinge takes a nonzero axis, normalized and
-interpreted in both bodies' local frames. Optional hinge limits are ordered
-radians in [-pi, pi]. Connected-body contacts are disabled. `remove_joint`
-removes a constraint and wakes its bodies; removing a body automatically removes
-its joints and their ID mappings. Joint capacity is four times body capacity.
+constraint; `insert_joint_with` adds `JointOptions` (break thresholds, connected
+contacts). `JointDesc` offers `Fixed`, `Revolute` (hinge, ordered limits in
+[-pi, pi]), `Prismatic` (slider with linear limits), `Spherical` (3D ball with
+optional swing cone and twist limits), `Spring`, `Distance` (min/max range),
+`Rope` (max only) and `Generic` (every axis `Free`, `Locked` or `Limited`, in
+arbitrary per-body `Frame`s). Joint IDs are independent of body IDs. Connected-body
+contacts are disabled by default. Runtime edits without a rebuild: `set_joint_motor`
+(position and/or velocity target, stiffness, damping, force cap, per `Dof`),
+`clear_joint_motor`, `set_joint_limits`, `set_joint_break_limits`. Read-back:
+`joint_state` (relative position/angles, force and torque), `joint_motor`,
+`joint_limits`, `joint_bodies`, `joint_ids`. A joint whose constraint force or torque
+exceeds its break threshold after a step is removed and reported by
+`drain_joint_broken`; `broken_joint(id)` keeps the record. 2D has no spherical joint
+(use `Revolute`). `remove_joint` removes a constraint and wakes its bodies; removing a
+body automatically removes its joints and their ID mappings. Joint capacity is four
+times body capacity. See [docs/physics-joints.md](../../docs/physics-joints.md).
 `apply_angular_impulse` accepts a scalar in 2D or XYZ vector in 3D. Linear and
 angular impulses also work immediately after insertion, before the first step.
 
@@ -64,8 +72,7 @@ collider layers. Direction is normalized, distances are in world units, and
 equal-distance hits choose the lower application ID. No broad-phase performance
 claim is made for this query path.
 
-This foundation does not yet expose joint motors, arbitrary joint frames,
-character controllers, vehicles, shape casts, save-state serialization, or ECS
+This foundation does not yet expose character controllers, vehicles, shape casts, save-state serialization, or ECS
 scheduling. It does not promise cross-platform bitwise determinism. New ECS
 adapters should preserve legacy kinematic gameplay behavior and make rigid-body
 authority opt-in.
@@ -80,7 +87,10 @@ Validation: `cargo test -p engine-physics` exercises real falling/settling bodie
 in both dimensions, angular motion, impulses, masks, sensors, removal, queries,
 kinematic targets, invalid inputs, and high-speed CCD against a thin wall.
 Joint tests verify gravity-resistant fixed constraints, torque-driven hinges,
-angle limits, explicit removal, and automatic cleanup in both dimensions. Shape
+angle limits, explicit removal, and automatic cleanup in both dimensions, plus
+slider drift and limits, ball anchor error and cone limits, spring period against
+2*pi*sqrt(m/k), rope and distance ranges, 6-DoF locked and free axes, velocity and
+position motors, and break force/torque (`tests/joints_extended.rs`). Shape
 tests measure resting heights on heightfields, meshes, hulls, cylinders and
 compounds plus hull/cylinder/compound masses; material tests measure sliding
 distance and bounce height per combine rule; layer tests prove matrix-disabled

@@ -129,6 +129,11 @@ Bodies exist once the simulation synced them (scene start, then every tick); an 
 spawned during the current tick reports "Entity has no synced physics body" until the next
 step. Errors are `simulation.invalid` with a precise message.
 
+## Joints
+
+Joints (fixed, revolute, prismatic, spherical, spring, distance, rope, generic 6-DoF; limits,
+motors, break thresholds) are described in [Physics joints](physics-joints.md).
+
 ## Extension seams
 
 Later physics features (joints, character controllers, vehicles, ragdolls, destruction,

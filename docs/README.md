@@ -71,6 +71,7 @@
   adapters, transform authority and callback events.
 - [Physics core](physics.md): shapes, material combine rules, named collision layers,
   `engine.PhysicsSettings`, the native physics API and extension seams.
+- [Physics joints](physics-joints.md): fixed, hinge, slider, ball, spring, distance, rope and 6-DoF joints with limits, motors and breakable constraints.
 - [Cloth (XPBD)](physics-cloth.md): engine-xpbd world, collider proxies with two-way impulses, cloth stretch/bending/tethers, wind and pins.
 - [Soft bodies (XPBD)](physics-softbody.md): tetrahedral edge/volume soft bodies, box tet generator and surface triangles.
 - [Particle fluids](physics-fluids.md): CPU Position Based Fluids, emitters, sinks,

@@ -16,7 +16,7 @@ use world::{Core, Extension};
 // Feature registrations: one `#[path] mod` item each (docs/physics.md#extension-seams).
 #[path = "features/joints/dim3.rs"]
 mod joints;
-pub use joints::JointDesc;
+pub use joints::{Angles, Dof, Frame, JointDesc, JointState};
 #[derive(Clone, Copy, Debug)]
 pub struct BodyDesc {
     pub kind: crate::BodyKind,

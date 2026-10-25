@@ -23,17 +23,26 @@ mod api;
 mod bodies;
 mod contacts;
 mod descriptors;
+mod joints;
 mod settings;
 mod types;
 pub use api::*;
 pub(crate) use bodies::Bodies;
+pub use joints::{
+    AxisKind, AxisSetting, BrokenJoint, JointKind, JointMotor, JointReadout, JointStatus,
+    PhysicsJoint2D, PhysicsJoint3D, add_joint_2d, add_joint_3d, broken_joints, clear_joint_motor,
+    joint_state, joint_status, remove_joint, set_joint_break_limits, set_joint_motor,
+};
 pub(crate) use settings::Resolved;
 pub use settings::{MAX_DISABLED_PAIRS, MAX_MATERIALS, NamedMaterial, PhysicsSettings};
 pub use types::*;
 
 /// Physics features in execution order. Add one entry per feature.
 fn features() -> Vec<Box<dyn Feature>> {
-    vec![Box::new(contacts::Contacts)]
+    vec![
+        Box::new(contacts::Contacts),
+        Box::new(joints::Joints::new()),
+    ]
 }
 
 /// The engine-physics worlds owned by the service. Body IDs are `Entity::to_bits()`.
