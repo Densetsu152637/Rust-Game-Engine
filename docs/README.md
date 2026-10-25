@@ -127,5 +127,7 @@
 - [2D tilemaps](world-tilemap.md): tilesets, chunked layers, rule tiles, merged
   collision, the `engine.Tilemap` component, the tile render data handed to the sprite
   path, native painting API and MCP tilemap tools.
+- [Procedural content generation](pcg.md): seeded noise, the node graph and executor
+  (`engine-pcg`), `engine.PcgVolume` runtime generation and the `pcg_*` MCP tools.
 
 Per-crate details are in `crates/*/README.md`.

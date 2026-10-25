@@ -51,6 +51,49 @@ pub enum EditOperation {
         entity_id: String,
     },
 }
+/// Prefab entities re-identified with `prefix` and re-parented under `parent`; entity
+/// references inside components follow the new ids. Shared with runtime PCG spawning.
+pub(crate) fn prefab_entities(
+    project: &Project,
+    prefab: Vec<SceneEntity>,
+    prefix: &str,
+    parent: Option<&str>,
+) -> Vec<SceneEntity> {
+    let ids: std::collections::BTreeMap<_, _> = prefab
+        .iter()
+        .map(|e| (e.id.clone(), format!("{prefix}{}", e.id)))
+        .collect();
+    let mut result = Vec::with_capacity(prefab.len());
+    for mut entity in prefab {
+        entity.id = ids[&entity.id].clone();
+        entity.parent = entity
+            .parent
+            .map(|p| ids.get(&p).cloned().unwrap_or(p))
+            .or_else(|| parent.map(str::to_owned));
+        if let Some(camera) = &mut entity.components.camera_2d
+            && let Some(follow) = &mut camera.follow
+            && let Some(mapped) = ids.get(follow)
+        {
+            *follow = mapped.clone();
+        }
+        for (name, value) in &mut entity.components.custom {
+            if name == "engine.AnimationPlayer" || name == "engine.SkinBinding" {
+                crate::simulation::remap_animation_bindings(&mut value.data, &ids);
+            }
+            if let Some(descriptor) = project.component_catalog.0.get(name) {
+                for pointer in &descriptor.entity_references {
+                    if let Some(reference) = value.data.pointer_mut(pointer)
+                        && let Some(mapped) = reference.as_str().and_then(|id| ids.get(id))
+                    {
+                        *reference = serde_json::Value::String(mapped.clone());
+                    }
+                }
+            }
+        }
+        result.push(entity);
+    }
+    result
+}
 fn unknown_entity(id: &str) -> Error {
     Error::new("scene.entity.unknown", format!("Unknown entity {id}"))
 }
@@ -244,40 +287,12 @@ impl SceneDocument {
                         "Prefab would exceed scene capacity",
                     ));
                 }
-                let ids: std::collections::BTreeMap<_, _> = prefab
-                    .entities
-                    .iter()
-                    .map(|e| (e.id.clone(), format!("{prefix}{}", e.id)))
-                    .collect();
-                for mut entity in prefab.entities {
-                    entity.id = ids[&entity.id].clone();
-                    entity.parent = entity
-                        .parent
-                        .map(|p| ids.get(&p).cloned().unwrap_or(p))
-                        .or_else(|| parent.clone());
-                    if let Some(camera) = &mut entity.components.camera_2d
-                        && let Some(follow) = &mut camera.follow
-                        && let Some(mapped) = ids.get(follow)
-                    {
-                        *follow = mapped.clone();
-                    }
-                    for (name, value) in &mut entity.components.custom {
-                        if name == "engine.AnimationPlayer" || name == "engine.SkinBinding" {
-                            crate::simulation::remap_animation_bindings(&mut value.data, &ids);
-                        }
-                        if let Some(descriptor) = project.component_catalog.0.get(name) {
-                            for pointer in &descriptor.entity_references {
-                                if let Some(reference) = value.data.pointer_mut(pointer)
-                                    && let Some(mapped) =
-                                        reference.as_str().and_then(|id| ids.get(id))
-                                {
-                                    *reference = serde_json::Value::String(mapped.clone());
-                                }
-                            }
-                        }
-                    }
-                    candidate.entities.push(entity);
-                }
+                candidate.entities.extend(prefab_entities(
+                    project,
+                    prefab.entities,
+                    &prefix,
+                    parent.as_deref(),
+                ));
             }
             EditOperation::SetPosition {
                 entity_id,

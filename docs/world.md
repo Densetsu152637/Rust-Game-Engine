@@ -11,7 +11,7 @@ descriptors, typed ECS adapters, installed services and per-tick hooks:
 | `foliage` | Foliage and vegetation |
 | `water` | Ocean, lake and river water |
 | `streaming` | Level streaming and world partition |
-| `pcg` | Procedural content generation |
+| `pcg` | Procedural content generation ([guide](pcg.md)) |
 | `tilemap` | 2D tilemaps |
 
 ## Hook contract

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+engine-pcg = { path = "../engine-pcg" }
 engine-project = { path = "../engine-project" }
 engine-tilemap = { path = "../engine-tilemap" }
 base64.workspace = true
