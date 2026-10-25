@@ -1,0 +1,13 @@
+[package]
+name = "engine-streaming"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Pure world-partition streaming core: f64 cell grid, hysteresis, priority/budget scheduler, data layers and the partition manifest"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
