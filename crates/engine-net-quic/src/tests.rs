@@ -341,3 +341,64 @@ fn unknown_peers_invalid_lanes_and_pre_admission_sends_are_rejected() {
         assert!(bad.validate().is_err());
     }
 }
+
+#[test]
+fn reset_reliable_unordered_stream_is_never_delivered_truncated() {
+    let mut pair = Pair::trusted();
+    let peer = pair.connected_peer();
+    let link = pair.client_link();
+    let stream = link.conn.streams().open(Dir::Uni).unwrap();
+    // Unordered header (kind 3) for the RPC lane plus half of a body, no FIN.
+    let half = [3, Lane::RPC.0, b'h', b'a', b'l', b'f'];
+    assert_eq!(
+        link.conn.send_stream(stream).write(&half).unwrap(),
+        half.len()
+    );
+    // Let the server buffer the partial body before the reset arrives.
+    let settle = Instant::now() + Duration::from_millis(200);
+    while Instant::now() < settle {
+        pair.poll();
+        thread::sleep(Duration::from_millis(2));
+    }
+    pair.client_link()
+        .conn
+        .send_stream(stream)
+        .reset(quinn_proto::VarInt::from_u32(0))
+        .unwrap();
+    let settle = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < settle {
+        pair.poll();
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        messages(&pair.server_events).is_empty(),
+        "truncated body delivered: {:?}",
+        messages(&pair.server_events)
+    );
+    let reason = pair.server_disconnect_reason();
+    assert!(reason.contains("reset"), "{reason}");
+    assert!(!pair.server.connected_peers().contains(&peer));
+}
+
+#[test]
+fn partial_message_allocation_never_exceeds_its_bound() {
+    let bound = QuicLimits::default().max_message_bytes + 1;
+    let chunk = [7_u8; 1200];
+    let mut naive = Vec::new();
+    let mut bounded = Vec::new();
+    let mut naive_peak = 0;
+    while bounded.len() < bound {
+        let take = chunk.len().min(bound - bounded.len());
+        naive.extend_from_slice(&chunk[..take]);
+        naive_peak = naive_peak.max(naive.capacity());
+        link::append_bounded(&mut bounded, &chunk[..take], bound);
+        assert!(
+            bounded.capacity() <= bound,
+            "{} > {bound}",
+            bounded.capacity()
+        );
+    }
+    assert_eq!(bounded, naive);
+    // Plain Vec growth overshoots the documented per-message bound (the defect fixed here).
+    assert!(naive_peak > bound, "naive peak {naive_peak}");
+}

@@ -522,11 +522,17 @@ impl Link {
                 }
                 Err(ReadError::Blocked) => break,
                 Err(ReadError::Reset(_)) => {
+                    // Engine peers never reset streams. A reset message stream would deliver a
+                    // truncated reliable message, so it is a protocol fault; a reset before the
+                    // header completes fails below as a stream that ended before its header.
                     outcome = match state {
                         Inbound::Ordered(_) | Inbound::Control => {
                             Err(Fault::protocol("peer reset a reliable-ordered stream"))
                         }
-                        _ => Ok(()),
+                        Inbound::Unordered { .. } => {
+                            Err(Fault::protocol("peer reset a reliable-unordered stream"))
+                        }
+                        Inbound::Header { .. } => Ok(()),
                     };
                     finished = true;
                     break;
@@ -580,7 +586,7 @@ impl Link {
                 }
                 Inbound::Ordered(ordered) => {
                     if let Some(body) = &mut ordered.body {
-                        body.extend_from_slice(&chunk);
+                        append_bounded(body, &chunk, ordered.expected);
                     } else {
                         ordered.length[ordered.have..ordered.have + chunk.len()]
                             .copy_from_slice(&chunk);
@@ -610,7 +616,7 @@ impl Link {
                     }
                 }
                 Inbound::Unordered { body, .. } => {
-                    body.extend_from_slice(&chunk);
+                    append_bounded(body, &chunk, limits.max_message_bytes + 1);
                     if body.len() > limits.max_message_bytes {
                         outcome = Err(Fault::protocol("message exceeds max_message_bytes"));
                         break;
@@ -726,6 +732,19 @@ impl Link {
 }
 
 /// Writes as much as flow control accepts; a stopped stream loses reliable data, so it is fatal.
+/// Appends `chunk` to a partially received message, growing the allocation geometrically but
+/// never beyond `bound` bytes (the message's own limit), so a partial message never holds more
+/// memory than its documented bound. `bound` must be at least the final length; callers read at
+/// most `bound - body.len()` bytes per chunk.
+pub(crate) fn append_bounded(body: &mut Vec<u8>, chunk: &[u8], bound: usize) {
+    let needed = body.len() + chunk.len();
+    if needed > body.capacity() {
+        let target = body.capacity().saturating_mul(2).min(bound).max(needed);
+        body.reserve_exact(target - body.len());
+    }
+    body.extend_from_slice(chunk);
+}
+
 fn write_some(
     conn: &mut Connection,
     stream: StreamId,
