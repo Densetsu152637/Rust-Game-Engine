@@ -8,6 +8,10 @@ use std::{
     collections::VecDeque,
     io,
     net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -280,6 +284,160 @@ fn relay_rate_limits_hold() {
     let stats = h.server.stats();
     assert!(stats.rate_limited_control >= 170);
     assert_eq!(stats.data_refused_rate, 90);
+}
+
+/// Security finding M3: the per-IP control bucket used to be charged before authentication, so
+/// anyone able to spoof the victim's source IP could drain it and starve the victim's
+/// allocate and refresh requests.
+#[test]
+fn spoofed_binding_requests_cannot_starve_a_victims_refresh_or_allocation() {
+    let mut h = Harness::new(RelayLimits::default());
+    let (victim, peer) = (addr(6001), addr(6002));
+    let a = h.allocate(victim, b"token-channel-1-a").unwrap();
+    let _b = h.allocate(peer, b"token-channel-1-b").unwrap();
+    // The attacker spoofs the victim's IP (here: any port on the same IP) 40 times.
+    let mut request = Vec::new();
+    wire::encode_binding_request(&mut request, &[1; TXID_LEN]);
+    let answered = (0..40)
+        .filter(|port| h.send(addr(7000 + port), &request).is_some())
+        .count();
+    assert!(answered <= 40);
+    assert!(
+        h.send(addr(7999), &request).is_none(),
+        "the unauthenticated bucket is drained"
+    );
+    // Established flows are charged only after authentication, so they are unaffected.
+    assert!(
+        h.refresh(victim, &a, 60).is_some(),
+        "refresh survives spoofed bindings"
+    );
+    // A new allocation's challenge uses its own bucket, not the binding one.
+    let c = h.allocate(addr(6003), b"token-channel-2-a");
+    assert!(c.is_ok(), "allocation survives spoofed bindings: {c:?}");
+    // A flood of wrong-cookie allocates from the victim's IP drains only the challenge bucket.
+    let mut flood = Vec::new();
+    wire::encode_allocate(
+        &mut flood,
+        &Allocate {
+            txid: [9; TXID_LEN],
+            cookie: [0; COOKIE_LEN],
+            credential: b"x",
+        },
+    )
+    .unwrap();
+    for port in 0..200 {
+        let _ = h.send(addr(8000 + port), &flood);
+    }
+    assert!(
+        h.refresh(victim, &a, 60).is_some(),
+        "refresh survives a challenge flood"
+    );
+    assert!(h.server.stats().rate_limited_control > 0);
+}
+
+/// Runs the challenge and cookie exchange and ignores every outcome.
+fn exchange(h: &mut Harness, from: SocketAddr, credential: &[u8]) {
+    let txid = [1; TXID_LEN];
+    let mut request = Vec::new();
+    let allocate = |cookie, request: &mut Vec<u8>| {
+        wire::encode_allocate(
+            request,
+            &Allocate {
+                txid,
+                cookie,
+                credential,
+            },
+        )
+        .unwrap();
+    };
+    allocate([0; COOKIE_LEN], &mut request);
+    let Some((_, reply)) = h.send(from, &request) else {
+        return;
+    };
+    let Some((_, cookie)) = wire::decode_challenge(&reply) else {
+        return;
+    };
+    allocate(cookie, &mut request);
+    let _ = h.send(from, &request);
+}
+
+/// M3/L5: credential checks are bounded globally and per verified source address, so a
+/// crowd of genuine addresses (or one address rotating ports) cannot make the relay run
+/// unlimited `Authorizer` work.
+#[test]
+fn relay_authorizer_calls_are_bounded_globally_and_per_source_address() {
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let mut h = Harness::with_authorizer(
+        RelayLimits {
+            global_authorizations_per_second: 5,
+            global_authorization_burst: 10,
+            control_requests_per_second_per_ip: 1000,
+            control_burst_per_ip: 1000,
+            ..RelayLimits::default()
+        },
+        move |_, _| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            None
+        },
+    );
+    for port in 0..100u16 {
+        exchange(&mut h, addr(9000 + port), b"credential");
+    }
+    let made = calls.load(Ordering::Relaxed);
+    assert_eq!(made, 10, "the global burst bounds Authorizer calls");
+    assert!(h.server.stats().rate_limited_control >= 90);
+    h.now += Duration::from_secs(2);
+    exchange(&mut h, addr(9500), b"credential");
+    assert!(
+        calls.load(Ordering::Relaxed) > made,
+        "the budget refills over time"
+    );
+
+    // One address repeating the cookie-bearing request is limited by its own bucket first.
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let mut h = Harness::with_authorizer(
+        RelayLimits {
+            control_requests_per_second_per_ip: 1,
+            control_burst_per_ip: 3,
+            ..RelayLimits::default()
+        },
+        move |_, _| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            None
+        },
+    );
+    let flooder = addr(9600);
+    let challenge = |h: &mut Harness| {
+        let mut request = Vec::new();
+        wire::encode_allocate(
+            &mut request,
+            &Allocate {
+                txid: [2; TXID_LEN],
+                cookie: [0; COOKIE_LEN],
+                credential: b"x",
+            },
+        )
+        .unwrap();
+        let (_, reply) = h.send(flooder, &request).unwrap();
+        wire::decode_challenge(&reply).unwrap().1
+    };
+    let cookie = challenge(&mut h);
+    let mut request = Vec::new();
+    wire::encode_allocate(
+        &mut request,
+        &Allocate {
+            txid: [2; TXID_LEN],
+            cookie,
+            credential: b"credential",
+        },
+    )
+    .unwrap();
+    for _ in 0..50 {
+        let _ = h.send(flooder, &request);
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 3, "per-address burst");
 }
 
 #[test]

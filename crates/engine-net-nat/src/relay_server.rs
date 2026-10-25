@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fmt, io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -87,11 +87,21 @@ pub struct RelayLimits {
     /// Forwarded bytes and packets per second across all allocations.
     pub global_bytes_per_second: u64,
     pub global_packets_per_second: u32,
-    /// Control requests (binding, allocate, refresh) per second per source IP.
+    /// Control requests per second per source. IPv4 sources are keyed by address and IPv6
+    /// sources by /64. The rate applies separately to unauthenticated binding requests,
+    /// unauthenticated allocate challenges, verified (cookie-bearing) allocates per source
+    /// address and port, and refreshes per allocation. Spoofed traffic can only drain the
+    /// unauthenticated buckets of the address it forges.
     pub control_requests_per_second_per_ip: u32,
     pub control_burst_per_ip: u32,
-    /// Source IPs tracked by the control limiter; new IPs are refused when full.
+    /// Sources tracked by each control limiter table; new sources are refused when full of
+    /// active ones.
     pub max_tracked_ips: usize,
+    /// Credential checks ([`Authorizer`] calls) per second across all sources, and the burst.
+    /// Only requests that proved return routability and passed their own source bucket can
+    /// consume it.
+    pub global_authorizations_per_second: u32,
+    pub global_authorization_burst: u32,
     /// Largest relayed payload (QUIC datagram) in bytes.
     pub max_payload_bytes: usize,
     pub max_credential_bytes: usize,
@@ -110,6 +120,8 @@ impl Default for RelayLimits {
             control_requests_per_second_per_ip: 20,
             control_burst_per_ip: 40,
             max_tracked_ips: 4096,
+            global_authorizations_per_second: 200,
+            global_authorization_burst: 400,
             max_payload_bytes: 1472,
             max_credential_bytes: 512,
             cookie_lifetime_secs: 10,
@@ -127,6 +139,8 @@ impl RelayLimits {
             || self.control_requests_per_second_per_ip == 0
             || self.control_burst_per_ip == 0
             || !(1..=1_000_000).contains(&self.max_tracked_ips)
+            || self.global_authorizations_per_second == 0
+            || self.global_authorization_burst == 0
             || !(1200..=65_000).contains(&self.max_payload_bytes)
             || !(1..=wire::MAX_CREDENTIAL_BYTES).contains(&self.max_credential_bytes)
             || !(1..=300).contains(&self.cookie_lifetime_secs)
@@ -211,6 +225,18 @@ struct Allocation {
     deadline: Option<Instant>,
     bytes: TokenBucket,
     packets: TokenBucket,
+    /// Refresh requests, charged only after the vport, bound address and key matched.
+    control: TokenBucket,
+}
+
+/// What `handle` should do after a control request was processed.
+enum Handled {
+    /// A reply is in the output buffer.
+    Reply,
+    /// The request did not decode.
+    Malformed,
+    /// A rate bucket refused it; nothing is sent.
+    Limited,
 }
 
 /// Sans-IO relay and reflexive discovery server.
@@ -223,8 +249,12 @@ struct Allocation {
 ///   other slot's bound address (its whole permission list), never to arbitrary addresses.
 /// - Allocations expire unless refreshed with their 128-bit key from the bound address.
 /// - Every request is answered by at most one datagram no larger than the request; forwarded
-///   data keeps its exact size. Control requests are rate limited per source IP; data per
-///   allocation and globally; state is bounded by `max_allocations` and `max_tracked_ips`.
+///   data keeps its exact size. Control requests are rate limited per source, and charged
+///   only for what the source has proven: unauthenticated binding and challenge requests per
+///   source IP (a spoofer can drain only the forged address's unauthenticated buckets),
+///   cookie-bearing allocates per source address and port, refreshes per allocation after
+///   the key matched, and credential checks globally. Data is limited per allocation and
+///   globally; state is bounded by `max_allocations` and `max_tracked_ips`.
 pub struct RelayServer {
     limits: RelayLimits,
     authorize: Arc<Authorizer>,
@@ -232,7 +262,14 @@ pub struct RelayServer {
     epoch: Instant,
     allocations: HashMap<u16, Allocation>,
     channels: HashMap<ChannelId, [Option<u16>; 2]>,
-    sources: SourceLimiter,
+    /// Unauthenticated binding requests, per source IP.
+    binding_sources: SourceLimiter<IpAddr>,
+    /// Unauthenticated allocate challenges and refused refreshes, per source IP.
+    challenge_sources: SourceLimiter<IpAddr>,
+    /// Allocates that proved return routability, per source address and port.
+    verified_sources: SourceLimiter<SocketAddr>,
+    /// Bounds [`Authorizer`] calls across all sources.
+    authorizations: TokenBucket,
     global_bytes: TokenBucket,
     global_packets: TokenBucket,
     next_sweep: Instant,
@@ -252,11 +289,13 @@ impl RelayServer {
             epoch: now,
             allocations: HashMap::new(),
             channels: HashMap::new(),
-            sources: SourceLimiter::new(
+            binding_sources: Self::source_limiter(now, &limits),
+            challenge_sources: Self::source_limiter(now, &limits),
+            verified_sources: Self::source_limiter(now, &limits),
+            authorizations: TokenBucket::new(
                 now,
-                limits.max_tracked_ips,
-                f64::from(limits.control_requests_per_second_per_ip),
-                f64::from(limits.control_burst_per_ip),
+                f64::from(limits.global_authorizations_per_second),
+                f64::from(limits.global_authorization_burst),
             ),
             global_bytes: TokenBucket::new(
                 now,
@@ -272,6 +311,17 @@ impl RelayServer {
             stats: RelayStats::default(),
             limits,
         })
+    }
+    fn source_limiter<K: crate::limiter::SourceKey>(
+        now: Instant,
+        limits: &RelayLimits,
+    ) -> SourceLimiter<K> {
+        SourceLimiter::new(
+            now,
+            limits.max_tracked_ips,
+            f64::from(limits.control_requests_per_second_per_ip),
+            f64::from(limits.control_burst_per_ip),
+        )
     }
     pub fn limits(&self) -> &RelayLimits {
         &self.limits
@@ -312,19 +362,26 @@ impl RelayServer {
             self.stats.malformed += 1;
             return None;
         }
-        if !self.sources.allow(now, from.ip()) {
-            self.stats.rate_limited_control += 1;
-            return None;
-        }
-        let answered = match packet_kind {
-            Some(kind::BINDING_REQUEST) => self.binding(from, datagram, out),
+        // Each handler charges the bucket matching what the source has proven so far, so
+        // traffic from a forged source address cannot spend an honest owner's budget for
+        // authenticated requests.
+        let handled = match packet_kind {
+            Some(kind::BINDING_REQUEST) => self.binding(now, from, datagram, out),
             Some(kind::ALLOCATE) => self.allocate(now, from, datagram, out),
             _ => self.refresh(now, from, datagram, out),
         };
-        if !answered {
-            self.stats.malformed += 1;
-            out.clear();
-            return None;
+        match handled {
+            Handled::Reply => {}
+            Handled::Malformed => {
+                self.stats.malformed += 1;
+                out.clear();
+                return None;
+            }
+            Handled::Limited => {
+                self.stats.rate_limited_control += 1;
+                out.clear();
+                return None;
+            }
         }
         if out.len() > datagram.len() {
             self.stats.suppressed_amplification += 1;
@@ -383,13 +440,22 @@ impl RelayServer {
         self.live(now, other).map(|_| other)
     }
 
-    fn binding(&mut self, from: SocketAddr, datagram: &[u8], out: &mut Vec<u8>) -> bool {
+    fn binding(
+        &mut self,
+        now: Instant,
+        from: SocketAddr,
+        datagram: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Handled {
         let Some(txid) = wire::decode_binding_request(datagram) else {
-            return false;
+            return Handled::Malformed;
         };
+        if !self.binding_sources.allow(now, from.ip()) {
+            return Handled::Limited;
+        }
         wire::encode_binding_response(out, &txid, from);
         self.stats.binding_responses += 1;
-        true
+        Handled::Reply
     }
 
     fn cookie(&self, from: SocketAddr, window: u64) -> [u8; COOKIE_LEN] {
@@ -408,9 +474,9 @@ impl RelayServer {
         from: SocketAddr,
         datagram: &[u8],
         out: &mut Vec<u8>,
-    ) -> bool {
+    ) -> Handled {
         let Some(request) = wire::decode_allocate(datagram) else {
-            return false;
+            return Handled::Malformed;
         };
         let window = now.saturating_duration_since(self.epoch).as_secs()
             / u64::from(self.limits.cookie_lifetime_secs);
@@ -418,9 +484,19 @@ impl RelayServer {
         let routable = wire::ct_eq(&request.cookie, &current)
             || (window > 0 && wire::ct_eq(&request.cookie, &self.cookie(from, window - 1)));
         if !routable {
+            // Cookie-less (or stale-cookie) request: the source may be forged. Only the
+            // forged IP's challenge bucket is charged, never the verified buckets.
+            if !self.challenge_sources.allow(now, from.ip()) {
+                return Handled::Limited;
+            }
             wire::encode_challenge(out, &request.txid, &current);
             self.stats.challenges += 1;
-            return true;
+            return Handled::Reply;
+        }
+        // The source received our cookie, so the address is genuine: charge it, then the
+        // global credential-check budget, before running the Authorizer.
+        if !self.verified_sources.allow(now, from) || !self.authorizations.try_take(now, 1.0) {
+            return Handled::Limited;
         }
         let txid = request.txid;
         let grant = (request.credential.len() <= self.limits.max_credential_bytes)
@@ -464,7 +540,7 @@ impl RelayServer {
                 observed: from,
             },
         );
-        true
+        Handled::Reply
     }
 
     /// `now + min(requested, server lifetime)`, never past the grant deadline.
@@ -500,6 +576,11 @@ impl RelayServer {
                 deadline,
                 bytes: TokenBucket::new(now, bytes_rate, bytes_rate),
                 packets: TokenBucket::new(now, packet_rate, packet_rate),
+                control: TokenBucket::new(
+                    now,
+                    f64::from(self.limits.control_requests_per_second_per_ip),
+                    f64::from(self.limits.control_burst_per_ip),
+                ),
             },
         );
         self.channels.entry(grant.channel).or_default()[grant.party.index()] = Some(vport);
@@ -507,14 +588,14 @@ impl RelayServer {
         Some(vport)
     }
 
-    fn refuse(&mut self, out: &mut Vec<u8>, txid: &TxId, refusal: RelayRefusal) -> bool {
+    fn refuse(&mut self, out: &mut Vec<u8>, txid: &TxId, refusal: RelayRefusal) -> Handled {
         match refusal {
             RelayRefusal::Unauthorized => self.stats.refused_unauthorized += 1,
             RelayRefusal::PartyTaken => self.stats.refused_party_taken += 1,
             RelayRefusal::Capacity => self.stats.refused_capacity += 1,
         }
         wire::encode_error(out, txid, refusal.code());
-        true
+        Handled::Reply
     }
 
     fn refresh(
@@ -523,15 +604,28 @@ impl RelayServer {
         from: SocketAddr,
         datagram: &[u8],
         out: &mut Vec<u8>,
-    ) -> bool {
+    ) -> Handled {
         let Some(request) = wire::decode_refresh(datagram) else {
-            return false;
+            return Handled::Malformed;
         };
+        // Verify the vport, the bound address and the key first; only then charge the
+        // allocation's own control bucket, so nobody can drain it without holding the key.
         let authorized = self
             .live(now, request.vport)
             .is_some_and(|a| a.bound == from && wire::ct_eq(&a.key, &request.key));
         if !authorized {
+            // Refused with an error, charged like any other unauthenticated request.
+            if !self.challenge_sources.allow(now, from.ip()) {
+                return Handled::Limited;
+            }
             return self.refuse(out, &request.txid, RelayRefusal::Unauthorized);
+        }
+        let within_budget = self
+            .allocations
+            .get_mut(&request.vport)
+            .is_some_and(|a| a.control.try_take(now, 1.0));
+        if !within_budget {
+            return Handled::Limited;
         }
         let (lifetime, counterpart) = if request.lifetime_secs == 0 {
             self.remove(request.vport);
@@ -546,7 +640,7 @@ impl RelayServer {
                 .and_then(|a| a.deadline);
             let expires = self.expiry(now, requested, deadline);
             let Some(allocation) = self.allocations.get_mut(&request.vport) else {
-                return false;
+                return Handled::Malformed;
             };
             allocation.expires = expires;
             self.stats.refreshes += 1;
@@ -561,7 +655,7 @@ impl RelayServer {
                 counterpart,
             },
         );
-        true
+        Handled::Reply
     }
 
     fn forward(
