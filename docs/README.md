@@ -61,6 +61,8 @@
   native callback integration.
 - [Text engine](text.md): the standalone `engine-text` crate: font fallback, shaping,
   bidi, line breaking, rich-text markup, caret geometry and coverage/SDF glyph atlases.
+- [Localization](localization.md): the standalone `engine-locale` crate: Fluent string tables,
+  plurals, locale fallback, runtime language switch, pseudo-localization and settings.
 - [Multiplayer](networking.md): authoritative sessions, mutual-TLS 1.3 transport,
   replication, ownership, runtime integration and plaintext trusted-LAN limits.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,
