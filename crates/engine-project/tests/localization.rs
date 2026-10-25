@@ -1386,3 +1386,142 @@ fn many_references_to_few_keys_format_once_per_generation() {
     assert_eq!(localization.stats().resolutions, 6);
     println!("300 localized labels drawn in {first:?} (debug build, includes layout)");
 }
+
+// ---- translations cannot make a root invalid --------------------------------
+
+/// A root of 15 labels with 4096 bytes, three accessibility descriptions of
+/// 1000 bytes and a `@big` label: 64,444 of the 65,536 bytes of root text.
+fn nearly_full_root() -> UiRoot {
+    let mut nodes: Vec<UiNode> = (0..15)
+        .map(|i| {
+            let label = sized(
+                UiNode::label(format!("l{i}"), "a".repeat(4096)),
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+            );
+            if i < 3 {
+                label.with_access_description("d".repeat(1000))
+            } else {
+                label
+            }
+        })
+        .collect();
+    nodes.push(sized(UiNode::label("big", "@big"), 0.0, 20.0, 100.0, 20.0));
+    root(nodes)
+}
+
+#[test]
+fn a_translation_is_cut_to_what_accessibility_text_leaves_of_the_root_budget() {
+    let en: &'static str = Box::leak(format!("big = {}\n", "b".repeat(4000)).into_boxed_str());
+    let mut setup = Setup::new(vec![]);
+    setup.locales = vec![("en", en)];
+    let (_dir, mut runtime) = setup.runtime();
+    // Scene components are capped at 64 KiB of JSON, so a root this full can
+    // only come from native code.
+    runtime.app_mut().world_mut().spawn((
+        engine_project::AuthoredId {
+            id: "hud".into(),
+            name: "hud".into(),
+        },
+        nearly_full_root(),
+    ));
+    // Before the accessibility bytes were counted, the 4000-byte expansion fit
+    // the supposed 4092 spare bytes and the root grew past 64 KiB, so the tick
+    // failed validation.
+    tick(&mut runtime);
+    let texts = drawn(&runtime);
+    assert!(
+        texts.iter().any(|t| t.len() == 1096 && t.starts_with('b')),
+        "cut to the 1,096 bytes that were left: {:?}",
+        texts.iter().map(String::len).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn accessibility_labels_and_descriptions_follow_the_locale() {
+    let label = sized(UiNode::label("title", "Score"), 0.0, 0.0, 200.0, 30.0)
+        .with_access_label("@greeting")
+        .with_access_description("@welcome.tooltip");
+    let (_dir, mut runtime) = Setup::new(vec![("hud", root(vec![label]))]).runtime();
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<engine_project::accessibility::AccessibilityControl>()
+        .settings
+        .screen_reader = true;
+    let described = |runtime: &Runtime| {
+        let ui = runtime.app().world().resource::<GameUi>();
+        let node = ui
+            .accessibility_tree()
+            .expect("tree")
+            .find("hud", "title")
+            .expect("node")
+            .clone();
+        (node.name, node.description)
+    };
+    tick(&mut runtime);
+    assert_eq!(
+        described(&runtime),
+        (Some("Hello".into()), Some("Opens the hub".into()))
+    );
+    runtime.set_locale("fr").unwrap();
+    tick(&mut runtime);
+    assert_eq!(
+        described(&runtime),
+        (Some("Bonjour".into()), Some("Ouvre le hub".into()))
+    );
+    // The stored component keeps the keys.
+    let stored = stored_root(&runtime, "hud");
+    let access = stored.tree.nodes[0].accessibility.as_ref().unwrap();
+    assert_eq!(access.label.as_deref(), Some("@greeting"));
+}
+
+fn locale_config_with_override(replacement: &str) -> Vec<u8> {
+    json!({"schema":1,"default_locale":"en","available_locales":["en"],
+        "resources":[{"locale":"en","paths":["strings/en/ui.ftl"]}],
+        "assets":[{"locale":"en","asset_overrides":{"logo":replacement}}]})
+    .to_string()
+    .into_bytes()
+}
+
+#[test]
+fn asset_overrides_longer_than_an_asset_key_are_rejected_and_ignored() {
+    use engine_project::localization::{
+        engine_locale::{LocaleAssetMap, LocaleAssets, LocaleId, Localizer, LocalizerConfig},
+        parse_locale_config,
+    };
+    parse_locale_config(&locale_config_with_override(&"x".repeat(128))).expect("128 bytes");
+    let error = parse_locale_config(&locale_config_with_override(&"x".repeat(129))).unwrap_err();
+    assert_eq!(error.diagnostics[0].code, "asset.locale_config.invalid");
+
+    // Settings built in code skip that check; the lookup ignores the override.
+    let localization = Localization::new(Localizer::new(LocalizerConfig::default()));
+    localization.load_ftl("en", "greeting = Hi\n").unwrap();
+    let mut map = LocaleAssetMap::new();
+    map.insert(
+        LocaleId::parse("en").unwrap(),
+        LocaleAssets {
+            fonts: vec![],
+            asset_overrides: BTreeMap::from([
+                ("logo".to_string(), "x".repeat(200)),
+                ("flag".to_string(), "flag-en".to_string()),
+            ]),
+        },
+    );
+    localization.with_mut(|l| l.set_assets(map));
+    assert_eq!(localization.asset("logo"), "logo");
+    assert_eq!(localization.asset("flag"), "flag-en");
+    let images = root(vec![
+        UiNode::image("a", "logo", UiImageFit::Stretch),
+        UiNode::image("b", "flag", UiImageFit::Stretch),
+    ]);
+    let localized = localize_root(&images, &localization).expect("the flag changes");
+    localized.validate().expect("no over-long texture key");
+    let key = |n: usize| match &localized.tree.nodes[n].widget {
+        UiWidget::Image { texture, .. } => texture.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((key(0).as_str(), key(1).as_str()), ("logo", "flag-en"));
+}

@@ -11,7 +11,7 @@
 use crate::{
     Error, Project, Result, confined_file,
     schema::read_bounded,
-    ui_tree::{UiStringResolver, validate_markup},
+    ui_tree::{UiStringResolver, escape_markup, validate_markup},
 };
 use bevy_ecs::prelude::Resource;
 use engine_locale::{
@@ -42,6 +42,9 @@ pub const MAX_LOCALE_CONFIG_BYTES: u64 = 256 * 1024;
 pub const LOCALE_CHANGED_EVENT: &str = "locale.changed";
 /// Entries kept in the static text cache of one generation.
 const MAX_CACHE_ENTRIES: usize = 8192;
+/// Longest asset key a UI texture or font reference may hold; an asset
+/// override is a replacement key, so it obeys the same limit.
+pub const MAX_ASSET_KEY_BYTES: usize = 128;
 
 pub(crate) fn locale_error(error: LocaleError) -> Error {
     Error::new(error.code(), error.to_string())
@@ -191,6 +194,16 @@ pub fn parse_locale_config(bytes: &[u8]) -> Result<LocalizationSettings> {
     let settings: LocalizationSettings =
         serde_json::from_value(value).map_err(|error| invalid(error.to_string()))?;
     settings.validate().map_err(locale_error)?;
+    for entry in &settings.assets {
+        for (key, replacement) in &entry.asset_overrides {
+            if replacement.len() > MAX_ASSET_KEY_BYTES {
+                return Err(invalid(format!(
+                    "Asset override `{key}` for locale `{}` is longer than {MAX_ASSET_KEY_BYTES} bytes",
+                    entry.locale
+                )));
+            }
+        }
+    }
     Ok(settings)
 }
 
@@ -646,7 +659,13 @@ impl Localization {
         if let Some(found) = cache.assets.get(key) {
             return found.clone();
         }
-        let resolved = localizer.resolve_asset(key);
+        let mut resolved = localizer.resolve_asset(key);
+        // An over-long replacement would make every node using it invalid;
+        // `parse_locale_config` rejects it, so this only guards settings that
+        // were built in code.
+        if resolved.len() > MAX_ASSET_KEY_BYTES {
+            resolved = key.to_owned();
+        }
         if cache.assets.len() < MAX_CACHE_ENTRIES {
             cache.assets.insert(key.to_owned(), resolved.clone());
         }
@@ -795,17 +814,6 @@ pub fn classify(text: &str) -> TextRef<'_> {
         Some(rest) if is_message_key(rest) => TextRef::Key(rest),
         _ => TextRef::Plain,
     }
-}
-
-fn escape_markup(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 8);
-    for c in text.chars() {
-        if matches!(c, '\\' | '[' | ']') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
 }
 
 #[cfg(test)]
