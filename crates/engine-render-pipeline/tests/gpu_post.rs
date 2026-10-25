@@ -174,7 +174,9 @@ impl Rig {
             engine_render_wgpu::read_texture_rgba(&self.gpu, &self.texture, SIZE[0], SIZE[1])
                 .unwrap();
         bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| [0, 1, 2].map(|c| srgb_decode(f32::from(p[c]) / 255.0)))
             .collect()
     }

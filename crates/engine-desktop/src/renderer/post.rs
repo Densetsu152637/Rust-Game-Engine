@@ -183,8 +183,10 @@ mod tests {
 
     #[test]
     fn authored_values_map_one_to_one() {
-        let mut post = authored::PostProcess::default();
-        post.tonemap = authored::TonemapMode::AgxPunchy;
+        let mut post = authored::PostProcess {
+            tonemap: authored::TonemapMode::AgxPunchy,
+            ..Default::default()
+        };
         post.exposure.mode = authored::ExposureMode::Auto;
         post.exposure.compensation = 0.5;
         post.bloom.enabled = true;

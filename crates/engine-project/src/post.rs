@@ -823,8 +823,10 @@ mod tests {
 
     #[test]
     fn status_summarises_the_effective_settings() {
-        let mut camera = PostProcess::default();
-        camera.tonemap = TonemapMode::Aces;
+        let mut camera = PostProcess {
+            tonemap: TonemapMode::Aces,
+            ..Default::default()
+        };
         camera.bloom.enabled = true;
         let r = resolve_post(Some(&camera), &[], [0.0; 3]).unwrap();
         let s = PostStatus::of(Some(&r), 3);
