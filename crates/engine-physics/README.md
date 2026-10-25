@@ -15,10 +15,20 @@ let position = world.pose(7).unwrap().position;
 ```
 
 `BodyDesc` selects fixed, dynamic, or position-based kinematic bodies, initial
-linear/angular velocity, rotation, and continuous collision detection. Shapes
-are boxes (half extents), balls, and Y-axis capsules (half segment height plus
-radius). Each body owns one collider. Density controls mass; friction,
-restitution, sensor behavior, and 32-bit layer/mask pairs are configurable.
+linear/angular velocity, rotation, and continuous collision detection. Each body
+owns one collider. Shapes are boxes (half extents), balls, Y-axis capsules (half
+segment height plus radius), 3D Y-axis cylinders, convex hulls of points (a convex
+polygon in 2D), triangle meshes and heightfields (fixed or kinematic bodies only;
+dynamic ones are rejected), and compounds of up to 64 posed convex parts. Point,
+vertex, triangle, sample and part counts are capped (`MAX_HULL_POINTS`,
+`MAX_MESH_VERTICES`, `MAX_MESH_TRIANGLES`, `MAX_HEIGHTFIELD_SAMPLES`,
+`MAX_COMPOUND_PARTS`); degenerate hulls, out-of-range indices and non-finite values
+fail. Density controls mass (`mass(id)` reports it); friction, restitution, their
+`CombineRule` (average, min, max, multiply; on disagreement max > multiply > min >
+average), sensor behavior, and 32-bit layer/mask pairs are configurable.
+`CollisionLayers` maps up to 32 named layers and a symmetric collision matrix to
+layer/mask pairs. `set_gravity`, `set_solver_iterations` (1..=64) and `velocity(id)`
+expose world parameters and state.
 `World2D` uses XY coordinates and radians. `World3D` uses XYZ and normalized XYZW
 quaternions. Units are meters, seconds, kilograms. IDs are caller-assigned u64s;
 duplicate IDs and unknown-body mutations fail.
@@ -54,13 +64,24 @@ collider layers. Direction is normalized, distances are in world units, and
 equal-distance hits choose the lower application ID. No broad-phase performance
 claim is made for this query path.
 
-This foundation does not yet expose joint motors, arbitrary joint frames, mesh colliders, compound shapes,
-character controllers, save-state serialization, or ECS scheduling. It does not
-promise cross-platform bitwise determinism. New ECS adapters should preserve
-legacy kinematic gameplay behavior and make rigid-body authority opt-in.
+This foundation does not yet expose joint motors, arbitrary joint frames,
+character controllers, vehicles, shape casts, save-state serialization, or ECS
+scheduling. It does not promise cross-platform bitwise determinism. New ECS
+adapters should preserve legacy kinematic gameplay behavior and make rigid-body
+authority opt-in.
+
+Source layout: `world.rs` is the dimension-generic core compiled once by `dim2.rs`
+and once by `dim3.rs`; features live under `src/features/` (joints are the
+reference) and extend `World` through `impl World` blocks plus per-world side
+tables using the crate-internal `Extension` hooks. See
+[docs/physics.md](../../docs/physics.md#extension-seams) for the procedure.
 
 Validation: `cargo test -p engine-physics` exercises real falling/settling bodies
 in both dimensions, angular motion, impulses, masks, sensors, removal, queries,
 kinematic targets, invalid inputs, and high-speed CCD against a thin wall.
 Joint tests verify gravity-resistant fixed constraints, torque-driven hinges,
-angle limits, explicit removal, and automatic cleanup in both dimensions.
+angle limits, explicit removal, and automatic cleanup in both dimensions. Shape
+tests measure resting heights on heightfields, meshes, hulls, cylinders and
+compounds plus hull/cylinder/compound masses; material tests measure sliding
+distance and bounce height per combine rule; layer tests prove matrix-disabled
+pairs never touch while enabled pairs do.

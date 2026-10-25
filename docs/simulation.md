@@ -2,7 +2,7 @@
 
 `Runtime::new` installs Rapier 2D/3D, animation playback and waypoint navigation.
 All projects automatically expose `engine.PhysicsBody2D`, `engine.PhysicsBody3D`,
-`engine.AnimationPlayer`, `engine.SkinBinding` and `engine.NavigationAgent` in the component catalog,
+`engine.PhysicsSettings`, `engine.AnimationPlayer`, `engine.SkinBinding` and `engine.NavigationAgent` in the component catalog,
 including MCP discovery. No game registration is required. Custom values use
 `{"version":1,"data":{...}}` in the entity's `components.custom` map.
 The `engine.*` namespace is reserved.
@@ -19,16 +19,23 @@ profiler records this boundary as `PostUpdate`. Typed hydration precedes startup
 
 ## Physics
 
+Shapes, materials, combine rules, named layers, `engine.PhysicsSettings`, the native
+`simulation::physics` API and the feature extension seams are documented in
+[Physics core](physics.md).
+
 Example data: `{"motion":"dynamic","shape":"box","half_extents":[0.5,0.5]}`.
 3D half extents and velocity have three elements; angular velocity is scalar in
-2D and three-dimensional in 3D. Shapes are `box`, `ball`, and Y-axis `capsule`.
-Other fields: `radius`, `half_height`, initial `velocity`, `angular_velocity`,
-`ccd`, and `material` (`density`, `friction`, `restitution`, `sensor`, `layer`,
-`mask`). Defaults come from the catalog. Motion is `fixed`, `dynamic`, or
-`kinematic`. Layer/mask filtering uses mutual intersection. Fixed sensors detect
-kinematic entries/exits. Each entity has one body/collider; compound colliders,
-mesh colliders and authored joint components are not supplied. Native
-`engine-physics` worlds offer fixed/revolute joints and impulses.
+2D and three-dimensional in 3D. Shapes are `box`, `ball`, Y-axis `capsule`, 3D
+Y-axis `cylinder`, `convex_hull`, fixed/kinematic `trimesh` and `heightfield`, and
+`compound`. Other fields: `radius`, `half_height`, shape data (`points`,
+`vertices`, `indices`, `heights`, `heightfield_*`, `parts`), initial `velocity`,
+`angular_velocity`, `ccd`, and `material` (`density`, `friction`, `restitution`,
+combine rules, `sensor`, `layer`, `mask`, `preset`, `layer_name`). Defaults come
+from the catalog. Motion is `fixed`, `dynamic`, or `kinematic`. Layer/mask
+filtering uses mutual intersection. Fixed sensors detect kinematic entries/exits.
+Each entity has one body and one collider (a compound collider may hold several
+parts); authored joint components are not supplied. Native `engine-physics`
+worlds offer fixed/revolute joints and impulses.
 
 Dynamic bodies own world translation/rotation. Direct Transform writes do not
 teleport dynamic bodies. Changing body configuration rebuilds the body with the
@@ -36,7 +43,7 @@ current pose and configured initial velocity. Fixed bodies follow authored pose
 changes; kinematic bodies follow native/navigation pose writes. Scale changes
 rebuild colliders. Parent transforms convert simulated world poses back to local
 TRS, parents first. Positive nonsingular scales and no shear are required;
-balls/capsules require uniform world scale. 2D rotation must be about world Z.
+balls, capsules, cylinders and compounds require uniform world scale. 2D rotation must be about world Z.
 Legacy `Collider2D` cannot coexist with either physics body on the same entity.
 
 Delta is bounded to one second when physics is active and subdivided into steps

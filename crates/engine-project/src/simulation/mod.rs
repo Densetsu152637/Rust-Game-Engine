@@ -8,7 +8,7 @@ mod descriptors;
 mod imported;
 mod navigation;
 mod navmesh;
-mod physics;
+pub mod physics;
 mod skinning;
 mod types;
 pub use animation::{
@@ -17,6 +17,10 @@ pub use animation::{
 pub use descriptors::component_descriptors;
 pub use imported::{imported_clip, imported_skeleton, skin_palette};
 pub use navmesh::*;
+pub use physics::{
+    BodyMaterial, CombineRule, CompoundPart2D, CompoundPart3D, Motion, NamedMaterial,
+    PhysicsBody2D, PhysicsBody3D, PhysicsSettings, Shape,
+};
 pub use types::*;
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -27,8 +31,7 @@ fn mapped(error: impl std::fmt::Display) -> Error {
 }
 pub fn register_components(app: &mut engine_core::EngineApp) -> Result<()> {
     crate::register_component::<SkinBinding>(app, "engine.SkinBinding", 1)?;
-    crate::register_component::<PhysicsBody2D>(app, "engine.PhysicsBody2D", 1)?;
-    crate::register_component::<PhysicsBody3D>(app, "engine.PhysicsBody3D", 1)?;
+    physics::register_components(app)?;
     crate::register_component::<AnimationPlayer>(app, "engine.AnimationPlayer", 1)?;
     crate::register_component::<NavigationAgent>(app, "engine.NavigationAgent", 1)
 }
@@ -127,7 +130,7 @@ fn validate(world: &World) -> Result<()> {
             }
         }
     }
-    Ok(())
+    physics::validate(world)
 }
 pub fn prepare(world: &mut World) -> Result<()> {
     validate(world)?;
