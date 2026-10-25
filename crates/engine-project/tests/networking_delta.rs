@@ -736,7 +736,7 @@ fn voice_frames_route_between_runtimes_by_proximity() {
         peers.iter().all(|p| world_status(p).connected)
     });
     let frame = vec![1000i16; 320];
-    let speak = |server: &mut Runtime, peers: &mut Vec<Runtime>, frames: usize| {
+    let speak = |server: &mut Runtime, peers: &mut [Runtime], frames: usize| {
         let mut heard = vec![0usize; 3];
         for _ in 0..frames {
             send_voice_frame(peers[0].app_mut().world_mut(), &frame, false).unwrap();

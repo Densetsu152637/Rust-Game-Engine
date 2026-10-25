@@ -78,6 +78,9 @@ struct PeerView {
     center: Option<[f32; 3]>,
     radius: f32,
 }
+/// Position, rotation, scale and velocity of a mirrored entity.
+type PoseValues = ([f32; 3], [f32; 4], [f32; 3], [f32; 3]);
+
 struct Live {
     pos: [f32; 3],
     rot: [f32; 4],
@@ -739,7 +742,7 @@ fn pose_values(l: &Live) -> Vec<Value> {
 // ---------------------------------------------------------------------------------- client
 
 impl ClientSide {
-    fn read_pose(&self, ids: &Ids, net: NetId) -> Option<([f32; 3], [f32; 4], [f32; 3], [f32; 3])> {
+    fn read_pose(&self, ids: &Ids, net: NetId) -> Option<PoseValues> {
         let entity = self.rc.entity(net)?;
         let comp = ids.pose.iter().find_map(|id| entity.component(*id))?;
         let position = quantity(comp.values.get(usize::from(POSITION))?)?;
