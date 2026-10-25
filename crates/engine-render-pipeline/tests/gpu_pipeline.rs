@@ -632,6 +632,7 @@ impl PipelineFeature for NeedsNormals {
         FeatureDescriptor::new("test.needs-normals", Stage::PostProcess).needs(FeatureNeeds {
             normals: true,
             motion: false,
+            screen_lighting: false,
         })
     }
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {

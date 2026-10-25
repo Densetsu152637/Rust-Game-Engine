@@ -182,7 +182,15 @@ fn layouts(device: &wgpu::Device) -> PipelineLayouts {
     };
     let float = wgpu::TextureSampleType::Float { filterable: true };
     let d2 = wgpu::TextureViewDimension::D2;
-    let [clusters, cluster_lights, shadow_sampler] = crate::lighting::view_layout_entries(all);
+    let [
+        clusters,
+        cluster_lights,
+        shadow_sampler,
+        screen_shadow,
+        screen_ao,
+        screen_indirect,
+        screen_reflection,
+    ] = crate::lighting::view_layout_entries(all);
     PipelineLayouts {
         view: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("engine::view"),
@@ -207,6 +215,10 @@ fn layouts(device: &wgpu::Device) -> PipelineLayouts {
                 clusters,
                 cluster_lights,
                 shadow_sampler,
+                screen_shadow,
+                screen_ao,
+                screen_indirect,
+                screen_reflection,
             ],
         }),
         instances: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -474,6 +486,18 @@ impl ScenePipeline {
         if needs.motion {
             targets.ensure_motion(&device);
         }
+        if needs.screen_lighting {
+            targets.ensure_screen_lighting(&device);
+        }
+        state.lighting.set_screen(
+            &device,
+            layouts,
+            &self.lighting,
+            targets
+                .screen_lighting
+                .as_ref()
+                .filter(|_| needs.screen_lighting),
+        );
         let light_count = state
             .lighting
             .prepare(
@@ -877,6 +901,31 @@ fn clear_scene(encoder: &mut wgpu::CommandEncoder, targets: &FrameTargets) {
     }
     if let Some(motion) = &targets.motion {
         colors.push(clear(&motion.view, wgpu::Color::TRANSPARENT));
+    }
+    if let Some(screen) = &targets.screen_lighting {
+        // Two passes: four Rgba16Float attachments alone reach the 32-byte
+        // per-sample colour attachment limit.
+        let [shadow, ao, indirect, reflection] = screen.targets();
+        let color = |v: [f32; 4]| wgpu::Color {
+            r: f64::from(v[0]),
+            g: f64::from(v[1]),
+            b: f64::from(v[2]),
+            a: f64::from(v[3]),
+        };
+        let d = crate::targets::SCREEN_LIGHTING_DEFAULTS;
+        for pair in [
+            [(shadow, d[0]), (ao, d[1])],
+            [(indirect, d[2]), (reflection, d[3])],
+        ] {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("engine clear screen lighting"),
+                color_attachments: &[
+                    clear(&pair[0].0.view, color(pair[0].1)),
+                    clear(&pair[1].0.view, color(pair[1].1)),
+                ],
+                ..Default::default()
+            });
+        }
     }
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("engine clear"),

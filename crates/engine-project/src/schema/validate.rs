@@ -66,6 +66,9 @@ impl Scene {
             if let Some(post) = &c.post_process {
                 post.validate()?;
             }
+            if let Some(rt) = &c.ray_tracing {
+                rt.validate()?;
+            }
             if let Some(volume) = &c.post_process_volume {
                 volume.validate()?;
                 if volume.is_local() && c.transform.is_none() {

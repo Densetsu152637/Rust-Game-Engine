@@ -73,6 +73,44 @@ impl OffscreenSprites {
         })
     }
 
+    /// [`Self::wgpu`] on a device created with the `engine-render-rt`
+    /// request when the adapter supports hardware ray query (otherwise the
+    /// ordinary device; ray-traced effects then report the adapter's reason).
+    pub fn wgpu_ray_traced(
+        backends: WgpuBackends,
+        width: u32,
+        height: u32,
+        limits: RenderLimits,
+    ) -> Result<Self> {
+        let mut options = WgpuOptions {
+            backends,
+            frames_in_flight: limits.max_frames_in_flight as u32,
+            ..Default::default()
+        };
+        let instance = GpuContext::instance_with(backends);
+        let request =
+            match pollster::block_on(GpuContext::request_adapter(&instance, None, &options)) {
+                Ok(adapter) => crate::request_ray_tracing(&mut options, &adapter),
+                Err(error) => Err(engine_render_rt::RayTracingStatus {
+                    tier: engine_render_rt::RayTracingTier::Unavailable,
+                    cause: Some(engine_render_rt::RtUnavailableCause::NoAdapter),
+                    reason: Some(format!("{error:#}")),
+                    adapter: None,
+                }),
+            };
+        let gpu = pollster::block_on(GpuContext::request_with_options(instance, None, &options))?;
+        let target = OffscreenTarget::new(&gpu, width, height)?;
+        let mut renderer = GpuRenderer::new(gpu, target.info, limits)?;
+        renderer.note_ray_tracing_request(Some(request));
+        Ok(Self {
+            engine: Engine::Gpu {
+                renderer: Box::new(renderer),
+                target,
+            },
+            size: (width, height),
+        })
+    }
+
     /// Offscreen sprites on the deterministic recording backend.
     pub fn headless(width: u32, height: u32, limits: RenderLimits) -> Result<Self> {
         Self::new(Box::new(RecordingBackend::new()), width, height, limits)

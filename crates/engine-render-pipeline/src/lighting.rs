@@ -461,6 +461,9 @@ pub(crate) struct LightingRenderer {
     compute_lists_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     timestamps: bool,
+    /// 1x1 screen-lighting placeholders holding
+    /// [`crate::targets::SCREEN_LIGHTING_DEFAULTS`].
+    screen_defaults: [wgpu::TextureView; 4],
 }
 
 impl LightingRenderer {
@@ -531,12 +534,48 @@ impl LightingRenderer {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
+        let screen_defaults = crate::targets::SCREEN_LIGHTING_DEFAULTS.map(|value| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("engine screen lighting default"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: crate::targets::SCREEN_LIGHTING_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let half: Vec<u8> = value
+                .iter()
+                .flat_map(|v| f32_to_f16(*v).to_le_bytes())
+                .collect();
+            gpu.queue.write_texture(
+                texture.as_image_copy(),
+                &half,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(8),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            texture.create_view(&Default::default())
+        });
         Ok(Self {
             cluster_pipeline,
             compute_view_layout,
             compute_lists_layout,
             sampler,
             timestamps: device.features().contains(wgpu::Features::TIMESTAMP_QUERY),
+            screen_defaults,
         })
     }
 
@@ -680,6 +719,11 @@ pub(crate) struct ViewLighting {
     shadow_group: wgpu::BindGroup,
     compute_view: wgpu::BindGroup,
     compute_lists: wgpu::BindGroup,
+    uniform: wgpu::Buffer,
+    /// Views bound at `engine::view` 7..=10 and the texture they belong to
+    /// (`None` for the placeholders).
+    screen: [wgpu::TextureView; 4],
+    screen_texture: Option<wgpu::Texture>,
     /// Shadow views of this frame.
     pub draws: Vec<ShadowDraw>,
     /// Whether the cluster pass runs this frame.
@@ -768,6 +812,7 @@ impl ViewLighting {
             grid: &grid,
             lists: &lists,
             sampler: &renderer.sampler,
+            screen: &renderer.screen_defaults,
         };
         let bind_group = view_group(device, layouts, &parts, &atlas);
         let shadow_group = view_group(device, layouts, &parts, &no_atlas);
@@ -786,6 +831,9 @@ impl ViewLighting {
             shadow_group,
             compute_view,
             compute_lists,
+            uniform: uniform.clone(),
+            screen: renderer.screen_defaults.clone(),
+            screen_texture: None,
             draws: Vec::new(),
             dispatch: false,
             stats_seen: None,
@@ -796,6 +844,37 @@ impl ViewLighting {
     /// `engine::view` group with the shadow atlas.
     pub fn bind_group(&self) -> &wgpu::BindGroup {
         &self.bind_group
+    }
+
+    /// Bind `screen` (or the placeholders) at `engine::view` 7..=10,
+    /// rebuilding the view groups when the textures changed.
+    pub fn set_screen(
+        &mut self,
+        device: &wgpu::Device,
+        layouts: &PipelineLayouts,
+        renderer: &LightingRenderer,
+        screen: Option<&crate::targets::ScreenLighting>,
+    ) {
+        let texture = screen.map(|s| s.shadow.texture.clone());
+        if texture == self.screen_texture {
+            return;
+        }
+        self.screen = match screen {
+            Some(s) => s.targets().map(|t| t.view.clone()),
+            None => renderer.screen_defaults.clone(),
+        };
+        self.screen_texture = texture;
+        let parts = Parts {
+            uniform: &self.uniform,
+            lights: &self.lights.buffer,
+            shadows: &self.shadows.buffer,
+            grid: &self.grid,
+            lists: &self.lists,
+            sampler: &renderer.sampler,
+            screen: &self.screen,
+        };
+        self.bind_group = view_group(device, layouts, &parts, &self.atlas);
+        self.shadow_group = view_group(device, layouts, &parts, &self.no_atlas);
     }
 
     /// `engine::view` group with a placeholder atlas (Shadow stage).
@@ -865,6 +944,7 @@ impl ViewLighting {
                 grid: &self.grid,
                 lists: &self.lists,
                 sampler: &renderer.sampler,
+                screen: &self.screen,
             };
             self.bind_group = view_group(device, layouts, &parts, &self.atlas);
             self.shadow_group = view_group(device, layouts, &parts, &self.no_atlas);
@@ -953,6 +1033,7 @@ struct Parts<'a> {
     grid: &'a wgpu::Buffer,
     lists: &'a wgpu::Buffer,
     sampler: &'a wgpu::Sampler,
+    screen: &'a [wgpu::TextureView; 4],
 }
 
 fn view_group(
@@ -992,6 +1073,22 @@ fn view_group(
             wgpu::BindGroupEntry {
                 binding: 6,
                 resource: wgpu::BindingResource::Sampler(parts.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::TextureView(&parts.screen[0]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: wgpu::BindingResource::TextureView(&parts.screen[1]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: wgpu::BindingResource::TextureView(&parts.screen[2]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 10,
+                resource: wgpu::BindingResource::TextureView(&parts.screen[3]),
             },
         ],
     })
@@ -1038,11 +1135,12 @@ fn compute_groups(
     (view, lists)
 }
 
-/// The `engine::view` layout entries 4..=6 (cluster grid, cluster lists,
-/// shadow comparison sampler) appended to the view layout.
+/// The `engine::view` layout entries 4..=10 (cluster grid, cluster lists,
+/// shadow comparison sampler, the four screen-lighting textures) appended to
+/// the view layout.
 pub(crate) fn view_layout_entries(
     visibility: wgpu::ShaderStages,
-) -> [wgpu::BindGroupLayoutEntry; 3] {
+) -> [wgpu::BindGroupLayoutEntry; 7] {
     let storage = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility,
@@ -1050,6 +1148,16 @@ pub(crate) fn view_layout_entries(
             ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
             min_binding_size: None,
+        },
+        count: None,
+    };
+    let screen = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
         },
         count: None,
     };
@@ -1062,7 +1170,27 @@ pub(crate) fn view_layout_entries(
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
             count: None,
         },
+        screen(7),
+        screen(8),
+        screen(9),
+        screen(10),
     ]
+}
+
+/// IEEE half of a finite `value` (mantissa truncated; exact for the
+/// screen-lighting defaults).
+fn f32_to_f16(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    let mantissa = bits & 0x007f_ffff;
+    if value == 0.0 || exponent <= 0 {
+        return sign;
+    }
+    if exponent >= 31 {
+        return sign | 0x7c00;
+    }
+    sign | ((exponent as u16) << 10) | ((mantissa >> 13) as u16)
 }
 
 #[cfg(test)]

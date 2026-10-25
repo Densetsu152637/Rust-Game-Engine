@@ -47,6 +47,7 @@ pub use dlss::{
 pub use engine_render;
 pub use engine_render_pipeline as render_pipeline;
 pub use engine_render_pipeline::PipelineFeatures;
+pub use engine_render_rt as render_rt;
 pub use engine_render_wgpu::{
     BACKEND_ENV_VAR, DeviceFeatureReport, DeviceFeatureRequest, GpuContext, GpuRequirements,
     OffscreenTarget, RenderTargetInfo, WgpuBackend, WgpuBackends, WgpuOptions,

@@ -1194,6 +1194,7 @@ dependencies = [
  "engine-project",
  "engine-render",
  "engine-render-pipeline",
+ "engine-render-rt",
  "engine-render-wgpu",
  "gilrs",
  "glam 0.34.1",

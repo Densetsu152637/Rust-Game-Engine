@@ -58,7 +58,7 @@ Per view, in order (render size until Upscale, output size after):
 | --- | --- | --- |
 | `Prepare` | — | uploads, compute (no target bound) |
 | `Shadow` | `engine.shadows` | shadow casters into the view's shadow atlas layers |
-| `Prepass` | `engine.prepass.normals`, `engine.prepass.motion` | run only when a running feature (or the host) needs them |
+| `Prepass` | `engine.prepass.normals`, `engine.prepass.motion`; `engine.rt.shadows`, `engine.rt.ao`, `engine.rt.reflections`, `engine.rt.gi` (desktop host, disabled by default) | prepasses run only when a running feature (or the host) needs them; the RT features write the screen-lighting inputs ([rendering-raytracing.md](rendering-raytracing.md#frame-integration)) |
 | `Opaque` | `engine.opaque` | instanced opaque engine meshes |
 | `Sky` | — | background after opaque geometry |
 | `Transparent` | `engine.transparent` | blended engine meshes, back to front |
@@ -101,7 +101,8 @@ needs }`:
 
 - **Names** are stable and unique: 1..=64 bytes of `[a-z0-9._-]`, conventionally
   `<domain>.<feature>` (`world.terrain`, `editor.gizmos`). `engine.` is reserved
-  for built-ins.
+  for built-ins and engine crates (`FeatureRegistry::register_engine`, used by the
+  desktop host's `engine.rt.*` features).
 - **Ordering**: stages in the table order; inside a stage a topological sort of
   `before`/`after` with ties broken by registration order. Constraints naming an
   unregistered feature are ignored (optional neighbours); a constraint against a
@@ -111,8 +112,9 @@ needs }`:
 - **Per-view state**: `FeatureOverrides` (name → bool) per view; `required`
   built-ins ignore `false` (reported `required_override_ignored`). Unknown names
   are reported, not errors.
-- **Needs**: `FeatureNeeds { normals, motion }`; the union over running
-  features plus `ViewData.host_needs` decides which prepasses run.
+- **Needs**: `FeatureNeeds { normals, motion, screen_lighting }`; the union over
+  running features plus `ViewData.host_needs` decides which prepasses run and
+  whether the screen-lighting inputs are allocated.
 
 Registration: `ScenePipeline::register(feature)` or
 `add_features(FeatureRegistry)` (prepares each feature on the device first,
@@ -129,7 +131,7 @@ such passes are now `Overlay`-stage features.
 | `stage`, `view` (`&ViewData`) | current stage and view |
 | `view_bind_group`, `layouts` | `engine::view` group 0 and the shared layouts (in `Shadow` the atlas binding is a 1x1 placeholder) |
 | `world` | the extracted ECS world (read only), when the host supplies it |
-| `hdr()`, `depth()`, `normals()`, `motion()` | frame textures (see below) |
+| `hdr()`, `depth()`, `normals()`, `motion()`, `screen_lighting()` | frame textures (see below) |
 | `scene_pass(label)` | render pass over HDR + depth (load/store), scene stages only |
 | `post_process_io()` | `(source, destination)`; the destination becomes current (PostProcess) |
 | `upscale_io()` | `(render HDR, output-size destination)` (Upscale) |
@@ -160,6 +162,7 @@ XR eyes use `LEFT_EYE`/`RIGHT_EYE`.
 | 4 | `var<storage, read> engine_clusters: EngineClusterGrid` |
 | 5 | `var<storage, read> engine_cluster_lights: array<u32>` |
 | 6 | `var engine_shadow_sampler: sampler_comparison` |
+| 7-10 | `engine_screen_shadow`, `engine_screen_ao`, `engine_screen_indirect`, `engine_screen_reflection: texture_2d<f32>` ([screen-lighting inputs](#screen-lighting-inputs)) |
 
 `EngineView` fields in order (all `mat4x4<f32>` then `vec4`):
 `clip_from_world` (jittered: rasterize with it), `unjittered_clip_from_world`,
@@ -183,10 +186,33 @@ clip space, depth 0 near .. 1 far, not reversed. Helpers:
 | Depth | `Depth32Float` (0 near .. 1 far) | render | always; sampled after Transparent |
 | Normals | `Rgba16Float` (world unit normal, w coverage) | render | after Prepass when a running feature needs normals |
 | Motion | `Rg16Float` (current→previous, render px, y down) | render | after Prepass when a feature or the host needs motion |
+| Screen-lighting inputs (4) | `Rgba16Float` | render | when a running feature needs `screen_lighting`; 1x1 neutral placeholders otherwise |
 | Post targets / upscaled | `Rgba16Float` | output | PostProcess / Upscale |
 
 Built-in prepasses use engine transforms: custom vertex displacement is not
 replayed in normal, motion or shadow passes. Motion is opaque-only.
+
+### Screen-lighting inputs
+
+Four render-size `Rgba16Float` textures (`ScreenLighting`, usage attachment, sampled,
+storage and copy) that Prepass features write and `engine::lighting` reads in the
+Opaque and Transparent stages. They are cleared every frame to
+`SCREEN_LIGHTING_DEFAULTS`, the values that leave lighting unchanged:
+
+| Texture | Binding | Cleared | Meaning |
+| --- | --- | --- | --- |
+| `shadow` | 7 | (1, 0, 0, 0) | x: visibility of the first directional light; y = 1: x replaces its shadow-map visibility, y = 0: x multiplies it |
+| `ambient_occlusion` | 8 | (1, 0, 0, 0) | x: multiplier of the diffuse ambient / indirect term |
+| `indirect` | 9 | (0, 0, 0, 0) | rgb: incident diffuse radiance (irradiance / pi) replacing the constant ambient where a >= 0.5 |
+| `reflection` | 10 | (0, 0, 0, -1) | rgb: specular radiance along the mirror direction where a >= 0; a: roughness cutoff |
+
+A writer uses storage writes or copies in the Prepass stage and must not bind the view
+group in the same pass. `engine_direct_lighting` applies `shadow` to light 0 when it is
+directional (`engine_light_contribution_screen`), and `engine_indirect_lighting(surface,
+v, frag)` returns the ambient / indirect term (constant ambient, AO, GI, reflections
+blended by Fresnel and roughness); `lit.wgsl` uses both. With no feature needing them the
+bindings hold 1x1 placeholders with the cleared values and the lit result is unchanged.
+The material contract allows these bindings (group 0, 7..=10).
 
 ### Light list and clusters
 
@@ -430,6 +456,8 @@ integration and requests fall back with the build reason.
 ## Limits and deferred work
 
 - Lights and shadows: see [rendering-lights.md](rendering-lights.md#limits).
+- Screen-lighting inputs carry one directional light's visibility (light 0) and
+  one reflection layer; transparent surfaces read the opaque surface's texels.
 - Prepasses and shadows ignore custom vertex displacement; transparent meshes
   write no motion or depth.
 - The default output is a linear clamp. Tonemapping, exposure and the other

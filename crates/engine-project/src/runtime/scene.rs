@@ -27,6 +27,11 @@ pub struct RuntimeSnapshot {
     /// the influencing volumes and the effective settings summary.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post: Option<crate::post::PostStatus>,
+    /// Renderer-reported ray-traced lighting of the active camera view: the
+    /// tier and, per effect, `ray_traced` / `fallback` / `disabled` with the
+    /// reason; absent without a 3D camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ray_tracing: Option<crate::raytracing::RayTracingReport>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -181,6 +186,7 @@ impl Runtime {
             render_pipeline: self.render_pipeline_status(),
             lighting: self.lighting_status(),
             post: self.post_status(),
+            ray_tracing: self.ray_tracing_status(),
             ticks: self.ticks,
             scene,
             live_entities: self
@@ -267,6 +273,11 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
         e.insert(value.clone());
     } else {
         e.remove::<crate::post::PostProcessVolume>();
+    }
+    if let Some(value) = &c.ray_tracing {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::raytracing::RayTracing>();
     }
     if let Some(parent) = &authored.parent {
         e.insert(crate::Parent(parent.clone()));

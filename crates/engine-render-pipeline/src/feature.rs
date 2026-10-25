@@ -98,6 +98,9 @@ pub struct FeatureNeeds {
     pub normals: bool,
     /// Current-to-previous motion vectors from `engine.prepass.motion`.
     pub motion: bool,
+    /// The screen-lighting inputs ([`crate::ScreenLighting`]) that Prepass
+    /// features write and `engine::lighting` reads.
+    pub screen_lighting: bool,
 }
 
 impl FeatureNeeds {
@@ -105,6 +108,7 @@ impl FeatureNeeds {
         Self {
             normals: self.normals || other.normals,
             motion: self.motion || other.motion,
+            screen_lighting: self.screen_lighting || other.screen_lighting,
         }
     }
 }
@@ -232,6 +236,19 @@ impl FeatureRegistry {
     /// Register an owned feature.
     pub fn register(&mut self, feature: impl PipelineFeature) -> Result<()> {
         self.register_boxed(Box::new(feature))
+    }
+
+    /// Register an engine-provided feature under the reserved `engine.`
+    /// namespace (for example the desktop host's `engine.rt.*` lighting
+    /// features). Game code uses [`Self::register`].
+    pub fn register_engine(&mut self, feature: impl PipelineFeature) -> Result<()> {
+        let descriptor = feature.descriptor();
+        ensure!(
+            descriptor.name.starts_with("engine."),
+            "engine render features must be named `engine.*`: {}",
+            descriptor.name
+        );
+        self.insert(descriptor, FeatureBody::Owned(Box::new(feature)))
     }
 
     pub fn register_boxed(&mut self, feature: Box<dyn PipelineFeature>) -> Result<()> {
@@ -767,11 +784,13 @@ mod tests {
             feature("a.ssao", Stage::PostProcess).needs(FeatureNeeds {
                 normals: true,
                 motion: false,
+                screen_lighting: false,
             }),
             feature("a.blur", Stage::PostProcess)
                 .needs(FeatureNeeds {
                     normals: false,
                     motion: true,
+                    screen_lighting: false,
                 })
                 .disabled_by_default(),
         ]);
@@ -780,7 +799,8 @@ mod tests {
             registry.needs(&resolved),
             FeatureNeeds {
                 normals: true,
-                motion: false
+                motion: false,
+                screen_lighting: false,
             }
         );
     }

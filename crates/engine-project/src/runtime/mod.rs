@@ -105,6 +105,8 @@ impl Runtime {
             .insert_resource(crate::lights::LightingControl::default());
         app.world_mut()
             .insert_resource(crate::post::PostControl::default());
+        app.world_mut()
+            .insert_resource(crate::raytracing::RayTracingControl::default());
         if !app
             .world()
             .contains_resource::<crate::rendering3d::TextureStreams>()

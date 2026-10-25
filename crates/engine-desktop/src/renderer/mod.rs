@@ -15,6 +15,7 @@ mod cache;
 mod framegen;
 mod material2d;
 mod post;
+mod rt;
 mod scene3d;
 mod sprite;
 mod temporal;
@@ -22,6 +23,7 @@ mod upscale;
 mod vertex;
 
 pub use framegen::{MAX_GENERATION_GAP, MAX_PRESENT_SPACING, PresentPacer, presentation_offsets};
+pub use rt::{effects_settings, prepare_ray_tracing, request_ray_tracing, rt_names};
 pub use scene3d::{LIT_WGSL, camera_matrix};
 pub use sprite::{SpriteRenderer, TEXTURED_WGSL};
 pub use temporal::{halton, jitter_matrix, jitter_offset, jitter_phase_count, pixel_motion};
@@ -119,6 +121,9 @@ pub struct GpuRenderer {
     lighting: LightingStatus,
     post: PostStatus,
     post_host: post::PostHost,
+    rt: rt::RtHost,
+    /// A camera cut requested for the next native view (`reset_history`).
+    native_reset: bool,
     upscaler: upscale::Upscaler,
     framegen: framegen::FrameGeneration,
 }
@@ -243,6 +248,8 @@ impl GpuRenderer {
             lighting: LightingStatus::default(),
             post: PostStatus::default(),
             post_host: post::PostHost::default(),
+            rt: rt::RtHost::default(),
+            native_reset: false,
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
             framegen: framegen::FrameGeneration::new(),
         })
@@ -290,10 +297,35 @@ impl GpuRenderer {
         &self.post
     }
 
+    /// Ray-traced lighting of the last camera view: the tier and, per
+    /// effect, `ray_traced` / `fallback` / `disabled` with the reason; `None`
+    /// while no frame enabled an `engine.rt.*` feature.
+    pub fn ray_tracing_status(&self) -> Option<&engine_project::raytracing::RayTracingReport> {
+        self.rt.report()
+    }
+
+    /// [`Self::ray_tracing_status`] in `engine-render-rt`'s types.
+    pub fn rt_effects_status(&self) -> Option<engine_render_rt::RtEffectsStatus> {
+        self.rt.effects_status()
+    }
+
+    /// Record the outcome of [`crate::prepare_ray_tracing`] for this
+    /// renderer's device: an `Err` (the adapter cannot run the hardware tier)
+    /// becomes the fallback reason of every ray-traced effect.
+    pub fn note_ray_tracing_request(
+        &mut self,
+        request: Option<std::result::Result<(), engine_render_rt::RayTracingStatus>>,
+    ) {
+        if let Some(Err(status)) = request {
+            self.rt.set_unavailable(status);
+        }
+    }
+
     /// Discard upscaler and frame generation history before the next frame
     /// (camera cut, teleport, scene transition, resume after a pause). Resizes
     /// and quality changes reset automatically.
     pub fn reset_temporal_history(&mut self) {
+        self.native_reset = true;
         self.upscaler.request_reset();
         self.framegen.request_reset();
     }
@@ -498,7 +530,10 @@ impl GpuRenderer {
             .sprites
             .scene_viewport(frame, (self.info.width, self.info.height))?;
         let size = [viewport.width, viewport.height];
-        let view = scene3d::camera_view(camera, ViewId::MAIN, size, size)?;
+        let mut view = scene3d::camera_view(camera, ViewId::MAIN, size, size)?;
+        // A requested camera cut discards the view's temporal history
+        // (motion, RT denoisers).
+        view.reset_history = std::mem::take(&mut self.native_reset);
         let output = self.output_target(target, viewport);
         let (_, stats) = self.draw_3d(frame, view, &output, world, true, None)?;
         Ok(stats)
@@ -527,6 +562,13 @@ impl GpuRenderer {
         self.pipeline()?;
         let mut view = view;
         let post_status = self.post_host.prepare(frame, &mut view)?;
+        self.rt.prepare(
+            &self.gpu,
+            self.scene.as_mut().expect("created above"),
+            frame,
+            &lights,
+            &mut view,
+        )?;
         let Self {
             gpu,
             sprites: sprite_renderer,
@@ -535,6 +577,7 @@ impl GpuRenderer {
             status,
             lighting,
             post,
+            rt,
             ..
         } = self;
         let scene = scene.as_mut().expect("created above");
@@ -570,6 +613,7 @@ impl GpuRenderer {
             *status = status_of(&report, RenderPipelineState::Rendered, &overrides);
             *lighting = lighting_status_of(&report.lighting, frame.lights.len());
             *post = post_status;
+            rt.finish(&report);
         }
         Ok((report, stats))
     }

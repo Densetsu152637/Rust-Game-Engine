@@ -44,7 +44,8 @@
 - [Mesh LOD, HLOD and culling](rendering-lod.md): the CPU engine-mesh-lod crate:
   quadric mesh simplification, LOD chains and selection, HLOD clusters, frustum culling.
 - [Render architecture](rendering-architecture.md): the render extension API
-  (features, stages, per-view data, HDR targets, light list, instancing), WGSL
+  (features, stages, per-view data, HDR targets, light list, screen-lighting inputs,
+  instancing), WGSL
   composition and the material shader contract, device feature composition,
   XR eye targets and texture streams.
 - [Lights and shadows](rendering-lights.md): directional, point, spot and area
@@ -59,7 +60,9 @@
 - [Hardware ray tracing core](rendering-raytracing.md): `engine-render-rt` tiers and
   status, the audited experimental token, BLAS/TLAS scenes, the WGSL ray-query library,
   RT shadow (hard/soft), ambient occlusion, reflection and diffuse-GI kernels, the
-  spatio-temporal denoiser, effect settings/status and the reference path tracer.
+  spatio-temporal denoiser, effect settings/status, the reference path tracer, and the
+  frame integration (`engine.rt.*` features, the `RayTracing` component, raster
+  fallbacks and per-effect status).
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
   fingerprints, ownership and reload behavior.
 - [Authored simulation](simulation.md): 2D/3D rigid bodies, animation and navigation

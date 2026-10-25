@@ -12,6 +12,7 @@ pub mod model_import;
 pub mod networking;
 pub mod persistence;
 pub mod post;
+pub mod raytracing;
 pub mod rendering3d;
 pub mod runtime;
 pub mod scheduled_events;

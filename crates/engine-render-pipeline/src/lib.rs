@@ -78,7 +78,10 @@ pub use resources::{ENGINE_VERTEX_LAYOUT, EngineVertex, GpuMesh, GpuTexture, TEX
 pub use shader::{LIT_WGSL, MaterialTarget, ShaderComposer, compose_material, validate_wgsl};
 pub use shadows::{ShadowAtlasConfig, cascade_splits};
 pub use streams::{MAX_STREAMS, StreamMode, TextureStreams};
-pub use targets::{DEPTH_FORMAT, FrameTargets, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT, Target};
+pub use targets::{
+    DEPTH_FORMAT, FrameTargets, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT,
+    SCREEN_LIGHTING_DEFAULTS, SCREEN_LIGHTING_FORMAT, ScreenLighting, Target,
+};
 pub use view::{
     VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, ViewKind, ViewUniform, Viewport, project,
 };

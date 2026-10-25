@@ -285,6 +285,11 @@ fn publish_upscaler_status(runtime: &mut Runtime, renderer: &crate::GpuRenderer)
     if let Some(mut control) = world.get_resource_mut::<engine_project::post::PostControl>() {
         control.status = renderer.post_status().clone();
     }
+    if let Some(mut control) =
+        world.get_resource_mut::<engine_project::raytracing::RayTracingControl>()
+    {
+        control.status = renderer.ray_tracing_status().cloned();
+    }
 }
 
 /// Publish the render feature state a renderer would resolve for the active
@@ -519,7 +524,7 @@ impl ApplicationHandler for DesktopRunner {
                 .unwrap_or_default();
             // NGX extensions must be requested at device creation.
             let request = DlssRequest::for_frame(&frame, &dlss);
-            let mut host = pollster::block_on(WindowSurface::with_upscaler(
+            let mut host = pollster::block_on(WindowSurface::with_ray_tracing(
                 window,
                 RenderLimits::default(),
                 WgpuOptions {
@@ -529,6 +534,7 @@ impl ApplicationHandler for DesktopRunner {
                 },
                 &dlss,
                 request,
+                Some(&frame),
             ))?;
             let features = self
                 .runtime
