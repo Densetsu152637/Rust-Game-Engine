@@ -1261,6 +1261,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-foliage"
+version = "0.1.0"
+dependencies = [
+ "engine-pcg",
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-log"
 version = "0.1.0"
 dependencies = [
