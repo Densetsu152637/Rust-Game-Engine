@@ -33,6 +33,7 @@ mod instancing;
 mod lighting;
 mod lights;
 mod pipeline;
+pub mod post;
 pub mod readback;
 mod resources;
 pub mod shader;
@@ -66,8 +67,12 @@ pub use lights::{
     SHADOW_RESOLUTIONS, ShadowFilter, ShadowSettings, ShadowView, photometric,
 };
 pub use pipeline::{
-    HdrImage, HostStages, HostUpscale, NoHost, SceneFrame, ScenePipeline, SceneTextures,
-    ViewReport, builtin_registry, names,
+    AutoExposureState, HdrImage, HostStages, HostUpscale, NoHost, SceneFrame, ScenePipeline,
+    SceneTextures, ViewReport, builtin_registry, names,
+};
+pub use post::{
+    BloomSettings, ExposureMode, ExposureSettings, GradingSettings, GrainSettings, Lut3d,
+    PostSettings, TonemapOperator, VignetteSettings,
 };
 pub use resources::{ENGINE_VERTEX_LAYOUT, EngineVertex, GpuMesh, GpuTexture, TEXTURE_USAGES};
 pub use shader::{LIT_WGSL, MaterialTarget, ShaderComposer, compose_material, validate_wgsl};

@@ -82,6 +82,9 @@ pub struct ViewData {
     /// Discard history this frame (camera cut): previous matrices equal the
     /// current ones and motion is camera-only.
     pub reset_history: bool,
+    /// HDR post-processing and tonemapping for this view (`None`: the
+    /// default clamp output). See [`crate::PostSettings`].
+    pub post: Option<crate::post::PostSettings>,
 }
 
 impl ViewData {
@@ -108,6 +111,7 @@ impl ViewData {
             features: FeatureOverrides::default(),
             host_needs: FeatureNeeds::default(),
             reset_history: false,
+            post: None,
         };
         view.validate()?;
         Ok(view)

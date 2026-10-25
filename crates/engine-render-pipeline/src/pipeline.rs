@@ -40,6 +40,13 @@ pub mod names {
     pub const UPSCALE: &str = "engine.upscale";
     /// Tonemap stage: the default output operator (linear clamp). Required.
     pub const OUTPUT: &str = "engine.output";
+    /// PostProcess stage: exposure (manual or auto), bloom and HDR colour
+    /// grading. Runs for views with [`crate::ViewData::post`] set.
+    pub const POST: &str = "engine.post";
+    /// Tonemap stage: tonemapping, vignette, grain and the target encode,
+    /// superseding `engine.output`. Runs for views with
+    /// [`crate::ViewData::post`] set.
+    pub const TONEMAP: &str = "engine.tonemap";
     /// Overlay stage: the host's 2D sprites/UI (a host-executed node).
     pub const SPRITES: &str = "engine.sprites";
 }
@@ -238,7 +245,11 @@ pub fn builtin_registry() -> Result<FeatureRegistry> {
         FeatureDescriptor::new(names::OPAQUE, Stage::Opaque),
         FeatureDescriptor::new(names::TRANSPARENT, Stage::Transparent),
         FeatureDescriptor::new(names::UPSCALE, Stage::Upscale),
+        FeatureDescriptor::new(names::POST, Stage::PostProcess).disabled_by_default(),
         FeatureDescriptor::new(names::OUTPUT, Stage::Tonemap).required(),
+        FeatureDescriptor::new(names::TONEMAP, Stage::Tonemap)
+            .after(names::OUTPUT)
+            .disabled_by_default(),
     ] {
         registry.insert(descriptor, FeatureBody::Builtin)?;
     }
@@ -259,6 +270,7 @@ pub struct ScenePipeline {
     layouts: PipelineLayouts,
     composer: ShaderComposer,
     registry: FeatureRegistry,
+    post: std::sync::Arc<crate::post::PostShared>,
     mesh: MeshRenderer,
     output: OutputPass,
     upscale: UpscalePass,
@@ -276,14 +288,27 @@ impl ScenePipeline {
         let mesh = MeshRenderer::new(&gpu, &layouts).context("creating the built-in mesh path")?;
         let output = OutputPass::new(device)?;
         let upscale = UpscalePass::new(device)?;
-        let registry = builtin_registry()?;
+        let mut registry = builtin_registry()?;
+        let composer = ShaderComposer::new();
+        let post = std::sync::Arc::new(crate::post::PostShared::default());
+        crate::post::install(
+            &mut registry,
+            &FeatureSetup {
+                gpu: &gpu,
+                layouts: &layouts,
+                composer: &composer,
+            },
+            post.clone(),
+        )
+        .context("creating the post-processing stack")?;
         let lighting = LightingRenderer::new(&gpu).context("creating the lighting passes")?;
         let shadow_alignment = device.limits().min_uniform_buffer_offset_alignment.max(16);
         Ok(Self {
             gpu,
             layouts,
-            composer: ShaderComposer::new(),
+            composer,
             registry,
+            post,
             mesh,
             output,
             upscale,
@@ -406,7 +431,17 @@ impl ScenePipeline {
                 && v.y + v.height <= target.size[1],
             "the target viewport must lie inside the target and match the view's output size"
         );
-        let mut resolved = self.registry.resolve(&view.features);
+        if let Some(post) = &view.post {
+            post.validate()?;
+        }
+        // Post settings turn the post stack on unless the view says otherwise.
+        let mut overrides = view.features.clone();
+        if view.post.is_some() {
+            for name in [names::POST, names::TONEMAP] {
+                overrides.0.entry(name.to_owned()).or_insert(true);
+            }
+        }
+        let mut resolved = self.registry.resolve(&overrides);
         let needs = self.registry.needs(&resolved).union(view.host_needs);
         let device = self.gpu.device.clone();
         let queue = self.gpu.queue.clone();
@@ -727,6 +762,44 @@ impl ScenePipeline {
         crate::readback::read_rgba16f(&self.gpu, texture)
     }
 
+    /// The auto-exposure state of `view`'s last frame: the adapted and the
+    /// target exposure value (log2 of the exposure scale) and the scale.
+    /// `None` when the view never ran auto-exposure. Blocks on the GPU.
+    pub fn auto_exposure(&self, view: ViewId) -> Result<Option<AutoExposureState>> {
+        let Some(buffer) = self
+            .post
+            .readbacks
+            .lock()
+            .expect("post readbacks lock")
+            .get(&view)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let slice = buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        self.gpu.wait_idle()?;
+        receiver
+            .recv()
+            .context("auto exposure readback was not mapped")?
+            .context("mapping the auto exposure readback")?;
+        let values: [f32; 4] = {
+            let mapped = slice
+                .get_mapped_range()
+                .map_err(|error| anyhow::anyhow!("reading auto exposure: {error:?}"))?;
+            bytemuck::pod_read_unaligned(&mapped[..16])
+        };
+        buffer.unmap();
+        Ok((values[3] > 0.5).then_some(AutoExposureState {
+            scale: values[0],
+            ev: values[1],
+            target_ev: values[2],
+        }))
+    }
+
     /// Read back the motion vectors (`xy`, render pixels) of `view`'s last
     /// frame; an error when no feature or host needed motion.
     pub fn read_motion(&self, view: ViewId) -> Result<HdrImage> {
@@ -760,6 +833,14 @@ impl ScenePipeline {
             .context("no frame was rendered for this view")?;
         crate::readback::read_rgba16f(&self.gpu, &targets.hdr.texture)
     }
+}
+
+/// Auto-exposure of one view: `scale = 2^ev`, adapted toward `target_ev`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AutoExposureState {
+    pub scale: f32,
+    pub ev: f32,
+    pub target_ev: f32,
 }
 
 /// Linear RGBA `f32` pixels.

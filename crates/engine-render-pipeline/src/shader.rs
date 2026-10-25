@@ -21,6 +21,7 @@ pub const LIGHTING_WGSL: &str = include_str!("wgsl/lighting.wgsl");
 pub const MATERIAL_WGSL: &str = include_str!("wgsl/material.wgsl");
 pub const SPRITE_MATERIAL_WGSL: &str = include_str!("wgsl/material_sprite.wgsl");
 pub const FULLSCREEN_WGSL: &str = include_str!("wgsl/fullscreen.wgsl");
+pub const TONEMAP_WGSL: &str = include_str!("wgsl/tonemap.wgsl");
 /// The built-in metallic-roughness material (selected when a material has no
 /// custom shader). Also a reference implementation of the contract.
 pub const LIT_WGSL: &str = include_str!("wgsl/lit.wgsl");
@@ -31,6 +32,10 @@ pub(crate) const OUTPUT_WGSL: &str = include_str!("wgsl/output.wgsl");
 pub(crate) const UPSCALE_WGSL: &str = include_str!("wgsl/upscale.wgsl");
 pub(crate) const DEPTH_EXPORT_WGSL: &str = include_str!("wgsl/depth_export.wgsl");
 pub(crate) const CLUSTERS_WGSL: &str = include_str!("wgsl/clusters.wgsl");
+pub(crate) const POST_MAIN_WGSL: &str = include_str!("wgsl/post_main.wgsl");
+pub(crate) const POST_BLOOM_WGSL: &str = include_str!("wgsl/post_bloom.wgsl");
+pub(crate) const POST_EXPOSURE_WGSL: &str = include_str!("wgsl/post_exposure.wgsl");
+pub(crate) const POST_OUTPUT_WGSL: &str = include_str!("wgsl/post_output.wgsl");
 
 /// Longest composed shader accepted, in bytes.
 pub const MAX_COMPOSED_BYTES: usize = 4 * 1024 * 1024;
@@ -72,6 +77,7 @@ impl ShaderComposer {
         modules.insert("engine::brdf".to_owned(), BRDF_WGSL.to_owned());
         modules.insert("engine::lighting".to_owned(), LIGHTING_WGSL.to_owned());
         modules.insert("engine::fullscreen".to_owned(), FULLSCREEN_WGSL.to_owned());
+        modules.insert("engine::tonemap".to_owned(), TONEMAP_WGSL.to_owned());
         let material = match target {
             MaterialTarget::Mesh => MATERIAL_WGSL,
             MaterialTarget::Sprite => SPRITE_MATERIAL_WGSL,
@@ -307,6 +313,10 @@ mod tests {
             UPSCALE_WGSL,
             DEPTH_EXPORT_WGSL,
             CLUSTERS_WGSL,
+            POST_MAIN_WGSL,
+            POST_BLOOM_WGSL,
+            POST_EXPOSURE_WGSL,
+            POST_OUTPUT_WGSL,
         ] {
             validate_wgsl(&composer.compose(source).unwrap()).unwrap();
         }
