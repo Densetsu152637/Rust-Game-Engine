@@ -41,6 +41,7 @@ parts). Joints are separate components: `engine.PhysicsJoint2D` and
 `engine.CharacterController2D/3D` ([Character controllers](physics-character.md)).
 Bodies can shatter into debris with `engine.Destructible3D` ([Physics destruction](physics-destruction.md)).
 Dynamic bodies can be driven as raycast vehicles with `engine.Vehicle3D` ([Raycast vehicles](physics-vehicles.md)).
+Cloth, soft bodies and particle fluids (`engine.Cloth`, `engine.SoftBody`, `engine.FluidVolume`) collide with and push rigid bodies; see [Cloth](physics-cloth.md#authored-component-enginecloth), [Soft bodies](physics-softbody.md#authored-component-enginesoftbody) and [Particle fluids](physics-fluids.md#authored-component-enginefluidvolume).
 
 Dynamic bodies own world translation/rotation. Direct Transform writes do not
 teleport dynamic bodies. Changing body configuration rebuilds the body with the

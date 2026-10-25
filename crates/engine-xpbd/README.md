@@ -46,8 +46,10 @@ for reaction in world.proxy_impulses() {
   values, out-of-range indices, repeated vertices, duplicate or degenerate triangles and
   tetrahedra, unreferenced vertices and exceeded capacities are rejected.
 
-Deferred: self-collision, triangle/edge and continuous proxy collision, shape matching, GPU
-acceleration, and engine integration (components, MCP, events, rendering). Details and
+Engine integration (`engine.Cloth`, `engine.SoftBody`, rigid coupling, render data) lives in
+`engine-project`; see [docs/physics-cloth.md](../../docs/physics-cloth.md). Deferred:
+self-collision, triangle/edge and continuous proxy collision, shape matching, GPU
+acceleration and drawing. Details and
 measured behaviour: [cloth](../../docs/physics-cloth.md) and
 [soft bodies](../../docs/physics-softbody.md).
 

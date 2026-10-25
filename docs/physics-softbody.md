@@ -80,6 +80,65 @@ iteration):
 | Same cube, edge compliance 3e-3 m/N, volume compliance 3e-4 1/Pa | Squashed 23 mm (stiff: 0.2 mm), volume error -5.2%, still resting at y = 0.01000. |
 | 0.3 m cube (100 kg/m^3, 2.7 kg) falling onto a box proxy, 120 frames | Reported proxy impulse matches the particles' momentum change minus gravity within 1.7e-4 relative on every frame, including the impact (peak 3.68 N s). At rest the impulse equals the weight impulse `m g dt` (0.4414 N s) applied under the centre. |
 
+## Authored component: `engine.SoftBody`
+
+Add `engine.SoftBody` to an entity with a `Transform`. Fields: `source` (`box` or `mesh`),
+`size` and `resolution` (box cells per axis, 1..=32; the box is centred on the entity),
+inline `positions`/`tets` (up to 16,384 vertices and 65,536 tetrahedra), `pinned`,
+`density` (kg/m^3), `edge_compliance`, `volume_compliance` (1/Pa), `damping`,
+`particle_radius` (collision margin), `friction`, `gravity_scale`, `substeps`, `iterations`
+and the coupling fields below. Validation errors are named `engine.SoftBody: invalid ...`.
+There is no `physics.softbody.*` event.
+
+### Rigid coupling
+
+Every engine-physics substep the feature turns the 3D rigid bodies near the object into
+collider proxies (current pose, linear and angular velocity, material friction), steps the
+solver with the same fixed `dt`, and applies the reported reaction impulse (linear, plus the
+angular part about the body origin) to **dynamic** bodies, multiplied by `coupling_scale`.
+`two_way: false` keeps the one-way collision. Bodies are used when `material.layer &
+collision_mask != 0` (sensors never collide).
+
+| Body shape | Proxy |
+| --- | --- |
+| box, ball, capsule | exact |
+| cylinder | local bounding box (`radius`, `half_height`) |
+| convex hull | local bounding box of the hull points |
+| compound | local bounding box of the parts' bounding spheres |
+| trimesh, heightfield | **not coupled** (no simple plane/box path exists; put a fixed box collider under them) |
+
+Only bodies within the object's bounds plus 0.25 m are passed to the solver; more than
+1024 (cloth, soft body) or 256 (fluid) nearby proxies fail the step with a named error rather
+than dropping bodies silently.
+
+### Transforms and render data
+
+Particles simulate in **world space**. The entity `Transform` is only the creation anchor
+(the mesh is placed with its world pose when the object is built); it is not written back
+and moving it later does not move the object. Structural edits (mesh, size, resolution,
+pins, density) rebuild the object at the entity's current pose; material, wind, damping,
+gravity scale, substeps and coupling edits apply live.
+
+After each frame in which the simulation stepped, the feature publishes the `PhysicsRenderData`
+world resource (`engine_project::simulation::physics::PhysicsRenderData`) for a render feature
+to read from the extracted world (see [render architecture](rendering-architecture.md)):
+
+```rust
+pub struct PhysicsRenderData {
+    pub frame: u64,                                    // bumped on every refresh
+    pub cloths: BTreeMap<Entity, ClothRender>,         // { positions, normals, triangles: Arc<[[u32; 3]]> }
+    pub soft_bodies: BTreeMap<Entity, SoftBodyRender>, // { positions, normals, triangles (surface), volume, rest_volume }
+    pub fluids: BTreeMap<Entity, FluidRender>,         // { positions, velocities, densities, surface, particle_radius,
+                                                       //   rest_density, capacity, domain_min, domain_max }
+}
+```
+
+`deformable_debug_segments(&World, max_segments)` returns cloth and soft-body edges and
+fluid particles (a short velocity tick, brighter on the surface) as world-space segments,
+bounded and only when `engine.PhysicsSettings.debug` is on. The engine-physics debug
+contributor hook takes a stateless function pointer, so these segments are not merged into
+`debug_view`.
+
 ## Deferred
 
 - **Shape matching**: not implemented; edge and volume constraints only.

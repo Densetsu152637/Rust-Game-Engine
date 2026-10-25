@@ -24,6 +24,7 @@ mod bodies;
 mod character;
 mod contacts;
 mod debug_view;
+mod deformables;
 mod descriptors;
 mod destruction;
 mod joints;
@@ -41,6 +42,12 @@ pub use character::{
     character_impulse, character_jump, character_state, set_character_velocity,
 };
 pub use debug_view::*;
+pub use deformables::{
+    Cloth, ClothAttachment, ClothEdge, ClothRender, ClothSource, EmitterShape, FluidEmitter,
+    FluidRegion, FluidRender, FluidVolume, MAX_CLOTHS, MAX_FLUID_CAPACITY, MAX_FLUID_VOLUMES,
+    MAX_SOFT_BODIES, PhysicsRenderData, RegionShape, SoftBody, SoftBodyRender, SoftBodySource,
+    deformable_debug_segments,
+};
 pub use destruction::{
     DebrisFragment, DebrisSettings, Destructible3D, DestructibleMesh, DestructibleStatus,
     FracturePattern, FractureReport, Fractured, FragmentInfo, FragmentRender, RecyclePolicy,
@@ -85,6 +92,7 @@ fn features() -> Vec<Box<dyn Feature>> {
         Box::new(destruction::Destruction),
         Box::new(vehicles::Vehicles::new()),
         Box::new(ragdoll::Ragdolls::new()),
+        Box::new(deformables::Deformables::new()),
     ]
 }
 
@@ -114,6 +122,11 @@ pub(crate) trait Feature: Send + Sync {
     /// Registers the feature's authored component adapters.
     fn register_components(&self, _app: &mut engine_core::EngineApp) -> Result<()> {
         Ok(())
+    }
+    /// True while the feature simulates something on its own (without rigid bodies), which
+    /// keeps the step running in scenes that have no engine-physics bodies.
+    fn active(&self) -> bool {
+        false
     }
     fn validate(&self, _world: &World, _settings: &Resolved) -> Result<()> {
         Ok(())
@@ -264,7 +277,11 @@ impl Physics {
     }
     pub fn step(&mut self, world: &mut World, dt: f32) -> Result<()> {
         // Features such as ragdolls own engine-physics bodies without authored body components.
-        if self.bodies.is_empty() && self.worlds.two.is_empty() && self.worlds.three.is_empty() {
+        if self.bodies.is_empty()
+            && self.worlds.two.is_empty()
+            && self.worlds.three.is_empty()
+            && !self.features.iter().any(|f| f.active())
+        {
             return Ok(());
         }
         if let Some(step) = self.settings.fixed_timestep {
