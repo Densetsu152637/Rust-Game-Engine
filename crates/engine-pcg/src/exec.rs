@@ -16,13 +16,19 @@ pub fn validate(graph: &Graph, registry: &Registry) -> Vec<Diagnostic> {
     if graph.nodes.len() > MAX_NODES {
         out.push(Diagnostic::new(
             "pcg.limit.nodes",
-            format!("{} nodes exceed the limit of {MAX_NODES}", graph.nodes.len()),
+            format!(
+                "{} nodes exceed the limit of {MAX_NODES}",
+                graph.nodes.len()
+            ),
         ));
     }
     if graph.edges.len() > MAX_EDGES {
         out.push(Diagnostic::new(
             "pcg.limit.edges",
-            format!("{} edges exceed the limit of {MAX_EDGES}", graph.edges.len()),
+            format!(
+                "{} edges exceed the limit of {MAX_EDGES}",
+                graph.edges.len()
+            ),
         ));
     }
     if graph.nodes.len() > MAX_NODES * 4 || graph.edges.len() > MAX_EDGES * 4 {
@@ -40,7 +46,10 @@ pub fn validate(graph: &Graph, registry: &Registry) -> Vec<Diagnostic> {
             out.push(
                 Diagnostic::new(
                     "pcg.node.invalid_id",
-                    format!("node id `{}` must be 1..={MAX_ID_LEN} characters of [A-Za-z0-9_.-]", node.id),
+                    format!(
+                        "node id `{}` must be 1..={MAX_ID_LEN} characters of [A-Za-z0-9_.-]",
+                        node.id
+                    ),
                 )
                 .at_node(&node.id),
             );
@@ -112,7 +121,10 @@ pub fn validate(graph: &Graph, registry: &Registry) -> Vec<Diagnostic> {
             ));
             continue;
         }
-        let (from, to) = (kinds.get(edge.from.node.as_str()), kinds.get(edge.to.node.as_str()));
+        let (from, to) = (
+            kinds.get(edge.from.node.as_str()),
+            kinds.get(edge.to.node.as_str()),
+        );
         if from.is_none() {
             out.push(
                 Diagnostic::new("pcg.edge.unknown_node", "edge source node does not exist")
@@ -315,7 +327,10 @@ pub fn run(
     let mut incoming: BTreeMap<&str, Vec<&crate::graph::Edge>> = BTreeMap::new();
     let mut consumed: BTreeSet<(&str, &str)> = BTreeSet::new();
     for edge in &graph.edges {
-        incoming.entry(edge.to.node.as_str()).or_default().push(edge);
+        incoming
+            .entry(edge.to.node.as_str())
+            .or_default()
+            .push(edge);
         consumed.insert((edge.from.node.as_str(), edge.from.port.as_str()));
     }
     let mut outputs: BTreeMap<String, BTreeMap<String, Data>> = BTreeMap::new();
@@ -335,7 +350,10 @@ pub fn run(
                     diagnostics: vec![
                         Diagnostic::new(
                             "pcg.node.missing_output",
-                            format!("upstream `{}.{}` produced no value", edge.from.node, edge.from.port),
+                            format!(
+                                "upstream `{}.{}` produced no value",
+                                edge.from.node, edge.from.port
+                            ),
                         )
                         .at_node(id),
                     ],
@@ -376,7 +394,12 @@ pub fn run(
                 Data::Points(p) => {
                     point_count += p.len();
                     if p.len() > settings.limits.max_points {
-                        return Err(limit_error(id, "points", p.len(), settings.limits.max_points));
+                        return Err(limit_error(
+                            id,
+                            "points",
+                            p.len(),
+                            settings.limits.max_points,
+                        ));
                     }
                 }
                 Data::Instances(list) => {

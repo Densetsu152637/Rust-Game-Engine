@@ -147,6 +147,11 @@ impl Graph {
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("graph is plain data")
     }
+    /// The seed a run uses for `instance_seed` (a volume's or caller's seed): the graph seed
+    /// and the instance seed are mixed so neither can cancel the other.
+    pub fn seed_for(&self, instance_seed: u64) -> u64 {
+        crate::rng::derive_seed(self.seed, &instance_seed.to_string())
+    }
     pub fn node(&self, id: &str) -> Option<&Node> {
         self.nodes.iter().find(|n| n.id == id)
     }

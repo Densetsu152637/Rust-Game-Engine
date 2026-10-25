@@ -58,7 +58,8 @@ pub fn apply(graph: &mut Graph, registry: &Registry, op: EditOp) -> Result<(), D
             }
             if graph.node(&id).is_some() {
                 return Err(
-                    Diagnostic::new("pcg.node.duplicate_id", "node id is already used").at_node(&id),
+                    Diagnostic::new("pcg.node.duplicate_id", "node id is already used")
+                        .at_node(&id),
                 );
             }
             let node = Node { id, kind, params };
@@ -119,7 +120,11 @@ pub fn apply(graph: &mut Graph, registry: &Registry, op: EditOp) -> Result<(), D
             }
         }
         EditOp::SetParameter { node, name, value } => {
-            let kind = graph.node(&node).ok_or_else(|| missing_node(&node))?.kind.clone();
+            let kind = graph
+                .node(&node)
+                .ok_or_else(|| missing_node(&node))?
+                .kind
+                .clone();
             if let Some(definition) = registry.definition(&kind) {
                 let spec = definition.param(&name).ok_or_else(|| {
                     Diagnostic::new(

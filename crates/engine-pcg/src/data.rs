@@ -104,7 +104,10 @@ pub enum Field {
         max: f32,
     },
     /// Ground height remapped from `[low, high]` to `[0, 1]` and clamped.
-    Height { low: f32, high: f32 },
+    Height {
+        low: f32,
+        high: f32,
+    },
     /// Ground slope in degrees divided by 90.
     Slope,
     /// Paint layer weight (0 when the surface has no such layer).

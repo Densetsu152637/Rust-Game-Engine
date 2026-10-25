@@ -272,11 +272,7 @@ impl Noise {
 
     /// Raw `(F1, F2)` Worley distances over the 3x3 (2D) or 3x3x3 (3D) cell neighbourhood.
     pub fn worley(&self, x: f64, y: f64, z: f64, three_d: bool) -> (f64, f64) {
-        let (cx, cy, cz) = (
-            floor_i(x),
-            floor_i(y),
-            if three_d { floor_i(z) } else { 0 },
-        );
+        let (cx, cy, cz) = (floor_i(x), floor_i(y), if three_d { floor_i(z) } else { 0 });
         let (mut f1, mut f2) = (f64::MAX, f64::MAX);
         let zr = if three_d { -1..=1 } else { 0..=0 };
         for dz in zr {
@@ -499,7 +495,10 @@ mod tests {
             }
             let mean = sum / count;
             let var = sq / count - mean * mean;
-            assert!((mean - mean_target).abs() < mean_tol, "{kind:?} mean {mean}");
+            assert!(
+                (mean - mean_target).abs() < mean_tol,
+                "{kind:?} mean {mean}"
+            );
             assert!((var_min..var_max).contains(&var), "{kind:?} variance {var}");
         }
     }
@@ -553,7 +552,10 @@ mod tests {
         let ridged = make(NoiseKind::Perlin, Fractal::Ridged, 2);
         let fbm = make(NoiseKind::Perlin, Fractal::Fbm, 2);
         let mean = |n: &Noise| {
-            grid().map(|(x, y)| f64::from(n.sample_2d(x, y))).sum::<f64>() / 14400.0
+            grid()
+                .map(|(x, y)| f64::from(n.sample_2d(x, y)))
+                .sum::<f64>()
+                / 14400.0
         };
         assert!(mean(&ridged) > mean(&fbm) + 0.1);
     }
@@ -570,6 +572,7 @@ mod tests {
         let detailed = Noise::new(NoiseParams {
             fractal: Fractal::Fbm,
             octaves: 6,
+            gain: 0.7,
             seed: 6,
             frequency: 0.5,
             ..Default::default()
@@ -618,5 +621,13 @@ mod tests {
             assert!((g - e).abs() < 1e-6, "golden mismatch got {got:?}");
         }
     }
-    const GOLDEN: [f32; 6] = [0.0; 6];
+    /// Pinned from real output on first run; any change breaks cross-platform determinism.
+    const GOLDEN: [f32; 6] = [
+        0.308_703_57,
+        0.526_507_74,
+        0.061_402_17,
+        0.571_970_3,
+        0.309_169_1,
+        0.539_193_8,
+    ];
 }

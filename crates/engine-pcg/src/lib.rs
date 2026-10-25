@@ -13,8 +13,8 @@ pub mod data;
 pub mod edit;
 mod exec;
 pub mod graph;
-pub mod noise;
 mod nodes;
+pub mod noise;
 mod registry;
 pub mod rng;
 pub mod surface;
@@ -22,9 +22,7 @@ pub mod surface;
 pub use data::{Data, Field, FieldContext, Instance, InstanceKind, MathOp, Point};
 pub use edit::{EditOp, GraphBuilder, apply as apply_edit};
 pub use exec::{NodeReport, RunError, RunResult, run, validate};
-pub use graph::{
-    Diagnostic, Edge, GRAPH_VERSION, Graph, MAX_EDGES, MAX_NODES, Node, PortRef,
-};
+pub use graph::{Diagnostic, Edge, GRAPH_VERSION, Graph, MAX_EDGES, MAX_NODES, Node, PortRef};
 pub use noise::{Distance, Fractal, Noise, NoiseKind, NoiseParams};
 pub use registry::{
     Limits, NodeContext, NodeDefinition, NodeError, NodeFn, Outputs, ParamSpec, ParamType, Params,

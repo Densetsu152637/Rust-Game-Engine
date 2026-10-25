@@ -1274,6 +1274,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "engine-pcg",
  "engine-project",
  "regex",
  "serde",
@@ -1304,6 +1305,15 @@ dependencies = [
  "glam 0.34.1",
  "rcgen",
  "rustls",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "engine-pcg"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
  "serde",
  "serde_json",
 ]
@@ -1355,6 +1365,7 @@ dependencies = [
  "engine-fluids",
  "engine-navigation",
  "engine-network",
+ "engine-pcg",
  "engine-physics",
  "engine-xpbd",
  "fs2",

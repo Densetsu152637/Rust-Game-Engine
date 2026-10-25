@@ -47,13 +47,24 @@ impl PortSpec {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ParamType {
-    Float { min: f64, max: f64 },
-    Int { min: i64, max: i64 },
+    Float {
+        min: f64,
+        max: f64,
+    },
+    Int {
+        min: i64,
+        max: i64,
+    },
     Bool,
     Str,
-    Enum { values: Vec<String> },
+    Enum {
+        values: Vec<String>,
+    },
     /// Array of three numbers in `[min, max]`.
-    Vec3 { min: f64, max: f64 },
+    Vec3 {
+        min: f64,
+        max: f64,
+    },
     /// Spawner entry list: `[{asset, kind: prefab|mesh, weight}]`.
     Entries,
 }
@@ -380,12 +391,20 @@ impl Registry {
             return Err("kind must be 1..=64 characters".into());
         }
         if self.kinds.contains_key(&definition.kind) {
-            return Err(format!("node kind `{}` is already registered", definition.kind));
+            return Err(format!(
+                "node kind `{}` is already registered",
+                definition.kind
+            ));
         }
-        for (i, port) in definition.inputs.iter().chain(&definition.outputs).enumerate() {
-            let all: Vec<&PortSpec> = definition.inputs.iter().chain(&definition.outputs).collect();
-            if all.iter().skip(i + 1).any(|other| other.name == port.name) {
-                return Err(format!("duplicate port name `{}`", port.name));
+        for ports in [&definition.inputs, &definition.outputs] {
+            for (i, port) in ports.iter().enumerate() {
+                if ports
+                    .iter()
+                    .skip(i + 1)
+                    .any(|other| other.name == port.name)
+                {
+                    return Err(format!("duplicate port name `{}`", port.name));
+                }
             }
         }
         for param in &definition.params {
@@ -393,7 +412,11 @@ impl Registry {
                 .check(&param.default)
                 .or_else(|e| {
                     // Entries default is the empty list and is intentionally invalid.
-                    if matches!(param.ty, ParamType::Entries) { Ok(()) } else { Err(e) }
+                    if matches!(param.ty, ParamType::Entries) {
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
                 })
                 .map_err(|e| format!("default of `{}` is invalid: {e}", param.name))?;
         }

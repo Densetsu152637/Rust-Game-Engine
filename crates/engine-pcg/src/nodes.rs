@@ -570,10 +570,7 @@ fn density_filter(ctx: &NodeContext<'_>) -> Result<Outputs, NodeError> {
     Ok(points_out(out))
 }
 
-fn filter(
-    ctx: &NodeContext<'_>,
-    keep: impl Fn(&Point) -> bool,
-) -> Result<Outputs, NodeError> {
+fn filter(ctx: &NodeContext<'_>, keep: impl Fn(&Point) -> bool) -> Result<Outputs, NodeError> {
     Ok(points_out(
         ctx.points("points")?
             .iter()
@@ -584,7 +581,10 @@ fn filter(
 }
 
 fn height_filter(ctx: &NodeContext<'_>) -> Result<Outputs, NodeError> {
-    let (lo, hi) = (ctx.params.float("min") as f32, ctx.params.float("max") as f32);
+    let (lo, hi) = (
+        ctx.params.float("min") as f32,
+        ctx.params.float("max") as f32,
+    );
     filter(ctx, |p| p.position.y >= lo && p.position.y <= hi)
 }
 
@@ -745,7 +745,10 @@ fn merge(ctx: &NodeContext<'_>) -> Result<Outputs, NodeError> {
     if dedupe > 0.0 {
         let mut grid = PointGrid::new(dedupe);
         a.iter().for_each(|p| grid.insert(p.position));
-        out.extend(b.iter().filter(|p| !grid.any_closer_than(p.position, dedupe)));
+        out.extend(
+            b.iter()
+                .filter(|p| !grid.any_closer_than(p.position, dedupe)),
+        );
     } else {
         out.extend(b.iter());
     }
@@ -770,7 +773,12 @@ fn difference(ctx: &NodeContext<'_>) -> Result<Outputs, NodeError> {
 // ---------------------------------------------------------------------------------------
 
 fn spawner(ctx: &NodeContext<'_>) -> Result<Outputs, NodeError> {
-    let entries = ctx.params.value("entries").as_array().cloned().unwrap_or_default();
+    let entries = ctx
+        .params
+        .value("entries")
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let choices: Vec<(InstanceKind, String, f64)> = entries
         .iter()
         .filter_map(|entry| {
@@ -779,7 +787,11 @@ fn spawner(ctx: &NodeContext<'_>) -> Result<Outputs, NodeError> {
                 Some("prefab") => InstanceKind::Prefab,
                 _ => InstanceKind::Mesh,
             };
-            Some((kind, asset, entry.get("weight").and_then(Value::as_f64).unwrap_or(1.0)))
+            Some((
+                kind,
+                asset,
+                entry.get("weight").and_then(Value::as_f64).unwrap_or(1.0),
+            ))
         })
         .collect();
     let total: f64 = choices.iter().map(|c| c.2).sum();
