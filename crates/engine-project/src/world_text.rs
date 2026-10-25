@@ -232,6 +232,7 @@ pub(crate) fn extract(
     engine: Option<&EngineTextBackend>,
 ) -> Result<Vec<WorldTextDraw>> {
     let mut draws = vec![];
+    let localization = world.get_resource::<crate::localization::Localization>();
     for entity in world.iter_entities() {
         let (Some(text), Some(_)) = (entity.get::<WorldText>(), entity.get::<Transform>()) else {
             continue;
@@ -240,27 +241,31 @@ pub(crate) fn extract(
             continue;
         }
         text.validate()?;
-        let engine = engine.ok_or_else(|| Error::new("render.font.unknown", &text.font))?;
+        // `@key` text and per-locale font keys resolve here, not in the component.
+        let resolved = localization.and_then(|l| l.resolve_text(&text.text, text.markup));
+        let content = resolved.as_deref().unwrap_or(&text.text);
+        let font = localization.map_or_else(|| text.font.clone(), |l| l.asset(&text.font));
+        let engine = engine.ok_or_else(|| Error::new("render.font.unknown", &font))?;
         let id = entity
             .get::<AuthoredId>()
             .map(|a| a.id.clone())
             .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
         let transform = crate::world_transform(world, entity.id())?;
-        if text.atlas == FontAtlasMode::Sdf || engine.wants_sdf(&text.font) {
+        if text.atlas == FontAtlasMode::Sdf || engine.wants_sdf(&font) {
             engine.note_sdf_request();
         }
         let pixels = text.size * text.pixels_per_unit;
         let family_size = engine
-            .pixel_size(&text.font, 1.0)
-            .ok_or_else(|| Error::new("render.font.unknown", &text.font))?;
+            .pixel_size(&font, 1.0)
+            .ok_or_else(|| Error::new("render.font.unknown", &font))?;
         let request = UiTextRequest {
-            text: &text.text,
+            text: content,
             kind: if text.markup {
                 UiTextKind::Markup
             } else {
                 UiTextKind::Plain
             },
-            font: &text.font,
+            font: &font,
             scale: pixels / family_size,
             color: text.color,
             max_width: text.max_width.map(|w| w * text.pixels_per_unit),

@@ -88,6 +88,10 @@ pub(super) struct Content {
     pub(super) fonts: BTreeMap<String, FontAtlas>,
     /// Shaping backend over `font_face` assets; `None` when the project has none.
     pub(super) text: Option<Arc<crate::ui_tree::EngineTextBackend>>,
+    /// The project's `font_config` fallback chains, before per-locale fonts.
+    pub(super) base_fallback: engine_text::FallbackConfig,
+    /// Localization built from the project's `locale_config`, if it has one.
+    pub(super) localization: Option<crate::localization::Localization>,
 }
 impl Content {
     pub(super) fn ui_text(&self) -> crate::ui_tree::SelectingTextBackend<'_> {
@@ -133,12 +137,14 @@ impl Content {
         if !faces.is_empty() || config.is_some() {
             let config = config.unwrap_or_default();
             config.validate_against(&faces.keys().cloned().collect())?;
+            content.base_fallback = config.fallback_config();
             if !faces.is_empty() {
                 content.text = Some(Arc::new(crate::ui_tree::EngineTextBackend::from_content(
                     &faces, &config,
                 )?));
             }
         }
+        content.localization = crate::localization::Localization::from_project(project)?;
         Ok(content)
     }
 }

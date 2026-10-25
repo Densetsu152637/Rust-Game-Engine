@@ -9,7 +9,8 @@
 //! (`docs/ui-styling.md`) adds `selector`, `stylesheet` (themes and cascade),
 //! `animation` (transitions, keyframes), `resolve` (the one style-resolution
 //! step), `binding` (data binding), `world_panel` (world-space panels) and
-//! `style_schema` (their descriptors).
+//! `style_schema` (their descriptors). `localize` applies message references and
+//! per-locale asset overrides (`docs/localization.md`).
 use crate::{Error, Result, ui::Rect};
 use bevy_ecs::prelude::Component;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,7 @@ mod builder;
 mod chrome;
 mod interaction;
 mod layout;
+mod localize;
 mod navigation;
 mod render;
 mod resolve;

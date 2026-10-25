@@ -1,4 +1,5 @@
 use super::{
+    localize,
     resolve::{NodeStates, any_themed, effective_for_render, states_by_root},
     stylesheet::SharedTheme,
     *,
@@ -7,6 +8,7 @@ use crate::{
     EngineEvent,
     content::{FontAtlas, Texture},
     emit_event,
+    localization::Localization,
     runtime::{AuthoredId, Draw},
 };
 use bevy_ecs::{
@@ -132,6 +134,13 @@ fn tick_all(
     ctx: &UiTickContext<'_>,
     input: &crate::ActionFrame,
 ) -> Result<()> {
+    if world
+        .get_resource::<Localization>()
+        .is_some_and(Localization::take_ui_dirty)
+    {
+        // The locale (or its strings) changed: message bindings re-render once.
+        parts.bindings.invalidate_strings();
+    }
     parts.bindings.sync_components(world, &mut parts.data)?;
     let sources = roots(world);
     let mut live: BTreeSet<String> = sources.iter().map(|(id, _, _)| id.clone()).collect();
@@ -164,6 +173,7 @@ pub(super) fn process(
             .apply(id, entity.to_bits(), root, &parts.data);
     }
     let none = NodeStates::new();
+    let localization = world.get_resource::<Localization>().cloned();
     let themed = authored
         .iter()
         .any(|(_, root)| parts.settings.theme_name_for(root).is_some());
@@ -185,6 +195,11 @@ pub(super) fn process(
                 .resolve(id, root, theme, states.get(id).unwrap_or(&none))?,
             None => root.clone(),
         };
+        // Resolved text lives only in the effective root, never in the component.
+        let resolved = localization
+            .as_ref()
+            .and_then(|l| localize::localize(&resolved, l))
+            .unwrap_or(resolved);
         effective.push((id.clone(), resolved));
         themes.push(theme);
     }
@@ -193,7 +208,11 @@ pub(super) fn process(
     for ((_, authored), (_, effective)) in authored.iter_mut().zip(&effective) {
         for (a, e) in authored.tree.nodes.iter_mut().zip(&effective.tree.nodes) {
             if a.widget != e.widget {
-                a.widget = e.widget.clone();
+                let mut merged = e.widget.clone();
+                localize::restore_authored(&mut merged, &a.widget);
+                if a.widget != merged {
+                    a.widget = merged;
+                }
             }
         }
     }
@@ -276,6 +295,7 @@ pub fn extract_world_with(
     };
     let data = world.get_resource::<UiDataContext>();
     let bindings = world.get_resource::<UiBindingState>();
+    let localization = world.get_resource::<Localization>();
     let mut draws = vec![];
     let mut ids = BTreeSet::new();
     for (id, _, root) in roots {
@@ -286,6 +306,8 @@ pub fn extract_world_with(
         let effective = effective_for_render(world, &id, &root, &by_root)?;
         state.themed = effective.is_some();
         let drawn = effective.as_ref().unwrap_or(&root);
+        let localized = localization.and_then(|l| localize::localize(drawn, l));
+        let drawn = localized.as_ref().unwrap_or(drawn);
         if let (Some(data), Some(bindings)) = (data, bindings) {
             state.item_texts = bindings.item_texts(drawn, data);
         }
