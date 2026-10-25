@@ -32,6 +32,14 @@ pub use queries::{
 #[path = "features/destruction.rs"]
 mod destruction;
 pub use destruction::ContactImpulse;
+#[path = "features/vehicle/dim3.rs"]
+mod vehicle;
+pub use vehicle::{
+    AntiRollBar, DifferentialDesc, EngineDesc, GearboxDesc, GearboxMode, MAX_ANTI_ROLL_BARS,
+    MAX_GEARS, MAX_TORQUE_SAMPLES, MAX_VEHICLE_EVENTS, MAX_WHEELS, PacejkaAxis, RAD_S_TO_RPM,
+    SteeringDesc, SuspensionCast, TyreDesc, TyreForces, VehicleControls, VehicleDesc, VehicleEvent,
+    VehicleEventKind, VehicleState, WheelDesc, WheelState, split_torque,
+};
 #[path = "features/debug/dim3.rs"]
 mod debug;
 pub use debug::{
