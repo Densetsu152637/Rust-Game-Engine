@@ -9,7 +9,8 @@
 //! (`docs/ui-styling.md`) adds `selector`, `stylesheet` (themes and cascade),
 //! `animation` (transitions, keyframes), `resolve` (the one style-resolution
 //! step), `binding` (data binding), `world_panel` (world-space panels) and
-//! `style_schema` (their descriptors). `localize` applies message references and
+//! `style_schema` (their descriptors). `gpu` is the hand-off to the UI render
+//! features of `engine-ui-render` (`docs/ui-render.md`). `localize` applies message references and
 //! per-locale asset overrides (`docs/localization.md`).
 use crate::{Error, Result, ui::Rect};
 use bevy_ecs::prelude::Component;
@@ -20,6 +21,7 @@ mod animation;
 mod binding;
 mod builder;
 mod chrome;
+mod gpu;
 mod interaction;
 mod layout;
 mod localize;
@@ -56,6 +58,11 @@ pub use binding::{
     UiBinding, UiBindingState, UiBindingStats, UiData, UiDataContext, UiItemTextSource,
     UiItemTexts, UiPathSegment, UiStringResolver, parse_path,
 };
+pub use gpu::{
+    FEATURE_COLOR_FILTER, FEATURE_SDF_TEXT, FEATURE_WORLD, UiFeatureReport, UiFeatureState,
+    UiFeatureStatus, UiGpuFeature, UiGpuFrame, UiGpuQueue, UiGpuRouting, UiRenderStatus,
+    WorldBillboard, WorldUiDraw, WorldUiItem, WorldUiKind, is_sdf_draw,
+};
 pub use interaction::{GameUi, UiInteraction, UiStateFlags, UiTickContext, UiWidgetEvent};
 pub use layout::{MAX_UI_BOXES, UiBox};
 pub use localize::localize_root;
@@ -64,8 +71,9 @@ pub use render::{UI_DIALOG_LAYER, UI_POPUP_LAYER, UiRenderState};
 pub use resolve::{UiStyleRuntime, UiStyleSettings};
 pub use schema::descriptor;
 pub use selector::{MAX_SELECTOR_COMPOUNDS, MAX_SELECTOR_LEN, MAX_SELECTOR_LIST};
+pub(crate) use shaped_text::PlacedText;
 pub use shaped_text::{
-    EngineTextBackend, SDF_DEFERRED_REASON, TextRenderState, TextRenderStatus, UiTextStats,
+    EngineTextBackend, SdfPathStatus, TextRenderState, TextRenderStatus, UiTextStats,
     validate_markup,
 };
 pub use style::{
@@ -92,7 +100,8 @@ pub use widget::{
     UiNavigation, UiScrollAxes, UiTooltip, UiWidget, virtual_range,
 };
 pub use world::{
-    UiTickEvents, extract_world, extract_world_with, register, reset_world, tick_world,
+    UiExtraction, UiTickEvents, extract_world, extract_world_routed, extract_world_with, register,
+    reset_world, tick_world,
 };
 pub use world_panel::{
     MAX_PANEL_PIXELS, PANEL_Z_STEP, UiBillboard, UiWorldPanel, UiWorldPanels, UiWorldPointer,

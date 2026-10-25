@@ -7,15 +7,22 @@
 //! atlas page, textured with the coverage atlas. Layout is y-down pixels, so the
 //! quad transform is `world * scale(1/ppu, -1/ppu, 1) * translate(-anchor * box)`.
 //!
-//! `DrawSpace::World` draws use the 2D world camera. A depth-tested 3D path and
-//! GPU SDF rendering need the render extension API, which this branch does not
-//! have; `atlas: "sdf"` is accepted and reported through `TextRenderStatus`, but
-//! rendered through a coverage atlas at the pixel size actually needed.
+//! `DrawSpace::World` draws use the 2D world camera. With a `Camera3D` and the
+//! `ui.world` render feature of `engine-ui-render` ready, [`extract_items`]
+//! hands the same quads to the feature instead: it depth-tests them against the
+//! scene, sorts them back to front, faces `billboard` text toward each view's
+//! camera and draws `atlas: "sdf"` text from an SDF atlas. `atlas: "sdf"`
+//! without that feature is reported through `TextRenderStatus` and rendered
+//! through a coverage atlas at the pixel size actually needed (the routing
+//! rule is in `docs/ui-render.md`).
 use crate::{
     ComponentDescriptor, Error, Result, Transform,
     content::{FontAtlasMode, Mesh, Texture, Vertex},
     runtime::AuthoredId,
-    ui_tree::{EngineTextBackend, UiTextKind, UiTextRequest, validate_markup},
+    ui_tree::{
+        EngineTextBackend, PlacedText, UiTextKind, UiTextRequest, WorldBillboard, WorldUiDraw,
+        WorldUiItem, WorldUiKind, validate_markup,
+    },
 };
 use bevy_ecs::prelude::{Component, World};
 use engine_text::{TextAlign, transform_quads};
@@ -83,7 +90,9 @@ pub struct WorldText {
     /// The point of the text box placed at the entity origin: `[0, 0]` top-left,
     /// `[0.5, 0.5]` centre, `[1, 1]` bottom-right.
     pub anchor: [f32; 2],
-    /// Requested glyph atlas; `sdf` is served by a coverage atlas for now.
+    /// Requested glyph atlas. `sdf` is drawn from an SDF atlas by the
+    /// `ui.world` render feature in `Camera3D` scenes; otherwise (no feature,
+    /// no 3D camera) it is served by a coverage atlas.
     pub atlas: FontAtlasMode,
     pub layer: i32,
     pub visible: bool,
@@ -216,8 +225,14 @@ fn placement(text: &WorldText, world: Mat4, box_size: [f32; 2]) -> Mat4 {
     } else {
         world
     };
+    base * local_from_layout(text, box_size)
+}
+
+/// Layout pixels (y down) to text-local world units (x right, y up), with the
+/// anchor at the origin.
+fn local_from_layout(text: &WorldText, box_size: [f32; 2]) -> Mat4 {
     let s = 1.0 / text.pixels_per_unit;
-    base * Mat4::from_scale(Vec3::new(s, -s, 1.0))
+    Mat4::from_scale(Vec3::new(s, -s, 1.0))
         * Mat4::from_translation(Vec3::new(
             -text.anchor[0] * box_size[0],
             -text.anchor[1] * box_size[1],
@@ -225,13 +240,25 @@ fn placement(text: &WorldText, world: Mat4, box_size: [f32; 2]) -> Mat4 {
         ))
 }
 
-/// Extract every visible `WorldText` as world-space draws. A project with
-/// world text but no `font_face` assets fails with `render.font.unknown`.
-pub(crate) fn extract(
+/// One text laid out and ready to place.
+struct PlacedWorldText {
+    id: String,
+    text: WorldText,
+    world: Mat4,
+    position: [f32; 3],
+    placed: PlacedText,
+    box_size: [f32; 2],
+}
+
+/// Shape every visible `WorldText`. `sdf_pages` selects SDF atlas pages for
+/// texts that request SDF (the 3D feature draws them); otherwise a text that
+/// requests SDF is only counted in `TextRenderStatus` and uses a coverage atlas.
+fn place_all(
     world: &World,
     engine: Option<&EngineTextBackend>,
-) -> Result<Vec<WorldTextDraw>> {
-    let mut draws = vec![];
+    sdf_pages: bool,
+) -> Result<Vec<PlacedWorldText>> {
+    let mut out = vec![];
     let localization = world.get_resource::<crate::localization::Localization>();
     for entity in world.iter_entities() {
         let (Some(text), Some(_)) = (entity.get::<WorldText>(), entity.get::<Transform>()) else {
@@ -251,7 +278,8 @@ pub(crate) fn extract(
             .map(|a| a.id.clone())
             .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
         let transform = crate::world_transform(world, entity.id())?;
-        if text.atlas == FontAtlasMode::Sdf || engine.wants_sdf(&font) {
+        let wants_sdf = text.atlas == FontAtlasMode::Sdf || engine.wants_sdf(&font);
+        if wants_sdf {
             engine.note_sdf_request();
         }
         let pixels = text.size * text.pixels_per_unit;
@@ -270,18 +298,34 @@ pub(crate) fn extract(
             color: text.color,
             max_width: text.max_width.map(|w| w * text.pixels_per_unit),
         };
-        let placed = engine.place_text(&request, text.align.engine())?;
+        let placed = engine.place_text(&request, text.align.engine(), wants_sdf && sdf_pages)?;
         let box_width = request
             .max_width
             .unwrap_or(placed.bounds.width)
             .max(placed.bounds.width);
-        let matrix = placement(
-            text,
-            Mat4::from_cols_array_2d(&transform.matrix),
-            [box_width, placed.bounds.height],
-        );
+        out.push(PlacedWorldText {
+            id,
+            text: text.clone(),
+            world: Mat4::from_cols_array_2d(&transform.matrix),
+            position: transform.position(),
+            box_size: [box_width, placed.bounds.height],
+            placed,
+        });
+    }
+    Ok(out)
+}
+
+/// Extract every visible `WorldText` as world-space draws. A project with
+/// world text but no `font_face` assets fails with `render.font.unknown`.
+pub(crate) fn extract(
+    world: &World,
+    engine: Option<&EngineTextBackend>,
+) -> Result<Vec<WorldTextDraw>> {
+    let mut draws = vec![];
+    for item in place_all(world, engine, false)? {
+        let matrix = placement(&item.text, item.world, item.box_size);
         let mut meshes: Vec<(u32, Mesh)> = vec![];
-        for quad in transform_quads(&placed.quads, matrix) {
+        for quad in transform_quads(&item.placed.quads, matrix) {
             let slot = match meshes.iter().position(|(page, _)| *page == quad.page) {
                 Some(slot) => slot,
                 None => {
@@ -289,37 +333,102 @@ pub(crate) fn extract(
                     meshes.len() - 1
                 }
             };
-            let mesh = &mut meshes[slot].1;
-            let base = mesh.vertices.len() as u32;
-            let color = quad.color.to_f32();
-            let uvs = [
-                [quad.uv.u0, quad.uv.v0],
-                [quad.uv.u1, quad.uv.v0],
-                [quad.uv.u1, quad.uv.v1],
-                [quad.uv.u0, quad.uv.v1],
-            ];
-            for (corner, uv) in quad.corners.iter().zip(uvs) {
-                mesh.vertices.push(Vertex {
-                    position: corner.to_array(),
-                    uv,
-                    color,
-                });
-            }
-            mesh.indices.extend([0, 1, 2, 0, 2, 3].map(|i| i + base));
+            push_quad(
+                &mut meshes[slot].1,
+                quad.corners,
+                quad.uv,
+                quad.color.to_f32(),
+            );
         }
         for (page, mesh) in meshes {
-            let Some(texture) = placed.pages.get(page as usize) else {
+            let Some(texture) = item.placed.pages.get(page as usize) else {
                 continue;
             };
             draws.push(WorldTextDraw {
-                id: format!("worldtext:{id}:{page:02}"),
-                layer: text.layer,
+                id: format!("worldtext:{}:{page:02}", item.id),
+                layer: item.text.layer,
                 texture: texture.clone(),
                 mesh,
-                position: transform.position(),
+                position: item.position,
             });
         }
     }
     draws.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(draws)
+}
+
+/// The same texts as items for the `ui.world` render feature: quads in
+/// text-local units (anchor at the origin, x right, y up) with the entity
+/// matrix and the camera-facing mode left to the feature. Texts that request
+/// SDF use SDF atlas pages.
+pub(crate) fn extract_items(
+    world: &World,
+    engine: Option<&EngineTextBackend>,
+) -> Result<Vec<WorldUiItem>> {
+    let mut items = vec![];
+    for item in place_all(world, engine, true)? {
+        let local = local_from_layout(&item.text, item.box_size);
+        let mut groups: Vec<(u32, Mesh)> = vec![];
+        for quad in transform_quads(&item.placed.quads, local) {
+            let slot = match groups.iter().position(|(page, _)| *page == quad.page) {
+                Some(slot) => slot,
+                None => {
+                    groups.push((quad.page, Mesh::default()));
+                    groups.len() - 1
+                }
+            };
+            push_quad(
+                &mut groups[slot].1,
+                quad.corners,
+                quad.uv,
+                quad.color.to_f32(),
+            );
+        }
+        let draws: Vec<WorldUiDraw> = groups
+            .into_iter()
+            .filter_map(|(page, mesh)| {
+                let texture = item.placed.pages.get(page as usize)?.clone();
+                Some(WorldUiDraw {
+                    mesh: Arc::new(mesh),
+                    texture: Some(texture),
+                    sdf: item.placed.sdf,
+                })
+            })
+            .collect();
+        if draws.is_empty() {
+            continue;
+        }
+        items.push(WorldUiItem {
+            id: format!("worldtext:{}", item.id),
+            kind: WorldUiKind::Text,
+            layer: item.text.layer,
+            world_from_local: item.world.to_cols_array_2d(),
+            billboard: if item.text.billboard {
+                WorldBillboard::Screen
+            } else {
+                WorldBillboard::None
+            },
+            draws,
+        });
+    }
+    items.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(items)
+}
+
+fn push_quad(mesh: &mut Mesh, corners: [Vec3; 4], uv: engine_text::UvRect, color: [f32; 4]) {
+    let base = mesh.vertices.len() as u32;
+    let uvs = [
+        [uv.u0, uv.v0],
+        [uv.u1, uv.v0],
+        [uv.u1, uv.v1],
+        [uv.u0, uv.v1],
+    ];
+    for (corner, uv) in corners.iter().zip(uvs) {
+        mesh.vertices.push(Vertex {
+            position: corner.to_array(),
+            uv,
+            color,
+        });
+    }
+    mesh.indices.extend([0, 1, 2, 0, 2, 3].map(|i| i + base));
 }

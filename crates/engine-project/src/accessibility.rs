@@ -5,7 +5,9 @@
 //! native code reads and writes. Every UI tick [`sync`] copies a changed
 //! component into the resource and applies the resource: reduced motion and
 //! the high-contrast theme reach [`UiStyleSettings`], the screen-reader hint
-//! reaches `GameUi`, and [`UiScaling`] scales layout, hit testing and text.
+//! reaches `GameUi`, and [`UiScaling`] scales layout, hit testing and text. The
+//! colour-vision filter fields are read by the `ui.color_filter` render feature
+//! of `engine-ui-render` through the UI GPU queue ([`crate::ui_tree::UiGpuQueue`]).
 use crate::{
     ComponentDescriptor, Error, Result,
     ui_tree::{GameUi, UiRoot, UiStyleSettings, UiTextBackend, UiTextKind, UiTextRequest},
@@ -27,6 +29,92 @@ pub const MAX_FOCUS_THICKNESS: f32 = 16.0;
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new("accessibility.invalid", message)
+}
+
+/// Which colour-vision deficiency the screen filter simulates or compensates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorFilterKind {
+    /// No filter.
+    #[default]
+    None,
+    /// Missing L (long-wavelength, red) cones.
+    Protanopia,
+    /// Missing M (medium-wavelength, green) cones.
+    Deuteranopia,
+    /// Missing S (short-wavelength, blue) cones.
+    Tritanopia,
+    /// No cone response: greyscale (Rec. 709 luminance).
+    Achromatopsia,
+}
+
+impl ColorFilterKind {
+    pub const ALL: [Self; 5] = [
+        Self::None,
+        Self::Protanopia,
+        Self::Deuteranopia,
+        Self::Tritanopia,
+        Self::Achromatopsia,
+    ];
+
+    /// Stable name used in authored data and status.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Protanopia => "protanopia",
+            Self::Deuteranopia => "deuteranopia",
+            Self::Tritanopia => "tritanopia",
+            Self::Achromatopsia => "achromatopsia",
+        }
+    }
+}
+
+/// What the colour-vision filter does with the deficiency it names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorFilterMode {
+    /// Show the scene as a person with the deficiency sees it (a design and
+    /// testing aid).
+    #[default]
+    Simulate,
+    /// Daltonize: shift the colour information the deficiency loses into
+    /// channels that remain distinguishable (for players with the deficiency).
+    Correct,
+}
+
+impl ColorFilterMode {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Simulate => "simulate",
+            Self::Correct => "correct",
+        }
+    }
+}
+
+/// The colour-vision filter fields of [`AccessibilitySettings`] as one value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorFilterSettings {
+    pub kind: ColorFilterKind,
+    pub mode: ColorFilterMode,
+    /// Blend from the unfiltered scene (0) to the full effect (1).
+    pub strength: f32,
+}
+
+impl Default for ColorFilterSettings {
+    fn default() -> Self {
+        Self {
+            kind: ColorFilterKind::None,
+            mode: ColorFilterMode::Simulate,
+            strength: 1.0,
+        }
+    }
+}
+
+impl ColorFilterSettings {
+    /// Whether the filter changes any pixel.
+    pub fn is_active(&self) -> bool {
+        self.kind != ColorFilterKind::None && self.strength > 0.0
+    }
 }
 
 /// User accessibility preferences. Attach as `engine.AccessibilitySettings`
@@ -57,6 +145,13 @@ pub struct AccessibilitySettings {
     /// their own theme keep it). Clearing it restores the previous theme.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub high_contrast_theme: Option<String>,
+    /// Colour-vision filter applied to the 3D scene (see `docs/accessibility.md`);
+    /// `none` disables it.
+    pub color_filter: ColorFilterKind,
+    /// Simulate the deficiency or correct for it (`achromatopsia` has no correction).
+    pub color_filter_mode: ColorFilterMode,
+    /// Blend between the unfiltered scene (0) and the full filter (1).
+    pub color_filter_strength: f32,
 }
 
 impl Default for AccessibilitySettings {
@@ -71,6 +166,9 @@ impl Default for AccessibilitySettings {
             focus_thickness: 2.0,
             focus_high_contrast: false,
             high_contrast_theme: None,
+            color_filter: ColorFilterKind::None,
+            color_filter_mode: ColorFilterMode::Simulate,
+            color_filter_strength: 1.0,
         }
     }
 }
@@ -105,7 +203,26 @@ impl AccessibilitySettings {
         {
             return Err(invalid("highContrastTheme is not a valid theme name"));
         }
+        if !within(self.color_filter_strength, 0.0, 1.0) {
+            return Err(invalid("colorFilterStrength must be within 0..=1"));
+        }
+        if self.color_filter == ColorFilterKind::Achromatopsia
+            && self.color_filter_mode == ColorFilterMode::Correct
+        {
+            return Err(invalid(
+                "colorFilterMode correct has no correction for achromatopsia; use simulate",
+            ));
+        }
         Ok(())
+    }
+
+    /// The colour-vision filter these settings request.
+    pub fn color_filter_settings(&self) -> ColorFilterSettings {
+        ColorFilterSettings {
+            kind: self.color_filter,
+            mode: self.color_filter_mode,
+            strength: self.color_filter_strength,
+        }
     }
 
     /// Scaling the UI step applies for these settings.
@@ -167,6 +284,20 @@ impl AccessibilityControl {
     pub fn set_reduced_motion(&mut self, reduced: bool) {
         self.settings.reduced_motion = reduced;
     }
+    /// Set the colour-vision filter after validating the combination.
+    pub fn set_color_filter(
+        &mut self,
+        kind: ColorFilterKind,
+        mode: ColorFilterMode,
+        strength: f32,
+    ) -> Result<()> {
+        self.set(AccessibilitySettings {
+            color_filter: kind,
+            color_filter_mode: mode,
+            color_filter_strength: strength,
+            ..self.settings.clone()
+        })
+    }
 }
 
 /// Bookkeeping of what [`sync`] last applied. Starts from the default
@@ -220,7 +351,10 @@ pub fn descriptor() -> ComponentDescriptor {
             "screenReader":{"type":"boolean"},
             "focusThickness":{"type":"number","minimum":MIN_FOCUS_THICKNESS,"maximum":MAX_FOCUS_THICKNESS},
             "focusHighContrast":{"type":"boolean"},
-            "highContrastTheme":{"type":"string","minLength":1,"maxLength":64}
+            "highContrastTheme":{"type":"string","minLength":1,"maxLength":64},
+            "colorFilter":{"type":"string","enum":["none","protanopia","deuteranopia","tritanopia","achromatopsia"]},
+            "colorFilterMode":{"type":"string","enum":["simulate","correct"]},
+            "colorFilterStrength":{"type":"number","minimum":0,"maximum":1}
         }}),
         defaults: serde_json::to_value(AccessibilitySettings::default())
             .expect("defaults serialize"),

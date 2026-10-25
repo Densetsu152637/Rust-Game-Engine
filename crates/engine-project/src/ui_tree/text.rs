@@ -108,6 +108,10 @@ pub struct UiTextLayout {
     pub images: Vec<UiInlineImage>,
     /// Precise caret and selection geometry, when the backend has it.
     pub geometry: Option<Arc<dyn UiTextGeometry>>,
+    /// [`Self::pages`] are SDF atlas pages (distance in alpha) that only the
+    /// `ui.sdf_text` render feature can draw. A backend sets this only after
+    /// [`UiTextBackend::set_sdf_output`] enabled SDF output.
+    pub sdf: bool,
 }
 
 /// Object-safe text backend. Implementations must be deterministic for a
@@ -119,6 +123,11 @@ pub trait UiTextBackend: Send + Sync {
     /// Called at the start of every UI tick and every draw extraction, so
     /// backends with a glyph cache can age it. The default does nothing.
     fn begin_frame(&self) {}
+    /// Let families that request SDF return SDF pages (`UiTextLayout::sdf`)
+    /// instead of coverage pages. Only the draw extraction that hands the
+    /// result to the `ui.sdf_text` render feature enables it. The default
+    /// ignores the request (the backend has no SDF output).
+    fn set_sdf_output(&self, _enabled: bool) {}
 }
 
 /// The runtime's backend: a font key that resolves to a `font_face` family
@@ -168,6 +177,11 @@ impl UiTextBackend for SelectingTextBackend<'_> {
     fn begin_frame(&self) {
         if let Some(engine) = self.engine {
             engine.begin_frame();
+        }
+    }
+    fn set_sdf_output(&self, enabled: bool) {
+        if let Some(engine) = self.engine {
+            UiTextBackend::set_sdf_output(engine, enabled);
         }
     }
 }

@@ -10,6 +10,7 @@
 //! Atlas pages are CPU `Arc<Texture>` snapshots. A page's snapshot is
 //! re-published only when the atlas reports it dirty, so the renderer (which
 //! keys uploads on `Arc` identity) uploads a page once per change, not per frame.
+use super::gpu::{UiFeatureState, UiGpuFeature, UiGpuQueue};
 use super::*;
 use crate::content::{
     DEFAULT_FONT_SIZE, FONT_SIZE_RANGE, FontAtlasMode, FontConfig, FontFace, FontFamilySettings,
@@ -26,7 +27,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -35,19 +36,27 @@ const MAX_CACHED_REQUESTS: usize = 512;
 /// Longest text one request may carry (matches the bitmap backend).
 const MAX_REQUEST_BYTES: usize = 65_536;
 
-/// Why SDF families are drawn through a coverage atlas.
-pub const SDF_DEFERRED_REASON: &str = "SDF GPU rendering is deferred: the render extension API \
-    (PipelineFeature, Overlay stage) is not on this branch, so SDF families render through a \
-    coverage atlas at the pixel size they are drawn at";
-
 /// Which glyph pipeline draws text right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextRenderState {
     /// Every family uses (and gets) a coverage atlas.
     Coverage,
-    /// At least one family asked for SDF and is served by a coverage atlas.
+    /// SDF was requested and every SDF path draws it on the GPU from an SDF atlas.
+    Sdf,
+    /// SDF was requested and at least one path (see [`TextRenderStatus::screen`]
+    /// and [`TextRenderStatus::world`]) is served by a coverage atlas.
     SdfFallback,
+}
+
+/// One SDF drawing path: screen UI text (`ui.sdf_text`) or world text
+/// (`ui.world`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SdfPathStatus {
+    pub state: UiFeatureState,
+    /// Why the path uses a coverage atlas, when `state` is `fallback`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Reported text rendering mode, in the style of `UpscalerStatus`.
@@ -60,6 +69,14 @@ pub struct TextRenderStatus {
     pub sdf_families: Vec<String>,
     /// World-text draws that asked for SDF since the backend was created.
     pub sdf_requests: u64,
+    /// SDF layouts handed to the GPU features since the backend was created.
+    pub sdf_gpu_layouts: u64,
+    /// Screen UI text of SDF families (`ui.sdf_text`, Overlay stage).
+    pub screen: SdfPathStatus,
+    /// `engine.WorldText` with `atlas: "sdf"` (`ui.world`, Transparent stage).
+    pub world: SdfPathStatus,
+    /// Why SDF requests are served by a coverage atlas (the reasons of the
+    /// paths in fallback), when `state` is `sdf_fallback`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
 }
@@ -86,6 +103,8 @@ struct Family {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
+    /// Atlas kind of laid-out quads; shaping ignores it (always `false`).
+    sdf: bool,
     text: String,
     markup: bool,
     family: String,
@@ -119,6 +138,8 @@ pub(crate) struct PlacedText {
     pub quads: Vec<GlyphQuad>,
     /// Current atlas page snapshots; `GlyphQuad::page` indexes them.
     pub pages: Vec<Arc<Texture>>,
+    /// `pages` are SDF pages (distance in alpha).
+    pub sdf: bool,
     /// Union of the visible line boxes.
     pub bounds: engine_text::Rect,
 }
@@ -128,25 +149,25 @@ struct Snapshot {
     texture: Arc<Texture>,
 }
 
-struct Inner {
-    library: FontLibrary,
+/// One glyph atlas and the published snapshots of its pages.
+struct Pages {
     atlas: GlyphAtlas,
-    language: Option<String>,
     snapshots: Vec<Snapshot>,
-    shaped: HashMap<Key, Arc<Shaped>>,
-    laid: HashMap<Key, Arc<Laid>>,
-    uploads: u64,
 }
 
-impl Inner {
-    fn clear_caches(&mut self) {
-        self.shaped.clear();
-        self.laid.clear();
+impl Pages {
+    fn new(config: AtlasConfig) -> Result<Self> {
+        Ok(Self {
+            atlas: GlyphAtlas::new(config).map_err(text_error)?,
+            snapshots: Vec::new(),
+        })
     }
 
-    /// Re-publish the snapshot of every page that changed since the last call.
-    fn sync_pages(&mut self) {
+    /// Re-publish the snapshot of every page that changed since the last call;
+    /// returns how many were published.
+    fn sync(&mut self) -> u64 {
         let dirty: Vec<u32> = self.atlas.take_dirty().iter().map(|d| d.page).collect();
+        let mut uploads = 0;
         for (index, page) in self.atlas.pages().iter().enumerate() {
             let stale = self.snapshots.get(index).is_none_or(|s| {
                 s.generation != page.generation() || dirty.contains(&(index as u32))
@@ -162,16 +183,53 @@ impl Inner {
                     pixels: page.pixels().to_vec(),
                 }),
             };
-            self.uploads += 1;
+            uploads += 1;
             match self.snapshots.get_mut(index) {
                 Some(slot) => *slot = snapshot,
                 None => self.snapshots.push(snapshot),
             }
         }
+        uploads
     }
 
-    fn pages(&self) -> Vec<Arc<Texture>> {
+    fn textures(&self) -> Vec<Arc<Texture>> {
         self.snapshots.iter().map(|s| s.texture.clone()).collect()
+    }
+
+    /// Whether every page a laid-out request used is unchanged.
+    fn is_current(&self, laid: &Laid) -> bool {
+        laid.pages.iter().all(|(page, generation)| {
+            self.atlas
+                .pages()
+                .get(*page as usize)
+                .is_some_and(|p| p.generation() == *generation)
+        })
+    }
+}
+
+struct Inner {
+    library: FontLibrary,
+    /// Exact-size coverage pages (crisp screen text).
+    coverage: Pages,
+    /// Signed-distance pages, created when SDF text is first laid out.
+    sdf: Option<Pages>,
+    language: Option<String>,
+    shaped: HashMap<Key, Arc<Shaped>>,
+    laid: HashMap<Key, Arc<Laid>>,
+    uploads: u64,
+}
+
+impl Inner {
+    fn clear_caches(&mut self) {
+        self.shaped.clear();
+        self.laid.clear();
+    }
+
+    fn pages(&self, sdf: bool) -> &Pages {
+        match (&self.sdf, sdf) {
+            (Some(pages), true) => pages,
+            _ => &self.coverage,
+        }
     }
 }
 
@@ -180,6 +238,12 @@ pub struct EngineTextBackend {
     families: BTreeMap<String, Family>,
     default_family: Option<String>,
     sdf_requests: AtomicU64,
+    sdf_gpu_layouts: AtomicU64,
+    /// Screen layouts of SDF families return SDF pages (set by the draw
+    /// extraction that hands them to `ui.sdf_text`).
+    sdf_output: AtomicBool,
+    /// The UI GPU queue, once attached by the runtime (status only).
+    gpu: Mutex<Option<UiGpuQueue>>,
     inner: Mutex<Inner>,
 }
 
@@ -219,11 +283,14 @@ impl EngineTextBackend {
             families: BTreeMap::new(),
             default_family: None,
             sdf_requests: AtomicU64::new(0),
+            sdf_gpu_layouts: AtomicU64::new(0),
+            sdf_output: AtomicBool::new(false),
+            gpu: Mutex::new(None),
             inner: Mutex::new(Inner {
                 library: FontLibrary::new(),
-                atlas: GlyphAtlas::new(atlas).map_err(text_error)?,
+                coverage: Pages::new(atlas)?,
+                sdf: None,
                 language: None,
-                snapshots: Vec::new(),
                 shaped: HashMap::new(),
                 laid: HashMap::new(),
                 uploads: 0,
@@ -339,20 +406,31 @@ impl EngineTextBackend {
     /// Cache and upload counters.
     pub fn stats(&self) -> UiTextStats {
         let inner = self.lock();
+        let sdf = inner.sdf.as_ref();
         UiTextStats {
             texture_uploads: inner.uploads,
-            atlas_pages: inner.atlas.pages().len(),
-            cached_glyphs: inner.atlas.cached_glyphs(),
-            evictions: inner.atlas.evictions(),
+            atlas_pages: inner.coverage.atlas.pages().len()
+                + sdf.map_or(0, |p| p.atlas.pages().len()),
+            cached_glyphs: inner.coverage.atlas.cached_glyphs()
+                + sdf.map_or(0, |p| p.atlas.cached_glyphs()),
+            evictions: inner.coverage.atlas.evictions() + sdf.map_or(0, |p| p.atlas.evictions()),
             cached_layouts: inner.shaped.len(),
             families: self.families.len(),
             faces: inner.library.face_count(),
         }
     }
 
-    /// Whether SDF is requested and what actually draws it. SDF requests are
-    /// served by a coverage atlas at the needed pixel size; see
-    /// [`SDF_DEFERRED_REASON`].
+    /// Connect the status to the runtime's UI GPU queue, which knows whether
+    /// the `ui.sdf_text` and `ui.world` render features are registered and
+    /// prepared on a renderer.
+    pub fn attach_gpu(&self, queue: UiGpuQueue) {
+        *self.gpu.lock().unwrap_or_else(PoisonError::into_inner) = Some(queue);
+    }
+
+    /// Whether SDF is requested and what actually draws it: `Sdf` when every
+    /// path draws from an SDF atlas on the GPU, otherwise `SdfFallback` with
+    /// the precise reason per path (feature not registered, not prepared by a
+    /// wgpu renderer, disabled for the camera, or no 3D camera for world text).
     pub fn render_status(&self) -> TextRenderStatus {
         let sdf: Vec<String> = self
             .families
@@ -362,20 +440,39 @@ impl EngineTextBackend {
             .collect();
         let sdf_requests = self.sdf_requests.load(Ordering::Relaxed);
         let requested = !sdf.is_empty() || sdf_requests > 0;
+        let queue = self
+            .gpu
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or_default();
+        let path = |feature| {
+            let (state, reason) = queue.state_of(feature);
+            SdfPathStatus { state, reason }
+        };
+        let (screen, world) = (path(UiGpuFeature::SdfText), path(UiGpuFeature::World));
+        let active = screen.state == UiFeatureState::Gpu && world.state == UiFeatureState::Gpu;
+        let reasons: Vec<&str> = [&screen, &world]
+            .into_iter()
+            .filter_map(|p| p.reason.as_deref())
+            .collect();
         TextRenderStatus {
             requested: if requested {
                 FontAtlasMode::Sdf
             } else {
                 FontAtlasMode::Coverage
             },
-            state: if requested {
-                TextRenderState::SdfFallback
-            } else {
-                TextRenderState::Coverage
+            state: match (requested, active) {
+                (false, _) => TextRenderState::Coverage,
+                (true, true) => TextRenderState::Sdf,
+                (true, false) => TextRenderState::SdfFallback,
             },
             sdf_families: sdf,
             sdf_requests,
-            fallback_reason: requested.then(|| SDF_DEFERRED_REASON.to_owned()),
+            sdf_gpu_layouts: self.sdf_gpu_layouts.load(Ordering::Relaxed),
+            fallback_reason: (requested && !active).then(|| reasons.join("; ")),
+            screen,
+            world,
         }
     }
 
@@ -417,6 +514,7 @@ impl EngineTextBackend {
         let px = family.size * request.scale;
         let markup = request.kind == UiTextKind::Markup;
         let key = Key {
+            sdf: false,
             text: request.text.to_owned(),
             markup,
             family: normalize(&family.name),
@@ -516,7 +614,11 @@ impl EngineTextBackend {
     /// Must be called once per rendered frame before drawing: ages the glyph
     /// atlas so unused pages can be recycled.
     pub fn begin_frame(&self) {
-        self.lock().atlas.begin_frame();
+        let mut inner = self.lock();
+        inner.coverage.atlas.begin_frame();
+        if let Some(sdf) = &mut inner.sdf {
+            sdf.atlas.begin_frame();
+        }
     }
 }
 
@@ -614,35 +716,52 @@ impl UiTextGeometry for LayoutGeometry {
 }
 
 impl EngineTextBackend {
-    /// Shape (cached) and rasterise (cached) a request: the shaped layout, its
-    /// atlas quads and the current page snapshots.
+    /// Shape (cached) and rasterise (cached) a request into the coverage
+    /// atlas, or into the SDF atlas when `sdf`: the shaped layout, its atlas
+    /// quads and the current page snapshots.
     fn place(
         &self,
         inner: &mut Inner,
         request: &UiTextRequest<'_>,
         align: TextAlign,
+        sdf: bool,
     ) -> Result<(Arc<Shaped>, Arc<Laid>)> {
-        let (key, shaped) = self.shape(inner, request, align)?;
-        let current = |laid: &Laid, inner: &Inner| {
-            laid.pages.iter().all(|(page, generation)| {
-                inner
-                    .atlas
-                    .pages()
-                    .get(*page as usize)
-                    .is_some_and(|p| p.generation() == *generation)
-            })
-        };
-        if let Some(laid) = inner.laid.get(&key).filter(|l| current(l, inner)).cloned() {
+        let (shaped_key, shaped) = self.shape(inner, request, align)?;
+        let key = Key { sdf, ..shaped_key };
+        if let Some(laid) = inner
+            .laid
+            .get(&key)
+            .filter(|l| inner.pages(sdf).is_current(l))
+            .cloned()
+        {
             return Ok((shaped, laid));
         }
-        let Inner { library, atlas, .. } = inner;
-        let built = build_quads(&shaped.layout, library, atlas, Vec2::ZERO);
-        inner.sync_pages();
+        let built;
+        {
+            // `build_quads` needs the library and the atlas at once.
+            let Inner {
+                library,
+                coverage,
+                sdf: sdf_pages,
+                uploads,
+                ..
+            } = &mut *inner;
+            let pages = if sdf {
+                if sdf_pages.is_none() {
+                    *sdf_pages = Some(Pages::new(AtlasConfig::sdf())?);
+                }
+                sdf_pages.as_mut().expect("created above")
+            } else {
+                coverage
+            };
+            built = build_quads(&shaped.layout, library, &mut pages.atlas, Vec2::ZERO);
+            *uploads += pages.sync();
+        }
         let quads = built.map_err(text_error)?;
         let mut pages: Vec<(u32, u64)> = vec![];
         for quad in &quads {
             if !pages.iter().any(|(p, _)| *p == quad.page)
-                && let Some(page) = inner.atlas.pages().get(quad.page as usize)
+                && let Some(page) = inner.pages(sdf).atlas.pages().get(quad.page as usize)
             {
                 pages.push((quad.page, page.generation()));
             }
@@ -657,17 +776,23 @@ impl EngineTextBackend {
 
     /// Lay out `request` with `align` and return quads in layout pixels, for
     /// callers that place the text themselves (world-space text). The font
-    /// size is `request.scale` times the family's pixel size.
+    /// size is `request.scale` times the family's pixel size. With `sdf` the
+    /// quads and pages come from the SDF atlas.
     pub(crate) fn place_text(
         &self,
         request: &UiTextRequest<'_>,
         align: TextAlign,
+        sdf: bool,
     ) -> Result<PlacedText> {
         let mut inner = self.lock();
-        let (shaped, laid) = self.place(&mut inner, request, align)?;
+        let (shaped, laid) = self.place(&mut inner, request, align, sdf)?;
+        if sdf {
+            self.sdf_gpu_layouts.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(PlacedText {
             quads: laid.quads.clone(),
-            pages: inner.pages(),
+            pages: inner.pages(sdf).textures(),
+            sdf,
             bounds: shaped.layout.bounds,
         })
     }
@@ -681,7 +806,14 @@ impl UiTextBackend for EngineTextBackend {
 
     fn layout(&self, request: &UiTextRequest<'_>) -> Result<UiTextLayout> {
         let mut inner = self.lock();
-        let (shaped, laid) = self.place(&mut inner, request, TextAlign::Start)?;
+        let sdf = self.sdf_output.load(Ordering::Relaxed)
+            && self
+                .family(request.font)
+                .is_some_and(|f| f.atlas == FontAtlasMode::Sdf);
+        let (shaped, laid) = self.place(&mut inner, request, TextAlign::Start, sdf)?;
+        if sdf {
+            self.sdf_gpu_layouts.fetch_add(1, Ordering::Relaxed);
+        }
         let glyphs = laid
             .quads
             .iter()
@@ -699,7 +831,8 @@ impl UiTextBackend for EngineTextBackend {
         Ok(UiTextLayout {
             metrics: shaped.metrics,
             glyphs,
-            pages: inner.pages(),
+            pages: inner.pages(sdf).textures(),
+            sdf,
             carets: shaped.carets.clone(),
             links: shaped.links.clone(),
             images: shaped.images.clone(),
@@ -709,5 +842,9 @@ impl UiTextBackend for EngineTextBackend {
 
     fn begin_frame(&self) {
         EngineTextBackend::begin_frame(self);
+    }
+
+    fn set_sdf_output(&self, enabled: bool) {
+        self.sdf_output.store(enabled, Ordering::Relaxed);
     }
 }

@@ -10,8 +10,9 @@ Status: integrated into the game UI (UI parity phase B). The library itself stay
 engine, GPU and windowing code; `engine-project` plugs it in as a `UiTextBackend`, loads
 TrueType/OpenType faces as `font_face` assets, draws rich labels, text inputs and
 world-space text through it, and `engine-desktop` forwards typed text and IME events. See
-[Game UI integration](#game-ui-integration). Not integrated: GPU SDF rendering (deferred,
-see [SDF status](#sdf-status)).
+[Game UI integration](#game-ui-integration). GPU SDF rendering and 3D world text are the
+`ui.sdf_text` and `ui.world` render features of [engine-ui-render](ui-render.md) (see
+[SDF status](#sdf-status)).
 
 ## Pipeline
 
@@ -334,20 +335,34 @@ An entity with `Transform` and `engine.WorldText` (editable with `component_set`
 
 Quad corners are `world_matrix * scale(1/ppu, -1/ppu, 1) * translate(-anchor * box)` applied
 with `engine_text::transform_quads`. A project with world text needs at least one `font_face`
-(`render.font.unknown` otherwise). `DrawSpace::World` draws use the 2D world camera, so
-`billboard` means "do not rotate"; a depth-tested 3D placement facing a `Camera3D` needs the render
-extension API (see below).
+(`render.font.unknown` otherwise). Without the `ui.world` render feature, or without a
+`Camera3D`, the draws are `DrawSpace::World` meshes for the 2D world camera and `billboard` means
+"do not rotate". With the feature ready and a `Camera3D` active the text is drawn in the 3D
+frame instead (Transparent stage): depth-tested against the scene, sorted back to front,
+`billboard` text aligned with each view's camera right and up axes, and `atlas: "sdf"` text
+drawn from an SDF atlas; the 2D draws are skipped (see [ui-render.md](ui-render.md#uiworld)
+and its [routing rule](ui-render.md#routing-rule-no-double-drawing)).
 
 ### SDF status
 
-Requests for SDF text are accepted (`font_config` `atlas: "sdf"`, `WorldText.atlas: "sdf"`) and
-reported by `EngineTextBackend::render_status()` as `TextRenderStatus { requested: sdf,
-state: sdf_fallback, sdf_families, sdf_requests, fallback_reason }`. They are **rendered through a
-coverage atlas at the pixel size actually needed**. GPU SDF rendering (`GLYPH_SHADER_WGSL` through
-an Overlay-stage `PipelineFeature`) is deferred because the render extension API
-(`PipelineFeature`, Overlay stage) lives on `claude/parity-rendering` and is not on this branch.
-The seam is the `FontAtlasMode` request: when the render feature exists, a pass can switch the
-families that request SDF to an `AtlasConfig::sdf()` atlas without changing authored data.
+Requests for SDF text (`font_config` `atlas: "sdf"`, `WorldText.atlas: "sdf"`) are served by
+the render features of [engine-ui-render](ui-render.md) when they are registered
+(`engine_ui_render::install`) and prepared on a wgpu renderer:
+
+- screen UI text of SDF families is laid out against an `AtlasConfig::sdf()` atlas (48 px base,
+  6 px spread, created on first use beside the coverage atlas) and drawn by `ui.sdf_text` in the
+  Overlay stage with `GLYPH_SHADER_WGSL`;
+- `WorldText` with `atlas: "sdf"` in a `Camera3D` scene is drawn from the same SDF atlas by
+  `ui.world`.
+
+`EngineTextBackend::render_status()` reports `TextRenderStatus { requested, state, sdf_families,
+sdf_requests, sdf_gpu_layouts, screen, world, fallback_reason }`: `state` is `sdf` when both
+paths draw on the GPU, `sdf_fallback` otherwise, and `screen` / `world` carry each path's
+`gpu` or `fallback` state with the precise reason (feature not registered, registered but not
+prepared by a wgpu renderer, disabled for the camera through `Camera3D.render_features`, or no
+active `Camera3D` for world text). In every fallback case the text is **rendered through a
+coverage atlas at the pixel size actually needed**: 2D-only frames, non-wgpu backends and
+headless sprite backends keep this path. Authored data is unchanged by any of this.
 
 ## Limits and errors
 
@@ -400,11 +415,14 @@ Integrated: `UiTextBackend`, `font_face`/`font_config` assets, rich labels (link
 text input with IME on shaped fonts, desktop typed-text and IME forwarding, world-space text.
 Not integrated or limited:
 
-- GPU SDF rendering is deferred (see [SDF status](#sdf-status)); there is no MCP tool dedicated to
-  fonts beyond the generic asset and `component_set` tools.
+- There is no MCP tool dedicated to fonts beyond the generic asset and `component_set` tools.
+- SDF text has no outline, glow or soft-shadow style, and screen SDF text composites above the
+  sprite/UI layer (see [SDF status](#sdf-status) and [ui-render.md](ui-render.md#not-implemented)).
 - UI text is rasterised at logical pixel size and scaled by the camera fit (no physical-pixel
   rasterisation), and world text at a fixed `pixelsPerUnit`.
-- World text draws in the 2D world pass only; there is no depth-tested 3D text yet.
+- World text is depth-tested in 3D only with the `ui.world` feature and a `Camera3D`; otherwise it
+  draws in the 2D world pass (see [ui-render.md](ui-render.md)). Billboard text in 3D is not
+  interpolated between ticks.
 - Colour glyphs (COLR, CBDT, sbix, SVG) are not rendered; colour-only emoji fonts produce
   no quads. Monochrome outline emoji (Noto Emoji) work.
 - Outlines are unhinted and variable fonts use their default instance (no axis selection).

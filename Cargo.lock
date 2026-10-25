@@ -1696,6 +1696,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-ui-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "engine-core",
+ "engine-desktop",
+ "engine-project",
+ "engine-render-pipeline",
+ "engine-text",
+ "epaint_default_fonts",
+ "glam 0.34.1",
+ "image",
+ "naga",
+ "serde_json",
+ "tempfile",
+ "wgpu",
+]
+
+[[package]]
 name = "enumflags2"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

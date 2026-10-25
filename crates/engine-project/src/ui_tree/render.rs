@@ -162,9 +162,9 @@ impl PaintTransform {
     }
 }
 
-/// Glyph quads grouped by atlas page.
+/// Glyph quads grouped by atlas page; the flag marks SDF pages.
 #[derive(Default)]
-struct TextBatch(Vec<(Arc<Texture>, Mesh)>);
+struct TextBatch(Vec<(Arc<Texture>, Mesh, bool)>);
 
 impl TextBatch {
     fn add(&mut self, layout: &UiTextLayout, origin: [f32; 2], alpha: f32) {
@@ -172,10 +172,10 @@ impl TextBatch {
             let Some(page) = layout.pages.get(glyph.page as usize) else {
                 continue;
             };
-            let slot = match self.0.iter().position(|(p, _)| Arc::ptr_eq(p, page)) {
+            let slot = match self.0.iter().position(|(p, ..)| Arc::ptr_eq(p, page)) {
                 Some(slot) => slot,
                 None => {
-                    self.0.push((page.clone(), Mesh::default()));
+                    self.0.push((page.clone(), Mesh::default(), layout.sdf));
                     self.0.len() - 1
                 }
             };
@@ -231,9 +231,12 @@ impl Painter<'_> {
     }
 
     fn push_text(&mut self, key: &str, batch: TextBatch, layer: i32, clip: Rect) {
-        for (page, (texture, mesh)) in batch.0.into_iter().enumerate() {
+        for (page, (texture, mesh, sdf)) in batch.0.into_iter().enumerate() {
+            // SDF runs carry `s` instead of `2` (see `is_sdf_draw`): only the
+            // `ui.sdf_text` feature can draw them.
+            let tag = if sdf { 's' } else { '2' };
             self.push(
-                format!("{key}:2{page:02}"),
+                format!("{key}:{tag}{page:02}"),
                 mesh,
                 Some(texture),
                 layer,

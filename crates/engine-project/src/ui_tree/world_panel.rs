@@ -1,9 +1,11 @@
 //! World-space UI panels: a `UiRoot` rendered onto a quad placed by the
 //! entity's transform, with pointer picking through a camera ray.
 //!
-//! Rendering stays on the existing `Draw` path: the panel's UI draws are
-//! clipped on the CPU and re-emitted as `DrawSpace::World` meshes. See
-//! `docs/ui-styling.md` for the 3D-composition limitation.
+//! Without the `ui.world` render feature the panel's UI draws are clipped on
+//! the CPU and re-emitted as `DrawSpace::World` meshes for the 2D camera. With
+//! it ([`extract_items`], routed by `UiGpuQueue`) the same draws become
+//! panel-local meshes that the feature places, billboards, sorts and
+//! depth-tests in the 3D frame. See `docs/ui-render.md`.
 use super::{
     localize,
     resolve::{any_themed, effective_for_render, states_by_root},
@@ -340,6 +342,9 @@ struct Panel {
     entity: Entity,
     root: UiRoot,
     panel: UiWorldPanel,
+    /// The entity's world matrix, before billboarding.
+    world: Mat4,
+    /// `world` turned toward the active 3D camera's entity position.
     matrix: Mat4,
 }
 
@@ -356,6 +361,7 @@ fn panels(world: &World) -> Result<Vec<Panel>> {
             entity: e.id(),
             root: root.clone(),
             panel: panel.clone(),
+            world: matrix,
             matrix: panel.placement(matrix, camera),
         });
     }
@@ -446,6 +452,39 @@ pub(super) fn tick(
     Ok(())
 }
 
+/// The UI draws of one panel in panel pixels (screen-root pipeline: theme,
+/// localisation, text scale, bindings), in the order the sprite pass sorts them.
+fn panel_draws(
+    world: &World,
+    panel: &Panel,
+    text: &dyn UiTextBackend,
+    textures: &BTreeMap<String, Arc<Texture>>,
+) -> Result<Vec<Draw>> {
+    let states = world.get_resource::<UiWorldPanels>();
+    let data = world.get_resource::<UiDataContext>();
+    let bindings = world.get_resource::<UiBindingState>();
+    let localization = world.get_resource::<crate::localization::Localization>();
+    panel.panel.validate()?;
+    let ui = states.and_then(|s| s.states.get(&panel.id));
+    let by_root = if any_themed(world, std::iter::once(&panel.root)) {
+        ui.map(states_by_root).unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
+    let effective = effective_for_render(world, &panel.id, &panel.root, &by_root)?;
+    let root = effective.as_ref().unwrap_or(&panel.root);
+    let localized = localization.and_then(|l| localize::localize_root(root, l));
+    let root = localized.as_ref().unwrap_or(root);
+    let scaled_text = crate::accessibility::UiScaling::of(world).text_scaled(root, text);
+    let root = scaled_text.as_ref().unwrap_or(root);
+    let mut state = ui.map(|u| u.render_state(&panel.id)).unwrap_or_default();
+    state.themed = effective.is_some();
+    if let (Some(data), Some(bindings)) = (data, bindings) {
+        state.item_texts = bindings.item_texts(root, data);
+    }
+    root.extract_draws_with(&panel.id, panel.panel.pixel_size(), &state, text, textures)
+}
+
 /// Draw the world panels as `DrawSpace::World` meshes.
 pub(super) fn extract(
     world: &World,
@@ -453,31 +492,8 @@ pub(super) fn extract(
     textures: &BTreeMap<String, Arc<Texture>>,
 ) -> Result<Vec<Draw>> {
     let mut out = vec![];
-    let states = world.get_resource::<UiWorldPanels>();
-    let data = world.get_resource::<UiDataContext>();
-    let bindings = world.get_resource::<UiBindingState>();
-    let localization = world.get_resource::<crate::localization::Localization>();
     for panel in panels(world)? {
-        panel.panel.validate()?;
-        let ui = states.and_then(|s| s.states.get(&panel.id));
-        let by_root = if any_themed(world, std::iter::once(&panel.root)) {
-            ui.map(states_by_root).unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-        let effective = effective_for_render(world, &panel.id, &panel.root, &by_root)?;
-        let root = effective.as_ref().unwrap_or(&panel.root);
-        let localized = localization.and_then(|l| localize::localize_root(root, l));
-        let root = localized.as_ref().unwrap_or(root);
-        let scaled_text = crate::accessibility::UiScaling::of(world).text_scaled(root, text);
-        let root = scaled_text.as_ref().unwrap_or(root);
-        let mut state = ui.map(|u| u.render_state(&panel.id)).unwrap_or_default();
-        state.themed = effective.is_some();
-        if let (Some(data), Some(bindings)) = (data, bindings) {
-            state.item_texts = bindings.item_texts(root, data);
-        }
-        let draws =
-            root.extract_draws_with(&panel.id, panel.panel.pixel_size(), &state, text, textures)?;
+        let draws = panel_draws(world, &panel, text, textures)?;
         for (n, draw) in draws.into_iter().enumerate() {
             let z = (n as f32 * PANEL_Z_STEP).min(PANEL_Z_MAX);
             let mesh = world_mesh(&panel.panel, panel.matrix, &draw.mesh, draw.clip, z);
@@ -496,6 +512,52 @@ pub(super) fn extract(
                 offset: [0.0; 3],
             });
         }
+    }
+    Ok(out)
+}
+
+/// The world panels as items for the `ui.world` render feature: each panel's
+/// draws clipped and mapped to panel-local units (x right, y up, z 0), with the
+/// entity matrix and billboard mode left to the feature, which applies them
+/// per view with that view's camera.
+pub(super) fn extract_items(
+    world: &World,
+    text: &dyn UiTextBackend,
+    textures: &BTreeMap<String, Arc<Texture>>,
+) -> Result<Vec<WorldUiItem>> {
+    let mut out = vec![];
+    for panel in panels(world)? {
+        let mut draws = panel_draws(world, &panel, text, textures)?;
+        // The sprite pass orders equal-depth draws by layer, then ID.
+        draws.sort_by(|a, b| a.layer.cmp(&b.layer).then_with(|| a.id.cmp(&b.id)));
+        let layer = draws.iter().map(|d| d.layer).min().unwrap_or(0);
+        let draws: Vec<WorldUiDraw> = draws
+            .into_iter()
+            .filter_map(|draw| {
+                let mesh = world_mesh(&panel.panel, Mat4::IDENTITY, &draw.mesh, draw.clip, 0.0);
+                let sdf = is_sdf_draw(&draw);
+                (!mesh.indices.is_empty()).then(|| WorldUiDraw {
+                    mesh: Arc::new(mesh),
+                    texture: draw.texture,
+                    sdf,
+                })
+            })
+            .collect();
+        if draws.is_empty() {
+            continue;
+        }
+        out.push(WorldUiItem {
+            id: format!("world:{}", panel.id),
+            kind: WorldUiKind::Panel,
+            layer,
+            world_from_local: panel.world.to_cols_array_2d(),
+            billboard: match panel.panel.billboard {
+                UiBillboard::None => WorldBillboard::None,
+                UiBillboard::Full => WorldBillboard::Full,
+                UiBillboard::Yaw => WorldBillboard::Yaw,
+            },
+            draws,
+        });
     }
     Ok(out)
 }

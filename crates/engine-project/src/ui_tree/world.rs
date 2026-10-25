@@ -34,6 +34,9 @@ pub fn register(app: &mut engine_core::EngineApp) -> Result<()> {
     world.insert_resource(UiDataContext::default());
     world.insert_resource(UiBindingState::default());
     world.insert_resource(UiWorldPanels::default());
+    if !world.contains_resource::<UiGpuQueue>() {
+        world.insert_resource(UiGpuQueue::default());
+    }
     Ok(())
 }
 
@@ -310,13 +313,41 @@ pub fn extract_world(
 
 /// [`extract_world`] with an explicit text backend (for example a
 /// [`SelectingTextBackend`] that adds shaped TrueType text). Calls
-/// `text.begin_frame()` once.
+/// `text.begin_frame()` once. Everything stays on the 2D path.
 pub fn extract_world_with(
     world: &World,
     viewport: [u32; 2],
     text: &dyn UiTextBackend,
     textures: &BTreeMap<String, Arc<Texture>>,
 ) -> Result<Vec<Draw>> {
+    Ok(extract_world_routed(world, viewport, text, textures, UiGpuRouting::default())?.draws)
+}
+
+/// The UI draws of one frame split by where they are drawn.
+#[derive(Debug, Default)]
+pub struct UiExtraction {
+    /// 2D draws (screen UI and, unless routed, world panels as world meshes).
+    pub draws: Vec<Draw>,
+    /// SDF text runs of screen roots for `ui.sdf_text`; empty unless
+    /// `routing.sdf_text`.
+    pub sdf_text: Vec<Draw>,
+    /// World panels for `ui.world`; empty unless `routing.world_ui`.
+    pub panels: Vec<WorldUiItem>,
+}
+
+/// [`extract_world_with`] that routes content to the UI render features. Only
+/// screen-root text of SDF families is produced as SDF runs (world panels
+/// rasterise text at their own density), and a root with a dialog, dropdown
+/// popup or tooltip is drawn with coverage text for the frame, because SDF
+/// text composites above the whole sprite layer and could not stay below the
+/// overlay.
+pub fn extract_world_routed(
+    world: &World,
+    viewport: [u32; 2],
+    text: &dyn UiTextBackend,
+    textures: &BTreeMap<String, Arc<Texture>>,
+    routing: UiGpuRouting,
+) -> Result<UiExtraction> {
     text.begin_frame();
     let roots = roots(world);
     if roots.len() > MAX_UI_ROOTS {
@@ -334,6 +365,7 @@ pub fn extract_world_with(
     let settings = world.get_resource::<crate::accessibility::AccessibilityControl>();
     let scaling = UiScaling::of(world);
     let layout_viewport = scaling.layout_viewport(viewport);
+    let sdf = SdfOutput::new(text);
     let mut draws = vec![];
     let mut ids = BTreeSet::new();
     for (id, _, root) in roots {
@@ -355,15 +387,55 @@ pub fn extract_world_with(
         if let (Some(data), Some(bindings)) = (data, bindings) {
             state.item_texts = bindings.item_texts(drawn, data);
         }
+        sdf.set(routing.sdf_text);
         let mut root_draws =
             drawn.extract_draws_with(&id, layout_viewport, &state, text, textures)?;
+        if routing.sdf_text
+            && root_draws.iter().any(is_sdf_draw)
+            && root_draws.iter().any(|d| d.layer >= UI_DIALOG_LAYER)
+        {
+            sdf.set(false);
+            root_draws = drawn.extract_draws_with(&id, layout_viewport, &state, text, textures)?;
+        }
         if scaling.ui_scale != 1.0 {
             root_draws = scale_draws(root_draws, scaling.ui_scale);
         }
         draws.extend(root_draws);
     }
-    draws.extend(world_panel::extract(world, text, textures)?);
-    Ok(draws)
+    // World panels keep coverage text at their own raster density.
+    sdf.set(false);
+    let mut panels = vec![];
+    if routing.world_ui {
+        panels = world_panel::extract_items(world, text, textures)?;
+    } else {
+        draws.extend(world_panel::extract(world, text, textures)?);
+    }
+    let (mut sdf_text, draws): (Vec<Draw>, Vec<Draw>) = draws.into_iter().partition(is_sdf_draw);
+    sdf_text.sort_by(|a, b| a.layer.cmp(&b.layer).then_with(|| a.id.cmp(&b.id)));
+    Ok(UiExtraction {
+        draws,
+        sdf_text,
+        panels,
+    })
+}
+
+/// Turns SDF output on a text backend on and restores "off" when dropped, so
+/// an extraction error never leaves it enabled for later layouts.
+struct SdfOutput<'a>(&'a dyn UiTextBackend);
+
+impl<'a> SdfOutput<'a> {
+    fn new(text: &'a dyn UiTextBackend) -> Self {
+        Self(text)
+    }
+    fn set(&self, enabled: bool) {
+        self.0.set_sdf_output(enabled);
+    }
+}
+
+impl Drop for SdfOutput<'_> {
+    fn drop(&mut self) {
+        self.0.set_sdf_output(false);
+    }
 }
 
 /// Scale screen-space draws from layout units to window logical pixels.

@@ -1,0 +1,27 @@
+[package]
+name = "engine-ui-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "GPU render features for the game UI: SDF text, depth-tested world panels and world text, and the colour-vision filter, as engine-render-pipeline features."
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+engine-core.workspace = true
+engine-project = { path = "../engine-project" }
+engine-render-pipeline = { path = "../engine-render-pipeline" }
+engine-text = { path = "../engine-text" }
+glam.workspace = true
+wgpu = { workspace = true, features = ["std", "wgsl"] }
+
+[dev-dependencies]
+engine-desktop = { path = "../engine-desktop" }
+epaint_default_fonts = "=0.37.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+naga = { workspace = true, features = ["wgsl-in"] }
+serde_json = "1"
+tempfile = "3"
+
+[lints]
+workspace = true
