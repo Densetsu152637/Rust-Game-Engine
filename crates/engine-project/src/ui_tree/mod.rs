@@ -9,7 +9,10 @@
 //! (`docs/ui-styling.md`) adds `selector`, `stylesheet` (themes and cascade),
 //! `animation` (transitions, keyframes), `resolve` (the one style-resolution
 //! step), `binding` (data binding), `world_panel` (world-space panels) and
-//! `style_schema` (their descriptors). `gpu` is the hand-off to the UI render
+//! `style_schema` (their descriptors). The authoring layer
+//! (`docs/ui-authoring.md`) adds `document` (edit operations, undo, selection),
+//! `diff`, `inspect` (layout inspection), `raster` (CPU rasterizer) and
+//! `preview` (headless rendering). `gpu` is the hand-off to the UI render
 //! features of `engine-ui-render` (`docs/ui-render.md`). `localize` applies message references and
 //! per-locale asset overrides (`docs/localization.md`).
 use crate::{Error, Result, ui::Rect};
@@ -21,11 +24,16 @@ mod animation;
 mod binding;
 mod builder;
 mod chrome;
+mod diff;
+mod document;
 mod gpu;
+mod inspect;
 mod interaction;
 mod layout;
 mod localize;
 mod navigation;
+mod preview;
+mod raster;
 mod render;
 mod resolve;
 mod schema;
@@ -58,15 +66,32 @@ pub use binding::{
     UiBinding, UiBindingState, UiBindingStats, UiData, UiDataContext, UiItemTextSource,
     UiItemTexts, UiPathSegment, UiStringResolver, parse_path,
 };
+pub use diff::{UiDiff, UiNodeChange, diff_ops, diff_roots};
+pub use document::{
+    DEFAULT_UI_HISTORY, MAX_UI_HISTORY, MAX_UI_OPS, MAX_UI_PATCH_BYTES, UI_WIDGET_KINDS, UiChange,
+    UiChangeKind, UiDocument, UiOp, UiOpReport, apply_ops,
+};
 pub use gpu::{
     FEATURE_COLOR_FILTER, FEATURE_SDF_TEXT, FEATURE_WORLD, UiFeatureReport, UiFeatureState,
     UiFeatureStatus, UiGpuFeature, UiGpuFrame, UiGpuQueue, UiGpuRouting, UiRenderStatus,
     WorldBillboard, WorldUiDraw, WorldUiItem, WorldUiKind, is_sdf_draw,
 };
+pub use inspect::{
+    MAX_UI_ISSUES, UiHitMode, UiInspection, UiIssue, UiIssueSeverity, UiNodeLayout, inspect_layout,
+    state_flag, state_names,
+};
 pub use interaction::{GameUi, UiInteraction, UiStateFlags, UiTickContext, UiWidgetEvent};
 pub use layout::{MAX_UI_BOXES, UiBox};
 pub use localize::localize_root;
 pub use navigation::UiDirection;
+pub use preview::{
+    UiPreview, UiPreviewAssets, UiPreviewOptions, UiViewOptions, effective_root,
+    referenced_textures, render_preview,
+};
+pub use raster::{
+    MAX_RASTER_DIMENSION, MAX_RASTER_DRAWS, MAX_RASTER_FILL, MAX_RASTER_TRIANGLES, RasterImage,
+    RasterOptions, UiSampling, painted_bounds, rasterize,
+};
 pub use render::{UI_DIALOG_LAYER, UI_POPUP_LAYER, UiRenderState};
 pub use resolve::{UiStyleRuntime, UiStyleSettings};
 pub use schema::descriptor;

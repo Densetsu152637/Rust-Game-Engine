@@ -11,6 +11,7 @@ mod model_import;
 mod navigation;
 mod project;
 mod scene;
+mod ui;
 
 pub use components::{COMPONENT_NAMES, ComponentDoc, component_docs};
 
@@ -79,6 +80,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(navigation::tools());
     tools.extend(acoustics::tools());
     tools.extend(locale::tools());
+    tools.extend(ui::tools());
     tools
 }
 
