@@ -210,7 +210,7 @@ impl Destructible3D {
     }
 }
 /// Runtime marker on a destructible entity that has fractured. Its `PhysicsBody3D` was
-/// removed; renderers should stop drawing the intact mesh.
+/// removed; scene extraction skips the intact mesh of a fractured entity.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct Fractured {
     pub fragments: u32,

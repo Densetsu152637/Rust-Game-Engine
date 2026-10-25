@@ -115,7 +115,7 @@ body shape. MCP editable through `component_set` like every catalog component.
    The engine's scene extraction (`extract_scene_frame`, 3D and the 2D mesh path) skips the
    `MeshRenderer` of an entity carrying `Fractured`, so only the fragments draw. Only that
    entity is skipped; child entities with their own `MeshRenderer` keep drawing.
-   needed the body treats a `Fractured` entity as inactive, not as an error: a joint with the
+   Everything that needed the body treats a `Fractured` entity as inactive, not as an error: a joint with the
    body as an endpoint is removed (`joint_status` reads `Inactive`), a `Vehicle3D` chassis stops
    being a vehicle (`vehicle_state` returns an error until the component is removed) and a
    `CharacterController3D` body stops being a character. Scene validation stays valid and no
