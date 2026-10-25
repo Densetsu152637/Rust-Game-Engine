@@ -29,6 +29,9 @@ pub use queries::{
     KindFilter, MAX_QUERY_EXCLUDES, MAX_QUERY_HITS, OverlapHit, PointHit, QueryFilter, QueryHits,
     RayCastHit, SensorFilter, ShapeCastHit,
 };
+#[path = "features/destruction.rs"]
+mod destruction;
+pub use destruction::ContactImpulse;
 #[path = "features/debug/dim3.rs"]
 mod debug;
 pub use debug::{

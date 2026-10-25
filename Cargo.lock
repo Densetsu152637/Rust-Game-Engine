@@ -1215,6 +1215,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-destruction"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+]
+
+[[package]]
 name = "engine-dlss"
 version = "0.1.0"
 dependencies = [
@@ -1327,6 +1334,7 @@ dependencies = [
  "engine-assets",
  "engine-audio",
  "engine-core",
+ "engine-destruction",
  "engine-navigation",
  "engine-network",
  "engine-physics",

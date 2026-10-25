@@ -111,3 +111,9 @@ contacts, joint anchors, optional AABBs, `wireframe(max_lines)` segments) and
 `add_debug_contributor` lets other features add anchors and lines. The optional
 `deterministic` cargo feature enables Rapier's `enhanced-determinism`. See
 [Physics queries](../../docs/physics-queries.md).
+
+Destruction support: `contact_impulse(id)` returns the normal contact impulse the solver
+applied to a body in the last `step` (`ContactImpulse { impulse, point, other }`: summed
+over its solid contacts, impulse-weighted world contact point, strongest partner), and
+`is_sleeping(id)` / `sleep(id)` read and force Rapier's sleep state. They back
+`engine.Destructible3D` ([Physics destruction](../../docs/physics-destruction.md)).
