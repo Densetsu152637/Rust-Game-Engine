@@ -135,6 +135,21 @@ fn shape2(c: &PhysicsBody2D, scale: Vec3) -> Result<dim2::Shape> {
         }
     })
 }
+/// Expands the authored hole cell indices into one flag per cell.
+fn heightfield_holes(c: &PhysicsBody3D) -> Result<Vec<bool>> {
+    if c.heightfield_holes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cells = (c.heightfield_rows.saturating_sub(1) as usize)
+        * (c.heightfield_columns.saturating_sub(1) as usize);
+    let mut holes = vec![false; cells];
+    for &cell in &c.heightfield_holes {
+        *holes.get_mut(cell as usize).ok_or_else(|| {
+            invalid("heightfield_holes entries must index a cell of the heightfield")
+        })? = true;
+    }
+    Ok(holes)
+}
 fn shape3(c: &PhysicsBody3D, scale: Vec3) -> Result<dim3::Shape> {
     let scaled = |p: &[f32; 3]| (Vec3::from(*p) * scale).to_array();
     Ok(match c.shape {
@@ -173,6 +188,7 @@ fn shape3(c: &PhysicsBody3D, scale: Vec3) -> Result<dim3::Shape> {
             columns: c.heightfield_columns as usize,
             heights: c.heights.clone(),
             scale: scaled(&c.heightfield_scale),
+            holes: heightfield_holes(c)?,
         },
         Shape::Compound => {
             uniform(scale, 3)?;

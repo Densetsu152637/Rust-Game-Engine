@@ -190,9 +190,9 @@ the registered surface and notes.
 The grid is cut into tiles of `collision.tile_cells` cells (8..=255). Each tile is a child
 entity with a fixed `engine.PhysicsBody3D` (engine-physics `Shape::HeightField`, rows along Z,
 centred on the tile centre, internal edges fixed) and the collision layer, mask, friction and
-restitution. A tile containing holes becomes a fixed `trimesh` of its non-hole cells with the
-same diagonal: the authored heightfield shape cannot remove cells, and triangle meshes are the
-supported way to cut them. Tiles whose cells are all holes have no collider. Edits rebuild only
+restitution. Hole cells are listed in the tile's `heightfield_holes`, so engine-physics removes
+both triangles of each (Parry cell status) and bodies fall through exactly those cells. Tiles
+whose cells are all holes have no collider. Edits rebuild only
 the tiles intersecting the edit region (widened by one sample).
 
 Measured (`crates/engine-project/tests/terrain.rs`): a dynamic 0.5 m ball dropped on a flat

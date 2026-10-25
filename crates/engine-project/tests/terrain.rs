@@ -305,9 +305,9 @@ fn dynamic_balls_rest_on_the_terrain_and_fall_through_holes() {
     tick(&mut runtime, 150);
     let entity = runtime.entity("land").unwrap();
     let status = terrain::status(runtime.app().world(), entity).unwrap();
-    // 4 x 4 tiles of 64 cells; the tile with the hole is a triangle mesh.
-    assert_eq!(status.heightfield_colliders, 15);
-    assert_eq!(status.mesh_colliders, 1);
+    // 4 x 4 heightfield tiles of 64 cells; one has its hole cells removed.
+    assert_eq!(status.colliders, 16);
+    assert_eq!(status.holed_colliders, 1);
     // Plateau height 3 + terrain y 1 + radius 0.5; tolerance 0.05 m.
     let rest = position(&runtime, "on_plateau");
     assert!((rest.y - 4.5).abs() < 0.05, "rest {rest}");
@@ -350,7 +350,8 @@ fn edits_rebuild_chunks_and_colliders() {
     tick(&mut runtime, 1);
     let after = terrain::status(runtime.app().world(), entity).unwrap();
     assert_eq!(after.revision, before.revision + 2);
-    assert_eq!(after.mesh_colliders, before.mesh_colliders + 1);
+    assert_eq!(after.holed_colliders, before.holed_colliders + 1);
+    assert_eq!(after.colliders, before.colliders);
     assert_eq!(
         after.triangles + 8,
         before.triangles,

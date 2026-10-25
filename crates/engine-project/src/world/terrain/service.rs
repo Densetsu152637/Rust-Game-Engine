@@ -88,9 +88,9 @@ pub struct TerrainStatus {
     pub chunk_entities: usize,
     pub vertices: usize,
     pub triangles: usize,
-    /// Collider tiles as heightfields and as triangle meshes (tiles with holes).
-    pub heightfield_colliders: usize,
-    pub mesh_colliders: usize,
+    /// Collider tiles (heightfields), and how many of them have removed hole cells.
+    pub colliders: usize,
+    pub holed_colliders: usize,
     /// Registered `PcgSurfaceRegistry` name.
     pub surface: Option<String>,
     /// Why something did not happen (no GPU renderer for `render_mode: gpu`, surface name
@@ -294,18 +294,14 @@ fn body(settings: &TerrainCollision, tile: &collision::CollisionTile) -> Option<
             columns,
             heights,
             size,
+            holes,
         } => Some(PhysicsBody3D {
             shape: Shape::HeightField,
             heights: heights.clone(),
             heightfield_rows: *rows,
             heightfield_columns: *columns,
             heightfield_scale: [size[0], 1.0, size[1]],
-            ..base
-        }),
-        TileShape::TriMesh { vertices, indices } => Some(PhysicsBody3D {
-            shape: Shape::TriMesh,
-            vertices: vertices.clone(),
-            indices: indices.clone(),
+            heightfield_holes: holes.clone(),
             ..base
         }),
         TileShape::Empty => None,
@@ -357,7 +353,7 @@ fn sync_collision(
             }
             continue;
         };
-        let is_mesh = body.shape == Shape::TriMesh;
+        let holed = !body.heightfield_holes.is_empty();
         let transform = Transform {
             position: [tile.center[0], 0.0, tile.center[1]],
             ..Transform::default()
@@ -365,7 +361,7 @@ fn sync_collision(
         match state.colliders.get_mut(&key) {
             Some((collider, mesh)) => {
                 world.entity_mut(*collider).insert((body, transform));
-                *mesh = is_mesh;
+                *mesh = holed;
             }
             None => {
                 let name = format!("terrain:{owner}/collider/{},{}", key[0], key[1]);
@@ -385,7 +381,7 @@ fn sync_collision(
                         TerrainGenerated { owner: entity },
                     ))
                     .id();
-                state.colliders.insert(key, (spawned, is_mesh));
+                state.colliders.insert(key, (spawned, holed));
             }
         }
     }
@@ -979,8 +975,8 @@ pub fn status(world: &World, entity: Entity) -> Option<TerrainStatus> {
         chunk_entities: state.chunks.len(),
         vertices: state.chunks.values().map(|c| c.vertices).sum(),
         triangles: state.chunks.values().map(|c| c.triangles).sum(),
-        heightfield_colliders: state.colliders.values().filter(|(_, m)| !m).count(),
-        mesh_colliders: state.colliders.values().filter(|(_, m)| *m).count(),
+        colliders: state.colliders.len(),
+        holed_colliders: state.colliders.values().filter(|(_, holed)| *holed).count(),
         surface: state.surface.as_ref().map(|(n, ..)| n.clone()),
         notes,
     })

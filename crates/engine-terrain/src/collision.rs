@@ -1,32 +1,27 @@
 //! Collision tiles for a physics engine: the grid is cut into square tiles of `tile_cells`
 //! cells, each a heightfield (rows along Z, columns along X, centred on the tile centre, the
-//! layout of engine-physics `dim3::Shape::HeightField`) or, when the tile has holes, a triangle
-//! mesh of its non-hole cells using the same diagonal. Tiles keep edits local: only tiles
-//! intersecting an edit's region are rebuilt.
+//! layout of engine-physics `dim3::Shape::HeightField`) whose hole cells are listed for
+//! removal. Tiles keep edits local: only tiles intersecting an edit's region are rebuilt.
 use crate::heightfield::{Heightfield, SampleRect};
 use crate::{Error, Result};
 
 /// Smallest tile edge in cells.
 pub const MIN_TILE_CELLS: u32 = 8;
-/// Largest tile edge in cells (a 257 x 257 heightfield; holed tiles stay below the
-/// 65,536-vertex triangle-mesh limit).
+/// Largest tile edge in cells (a 256 x 256 sample heightfield).
 pub const MAX_TILE_CELLS: u32 = 255;
 
 /// Geometry of one tile in tile-local coordinates: x and z relative to the tile centre,
 /// heights unchanged (relative to the terrain origin).
 #[derive(Clone, Debug, PartialEq)]
 pub enum TileShape {
-    /// `rows` x `columns` row-major heights spanning `size` local units.
+    /// `rows` x `columns` row-major heights spanning `size` local units. `holes` lists the
+    /// tile's hole cells by row-major index over `(rows - 1) x (columns - 1)`, ascending.
     HeightField {
         rows: u32,
         columns: u32,
         heights: Vec<f32>,
         size: [f32; 2],
-    },
-    /// Non-hole cells as triangles.
-    TriMesh {
-        vertices: Vec<[f32; 3]>,
-        indices: Vec<[u32; 3]>,
+        holes: Vec<u32>,
     },
     /// Every cell is a hole.
     Empty,
@@ -108,7 +103,19 @@ pub fn collision_tile(
         min[1] as f32 * s + size[1] * 0.5,
     ];
     let (columns, rows) = (max[0] - min[0] + 1, max[1] - min[1] + 1);
-    let shape = if !field.any_hole(cells) {
+    let mut holes = Vec::new();
+    if field.any_hole(cells) {
+        for r in min[1]..max[1] {
+            for c in min[0]..max[0] {
+                if field.is_hole(c, r) {
+                    holes.push((r - min[1]) * (columns - 1) + (c - min[0]));
+                }
+            }
+        }
+    }
+    let shape = if holes.len() == ((columns - 1) * (rows - 1)) as usize {
+        TileShape::Empty
+    } else {
         let mut heights = Vec::with_capacity((columns * rows) as usize);
         for r in min[1]..=max[1] {
             for c in min[0]..=max[0] {
@@ -120,34 +127,7 @@ pub fn collision_tile(
             columns,
             heights,
             size,
-        }
-    } else {
-        let mut vertices = Vec::with_capacity((columns * rows) as usize);
-        for r in min[1]..=max[1] {
-            for c in min[0]..=max[0] {
-                vertices.push([
-                    c as f32 * s - center[0],
-                    field.height(c, r),
-                    r as f32 * s - center[1],
-                ]);
-            }
-        }
-        let mut indices = Vec::new();
-        for r in min[1]..max[1] {
-            for c in min[0]..max[0] {
-                if field.is_hole(c, r) {
-                    continue;
-                }
-                let a = (r - min[1]) * columns + (c - min[0]);
-                let (b, cc) = (a + columns, a + 1);
-                indices.push([a, b, cc]);
-                indices.push([b, b + 1, cc]);
-            }
-        }
-        if indices.is_empty() {
-            TileShape::Empty
-        } else {
-            TileShape::TriMesh { vertices, indices }
+            holes,
         }
     };
     Ok(CollisionTile {
@@ -172,7 +152,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tiles_cover_the_grid_and_holes_switch_to_meshes() {
+    fn tiles_cover_the_grid_and_list_hole_cells() {
         let heights = (0..21 * 13).map(|i| i as f32 * 0.01).collect();
         let mut f = Heightfield::from_heights(21, 13, 2.0, heights).unwrap();
         assert_eq!(tile_counts(&f, 8).unwrap(), [3, 2]);
@@ -183,11 +163,17 @@ mod tests {
         assert_eq!(last.cells, SampleRect::new([16, 8], [20, 12]));
         assert_eq!(last.center, [36.0, 20.0]);
         match &last.shape {
-            TileShape::TriMesh { vertices, indices } => {
-                assert_eq!(vertices.len(), 5 * 5);
-                assert_eq!(indices.len(), 4 * 4 * 2 - 2);
+            TileShape::HeightField {
+                rows,
+                columns,
+                holes,
+                ..
+            } => {
+                assert_eq!((*rows, *columns), (5, 5));
+                // Cell (17, 9) is local column 1, row 1 of the 4 x 4 cell tile.
+                assert_eq!(holes, &vec![5]);
             }
-            other => panic!("expected a mesh, got {other:?}"),
+            other => panic!("expected a holed heightfield, got {other:?}"),
         }
         match &tiles[0].shape {
             TileShape::HeightField {
@@ -195,7 +181,9 @@ mod tests {
                 columns,
                 heights,
                 size,
+                holes,
             } => {
+                assert!(holes.is_empty());
                 assert_eq!((*rows, *columns), (9, 9));
                 assert_eq!(heights[9], f.height(0, 1));
                 assert_eq!(*size, [16.0, 16.0]);
