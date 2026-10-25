@@ -525,3 +525,96 @@ fn kinematic_targets_are_spread_over_the_fixed_steps_of_a_frame() {
         assert!((speed - 3.).abs() < 0.05, "{speeds:?}");
     }
 }
+
+/// M4 left no way to teleport a dynamic body (Transform writes are ignored). `set_body_pose`
+/// moves it, writes the Transform at once, and keeps or replaces the velocity.
+#[test]
+fn set_body_pose_teleports_dynamic_bodies_in_both_dimensions() {
+    let (_dir, mut runtime) = started(vec![
+        settings(json!({"gravity_2d":[0.,0.],"gravity_3d":[0.,0.,0.]})),
+        entity("three", [0., 0., 0.], body3(json!({"velocity":[1.,0.,0.]}))),
+        entity("two", [0., 0., 0.], body2(json!({"velocity":[0.,1.]}))),
+    ]);
+    ticks(&mut runtime, 5);
+    let (three, two) = (
+        runtime.entity("three").unwrap(),
+        runtime.entity("two").unwrap(),
+    );
+    // A plain Transform write is ignored for a dynamic body (the behaviour this fixes around).
+    runtime
+        .app_mut()
+        .world_mut()
+        .get_mut::<Transform>(three)
+        .unwrap()
+        .position = [50., 0., 0.];
+    ticks(&mut runtime, 1);
+    assert!(
+        position(&runtime, "three").x < 5.,
+        "Transform writes lose to the simulation"
+    );
+
+    let target = Vec3::new(10., 20., 30.);
+    let turned = glam::Quat::from_rotation_y(0.5);
+    physics::set_body_pose(runtime.app_mut().world_mut(), three, target, turned, None).unwrap();
+    // Written immediately, before any step.
+    assert!((position(&runtime, "three") - target).length() < 1e-4);
+    let state = physics::body_state(runtime.app().world(), three).unwrap();
+    assert!((state.position - target).length() < 1e-4);
+    assert!(state.rotation.angle_between(turned) < 1e-3);
+    assert!(
+        (state.linear_velocity - Vec3::X).length() < 1e-4,
+        "velocity kept"
+    );
+    ticks(&mut runtime, 5);
+    // 5 ticks x 0.02 s at 1 m/s from the teleported pose.
+    let moved = position(&runtime, "three");
+    assert!(
+        (moved - (target + Vec3::new(0.1, 0., 0.))).length() < 0.02,
+        "{moved}"
+    );
+
+    physics::set_body_pose(
+        runtime.app_mut().world_mut(),
+        three,
+        Vec3::ZERO,
+        glam::Quat::IDENTITY,
+        Some((Vec3::new(0., 3., 0.), Vec3::ZERO)),
+    )
+    .unwrap();
+    let state = physics::body_state(runtime.app().world(), three).unwrap();
+    assert!((state.linear_velocity - Vec3::new(0., 3., 0.)).length() < 1e-4);
+
+    // 2D: rotation about Z only, planar velocities only.
+    physics::set_body_pose(
+        runtime.app_mut().world_mut(),
+        two,
+        Vec3::new(7., 8., 0.),
+        glam::Quat::from_rotation_z(0.25),
+        None,
+    )
+    .unwrap();
+    let state = physics::body_state(runtime.app().world(), two).unwrap();
+    assert!((state.position.truncate() - Vec2::new(7., 8.)).length() < 1e-4);
+    assert!((state.linear_velocity.y - 1.).abs() < 1e-4);
+    assert!(
+        physics::set_body_pose(
+            runtime.app_mut().world_mut(),
+            two,
+            Vec3::ZERO,
+            glam::Quat::from_rotation_x(0.5),
+            None
+        )
+        .is_err(),
+        "2D bodies reject a non-planar rotation"
+    );
+    assert!(
+        physics::set_body_pose(
+            runtime.app_mut().world_mut(),
+            three,
+            Vec3::new(f32::NAN, 0., 0.),
+            glam::Quat::IDENTITY,
+            None
+        )
+        .is_err()
+    );
+}

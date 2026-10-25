@@ -139,7 +139,12 @@ non-sensor `engine.PhysicsBody2D` (box, ball, capsule, with the transform's
 rotation; `convex_hull` as its polygon, `trimesh` as one polygon per triangle, `compound` as
 its box, ball, capsule and hull parts; `cylinder`, `heightfield` and unsupported parts add a
 warning naming the entity and shape; the 2D schema does not author `cylinder`) and `engine.AcousticVolume` with `space: "proxy2d"` (a static solid
-box). Their `AcousticMaterial` applies, otherwise `proxy2d.material`. While a
+box). The proxy builder accepts polygons of at most 32 vertices and at most 8192 footprints in
+all: a `convex_hull` with more vertices is simplified to 32 (dropping the corners that cut the
+least area; the result stays convex) and a `trimesh` or scene beyond 8192 footprints keeps the
+first 8192, each with a warning naming the entity (`simplified from N to 32 vertices`,
+`trimesh footprints capped at 8192`, `proxy2d footprints beyond the limit`); the build never
+fails for them. Their `AcousticMaterial` applies, otherwise `proxy2d.material`. While a
 proxy is active 3D meshes and world-space volumes are ignored (the build lists
 them as warnings), and all propagation runs in proxy space.
 

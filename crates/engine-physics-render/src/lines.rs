@@ -157,7 +157,7 @@ impl PipelineFeature for DebugLinesFeature {
                 self.count = 0;
             }
             Some(extract) => {
-                if self.uploaded != Some(extract.revision) {
+                if self.uploaded != Some(extract.revisions.debug) {
                     let batch = build_lines(&extract.debug, self.config.debug_line_width, cap);
                     let whole = self.instances.write(
                         &ctx.gpu.device,
@@ -165,7 +165,7 @@ impl PipelineFeature for DebugLinesFeature {
                         bytemuck::cast_slice(&batch.instances),
                     );
                     self.count = (self.instances.len / size_of::<LineInstance>() as u64) as u32;
-                    self.uploaded = Some(extract.revision);
+                    self.uploaded = Some(extract.revisions.debug);
                     self.last = FeatureStatus {
                         truncated: batch.truncated || extract.debug_truncated || !whole,
                         reason: line_reason(extract, &batch),

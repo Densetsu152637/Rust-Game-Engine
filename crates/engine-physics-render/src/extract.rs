@@ -12,7 +12,7 @@ use bevy_ecs::prelude::*;
 use engine_core::{EngineApp, ExtractionSet, RenderWorld, Stage};
 use engine_project::Transform;
 use engine_project::simulation::physics::{
-    DebugSegment, Fractured, FragmentRender, PhysicsRenderData, debug_view,
+    DebugSegment, Fractured, FragmentRender, FragmentRenderer, PhysicsRenderData, debug_view,
     deformable_debug_segments, fragment_mesh, fragments,
 };
 use glam::{Mat4, Quat, Vec3};
@@ -40,11 +40,31 @@ pub struct FragmentDraw {
     pub mesh: Arc<FragmentRender>,
 }
 
+/// Per-category content revisions. A feature re-uploads its buffers only when its own
+/// category changed, so animated debug lines or fragments do not force the (large) deformable
+/// buffers to re-upload every frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExtractRevisions {
+    pub cloth: u64,
+    pub soft_bodies: u64,
+    pub fluid: u64,
+    pub fragments: u64,
+    pub debug: u64,
+}
+impl ExtractRevisions {
+    /// Sum of the categories: changes whenever any category changed.
+    pub fn total(&self) -> u64 {
+        self.cloth + self.soft_bodies + self.fluid + self.fragments + self.debug
+    }
+}
+
 /// Physics render data copied into the render world.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct PhysicsRenderExtract {
-    /// Changes whenever any content changed; features skip re-uploads when it is unchanged.
+    /// Changes whenever any content changed ([`ExtractRevisions::total`]).
     pub revision: u64,
+    /// Per-category revisions; each feature compares its own.
+    pub revisions: ExtractRevisions,
     pub data: PhysicsRenderData,
     /// Debug-view and deformable debug segments, at most `max_debug_segments`.
     pub debug: Vec<DebugSegment>,
@@ -70,6 +90,12 @@ pub fn build_extract(
     let mut out = PhysicsRenderExtract::default();
     let wants_data = enabled.cloth || enabled.soft_bodies || enabled.fluid;
     let mut data_changed = false;
+    // What the previous extract held, read before its data may be moved into the new one.
+    let had_cloth = previous.as_ref().is_some_and(|p| !p.data.cloths.is_empty());
+    let had_soft = previous
+        .as_ref()
+        .is_some_and(|p| !p.data.soft_bodies.is_empty());
+    let had_fluid = previous.as_ref().is_some_and(|p| !p.data.fluids.is_empty());
     if wants_data {
         match world.get_resource::<PhysicsRenderData>() {
             Some(source) => {
@@ -147,14 +173,42 @@ pub fn build_extract(
             }
         }
     }
-    let animated = !out.debug.is_empty() || !out.fragments.is_empty();
-    let base = previous.as_ref().map_or(0, |p| p.revision);
-    out.revision = if data_changed || animated || previous.is_none() {
-        base + 1
-    } else {
-        base
-    };
+    let base = previous.as_ref().map(|p| p.revisions).unwrap_or_default();
+    let first = previous.is_none();
+    let bump = |revision: u64, changed: bool| revision + u64::from(changed || first);
+    // Data categories re-upload when the simulation refreshed them and they hold (or held)
+    // something.
+    out.revisions.cloth = bump(
+        base.cloth,
+        data_changed && (had_cloth || !out.data.cloths.is_empty()),
+    );
+    out.revisions.soft_bodies = bump(
+        base.soft_bodies,
+        data_changed && (had_soft || !out.data.soft_bodies.is_empty()),
+    );
+    out.revisions.fluid = bump(
+        base.fluid,
+        data_changed && (had_fluid || !out.data.fluids.is_empty()),
+    );
+    // Debug lines animate whenever they exist; a frame that drops them changes the buffer once.
+    let had_debug = previous.as_ref().is_some_and(|p| !p.debug.is_empty());
+    out.revisions.debug = bump(base.debug, !out.debug.is_empty() || had_debug);
+    let fragments_same = previous
+        .as_ref()
+        .is_some_and(|p| same_fragments(&p.fragments, &out.fragments));
+    out.revisions.fragments = bump(base.fragments, !fragments_same);
+    out.revision = out.revisions.total();
     out
+}
+
+/// Whether two fragment lists draw identically (same entities, transforms and shared meshes).
+fn same_fragments(a: &[FragmentDraw], b: &[FragmentDraw]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.fragment == y.fragment
+                && x.world_from_local == y.world_from_local
+                && Arc::ptr_eq(&x.mesh, &y.mesh)
+        })
 }
 
 /// World matrix of an authored transform.
@@ -177,6 +231,7 @@ pub fn extract_physics_render(world: &mut World) {
         .resource_mut::<RenderWorld>()
         .world_mut()
         .remove_resource::<PhysicsRenderExtract>();
+    sync_fragment_renderer(world, &config);
     let extract = build_extract(world, &config, previous);
     world
         .resource_mut::<RenderWorld>()
@@ -184,13 +239,29 @@ pub fn extract_physics_render(world: &mut World) {
         .insert_resource(extract);
 }
 
+/// Keeps the [`FragmentRenderer`] marker in step with whether fragment drawing is enabled, so
+/// scene extraction hides a fractured entity's intact mesh only while fragments are drawn.
+fn sync_fragment_renderer(world: &mut World, config: &PhysicsRenderConfig) {
+    let present = world.contains_resource::<FragmentRenderer>();
+    if config.enabled.fragments && !present {
+        world.insert_resource(FragmentRenderer);
+    } else if !config.enabled.fragments && present {
+        world.remove_resource::<FragmentRenderer>();
+    }
+}
+
 /// Validates `config`, inserts it as a resource of the simulation world and schedules
 /// [`extract_physics_render`] in the `Extract` stage. Call once while configuring the app.
+///
+/// When fragment drawing is enabled this also inserts the [`FragmentRenderer`] marker, which
+/// makes scene extraction hide the intact mesh of a `Fractured` entity (the fragments draw
+/// instead). Hosts that do not install the extraction keep the intact mesh visible.
 pub fn install_physics_extraction(
     app: &mut EngineApp,
     config: PhysicsRenderConfig,
 ) -> anyhow::Result<()> {
     config.validate()?;
+    sync_fragment_renderer(app.world_mut(), &config);
     app.world_mut().insert_resource(config);
     app.schedule_mut(Stage::Extract).add_systems(
         extract_physics_render

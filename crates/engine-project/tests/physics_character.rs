@@ -549,3 +549,36 @@ fn characters_interpolate_their_transform_when_interpolation_is_on() {
     println!("not interpolated: {idle} of 120 frames hold still");
     assert!(idle > 40, "{idle}");
 }
+
+/// A character parented to an entity that keeps moving (a vehicle, a platform) is driven by the
+/// simulation, not teleported by the parent's motion: its ground state survives every frame.
+#[test]
+fn a_character_under_a_moving_parent_keeps_its_ground_state() {
+    let carrier = entity("carrier", [0., 0., 0.], json!({}));
+    let mut child = bound(hero3([0., 0.85, 0.], json!({})));
+    child["parent"] = json!("carrier");
+    let (_dir, mut runtime) = started(vec![floor3(), carrier, child]);
+    ticks(&mut runtime, 30);
+    let grounded_before = events(&runtime, "physics.character.grounded").len();
+    let carrier_entity = runtime.entity("carrier").unwrap();
+    for _ in 0..90 {
+        runtime
+            .app_mut()
+            .world_mut()
+            .get_mut::<Transform>(carrier_entity)
+            .unwrap()
+            .position[0] += 0.05;
+        ticks(&mut runtime, 1);
+        let state = physics::character_state(runtime.app().world(), hero(&runtime)).unwrap();
+        assert!(state.grounded, "ground state lost under a moving parent");
+    }
+    assert_eq!(
+        events(&runtime, "physics.character.grounded").len(),
+        grounded_before,
+        "no spurious grounded events from false teleports"
+    );
+    assert!(
+        events(&runtime, "physics.character.left_ground").is_empty(),
+        "no spurious left_ground events"
+    );
+}

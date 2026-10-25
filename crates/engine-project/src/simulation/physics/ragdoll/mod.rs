@@ -408,6 +408,9 @@ impl Rig {
         let inherit = inherit && dynamic && self.built == Some(false) && config.inherit_velocity;
         self.remove_bodies(worlds);
         self.drives = (0..self.bones.len()).map(|_| None).collect();
+        // The poses of the bodies just removed must not be blended into the new ones on a
+        // frame that runs no step.
+        self.previous.clear();
         if worlds.three.len() + self.bones.len() > worlds.three.capacity() {
             return Ok(());
         }

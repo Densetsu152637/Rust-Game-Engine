@@ -366,6 +366,38 @@ impl World {
         body.apply_impulse(vector(impulse), true);
         Ok(())
     }
+    /// Teleports a dynamic or kinematic body to `position`/`orientation` and wakes it. With
+    /// `velocity` (linear, angular) the velocities are replaced; with `None` they are kept.
+    /// Contacts and joints are not touched, so a joint partner is pulled along by the next
+    /// step. Fixed bodies are moved by rebuilding them, not by this call.
+    pub fn set_pose(
+        &mut self,
+        id: u64,
+        position: Position,
+        orientation: Orientation,
+        velocity: Option<(Position, AngularVelocity)>,
+    ) -> Result<()> {
+        if !crate::finite(&position) || !valid_rotation(orientation) {
+            return Err(Error("invalid pose"));
+        }
+        if let Some((linear, spin)) = velocity
+            && (!crate::finite(&linear) || !valid_angular(spin))
+        {
+            return Err(Error("invalid velocity"));
+        }
+        let body = self.core.body_mut(id)?;
+        if body.is_fixed() {
+            return Err(Error("set_pose requires a dynamic or kinematic body"));
+        }
+        body.set_translation(vector(position), true);
+        body.set_rotation(rotation(orientation), true);
+        if let Some((linear, spin)) = velocity {
+            body.set_linvel(vector(linear), true);
+            body.set_angvel(angular(spin), true);
+        }
+        body.wake_up(true);
+        Ok(())
+    }
     pub fn set_kinematic_target(
         &mut self,
         id: u64,

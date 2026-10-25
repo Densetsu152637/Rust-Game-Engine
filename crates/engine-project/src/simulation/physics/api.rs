@@ -3,7 +3,7 @@
 //! Bodies exist after the simulation synced them (scene start, then every tick), so an
 //! entity spawned during the current tick reports "no synced physics body" until the next
 //! step. Body IDs in engine-physics are `Entity::to_bits()`.
-use super::super::{invalid, mapped};
+use super::super::{invalid, mapped, write_world_pose};
 use super::{service, service_mut};
 use crate::Result;
 use bevy_ecs::prelude::*;
@@ -82,6 +82,81 @@ pub fn body_state(world: &World, entity: Entity) -> Result<BodyState> {
             })
         }
     }
+}
+/// Teleports a dynamic or kinematic body to the world-space `position`/`rotation` and wakes
+/// it. Plain `Transform` writes are ignored for a dynamic body (the simulated pose wins), so
+/// this is the way to move one. `velocity` is `(linear, angular)`; `None` keeps the current
+/// velocities. The `Transform` is written immediately and interpolation restarts from the new
+/// pose. 2D bodies need a rotation about Z, `position.z` (only stored for the `Transform`)
+/// and zero linear Z / angular X, Y. Joints and contacts are not touched: a jointed partner is
+/// pulled along by the next step. Fixed bodies move by editing their `Transform`.
+pub fn set_body_pose(
+    world: &mut World,
+    entity: Entity,
+    position: Vec3,
+    rotation: Quat,
+    velocity: Option<(Vec3, Vec3)>,
+) -> Result<()> {
+    if !position.is_finite() || !rotation.is_finite() || (rotation.length() - 1.).abs() > 0.01 {
+        return Err(invalid(
+            "set_body_pose needs a finite position and unit rotation",
+        ));
+    }
+    if let Some((linear, angular)) = velocity
+        && (!linear.is_finite() || !angular.is_finite())
+    {
+        return Err(invalid("set_body_pose velocities must be finite"));
+    }
+    let dimension = dimension_of(world, entity)?;
+    let id = body_id(entity);
+    let scale = {
+        let mut physics = service_mut(world)?;
+        let physics = &mut *physics;
+        match dimension {
+            Dimension::Two => {
+                let angle = super::bodies::planar(rotation)?;
+                let velocity = match velocity {
+                    Some((linear, angular))
+                        if linear.z != 0. || angular.x != 0. || angular.y != 0. =>
+                    {
+                        return Err(invalid("2D velocities need zero linear Z and angular X, Y"));
+                    }
+                    Some((linear, angular)) => Some(([linear.x, linear.y], angular.z)),
+                    None => None,
+                };
+                physics
+                    .worlds
+                    .two
+                    .set_pose(id, [position.x, position.y], angle, velocity)
+                    .map_err(mapped)?;
+                let record = physics
+                    .bodies
+                    .two
+                    .get_mut(&entity)
+                    .ok_or_else(|| invalid("Entity has no synced physics body"))?;
+                record.pose = (record.pose.0, rotation, position);
+                record.pose.0
+            }
+            Dimension::Three => {
+                let velocity =
+                    velocity.map(|(linear, angular)| (linear.to_array(), angular.to_array()));
+                physics
+                    .worlds
+                    .three
+                    .set_pose(id, position.to_array(), rotation.to_array(), velocity)
+                    .map_err(mapped)?;
+                let record = physics
+                    .bodies
+                    .three
+                    .get_mut(&entity)
+                    .ok_or_else(|| invalid("Entity has no synced physics body"))?;
+                record.pose = (record.pose.0, rotation, position);
+                record.pose.0
+            }
+        }
+    };
+    service_mut(world)?.stepper.forget(entity);
+    write_world_pose(world, entity, scale, rotation, position)
 }
 /// Linear impulse in N*s on a dynamic body. 2D bodies require `impulse.z == 0`.
 pub fn apply_impulse(world: &mut World, entity: Entity, impulse: Vec3) -> Result<()> {

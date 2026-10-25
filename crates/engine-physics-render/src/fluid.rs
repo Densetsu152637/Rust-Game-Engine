@@ -199,7 +199,7 @@ impl PipelineFeature for FluidFeature {
                 self.count = 0;
             }
             Some(extract) => {
-                if self.uploaded != Some(extract.revision) {
+                if self.uploaded != Some(extract.revisions.fluid) {
                     let batch =
                         build_particles(extract.data.fluids.values(), &self.config.fluid, cap);
                     self.instances.write(
@@ -208,7 +208,7 @@ impl PipelineFeature for FluidFeature {
                         bytemuck::cast_slice(&batch.instances),
                     );
                     self.count = batch.instances.len() as u32;
-                    self.uploaded = Some(extract.revision);
+                    self.uploaded = Some(extract.revisions.fluid);
                     self.last = FeatureStatus {
                         truncated: batch.truncated,
                         reason: (batch.truncated || batch.rejected > 0).then(|| {

@@ -176,6 +176,20 @@ pub(super) fn near(
         .collect()
 }
 
+/// Keeps the `limit` colliders nearest to the box `min..max` (ties by id), still sorted by id.
+/// Returns how many were left out.
+pub(super) fn limit(near: &mut Vec<Collider>, min: Vec3, max: Vec3, limit: usize) -> usize {
+    if near.len() <= limit {
+        return 0;
+    }
+    let omitted = near.len() - limit;
+    let gap = |c: &Collider| c.position.clamp(min, max).distance_squared(c.position);
+    near.sort_by(|a, b| gap(a).total_cmp(&gap(b)).then(a.id.cmp(&b.id)));
+    near.truncate(limit);
+    near.sort_by_key(|c| c.id);
+    omitted
+}
+
 impl Collider {
     pub(super) fn xpbd(&self) -> engine_xpbd::ColliderProxy {
         engine_xpbd::ColliderProxy {

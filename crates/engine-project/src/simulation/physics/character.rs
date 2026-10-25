@@ -163,7 +163,8 @@ struct Link<D> {
     jump: u64,
     /// Simulated world position before the latest step (the start of the interpolation).
     previous: Option<Vec3>,
-    /// World position the `Transform` held after the feature last wrote it.
+    /// Local `Transform` position after the feature last wrote it. Compared in local space, so a
+    /// parent that moves afterwards is not mistaken for a teleport of the character.
     written: Option<Vec3>,
 }
 pub(super) struct Characters {
@@ -276,8 +277,11 @@ macro_rules! dimension {
                         }
                         // A `Transform` the feature did not write is a teleport.
                         if let Some(written) = link.written {
-                            let at = world_pose(world, e)?.2;
-                            if ((at - written) * $flat).length() > TELEPORT_EPSILON {
+                            let local = entity
+                                .get::<crate::Transform>()
+                                .map_or(written, |t| Vec3::from(t.position));
+                            if ((local - written) * $flat).length() > TELEPORT_EPSILON {
+                                let at = world_pose(world, e)?.2;
                                 physics
                                     .set_character_position(id, $array(at))
                                     .map_err(mapped)?;
@@ -399,7 +403,9 @@ fn write_poses<D>(
         if world.get_entity(e).is_ok() {
             write_world_pose(world, e, scale, rotation, position)?;
             if let Some(link) = links.get_mut(&e) {
-                link.written = Some(world_pose(world, e)?.2);
+                link.written = world
+                    .get::<crate::Transform>(e)
+                    .map(|t| Vec3::from(t.position));
             }
         }
     }

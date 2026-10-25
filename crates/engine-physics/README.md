@@ -33,8 +33,9 @@ expose world parameters and state.
 quaternions. Units are meters, seconds, kilograms. IDs are caller-assigned u64s;
 duplicate IDs and unknown-body mutations fail.
 
-Dynamic poses belong to physics. Use `apply_impulse` for dynamics and
-`set_kinematic_target` for kinematics. Read poses after `step`; preserve prior
+Dynamic poses belong to physics. Use `apply_impulse` for dynamics, `set_pose` to teleport a
+dynamic or kinematic body (optionally replacing its velocities), and `set_kinematic_target` to
+drive kinematics. Read poses after `step`; preserve prior
 poses in the host for render interpolation. Valid timesteps satisfy 0 < dt <=
 0.25 seconds. Worlds cap body count at their configured capacity (at most
 100,000). Coordinates and velocities must be finite and bounded; dimensions

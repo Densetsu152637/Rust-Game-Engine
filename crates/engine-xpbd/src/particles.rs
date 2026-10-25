@@ -137,6 +137,13 @@ impl Particles {
                 acceleration += forces[i] * w;
             }
             self.v[i] += acceleration * h;
+            // Aerodynamic forces scale with the inverse mass (up to 1e6) and the squared air
+            // speed; without this clamp a validated cloth in a strong wind overflows to
+            // infinity within a few steps.
+            let speed = self.v[i].length();
+            if speed > MAX_SPEED {
+                self.v[i] *= MAX_SPEED / speed;
+            }
             self.x[i] += self.v[i] * h;
         }
     }

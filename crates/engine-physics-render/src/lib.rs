@@ -2,6 +2,11 @@
 //! (`engine-render-pipeline`): the debug view as lines, cloth and soft-body surfaces, particle
 //! fluids as sphere impostors and destruction fragments. See `docs/physics-rendering.md`.
 //!
+//! A host must call BOTH `install_physics_extraction` and `register_physics_features`:
+//! installing the extraction also marks the fragment renderer, which is what makes scene
+//! extraction hide the intact mesh of a fractured entity. Without them the intact mesh stays
+//! visible and nothing draws the fragments.
+//!
 //! ```ignore
 //! // Game setup, before the runner starts:
 //! install_physics_extraction(runtime.app_mut(), PhysicsRenderConfig::default())?;
@@ -25,8 +30,8 @@ pub use config::{
     MAX_SURFACE_VERTICES, PhysicsRenderConfig, PhysicsRenderToggles, SurfaceShading,
 };
 pub use extract::{
-    DebugState, FragmentDraw, PhysicsRenderExtract, build_extract, extract_physics_render,
-    install_physics_extraction, transform_matrix,
+    DebugState, ExtractRevisions, FragmentDraw, PhysicsRenderExtract, build_extract,
+    extract_physics_render, install_physics_extraction, transform_matrix,
 };
 pub use fluid::{FluidFeature, ParticleBatch, ParticleInstance, build_particles, particle_color};
 pub use lines::{DebugLinesFeature, LineBatch, LineInstance, build_lines};

@@ -3,8 +3,11 @@
 `crates/engine-physics-render` draws the physics module's output through the render
 extension API ([rendering architecture](rendering-architecture.md)): the physics debug
 view, cloth and soft-body surfaces, particle fluids and destruction fragments. It is five
-`PipelineFeature`s plus one extraction system; nothing in `engine-physics`,
-`engine-project` or `engine-desktop` was changed for it.
+`PipelineFeature`s plus one extraction system. Besides the crate itself, `engine-project` carries
+the `FragmentRenderer` marker resource and two small conditions in scene extraction (see
+[Intact mesh of a fractured entity](#intact-mesh-of-a-fractured-entity)). `engine-desktop` does
+not install the features by default: a host calls `install_physics_extraction` and
+`register_physics_features` itself (default host wiring is a rendering-domain decision).
 
 | Feature | Stage | Draws | Data |
 | --- | --- | --- | --- |
@@ -107,11 +110,32 @@ error):
 
 ## Intact mesh of a fractured entity
 
-`PhysicsRenderExtract.fractured` lists the `Fractured` owners. The engine's own scene
-extraction (`Runtime::extract_scene_frame`) already skips the `MeshRenderer` of an entity
-carrying `Fractured`, so a fractured entity's intact mesh does not draw alongside its
-fragments; children with their own `MeshRenderer` still draw. Fragments use configured colours; the owner's `MeshMaterial`
+`PhysicsRenderExtract.fractured` lists the `Fractured` owners. `install_physics_extraction`
+inserts the `engine_project::simulation::physics::FragmentRenderer` marker resource while
+`enabled.fragments` is on (the extraction system keeps it in step with the toggle). The engine's
+own scene extraction (`Runtime::extract_scene_frame`) skips the `MeshRenderer` of an entity
+carrying `Fractured` **only while that marker exists**, so with the fragment renderer installed
+the intact mesh does not draw alongside its fragments, and in a host that does not install it
+the intact mesh stays visible instead of the object vanishing. Children with their own
+`MeshRenderer` always draw. Fragments use configured colours; the owner's `MeshMaterial`
 (texture, tint) is not applied.
+
+## Revisions and uploads
+
+`PhysicsRenderExtract.revisions` holds one revision per category (`cloth`, `soft_bodies`,
+`fluid`, `fragments`, `debug`); `revision` is their sum. A feature re-uploads only when its own
+category changed, so animated debug lines no longer force the cloth, soft-body and fluid buffers
+to re-upload every frame. Debug lines re-upload every frame they exist; fragments only when a
+fragment moved or the set changed; the deformable categories when the simulation refreshed
+`PhysicsRenderData` and the category holds (or held) objects.
+
+## Draw path limits
+
+Surfaces and impostors draw HDR colour and depth in the `Opaque` stage only. They cast no
+shadows, write no normal or motion-vector prepass data (so screen-space effects and temporal
+anti-aliasing treat them as static geometry with no normals), and are not part of the ray-tracing
+acceleration structures (they do not appear in ray-traced shadows, reflections or lighting).
+Debug lines draw in `Transparent`.
 
 ## Verification
 
@@ -131,7 +155,10 @@ fragments; children with their own `MeshRenderer` still draw. Fragments use conf
 - **Screen-space fluid surface** (depth smoothing, thickness, refraction) and marching-cubes
   meshing: particles draw as lit opaque sphere impostors. `FluidRender` already carries the
   inputs (positions, densities, surface flags, radius, domain).
-- **Fragment materials** from the owner's `MeshMaterial`, and hiding the intact mesh (above).
+- **Fragment materials** from the owner's `MeshMaterial`.
+- **Shadows, normal/motion prepass and ray-tracing acceleration structures** for physics
+  surfaces and impostors (see [Draw path limits](#draw-path-limits)).
+- **Default host wiring**: `engine-desktop` does not install the extraction or the features.
 - **Interpolated** deformable and fragment transforms: data is drawn at the latest
   simulation state.
 - **Particles beyond the cap** are cut, not streamed; GPU-side culling is not done.

@@ -910,3 +910,38 @@ fn a_ragdoll_that_does_not_fit_the_body_table_waits_and_says_why() {
         "{pressure:?}"
     );
 }
+
+/// A rebuild (here: a layer change in the settings) used to leave the pre-rebuild poses in the
+/// interpolation buffer, so a frame without a physics step right after it blended from stale
+/// poses and the ragdoll visibly jumped.
+#[test]
+fn a_rebuild_does_not_blend_a_zero_step_frame_from_stale_poses() {
+    let mut rig = animated_ragdoll(
+        json!({"fixed_timestep":STEP,"interpolation":"interpolate","layers":["world","actors"]}),
+    );
+    rig.frames(20, FRAME);
+    // Run until the next frame is predicted to run no step.
+    for _ in 0..8 {
+        let status = physics::step_status(rig.world()).unwrap();
+        if status.accumulator + FRAME < STEP * 0.99 {
+            break;
+        }
+        rig.frames(1, FRAME);
+    }
+    let settings_entity = rig.runtime.entity("settings").unwrap();
+    rig.world_mut()
+        .get_mut::<physics::PhysicsSettings>(settings_entity)
+        .unwrap()
+        .disabled_pairs = vec![["world".into(), "actors".into()]];
+    rig.frames(1, FRAME);
+    let status = physics::step_status(rig.world()).unwrap();
+    assert_eq!(status.steps, 0, "this frame must run no physics step");
+    for id in ["head", "arm_l", "spine"] {
+        let state = rig.bone_state(id);
+        let drawn = (rig.world_position(id) - state.position).length();
+        assert!(
+            drawn < 1e-5,
+            "{id} drawn {drawn} m from its body after a rebuild"
+        );
+    }
+}

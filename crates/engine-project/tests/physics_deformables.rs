@@ -608,3 +608,84 @@ fn fixed_step_runs_are_bitwise_deterministic() {
     assert!(!runs[0].0.is_empty());
     assert_eq!(runs[0], runs[1], "two runs must match bit for bit");
 }
+
+/// More rigid bodies near a deformable than the solver's proxy limit used to abort every tick
+/// with an error; now the nearest are coupled, the rest are counted and reported once.
+#[test]
+fn bodies_beyond_the_proxy_limit_degrade_instead_of_failing_the_tick() {
+    const BALLS: usize = 300;
+    let mut settings_entity = settings(json!({}));
+    settings_entity["components"]["EventBindings"] = json!({"bindings":[
+        {"event":"physics.proxies.limited","handler":"record"}]});
+    let mut entities = vec![
+        settings_entity,
+        with(
+            "water",
+            [0., 0., 0.],
+            "engine.FluidVolume",
+            json!({"domain_min":[-2.,0.,-2.],"domain_max":[2.,2.,2.],"particle_radius":0.05,
+                "capacity":500,"fills":[{"center":[0.,0.2,0.],"half_extents":[0.15,0.1,0.15]}]}),
+        ),
+        with(
+            "cloth",
+            [0., 1., 0.],
+            "engine.Cloth",
+            json!({"size":[1.,1.],"resolution":[3,3]}),
+        ),
+    ];
+    for i in 0..BALLS {
+        let (x, z) = ((i % 20) as f32 * 0.18 - 1.7, (i / 20) as f32 * 0.18 - 1.7);
+        entities.push(body(
+            &format!("ball{i}"),
+            [x, 1.5, z],
+            json!({"motion":"fixed","shape":"ball","radius":0.05}),
+        ));
+    }
+    let (_dir, mut runtime) = started(entities);
+    ticks(&mut runtime, 5);
+    let status = physics::pressure_status(runtime.app().world()).unwrap();
+    assert!(
+        status.proxies_omitted >= (BALLS - engine_fluids::MAX_PROXIES) as u64 * 5,
+        "{status:?}"
+    );
+    assert_eq!(data(&runtime).fluids.len(), 1, "the fluid kept simulating");
+    let warnings = events(&runtime, "physics.proxies.limited");
+    assert_eq!(
+        warnings.len(),
+        1,
+        "one warning per episode, not one per step: {warnings:?}"
+    );
+    assert!(warnings[0]["total"].as_u64().unwrap() > 0);
+}
+
+/// `physics.fluid.capacity_reached` goes through the event pressure handling: with a full
+/// event queue it is dropped and counted instead of aborting the tick.
+#[test]
+fn the_fluid_capacity_event_is_dropped_and_counted_when_the_queue_is_full() {
+    let mut volume = json!({"domain_min":[-0.5,0.,-0.5],"domain_max":[0.5,1.,0.5],"particle_radius":0.03,
+        "capacity":100,"emitters":[{"kind":"rate","center":[0.,0.7,0.],"half_extents":[0.2,0.1,0.2],
+            "per_second":3000.0}]});
+    volume["gravity_scale"] = json!(0.0);
+    let water = with("water", [0., 0., 0.], "engine.FluidVolume", volume);
+    let (_dir, mut runtime) = started(vec![settings(json!({})), water]);
+    // A queue that holds nothing: every physics event is dropped.
+    runtime.app_mut().world_mut().insert_resource(EventLimits {
+        queued: 0,
+        payload_bytes: 65_536,
+        deliveries_per_tick: 4096,
+    });
+    ticks(&mut runtime, 60);
+    let status = physics::pressure_status(runtime.app().world()).unwrap();
+    assert!(status.events_dropped >= 1, "{status:?}");
+    assert_eq!(
+        data(&runtime)
+            .fluids
+            .values()
+            .next()
+            .unwrap()
+            .positions
+            .len(),
+        100,
+        "the fluid kept simulating up to its capacity"
+    );
+}

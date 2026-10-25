@@ -531,13 +531,14 @@ fn texture_streams_resolve_for_mesh_materials_by_stream_name() {
 }
 
 #[test]
-fn fractured_entities_hide_their_intact_mesh_but_intact_ones_draw() {
+fn fractured_entities_hide_their_intact_mesh_only_when_a_fragment_renderer_is_installed() {
+    use engine_project::simulation::physics::{Fractured, FragmentRenderer};
     let dir = fixture();
     let mut runtime =
         Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
     assert_eq!(runtime.extract_scene_frame().unwrap().meshes.len(), 1);
     let mesh = runtime.entity("mesh").unwrap();
-    let marker = engine_project::simulation::physics::Fractured {
+    let marker = Fractured {
         fragments: 4,
         impulse: 1.0,
         point: glam::Vec3::ZERO,
@@ -547,6 +548,17 @@ fn fractured_entities_hide_their_intact_mesh_but_intact_ones_draw() {
         .world_mut()
         .entity_mut(mesh)
         .insert(marker);
+    // No fragment renderer: nothing draws the fragments, so the intact mesh must stay visible
+    // (otherwise the object vanishes entirely).
+    assert_eq!(
+        runtime.extract_scene_frame().unwrap().meshes.len(),
+        1,
+        "without a fragment renderer the intact mesh keeps drawing"
+    );
+    runtime
+        .app_mut()
+        .world_mut()
+        .insert_resource(FragmentRenderer);
     let frame = runtime.extract_scene_frame().unwrap();
     assert!(frame.meshes.is_empty(), "fractured mesh must not draw");
     // Without a 3D camera the mesh would take the 2D draw path; it is hidden there too.
@@ -567,8 +579,21 @@ fn fractured_entities_hide_their_intact_mesh_but_intact_ones_draw() {
     runtime
         .app_mut()
         .world_mut()
+        .remove_resource::<FragmentRenderer>();
+    assert_eq!(
+        runtime.extract_scene_frame().unwrap().sprites.draws.len(),
+        1,
+        "removing the renderer shows the intact mesh again"
+    );
+    runtime
+        .app_mut()
+        .world_mut()
+        .insert_resource(FragmentRenderer);
+    runtime
+        .app_mut()
+        .world_mut()
         .entity_mut(mesh)
-        .remove::<engine_project::simulation::physics::Fractured>();
+        .remove::<Fractured>();
     assert_eq!(
         runtime.extract_scene_frame().unwrap().sprites.draws.len(),
         1
