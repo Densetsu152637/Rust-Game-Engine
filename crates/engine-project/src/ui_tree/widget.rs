@@ -123,13 +123,13 @@ pub enum UiWidget {
     },
     Button {
         text: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
     Toggle {
         text: String,
         checked: bool,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
     Slider {
@@ -137,7 +137,7 @@ pub enum UiWidget {
         min: f32,
         max: f32,
         step: f32,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
     Progress {
@@ -164,7 +164,7 @@ pub enum UiWidget {
         caret: u32,
         #[serde(default, skip_serializing_if = "is_zero")]
         anchor: u32,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
     /// Single choice; the option list opens as a popup above all UI.
@@ -177,7 +177,7 @@ pub enum UiWidget {
         /// Options shown before the popup scrolls.
         #[serde(default = "default_max_visible")]
         max_visible: u32,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
     /// Scrolls its children; `offset` is clamped to the content extent.
@@ -188,14 +188,14 @@ pub enum UiWidget {
         axes: UiScrollAxes,
         #[serde(default = "yes")]
         scrollbars: bool,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
     /// Selectable list whose children are the items (in vector order).
     List {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selected: Option<u32>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
     /// Fixed-extent items generated from one template child; only the visible
@@ -214,7 +214,7 @@ pub enum UiWidget {
         overscan: u32,
         #[serde(default, skip_serializing_if = "is_false")]
         horizontal: bool,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
     /// Tab strip; child `n` (in vector order) is the panel for `labels[n]`.
@@ -224,7 +224,7 @@ pub enum UiWidget {
         selected: u32,
         #[serde(default = "default_bar_height")]
         header_height: f32,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
     /// Modal dialog: while open it is laid out centred over the viewport, blocks
@@ -240,7 +240,7 @@ pub enum UiWidget {
         title_height: f32,
         #[serde(default = "default_bar_height")]
         button_height: f32,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         action: String,
     },
 }

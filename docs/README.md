@@ -57,8 +57,9 @@
   the modal UI model.
 - [Custom and accessible input](custom-input.md): injectable peripheral adapters,
   remapping, hold/toggle actions and device diagnostics.
-- [Retained game UI](game-ui.md): hierarchy/layout, controls, clipping, focus and
-  native callback integration.
+- [Retained game UI](game-ui.md): taffy flexbox/grid layout, widget set (text input,
+  dropdown, scroll/virtual lists, tabs, modal dialogs, tooltips), spatial navigation,
+  text backend and text-edit event contracts, limits.
 - [Multiplayer](networking.md): authoritative sessions, mutual-TLS 1.3 transport,
   replication, ownership, runtime integration and plaintext trusted-LAN limits.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,

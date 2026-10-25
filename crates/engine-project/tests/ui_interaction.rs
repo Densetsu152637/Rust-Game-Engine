@@ -912,4 +912,8 @@ fn multiline_input_moves_by_lines_and_keeps_newlines() {
     ui.tick(&mut roots, [400, 300], &press("ui_down", [-1.0, -1.0]))
         .unwrap();
     assert_eq!(focus(&ui), "name");
+    // ui_cancel (gamepad back) leaves it.
+    ui.tick(&mut roots, [400, 300], &press("ui_cancel", [-1.0, -1.0]))
+        .unwrap();
+    assert!(ui.focus().is_none() && ui.text_input_focus().is_none());
 }
