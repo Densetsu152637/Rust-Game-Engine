@@ -60,6 +60,12 @@ times body capacity. See [docs/physics-joints.md](../../docs/physics-joints.md).
 `apply_angular_impulse` accepts a scalar in 2D or XYZ vector in 3D. Linear and
 angular impulses also work immediately after insertion, before the first step.
 
+A kinematic body becomes a character controller with `insert_character(id, CharacterDesc)`:
+Rapier's `KinematicCharacterController` (slopes, sliding, snap to ground, push impulses) plus
+gravity, `character_jump`, platform riding, an own autostep, `character_state(id)` and
+`drain_character_events`. Drive it with `set_character_velocity`. See
+[docs/physics-character.md](../../docs/physics-character.md).
+
 `drain_events` reports sorted start/stop transitions for active solid contacts
 and sensor intersections between fixed steps. Initial overlaps are reported on
 the first step; removed bodies produce stop events on the next step. Events are

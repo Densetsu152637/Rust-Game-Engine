@@ -142,6 +142,12 @@ step. Errors are `simulation.invalid` with a precise message.
 Joints (fixed, revolute, prismatic, spherical, spring, distance, rope, generic 6-DoF; limits,
 motors, break thresholds) are described in [Physics joints](physics-joints.md).
 
+## Character controllers
+
+Kinematic characters (`engine.CharacterController2D/3D`: slopes, autostep, snapping, platform
+riding, pushing, gravity, jumps, ground and wall events) are described in
+[Physics character controllers](physics-character.md).
+
 ## Extension seams
 
 Later physics features (joints, character controllers, vehicles, ragdolls, destruction,
