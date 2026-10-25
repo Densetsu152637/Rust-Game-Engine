@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 10] = [
+const WRITE_TOOLS: [&str; 13] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -31,6 +31,9 @@ const WRITE_TOOLS: [&str; 10] = [
     "asset_import_model",
     "navigation_bake",
     "acoustics_bake",
+    "pcg_create",
+    "pcg_edit",
+    "pcg_run",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -84,12 +87,12 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 27);
+    assert_eq!(names.len(), 31);
     // Registration order: the 12 original read tools, the 8 original write
     // tools, then the navigation pair (bake writes, query only reads), then the
     // acoustics tools (inspect and query read, bake writes), then the physics pair (both read).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 17);
+    assert_eq!(read_only_names.len(), 18);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -99,13 +102,19 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(names[24], "acoustics_bake");
     assert_eq!(names[25], "physics_query");
     assert_eq!(names[26], "physics_debug");
+    assert_eq!(names[27], "pcg_create");
+    assert_eq!(names[28], "pcg_edit");
+    assert_eq!(names[29], "pcg_validate");
+    assert_eq!(names[30], "pcg_run");
     assert_eq!(read_only_names[12], "navigation_query");
     assert_eq!(read_only_names[13], "acoustics_inspect");
     assert_eq!(read_only_names[14], "acoustics_query");
     assert_eq!(read_only_names[15], "physics_query");
     assert_eq!(read_only_names[16], "physics_debug");
+    assert_eq!(read_only_names[17], "pcg_validate");
     assert_eq!(WRITE_TOOLS[8], "navigation_bake");
     assert_eq!(WRITE_TOOLS[9], "acoustics_bake");
+    assert_eq!(WRITE_TOOLS[10..], ["pcg_create", "pcg_edit", "pcg_run"]);
 }
 
 #[test]

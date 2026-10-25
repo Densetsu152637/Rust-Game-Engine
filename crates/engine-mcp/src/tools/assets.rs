@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 13] = [
+const KINDS: [&str; 14] = [
     "script",
     "mesh",
     "texture",
@@ -25,6 +25,7 @@ const KINDS: [&str; 13] = [
     "navigation",
     "acoustics",
     "lut",
+    "pcg",
 ];
 const MAX_USES: usize = 200;
 
@@ -205,6 +206,11 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
                 "materials":document.materials.len(),"meshes":document.meshes.len(),
                 "instances":document.instances.len(),"volumes":document.volumes.len(),
                 "proxy":document.proxy.is_some(),"content_hash":document.content_hash})
+        }
+        "pcg" => {
+            let graph = engine_project::world::pcg::load_graph(project, &asset.id)?;
+            json!({"version": graph.version, "seed": graph.seed,
+                "nodes": graph.nodes.len(), "edges": graph.edges.len()})
         }
         "scene" | "prefab" => {
             let relative = file.strip_prefix(cx.root).expect("confined file");

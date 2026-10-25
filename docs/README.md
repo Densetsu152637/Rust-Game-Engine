@@ -124,5 +124,7 @@
 
 - [World building overview](world.md): the `engine_project::world` module, its
   per-feature component, install and tick-hook contract, and the render adapter.
+- [Procedural content generation](pcg.md): seeded noise, the node graph and executor
+  (`engine-pcg`), `engine.PcgVolume` runtime generation and the `pcg_*` MCP tools.
 
 Per-crate details are in `crates/*/README.md`.

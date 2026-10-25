@@ -42,6 +42,7 @@ impl Project {
                 "animation",
                 "navigation",
                 "acoustics",
+                "pcg",
                 "lut",
             ]
             .contains(&asset.kind.as_str())
@@ -191,6 +192,7 @@ impl Project {
             }
         }
         crate::acoustics::validate_scene(self, scene)?;
+        crate::world::pcg::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.
@@ -208,6 +210,9 @@ impl Project {
                 }
                 "navigation" => {
                     crate::simulation::load_navmesh(self, &asset.id)?;
+                }
+                "pcg" => {
+                    crate::world::pcg::load_graph(self, &asset.id)?;
                 }
                 "acoustics" => {
                     let bytes =
