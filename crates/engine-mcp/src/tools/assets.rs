@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 16] = [
+const KINDS: [&str; 17] = [
     "script",
     "mesh",
     "texture",
@@ -28,6 +28,7 @@ const KINDS: [&str; 16] = [
     "tileset",
     "tilemap",
     "pcg",
+    "partition",
 ];
 const MAX_USES: usize = 200;
 
@@ -233,6 +234,13 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
             let graph = engine_project::world::pcg::load_graph(project, &asset.id)?;
             json!({"version": graph.version, "seed": graph.seed,
                 "nodes": graph.nodes.len(), "edges": graph.edges.len()})
+        }
+        "partition" => {
+            let manifest = engine_project::world::streaming::load_manifest(project, &asset.id)?;
+            json!({"cell_size": manifest.cell_size, "cells": manifest.cells.len(),
+                "layers": manifest.cells.iter().map(|c| c.layer.as_str())
+                    .collect::<std::collections::BTreeSet<_>>(),
+                "hlod_cells": manifest.cells.iter().filter(|c| c.hlod.is_some()).count()})
         }
         "scene" | "prefab" => {
             let relative = file.strip_prefix(cx.root).expect("confined file");
