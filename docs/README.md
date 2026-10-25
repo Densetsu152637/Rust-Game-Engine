@@ -140,5 +140,9 @@
   brush painting over terrain or PCG surfaces (`engine-foliage`), LOD bands with
   hysteresis and impostors, wind, `engine.Foliage`, the CPU cluster fallback, the
   `world.foliage` GPU feature and the `foliage_*` MCP tools.
+- [Large-world coordinates](world-coordinates.md): floating-origin rebasing with f64
+  absolute positions, `engine.LargeWorld` and `engine.AbsolutePosition`, how physics,
+  navigation, streaming, terrain, foliage and PCG follow a shift, the `world.origin_shifted`
+  event, telemetry and the camera-relative rendering property.
 
 Per-crate details are in `crates/*/README.md`.

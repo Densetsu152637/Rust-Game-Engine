@@ -9,7 +9,8 @@ file reads and optional low-detail stand-ins (HLOD proxies) for cells that are n
   scheduler, data layers and the manifest format. No ECS, no I/O, no threads.
 * `engine_project::world::streaming` is the runtime: `engine.WorldPartition`,
   `engine.StreamingSource` and `engine.DataLayer`, background reads, spawning and despawning,
-  origin rebasing, HLOD proxies, events, telemetry and the native API.
+  HLOD proxies, events, telemetry and the native API. Origin rebasing is owned by
+  [large-world coordinates](world-coordinates.md).
 * Three MCP tools (`streaming_partition`, `streaming_hlod`, `streaming_info`) cut a scene
   into cells, build the proxies and inspect the result.
 
@@ -108,8 +109,11 @@ Every tick, in the world `pre_simulation` hook (before `simulation::step`):
    manifest, a changed entity or manifest reopens, a removed entity unloads everything it
    owned. A manifest that cannot be read is reported once in the status and not retried until
    the entity or manifest changes. At most 16 partitions stream at once.
-2. **Rebase**: if `WorldOrigin` moved, the roots of loaded cells and proxies are shifted by
-   the difference in f64, so their absolute position is unchanged.
+2. **Rebase** is not done here: the coordinates service (which runs first in
+   `pre_simulation`) shifts every root entity, cell roots and proxies included, exactly once
+   per origin move (see [large-world coordinates](world-coordinates.md)). Streaming only
+   reads the current `WorldOrigin.offset` when it converts source positions to absolute and
+   cell corners to local positions, so content loaded after a shift lands consistently.
 3. **Plan** with the sources, then cancel, **unload** (despawn exactly the entities the cell
    spawned, never an entity a later scene reused) and **start loads**: a short-lived thread
    per cell reads and parses the document (`load_scene`, bounded to 16 MiB) and sends it
