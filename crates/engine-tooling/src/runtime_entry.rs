@@ -232,6 +232,9 @@ fn screenshot_on(
         {
             control.status = renderer.lighting_status().clone();
         }
+        if let Some(mut control) = world.get_resource_mut::<engine_project::post::PostControl>() {
+            control.status = renderer.post_status().clone();
+        }
         // Generated frames before the final real frame, as sibling PNGs.
         let mut generated = Vec::new();
         for (index, captured) in renderer

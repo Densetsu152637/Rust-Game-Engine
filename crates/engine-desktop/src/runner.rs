@@ -282,6 +282,9 @@ fn publish_upscaler_status(runtime: &mut Runtime, renderer: &crate::GpuRenderer)
     if let Some(mut control) = world.get_resource_mut::<engine_project::lights::LightingControl>() {
         control.status = renderer.lighting_status().clone();
     }
+    if let Some(mut control) = world.get_resource_mut::<engine_project::post::PostControl>() {
+        control.status = renderer.post_status().clone();
+    }
 }
 
 /// Publish the render feature state a renderer would resolve for the active

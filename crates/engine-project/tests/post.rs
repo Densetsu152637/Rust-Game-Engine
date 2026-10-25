@@ -220,5 +220,8 @@ fn lut_assets_are_validated_and_loaded() {
         json!([]),
     );
     let error = Project::load(dir.path().join("project.json")).unwrap_err();
-    assert!(error.to_string().contains("Unknown asset missing"), "{error}");
+    assert!(
+        error.to_string().contains("Unknown asset missing"),
+        "{error}"
+    );
 }

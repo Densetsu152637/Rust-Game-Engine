@@ -14,6 +14,7 @@
 mod cache;
 mod framegen;
 mod material2d;
+mod post;
 mod scene3d;
 mod sprite;
 mod temporal;
@@ -29,6 +30,7 @@ use crate::{GpuContext, RenderTargetInfo, UpscalerDevice};
 use anyhow::{Context, Result, ensure};
 use engine_core::bevy_ecs::world::World;
 use engine_project::lights::LightingStatus;
+use engine_project::post::PostStatus;
 use engine_project::rendering3d::{
     FrameGenerationMode, FrameGenerationSettings, FrameGenerationStatus, RenderFeatureView,
     RenderPipelineState, RenderPipelineStatus, SceneRenderFrame, TextureStreamMode, UpscalerMode,
@@ -115,6 +117,8 @@ pub struct GpuRenderer {
     depth_export: Option<Arc<engine_render_pipeline::DepthExport>>,
     status: RenderPipelineStatus,
     lighting: LightingStatus,
+    post: PostStatus,
+    post_host: post::PostHost,
     upscaler: upscale::Upscaler,
     framegen: framegen::FrameGeneration,
 }
@@ -237,6 +241,8 @@ impl GpuRenderer {
             depth_export: None,
             status: RenderPipelineStatus::default(),
             lighting: LightingStatus::default(),
+            post: PostStatus::default(),
+            post_host: post::PostHost::default(),
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
             framegen: framegen::FrameGeneration::new(),
         })
@@ -276,6 +282,12 @@ impl GpuRenderer {
     /// view.
     pub fn lighting_status(&self) -> &LightingStatus {
         &self.lighting
+    }
+
+    /// The effective post-processing of the last camera view: influencing
+    /// volumes, the settings summary and any LUT error.
+    pub fn post_status(&self) -> &PostStatus {
+        &self.post
     }
 
     /// Discard upscaler and frame generation history before the next frame
@@ -513,6 +525,8 @@ impl GpuRenderer {
             SpriteMode::Skip
         };
         self.pipeline()?;
+        let mut view = view;
+        let post_status = self.post_host.prepare(frame, &mut view)?;
         let Self {
             gpu,
             sprites: sprite_renderer,
@@ -520,6 +534,7 @@ impl GpuRenderer {
             uploads,
             status,
             lighting,
+            post,
             ..
         } = self;
         let scene = scene.as_mut().expect("created above");
@@ -554,6 +569,7 @@ impl GpuRenderer {
         if view.kind == ViewKind::Camera {
             *status = status_of(&report, RenderPipelineState::Rendered, &overrides);
             *lighting = lighting_status_of(&report.lighting, frame.lights.len());
+            *post = post_status;
         }
         Ok((report, stats))
     }
