@@ -1261,6 +1261,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-foliage"
+version = "0.1.0"
+dependencies = [
+ "engine-pcg",
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-log"
 version = "0.1.0"
 dependencies = [
@@ -1274,6 +1284,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "engine-foliage",
  "engine-mesh-lod",
  "engine-pcg",
  "engine-project",
@@ -1368,6 +1379,7 @@ dependencies = [
  "engine-core",
  "engine-destruction",
  "engine-fluids",
+ "engine-foliage",
  "engine-navigation",
  "engine-network",
  "engine-pcg",
@@ -1489,6 +1501,7 @@ dependencies = [
  "bevy_ecs",
  "bytemuck",
  "engine-core",
+ "engine-foliage",
  "engine-project",
  "engine-render-pipeline",
  "engine-render-wgpu",

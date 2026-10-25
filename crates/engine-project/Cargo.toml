@@ -9,6 +9,7 @@ engine-network = { path = "../engine-network" }
 engine-core = { path = "../engine-core" }
 engine-destruction = { path = "../engine-destruction" }
 engine-fluids = { path = "../engine-fluids" }
+engine-foliage = { path = "../engine-foliage" }
 engine-audio = { path = "../engine-audio" }
 engine-acoustics = { path = "../engine-acoustics" }
 engine-physics = { path = "../engine-physics" }

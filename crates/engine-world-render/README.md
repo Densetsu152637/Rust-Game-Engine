@@ -7,8 +7,9 @@ Render features for world building, drawn through the render extension API
 | --- | --- | --- |
 | `terrain` | `world.terrain` | `Opaque`, after `engine.opaque` |
 | | `world.terrain.normals` | `Prepass`, after `engine.prepass.normals` (only when a feature needs normals) |
+| `foliage` | `world.foliage` | `Opaque`, after `engine.opaque` |
 
-`world.water` and `world.foliage` will be added here as further modules.
+`world.water` will be added here as a further module.
 
 `world.terrain` draws the terrains of `engine_project::world::terrain::TerrainRenderSet`:
 CPU CDLOD selection per view, frustum culling, one instanced draw per terrain, GPU
@@ -30,3 +31,13 @@ With the renderer installed, `render_mode: auto` terrains stop spawning CPU fall
 entities, so nothing is drawn twice. GPU tests:
 `cargo test -p engine-world-render --test gpu_terrain -- --ignored --test-threads=1`.
 See [docs/terrain.md](../../docs/terrain.md#gpu-rendering-engine-world-render).
+
+`world.foliage` draws the `FoliageRenderSet` of `engine_project::world::foliage`: per-view
+cell and instance frustum / distance culling, LOD levels with hysteresis and camera-facing
+impostors, one instanced draw per (type, level), and wind sway in WGSL matching
+`engine_foliage::WindParams::sway_offset`. `install` also inserts the `FoliageGpuRenderer`
+marker (so `auto` foliage builds no CPU clusters), `register` registers it with the terrain
+features and `register_all` returns both status handles. It casts no shadows (the extension
+API has no shadow hook). GPU tests:
+`cargo test -p engine-world-render --test gpu_foliage -- --ignored --test-threads=1`.
+See [docs/world-foliage.md](../../docs/world-foliage.md#gpu-rendering-engine-world-render).

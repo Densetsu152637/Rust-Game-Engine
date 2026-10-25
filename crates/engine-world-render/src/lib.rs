@@ -1,6 +1,7 @@
 //! Render features for world building, one module per feature, drawn through the render
-//! extension API (`engine-render-pipeline`). Today: [`terrain`] (`world.terrain`); the
-//! `world.water` and `world.foliage` features will live here too. See docs/terrain.md.
+//! extension API (`engine-render-pipeline`). Today: [`terrain`] (`world.terrain`) and
+//! [`foliage`] (`world.foliage`); `world.water` will live here too. See docs/terrain.md and
+//! docs/world-foliage.md.
 //!
 //! A host enables the terrain feature in two parts, both before the runner starts:
 //!
@@ -15,6 +16,7 @@
 //! ```
 //!
 //! [`enable`] does both and merges into an existing `PipelineFeatures` resource.
+pub mod foliage;
 pub mod terrain;
 
 use anyhow::Result;
@@ -29,6 +31,8 @@ pub mod names {
     /// Terrain normals into the normals target (`Prepass` stage, after
     /// `engine.prepass.normals`); runs only when another feature needs normals.
     pub const TERRAIN_NORMALS: &str = "world.terrain.normals";
+    /// Instanced foliage meshes and impostors with wind (`Opaque` stage, after `engine.opaque`).
+    pub const FOLIAGE: &str = "world.foliage";
 }
 
 pub use terrain::{
@@ -39,7 +43,22 @@ pub use terrain::{
 /// Registers `world.terrain` and `world.terrain.normals`; returns a handle that reports what
 /// the features drew in the last view.
 pub fn register(features: &mut PipelineFeatures) -> Result<TerrainRenderStatusHandle> {
+    foliage::register(features)?;
     terrain::register(features)
+}
+
+/// [`register`] returning the status handle of every feature.
+pub fn register_all(features: &mut PipelineFeatures) -> Result<RenderStatusHandles> {
+    let foliage = foliage::register(features)?;
+    let terrain = terrain::register(features)?;
+    Ok(RenderStatusHandles { terrain, foliage })
+}
+
+/// Status handles of the features [`register_all`] registered.
+#[derive(Clone, Debug)]
+pub struct RenderStatusHandles {
+    pub terrain: TerrainRenderStatusHandle,
+    pub foliage: foliage::FoliageRenderStatusHandle,
 }
 
 /// Adds the `Extract`-stage system copying `engine_project::world::terrain::TerrainRenderSet`
@@ -47,6 +66,7 @@ pub fn register(features: &mut PipelineFeatures) -> Result<TerrainRenderStatusHa
 /// the GPU path. Call once while configuring the app.
 pub fn install(app: &mut EngineApp) {
     terrain::install(app);
+    foliage::install(app);
 }
 
 /// [`install`] plus [`register`] into the world's `PipelineFeatures` resource (created when

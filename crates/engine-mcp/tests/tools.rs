@@ -371,6 +371,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.DataLayer",
         "engine.Destructible3D",
         "engine.FluidVolume",
+        "engine.Foliage",
         "engine.NavigationAgent",
         "engine.NetworkReplica",
         "engine.PcgVolume",
