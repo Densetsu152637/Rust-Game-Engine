@@ -128,7 +128,7 @@ fn legacy_negotiation_lifecycle_ping_and_discovery() {
     assert_eq!(responses[3]["result"], json!({}));
     assert_eq!(
         responses[4]["result"]["tools"].as_array().unwrap().len(),
-        22
+        23
     );
     assert!(responses[4]["result"].get("resultType").is_none());
     assert_eq!(responses[5]["error"]["code"], -32602);

@@ -11,11 +11,25 @@ use glam::{Mat3, Mat4, Vec3};
 use std::sync::Arc;
 
 /// A placed terrain with hole awareness (world coordinates in, world coordinates out).
-pub(super) struct TerrainGround {
+pub struct TerrainGround {
     surface: TerrainSurface,
     field: Arc<Heightfield>,
     local_from_world: Mat4,
     normal_from_local: Mat3,
+}
+
+impl TerrainGround {
+    /// Places `field` with `world_from_local`; `None` for a singular transform. Surface
+    /// queries and hole tests take world `(x, z)`; the normal is the exact triangle normal.
+    pub fn new(field: Arc<Heightfield>, world_from_local: Mat4) -> Option<Self> {
+        let surface = TerrainSurface::new(field.clone(), world_from_local)?;
+        Some(Self {
+            surface,
+            local_from_world: world_from_local.inverse(),
+            normal_from_local: Mat3::from_mat4(world_from_local).inverse().transpose(),
+            field,
+        })
+    }
 }
 
 impl Surface for TerrainGround {
@@ -90,14 +104,11 @@ pub(super) fn resolve(world: &mut World, component: &FoliageComponent) -> Result
         })?;
         let matrix = crate::world_transform(world, entity)?.matrix;
         let world_from_local = Mat4::from_cols_array_2d(&matrix);
-        let surface = TerrainSurface::new(field.clone(), world_from_local)
-            .ok_or_else(|| Error::new("foliage.ground.terrain", "singular terrain transform"))?;
-        let ground = Arc::new(TerrainGround {
-            surface,
-            local_from_world: world_from_local.inverse(),
-            normal_from_local: Mat3::from_mat4(world_from_local).inverse().transpose(),
-            field: field.clone(),
-        });
+        let ground = Arc::new(
+            TerrainGround::new(field.clone(), world_from_local).ok_or_else(|| {
+                Error::new("foliage.ground.terrain", "singular terrain transform")
+            })?,
+        );
         return Ok(Ground {
             surface: ground.clone(),
             terrain: Some(ground),

@@ -1284,6 +1284,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "engine-foliage",
  "engine-mesh-lod",
  "engine-pcg",
  "engine-project",
@@ -1500,6 +1501,7 @@ dependencies = [
  "bevy_ecs",
  "bytemuck",
  "engine-core",
+ "engine-foliage",
  "engine-project",
  "engine-render-pipeline",
  "engine-render-wgpu",

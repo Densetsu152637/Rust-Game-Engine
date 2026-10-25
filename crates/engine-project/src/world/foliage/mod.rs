@@ -24,6 +24,7 @@ pub use component::{
     FoliageMode, FoliageRenderMode, validate_scene,
 };
 pub use cpu::{IMPOSTOR_VERTICES, impostor_mesh, merge_instances};
+pub use ground::TerrainGround;
 pub use service::{
     FoliageGpuRenderer, FoliageRenderItem, FoliageRenderSet, FoliageRenderType, FoliageStatus,
     Foliages, MAX_FOLIAGES, RenderImpostor, export_asset, field, paint, status, sync_foliage,

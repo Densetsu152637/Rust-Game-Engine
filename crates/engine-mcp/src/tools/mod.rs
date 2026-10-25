@@ -6,6 +6,7 @@ mod assets;
 mod components;
 mod edit;
 mod files;
+mod foliage;
 mod model_import;
 mod navigation;
 mod pcg;
@@ -87,6 +88,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(pcg::tools());
     tools.extend(streaming::tools());
     tools.extend(terrain::tools());
+    tools.extend(foliage::tools());
     tools
 }
 
