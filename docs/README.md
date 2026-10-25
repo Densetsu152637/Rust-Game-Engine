@@ -71,6 +71,8 @@
   adapters, transform authority and callback events.
 - [Physics core](physics.md): shapes, material combine rules, named collision layers,
   `engine.PhysicsSettings`, the native physics API and extension seams.
+- [Physics queries and determinism](physics-queries.md): ray, shape and overlap queries with filters,
+  fixed-step stepping and interpolation, the `deterministic` feature, debug-view data, MCP `physics_query`/`physics_debug`.
 - [Cloth (XPBD)](physics-cloth.md): engine-xpbd world, collider proxies with two-way impulses, cloth stretch/bending/tethers, wind and pins.
 - [Soft bodies (XPBD)](physics-softbody.md): tetrahedral edge/volume soft bodies, box tet generator and surface triangles.
 - [Particle fluids](physics-fluids.md): CPU Position Based Fluids, emitters, sinks,

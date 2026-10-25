@@ -8,5 +8,10 @@ rust-version.workspace = true
 rapier2d = "=0.36.1"
 rapier3d = "=0.36.1"
 
+[features]
+# Rapier's `enhanced-determinism`: cross-platform bit-identical floating point maths for the
+# same inputs. Off by default (it costs speed); see docs/physics-queries.md#determinism.
+deterministic = ["rapier2d/enhanced-determinism", "rapier3d/enhanced-determinism"]
+
 [lints]
 workspace = true

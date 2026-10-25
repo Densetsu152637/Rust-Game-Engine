@@ -21,7 +21,8 @@ profiler records this boundary as `PostUpdate`. Typed hydration precedes startup
 
 Shapes, materials, combine rules, named layers, `engine.PhysicsSettings`, the native
 `simulation::physics` API and the feature extension seams are documented in
-[Physics core](physics.md).
+[Physics core](physics.md). Queries, the fixed-step accumulator and the debug view are in
+[Physics queries](physics-queries.md).
 
 Example data: `{"motion":"dynamic","shape":"box","half_extents":[0.5,0.5]}`.
 3D half extents and velocity have three elements; angular velocity is scalar in
@@ -47,8 +48,12 @@ balls, capsules, cylinders and compounds require uniform world scale. 2D rotatio
 Legacy `Collider2D` cannot coexist with either physics body on the same entity.
 
 Delta is bounded to one second when physics is active and subdivided into steps
-of at most approximately 1/60 second. There is no wall-clock accumulator or
-cross-machine determinism guarantee. Contact start/stop events target each live
+of at most approximately 1/60 second. Setting `engine.PhysicsSettings.fixed_timestep`
+switches to an accumulator that runs only whole fixed steps (bounded by
+`max_substeps`), which makes poses independent of how frame time is split; see
+[Physics queries and determinism](physics-queries.md#fixed-step-and-determinism).
+There is no cross-machine determinism guarantee unless the `deterministic` feature
+is enabled, and even then only the documented one. Contact start/stop events target each live
 participant, with the other participant as source and `{dimension,other}` payload.
 Names are `physics.contact.start` and `physics.contact.stop`.
 Rapier evaluates contacts before integration, so a newly reached kinematic target

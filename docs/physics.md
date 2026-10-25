@@ -105,6 +105,11 @@ settings entity while simulation services are disabled, fail scene start.
   `friction_combine`, `restitution_combine`), validated with the same bounds as inline
   materials; names are unique.
 
+- `fixed_timestep`, `max_substeps`, `interpolation`: fixed-step accumulator with a bounded
+  catch-up and optional pose interpolation (all optional; see
+  [Physics queries](physics-queries.md#fixed-step-and-determinism)).
+- `debug`, `debug_aabbs`, `debug_max_items`: debug-view data toggle and caps.
+
 Changing gravity or iterations applies on the next tick and wakes sleeping bodies.
 Changing layers or materials rebuilds every body from its authored data (current pose,
 authored initial velocity). The component is MCP-editable through `component_set` like
@@ -122,6 +127,9 @@ provides:
 | `apply_angular_impulse(&mut World, Entity, Vec3)` | Angular impulse (2D uses only `z`). |
 | `raycast_2d` / `raycast_3d(&World, origin, direction, max_distance, mask)` | Closest hit as `RaycastHit { entity, distance }`. |
 | `layer_mask(&World, &[&str]) -> u32` | Query mask from named layers. |
+| `ray_cast`, `ray_cast_all`, `shape_cast`, `shape_cast_all`, `overlap`, `project_point`, `contains_point` | Spatial queries with a `QueryFilter`; see [Physics queries](physics-queries.md). |
+| `step_status`, `interpolation_alpha` | What the last frame did under `fixed_timestep`. |
+| `debug_view`, `debug_view_with` | Bounded debug-view data; see [Physics queries](physics-queries.md#debug-view). |
 | `body_id(Entity) -> u64`, `body_entity(u64) -> Option<Entity>` | Entity <-> engine-physics ID (`Entity::to_bits`). |
 | `physics_worlds(&World) -> (&World2D, &World3D)` | Read-only engine-physics worlds for other queries. |
 

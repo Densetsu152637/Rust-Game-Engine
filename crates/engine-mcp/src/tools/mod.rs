@@ -8,6 +8,7 @@ mod edit;
 mod files;
 mod model_import;
 mod navigation;
+mod physics;
 mod project;
 mod scene;
 
@@ -77,6 +78,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(model_import::tools());
     tools.extend(navigation::tools());
     tools.extend(acoustics::tools());
+    tools.extend(physics::tools());
     tools
 }
 

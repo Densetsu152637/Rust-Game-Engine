@@ -17,6 +17,19 @@ use world::{Core, Extension};
 #[path = "features/joints/dim3.rs"]
 mod joints;
 pub use joints::JointDesc;
+#[path = "features/queries.rs"]
+mod queries;
+pub use queries::{
+    KindFilter, MAX_QUERY_EXCLUDES, MAX_QUERY_HITS, OverlapHit, PointHit, QueryFilter, QueryHits,
+    RayCastHit, SensorFilter, ShapeCastHit,
+};
+#[path = "features/debug/dim3.rs"]
+mod debug;
+pub use debug::{
+    DebugAnchor, DebugCollider, DebugContact, DebugContributor, DebugLine, DebugLines,
+    DebugOptions, DebugPart, DebugShape, DebugSink, DebugState, DebugTotals, DebugView,
+    MAX_DEBUG_ITEMS,
+};
 #[derive(Clone, Copy, Debug)]
 pub struct BodyDesc {
     pub kind: crate::BodyKind,

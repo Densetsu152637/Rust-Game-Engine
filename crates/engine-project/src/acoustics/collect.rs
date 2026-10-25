@@ -225,6 +225,9 @@ fn footprint_of(
                 radius: b.radius * radius_scale,
                 rotation,
             },
+            // The 2D acoustic proxy models only box, ball and capsule footprints; richer
+            // collider shapes added by the physics core have no proxy footprint.
+            _ => return None,
         };
         return Some((shape, mobility));
     }
