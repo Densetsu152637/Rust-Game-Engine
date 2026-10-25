@@ -86,7 +86,8 @@ pub trait PropagationBackend: Send {
     ) -> Result<TraceStats, BackendError>;
 }
 
-/// CPU tier. `threads` is `1..=8`.
+/// CPU tier. `threads` is `1..=8`; results are bitwise identical for any thread
+/// count (fixed ray chunks reduced in order).
 #[derive(Clone, Copy, Debug)]
 pub struct CpuBackend {
     threads: u8,
@@ -107,13 +108,6 @@ impl CpuBackend {
         self.threads
     }
 }
-fn unimplemented_backend(what: &str) -> BackendError {
-    BackendError {
-        code: "acoustics.unimplemented",
-        message: format!("{what} is not implemented yet"),
-        fatal: false,
-    }
-}
 impl PropagationBackend for CpuBackend {
     fn info(&self) -> BackendInfo {
         BackendInfo {
@@ -123,20 +117,22 @@ impl PropagationBackend for CpuBackend {
             driver: None,
         }
     }
+    /// The CPU tier is always available.
     fn initialize(&mut self) -> Result<(), BackendError> {
-        Err(unimplemented_backend("CpuBackend::initialize"))
+        Ok(())
     }
+    /// The CPU traverses the world it is handed, so there is nothing to upload.
     fn sync_world(&mut self, _world: &AcousticWorld) -> Result<(), BackendError> {
-        Err(unimplemented_backend("CpuBackend::sync_world"))
+        Ok(())
     }
     fn trace(
         &mut self,
-        _world: &AcousticWorld,
-        _settings: &TraceSettings,
-        _jobs: &[EnergyJob],
-        _out: &mut Vec<EnergyHistogram>,
+        world: &AcousticWorld,
+        settings: &TraceSettings,
+        jobs: &[EnergyJob],
+        out: &mut Vec<EnergyHistogram>,
     ) -> Result<TraceStats, BackendError> {
-        Err(unimplemented_backend("CpuBackend::trace"))
+        crate::trace_cpu::trace_jobs(world, settings, jobs, usize::from(self.threads), out)
     }
 }
 

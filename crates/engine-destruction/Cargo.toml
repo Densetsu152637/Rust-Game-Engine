@@ -1,0 +1,12 @@
+[package]
+name = "engine-destruction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Deterministic Voronoi pre-fracture of closed meshes and convex polygons"
+
+[dependencies]
+glam.workspace = true
+
+[lints]
+workspace = true

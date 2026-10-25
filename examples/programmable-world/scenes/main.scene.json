@@ -12,6 +12,14 @@
       }
     },
     {
+      "id": "sun",
+      "name": "Directional light",
+      "components": {
+        "Transform": { "position": [0, 10, 0], "rotation": [-0.2889444, 0.1651111, 0, 0.9430003] },
+        "DirectionalLight": { "lux": 3 }
+      }
+    },
+    {
       "id": "ground",
       "name": "Fixed physics floor",
       "components": {

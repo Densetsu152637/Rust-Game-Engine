@@ -21,6 +21,9 @@ pub struct RunArguments {
     /// `ENGINE_RENDER_BACKEND` and then to the platform default. Headless runs
     /// never create a device and ignore it.
     pub render_backend: Option<WgpuBackends>,
+    /// Acoustic propagation tier from `--acoustics-backend`; replaces the scene's
+    /// authored `AcousticEnvironment.backend` for the run. `None` keeps it.
+    pub acoustics_backend: Option<engine_desktop::BackendPreference>,
 }
 
 /// Default offscreen screenshot size.
@@ -52,6 +55,7 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
         screenshot: None,
         screenshot_size: DEFAULT_SCREENSHOT_SIZE,
         render_backend: None,
+        acoustics_backend: None,
     };
     let mut size_given = false;
     let mut events = Vec::new();
@@ -114,6 +118,19 @@ pub fn parse_run(arguments: &[OsString]) -> Result<RunArguments> {
                             "Render backend must be primary, vulkan, dx12, metal, gl or all",
                         )
                     })?);
+            }
+            "--acoustics-backend" => {
+                result.acoustics_backend = Some(
+                    value
+                        .to_str()
+                        .and_then(|v| engine_desktop::parse_acoustics_backend(v).ok())
+                        .ok_or_else(|| {
+                            Error::new(
+                                "command.arguments",
+                                "Acoustics backend must be auto, ray_query, compute or cpu",
+                            )
+                        })?,
+                );
             }
             "--screenshot-size" => {
                 result.screenshot_size = value.to_str().and_then(parse_size).ok_or_else(|| {

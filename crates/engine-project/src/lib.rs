@@ -1,5 +1,6 @@
 //! Authored projects, deterministic desktop gameplay, and CPU render extraction.
 //! Native game systems register directly on [`engine_core::EngineApp`].
+pub mod acoustics;
 pub mod audio;
 pub mod catalog;
 pub mod content;
@@ -7,9 +8,12 @@ pub mod document;
 pub mod events;
 pub mod gameplay2d;
 pub mod input;
+pub mod lights;
 pub mod model_import;
 pub mod networking;
 pub mod persistence;
+pub mod post;
+pub mod raytracing;
 pub mod rendering3d;
 pub mod runtime;
 pub mod scheduled_events;

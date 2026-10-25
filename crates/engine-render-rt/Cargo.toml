@@ -1,0 +1,31 @@
+[package]
+name = "engine-render-rt"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+description = "Hardware ray-tracing core for the renderer: ray-query capability probing, self-test-gated tiers, BLAS/TLAS management, a WGSL ray-query library and reference RT kernels"
+
+[dependencies]
+bytemuck = { workspace = true }
+pollster = "0.4"
+serde = { version = "1", features = ["derive"] }
+wgpu = { workspace = true, features = ["std", "parking_lot", "vulkan", "dx12", "metal", "wgsl"] }
+
+[dev-dependencies]
+glam = { workspace = true }
+naga = { workspace = true, features = ["wgsl-in"] }
+serde_json = "1"
+
+# Opts out of `[workspace.lints]` (which forbids unsafe code), as engine-dlss and
+# engine-acoustics-gpu do. The crate instead denies unsafe code: the single
+# audited `#[allow(unsafe_code)]` function `device::experimental_features_token`
+# creates wgpu's `ExperimentalFeatures::enabled()` token (docs/rendering-raytracing.md,
+# "Token audit") and is the only place the lint is lifted. `forbid` is not used
+# because it cannot be locally allowed.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "warn"

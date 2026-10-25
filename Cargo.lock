@@ -1137,7 +1137,11 @@ dependencies = [
 name = "engine-acoustics-gpu"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "engine-acoustics",
+ "naga",
+ "pollster 0.4.0",
+ "wgpu",
 ]
 
 [[package]]
@@ -1188,11 +1192,15 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "bytemuck",
+ "engine-acoustics",
+ "engine-acoustics-gpu",
  "engine-audio",
  "engine-core",
  "engine-dlss",
  "engine-project",
  "engine-render",
+ "engine-render-pipeline",
+ "engine-render-rt",
  "engine-render-wgpu",
  "gilrs",
  "glam 0.34.1",
@@ -1200,8 +1208,17 @@ dependencies = [
  "naga",
  "pollster 0.4.0",
  "serde",
+ "serde_json",
+ "tempfile",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "engine-destruction"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
 ]
 
 [[package]]
@@ -1237,6 +1254,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-fluids"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+]
+
+[[package]]
 name = "engine-log"
 version = "0.1.0"
 dependencies = [
@@ -1255,6 +1279,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "engine-mesh-lod"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
 ]
 
 [[package]]
@@ -1286,6 +1317,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-physics-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "bytemuck",
+ "engine-core",
+ "engine-project",
+ "engine-render-pipeline",
+ "engine-render-wgpu",
+ "glam 0.34.1",
+ "serde_json",
+ "tempfile",
+ "wgpu",
+]
+
+[[package]]
 name = "engine-platform"
 version = "0.1.0"
 dependencies = [
@@ -1298,13 +1346,17 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "blake3",
+ "engine-acoustics",
  "engine-animation",
  "engine-assets",
  "engine-audio",
  "engine-core",
+ "engine-destruction",
+ "engine-fluids",
  "engine-navigation",
  "engine-network",
  "engine-physics",
+ "engine-xpbd",
  "fs2",
  "glam 0.34.1",
  "image",
@@ -1320,6 +1372,33 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "naga",
+]
+
+[[package]]
+name = "engine-render-pipeline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "bytemuck",
+ "engine-render-wgpu",
+ "glam 0.34.1",
+ "naga",
+ "pollster 0.4.0",
+ "wgpu",
+]
+
+[[package]]
+name = "engine-render-rt"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.34.1",
+ "naga",
+ "pollster 0.4.0",
+ "serde",
+ "serde_json",
+ "wgpu",
 ]
 
 [[package]]
@@ -1356,6 +1435,13 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "engine-xpbd"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
 ]
 
 [[package]]
@@ -3083,6 +3169,7 @@ dependencies = [
  "foldhash 0.2.0",
  "glamx",
  "hashbrown 0.17.1",
+ "indexmap",
  "log",
  "num-derive 0.5.1",
  "num-traits",
@@ -3109,6 +3196,7 @@ dependencies = [
  "foldhash 0.2.0",
  "glamx",
  "hashbrown 0.17.1",
+ "indexmap",
  "log",
  "num-derive 0.5.1",
  "num-traits",
@@ -3789,6 +3877,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1a7200d82ff1c7b4235efd12f11e2537a402c91cf83a5cb97ce80eef787fde7"
 dependencies = [
  "approx",
+ "libm",
  "num-complex",
  "num-traits",
  "wide",

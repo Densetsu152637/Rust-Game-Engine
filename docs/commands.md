@@ -30,7 +30,7 @@ engine project assets <manifest>
 engine project shaders <manifest>
 engine project package <manifest> <new-directory> [--profile release|dev]
 engine scene inspect <scene> --project-root <project-directory>
-engine run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--render-backend api] [--screenshot file.png [--screenshot-size WxH]]
+engine run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--render-backend api] [--acoustics-backend tier] [--screenshot file.png [--screenshot-size WxH]]
 engine editor <manifest>
 engine mcp <project-root> [--allow-write] [--allow-exec]
 ```
@@ -84,6 +84,11 @@ directory.
   `ENGINE_RENDER_BACKEND` environment variable, `wgpu`, `auto` and `default` are
   aliases of `primary`, and an unknown value is a usage error (exit 2). A
   `--headless` run creates no device and ignores it.
+  `--acoustics-backend auto|ray_query|compute|cpu` replaces the scene's authored
+  `engine.AcousticEnvironment.backend` for the run (`ray_query` and `compute` are the
+  GPU tiers; an unavailable tier falls back and the status says why; see
+  [Spatial audio and acoustics](acoustics.md#backends-tiers-and-fallback)). Headless
+  runs use the synchronous, deterministic service and `cpu` never opens a GPU.
   `--input action:tick` (repeatable) injects an action at a zero-based tick; an
   absent action releases on the following tick. Actions must be declared by the
   manifest's `inputActions` or `inputBindings`. `--user-data` selects the root for

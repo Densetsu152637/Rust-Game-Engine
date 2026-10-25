@@ -95,15 +95,35 @@ impl WindowSurface {
     pub async fn with_upscaler(
         window: Arc<Window>,
         limits: RenderLimits,
+        options: WgpuOptions,
+        dlss: &DlssConfig,
+        request: crate::DlssRequest,
+    ) -> Result<Self> {
+        Self::with_ray_tracing(window, limits, options, dlss, request, None).await
+    }
+
+    /// [`Self::with_upscaler`] that also adds the `engine-render-rt` device
+    /// request when `frame` (the first frame) enables a `RayTracing` effect
+    /// on its camera ([`crate::prepare_ray_tracing`]).
+    pub async fn with_ray_tracing(
+        window: Arc<Window>,
+        limits: RenderLimits,
         mut options: WgpuOptions,
         dlss: &DlssConfig,
         request: crate::DlssRequest,
+        frame: Option<&engine_project::rendering3d::SceneRenderFrame>,
     ) -> Result<Self> {
         options.frames_in_flight = limits.max_frames_in_flight as u32;
         let instance = GpuContext::instance_with(options.backends);
         let surface = instance
             .create_surface(window.clone())
             .context("creating window surface")?;
+        let ray_tracing = match frame {
+            Some(frame) => {
+                crate::prepare_ray_tracing(&instance, Some(&surface), &mut options, frame).await
+            }
+            None => None,
+        };
         let (gpu, upscaler) =
             crate::request_upscaler_gpu(instance, Some(&surface), &options, dlss, request).await?;
         let size = window.inner_size();
@@ -130,6 +150,8 @@ impl WindowSurface {
             limits,
             upscaler,
         )?;
+        let mut renderer = renderer;
+        renderer.note_ray_tracing_request(ray_tracing);
         Ok(Self {
             window,
             renderer,

@@ -21,26 +21,97 @@
         },
         "Camera3D": {
           "lighting": {
-            "direction": [
-              0.6,
-              1,
-              0.8
-            ],
-            "intensity": 3,
             "ambient": 0.05,
-            "shadows": {
-              "enabled": true,
-              "resolution": 1024,
-              "center": [
-                0,
-                0,
-                0
-              ],
-              "extent": 12,
-              "depth": 20,
-              "bias": 0.0008
-            }
+            "exposure": 1
           }
+        }
+      }
+    },
+    {
+      "id": "sun",
+      "name": "Sun",
+      "components": {
+        "Transform": {
+          "position": [
+            0,
+            10,
+            0
+          ],
+          "rotation": [
+            -0.399593,
+            0.239756,
+            0.0,
+            0.884784
+          ]
+        },
+        "DirectionalLight": {
+          "lux": 3,
+          "shadows": {
+            "enabled": true,
+            "resolution": 2048,
+            "cascades": 2,
+            "max_distance": 30,
+            "filter": "pcf",
+            "pcf_radius": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "spot",
+      "name": "Spot",
+      "components": {
+        "Transform": {
+          "position": [
+            2.35,
+            3.2,
+            1.5
+          ],
+          "rotation": [
+            -0.707107,
+            0,
+            0,
+            0.707107
+          ]
+        },
+        "SpotLight": {
+          "color": [
+            1.0,
+            0.85,
+            0.6
+          ],
+          "lumens": 300,
+          "range": 8,
+          "inner_angle_radians": 0.25,
+          "outer_angle_radians": 0.45,
+          "shadows": {
+            "enabled": true,
+            "resolution": 1024,
+            "filter": "pcss",
+            "source_radius": 0.15
+          }
+        }
+      }
+    },
+    {
+      "id": "lamp",
+      "name": "Lamp",
+      "components": {
+        "Transform": {
+          "position": [
+            -1.2,
+            1.6,
+            1.4
+          ]
+        },
+        "PointLight": {
+          "color": [
+            0.4,
+            0.6,
+            1.0
+          ],
+          "lumens": 80,
+          "range": 5
         }
       }
     },
@@ -48,7 +119,13 @@
       "id": "floor",
       "name": "Floor",
       "components": {
-        "Transform": {"position": [0, 0, 0]},
+        "Transform": {
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
         "MeshRenderer": {
           "mesh": "floor"
         },

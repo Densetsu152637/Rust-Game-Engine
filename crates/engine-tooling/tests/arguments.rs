@@ -216,6 +216,44 @@ fn invalid_missing_or_repeated_render_backends_are_argument_errors() {
 }
 
 #[test]
+fn acoustics_backend_selects_a_tier_and_rejects_everything_else() {
+    use engine_desktop::BackendPreference;
+    assert_eq!(parse(&["p.json"]).unwrap().acoustics_backend, None);
+    for (value, expected) in [
+        ("auto", BackendPreference::Auto),
+        ("ray_query", BackendPreference::GpuRayQuery),
+        ("compute", BackendPreference::GpuCompute),
+        ("cpu", BackendPreference::Cpu),
+    ] {
+        let args = parse(&["p.json", "--headless", "--acoustics-backend", value]).unwrap();
+        assert_eq!(args.acoustics_backend, Some(expected), "{value}");
+    }
+    for value in ["gpu", "", "CPU", "cpu,auto"] {
+        assert_eq!(
+            error_code(&["p.json", "--acoustics-backend", value]),
+            "command.arguments",
+            "{value:?}"
+        );
+    }
+    assert!(parse(&["p.json", "--acoustics-backend"]).is_err());
+    assert!(
+        parse(&[
+            "p.json",
+            "--acoustics-backend",
+            "cpu",
+            "--acoustics-backend",
+            "auto"
+        ])
+        .is_err()
+    );
+    let message = &parse(&["p.json", "--acoustics-backend", "gpu"])
+        .unwrap_err()
+        .diagnostics[0]
+        .message;
+    assert!(message.contains("auto, ray_query, compute or cpu"));
+}
+
+#[test]
 fn injected_actions_must_be_declared_by_the_project() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(

@@ -122,8 +122,9 @@ invalidation. First evaluation resets automatically. Submit producers before
 rendering HUD/UI at display resolution.
 
 The desktop renderer implements this handoff behind the `engine-desktop/dlss`
-feature: Halton jitter, an engine depth/motion pass, history resets, a pre-HUD
-composite, device preparation before the GPU context, authored/MCP/native
+feature through the render pipeline's host upscale hook: Halton jitter, the
+pipeline's HDR colour, depth export and motion prepass, history resets, HDR
+post/output before the HUD, device preparation before the GPU context, authored/MCP/native
 configuration and a reported native fallback. See
 [Temporal upscaling](rendering3d.md#temporal-upscaling-dlss-super-resolution)
 for its contract and limits. It uses the public `Session` API unchanged.
@@ -413,7 +414,7 @@ the SR+FG test scene.
 - an asynchronous lifetime to replace the per-frame wait;
 - VSync and frame-rate-limit interaction, and latency reduction (Reflex);
 - a context that does not require the SR runtime for FG-only use;
-- native render passes with frame generation (they currently disable it);
+- overlay render features with frame generation (they currently disable it);
 - `OutputReal`, UI-alpha recomposition, `NotRenderingGameFrames`, HDR and
   dynamic-resolution parameters;
 - Linux runtime packaging (`libnvidia-ngx-dlssg.so.<ver>`, unvalidated);

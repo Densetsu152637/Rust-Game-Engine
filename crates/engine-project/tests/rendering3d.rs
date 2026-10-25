@@ -127,28 +127,26 @@ fn pbr_and_shadow_controls_validate_and_round_trip_through_authored_components()
         .camera3d
         .as_mut()
         .unwrap();
-    camera.lighting.shadows.enabled = true;
-    camera.lighting.shadows.resolution = 512;
-    camera.lighting.intensity = 4.0;
+    camera.lighting.exposure = 0.5;
+    let mut sun = engine_project::lights::DirectionalLight::default();
+    sun.shadows.enabled = true;
+    sun.shadows.resolution = 512;
+    sun.lux = 4.0;
+    project.scene.entities[0].components.directional_light = Some(sun);
     project.validate_scene(&project.scene).unwrap();
     let runtime = Runtime::new(project).unwrap();
     let frame = runtime.extract_scene_frame().unwrap();
     assert_eq!(frame.meshes[0].material.metallic, 0.8);
     assert!(!frame.meshes[0].material.cast_shadows);
-    assert_eq!(
-        frame.camera3d.unwrap().camera.lighting.shadows.resolution,
-        512
-    );
+    assert_eq!(frame.camera3d.unwrap().camera.lighting.exposure, 0.5);
+    let engine_project::lights::SceneLight::Directional(light) = &frame.lights[0].light else {
+        panic!("{:?}", frame.lights);
+    };
+    assert_eq!(light.shadows.resolution, 512);
     let snapshot = runtime.try_snapshot().unwrap();
-    let value = serde_json::to_value(
-        snapshot.scene.entities[0]
-            .components
-            .camera3d
-            .as_ref()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(value["lighting"]["shadows"]["enabled"], true);
+    let value = serde_json::to_value(&snapshot.scene.entities[0].components).unwrap();
+    assert_eq!(value["DirectionalLight"]["shadows"]["enabled"], true);
+    assert_eq!(value["Camera3D"]["lighting"]["exposure"], 0.5);
 }
 #[test]
 fn invalid_pbr_light_and_shadow_values_are_rejected_at_boundary() {
@@ -165,19 +163,19 @@ fn invalid_pbr_light_and_shadow_values_are_rejected_at_boundary() {
         assert!(material.validate().is_err());
     }
     for resolution in [0, 63, 65, 8192] {
+        let mut light = engine_project::lights::DirectionalLight::default();
+        light.shadows.resolution = resolution;
+        assert!(light.validate().is_err());
+    }
+    for exposure in [0.0, -1.0, f32::NAN, 1e6] {
         let mut camera = Camera3D::default();
-        camera.lighting.shadows.resolution = resolution;
+        camera.lighting.exposure = exposure;
         assert!(camera.validate().is_err());
     }
-    let mut light = SceneLighting {
-        direction: [0.0; 3],
-        ..Default::default()
-    };
-    assert!(light.validate().is_err());
-    light.direction = [0.0, 1.0, 0.0];
-    light.validate().unwrap();
-    light.shadows.bias = f32::NAN;
-    assert!(light.validate().is_err());
+    let mut lighting = SceneLighting::default();
+    lighting.validate().unwrap();
+    lighting.ambient = f32::NAN;
+    assert!(lighting.validate().is_err());
     let dir = fixture();
     let mut project = Project::load(dir.path().join("project.json")).unwrap();
     project.scene.entities[2]
@@ -402,5 +400,202 @@ fn authored_frame_generation_is_validated_documented_and_overridable() {
     assert_eq!(
         frame.camera3d.unwrap().camera.frame_generation.multiplier,
         2
+    );
+}
+
+#[test]
+fn render_feature_overrides_are_authored_through_component_set_and_reported() {
+    use engine_project::document::{EditOperation, SceneDocument};
+    let dir = fixture();
+    let mut document = SceneDocument::load(dir.path().join("project.json")).unwrap();
+    let revision = document.revision().to_owned();
+    let set = |value: serde_json::Value| EditOperation::SetComponent {
+        entity_id: "camera".into(),
+        component: "Camera3D".into(),
+        value,
+        merge: true,
+    };
+    let revision = document
+        .apply(
+            set(json!({"render_features": {"engine.opaque": false, "world.terrain": true}})),
+            &revision,
+        )
+        .unwrap();
+    for bad in [
+        json!({"render_features": {"Bad Name": false}}),
+        json!({"render_features": {"engine.opaque": "no"}}),
+        json!({"render_features": (0..65).map(|i| (format!("f{i}"), json!(true))).collect::<serde_json::Map<_, _>>()}),
+    ] {
+        assert!(document.apply(set(bad), &revision).is_err());
+    }
+    let mut project = Project::load(dir.path().join("project.json")).unwrap();
+    project.scene = document.snapshot().clone();
+    let runtime = Runtime::new(project).unwrap();
+    let frame = runtime.extract_scene_frame().unwrap();
+    let camera = &frame.camera3d.as_ref().unwrap().camera;
+    assert_eq!(camera.render_features.get("engine.opaque"), Some(&false));
+    let status = runtime.render_pipeline_status().unwrap();
+    assert_eq!(status.state, RenderPipelineState::NotRendered);
+    assert_eq!(status.overrides, camera.render_features);
+    let snapshot = serde_json::to_value(runtime.try_snapshot().unwrap()).unwrap();
+    assert_eq!(
+        snapshot["render_pipeline"]["overrides"]["engine.opaque"],
+        json!(false)
+    );
+    // Round trip: empty maps are not serialized; authored ones are.
+    let camera: Camera3D = serde_json::from_value(json!({})).unwrap();
+    assert!(
+        serde_json::to_value(&camera)
+            .unwrap()
+            .get("render_features")
+            .is_none()
+    );
+    let docs = engine_project::component_docs();
+    let doc = docs.iter().find(|d| d.name == "Camera3D").unwrap();
+    assert!(
+        doc.schema["properties"]["render_features"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("engine.opaque")
+    );
+}
+
+#[test]
+fn texture_streams_resolve_for_mesh_materials_by_stream_name() {
+    let dir = fixture();
+    let scene: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.path().join("scene.json")).unwrap()).unwrap();
+    let mut scene = scene;
+    scene["entities"][2]["components"]["MeshMaterial"]["texture"] = json!("stream:video");
+    fs::write(
+        dir.path().join("scene.json"),
+        serde_json::to_vec(&scene).unwrap(),
+    )
+    .unwrap();
+    let project = Project::load(dir.path().join("project.json")).unwrap();
+    let mut runtime = Runtime::new(project).unwrap();
+    let error = runtime.extract_scene_frame().unwrap_err();
+    assert!(
+        format!("{error}").contains("render.texture_stream.unknown"),
+        "{error}"
+    );
+    {
+        let world = runtime.app_mut().world_mut();
+        let mut streams = world.resource_mut::<TextureStreams>();
+        streams.create_cpu("video", 2, 1).unwrap();
+        assert!(streams.create_cpu("bad name", 2, 1).is_err());
+        assert!(streams.create_cpu("huge", 9000, 1).is_err());
+        assert!(
+            streams.upload_rgba("video", vec![0; 3]).is_err(),
+            "wrong size"
+        );
+        assert_eq!(streams.upload_rgba("video", vec![255; 8]).unwrap(), 1);
+        streams.create_external("camera", 4, 4).unwrap();
+        assert!(
+            streams.upload_rgba("camera", vec![0; 64]).is_err(),
+            "external streams are written on the GPU"
+        );
+        assert_eq!(streams.mark_written("camera").unwrap(), 1);
+    }
+    let frame = runtime.extract_scene_frame().unwrap();
+    assert_eq!(frame.streams.len(), 1);
+    let stream = &frame.streams[0];
+    assert_eq!(
+        (stream.name.as_str(), stream.revision, stream.size),
+        ("video", 1, [2, 1])
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        frame.meshes[0].texture.as_ref().unwrap(),
+        &stream.texture
+    ));
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<TextureStreams>()
+        .upload_rgba("video", vec![0; 8])
+        .unwrap();
+    let next = runtime.extract_scene_frame().unwrap();
+    assert_eq!(next.streams[0].revision, 2);
+    assert!(!std::sync::Arc::ptr_eq(
+        &next.streams[0].texture,
+        &stream.texture
+    ));
+    // Stream references are validated by name, not as catalog assets.
+    scene["entities"][2]["components"]["MeshMaterial"]["texture"] = json!("stream:bad name");
+    fs::write(
+        dir.path().join("scene.json"),
+        serde_json::to_vec(&scene).unwrap(),
+    )
+    .unwrap();
+    assert!(Project::load(dir.path().join("project.json")).is_err());
+}
+
+#[test]
+fn fractured_entities_hide_their_intact_mesh_only_when_a_fragment_renderer_is_installed() {
+    use engine_project::simulation::physics::{Fractured, FragmentRenderer};
+    let dir = fixture();
+    let mut runtime =
+        Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    assert_eq!(runtime.extract_scene_frame().unwrap().meshes.len(), 1);
+    let mesh = runtime.entity("mesh").unwrap();
+    let marker = Fractured {
+        fragments: 4,
+        impulse: 1.0,
+        point: glam::Vec3::ZERO,
+    };
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(mesh)
+        .insert(marker);
+    // No fragment renderer: nothing draws the fragments, so the intact mesh must stay visible
+    // (otherwise the object vanishes entirely).
+    assert_eq!(
+        runtime.extract_scene_frame().unwrap().meshes.len(),
+        1,
+        "without a fragment renderer the intact mesh keeps drawing"
+    );
+    runtime
+        .app_mut()
+        .world_mut()
+        .insert_resource(FragmentRenderer);
+    let frame = runtime.extract_scene_frame().unwrap();
+    assert!(frame.meshes.is_empty(), "fractured mesh must not draw");
+    // Without a 3D camera the mesh would take the 2D draw path; it is hidden there too.
+    let camera = runtime.entity("camera").unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(camera)
+        .remove::<Camera3D>();
+    assert!(
+        runtime
+            .extract_scene_frame()
+            .unwrap()
+            .sprites
+            .draws
+            .is_empty()
+    );
+    runtime
+        .app_mut()
+        .world_mut()
+        .remove_resource::<FragmentRenderer>();
+    assert_eq!(
+        runtime.extract_scene_frame().unwrap().sprites.draws.len(),
+        1,
+        "removing the renderer shows the intact mesh again"
+    );
+    runtime
+        .app_mut()
+        .world_mut()
+        .insert_resource(FragmentRenderer);
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(mesh)
+        .remove::<Fractured>();
+    assert_eq!(
+        runtime.extract_scene_frame().unwrap().sprites.draws.len(),
+        1
     );
 }
