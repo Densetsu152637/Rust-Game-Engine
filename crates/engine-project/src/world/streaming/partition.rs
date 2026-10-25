@@ -1,5 +1,7 @@
 //! The runtime side of a partition: sources, scheduling, background reads, applying cells to
-//! the world, unloading, origin rebasing and HLOD proxies.
+//! the world, unloading and HLOD proxies. Origin rebasing is owned by `world::coordinates`:
+//! it shifts the cell roots and proxies like every other root entity, so this module only
+//! reads `WorldOrigin` when it converts between absolute and local positions.
 use super::component::{StreamingSource, WorldPartition, load_manifest};
 use super::status::{
     CellInfo, LayerStatus, MAX_DIAGNOSTICS, MAX_LISTED_CELLS, MAX_PARTITIONS, PartitionStatus,
@@ -59,7 +61,6 @@ struct CellRt {
     layer: String,
     name: String,
     spawned: Vec<(String, Entity)>,
-    roots: Vec<Entity>,
 }
 
 struct JobResult {
@@ -84,7 +85,6 @@ pub(super) struct Partition {
     pub(super) manifest_id: String,
     streamer: Streamer,
     cells: BTreeMap<CellId, CellRt>,
-    applied_origin: [f64; 3],
     tx: Sender<JobResult>,
     rx: Mutex<Receiver<JobResult>>,
     running: BTreeMap<CellId, u64>,
@@ -152,7 +152,6 @@ impl Partition {
                     layer: cell.layer.clone(),
                     name: cell_name(cell.key, &cell.layer),
                     spawned: Vec::new(),
-                    roots: Vec::new(),
                 },
             );
         }
@@ -163,7 +162,6 @@ impl Partition {
             manifest_id: component.manifest.clone(),
             streamer,
             cells,
-            applied_origin: origin_of(world),
             tx,
             rx: Mutex::new(rx),
             running: BTreeMap::new(),
@@ -382,7 +380,6 @@ fn despawn_cell(world: &mut World, partition: &mut Partition, id: CellId) -> usi
         return 0;
     };
     let spawned = std::mem::take(&mut cell.spawned);
-    cell.roots.clear();
     let count = spawned.len();
     for (entity_id, entity) in spawned {
         despawn_owned(world, &entity_id, entity);
@@ -463,7 +460,6 @@ fn step(
     partition.stats.applied = 0;
     partition.stats.bytes = 0;
     let origin = origin_of(world);
-    rebase(world, partition, origin);
     sync_config(partition, component);
     let sources = collect_sources(world, component, origin);
     partition.sources = sources.len();
@@ -549,28 +545,6 @@ fn collect_sources(world: &mut World, component: &WorldPartition, origin: [f64; 
         }
     }
     sources
-}
-
-/// Keeps streamed content at the same absolute place when the world origin moved.
-fn rebase(world: &mut World, partition: &mut Partition, origin: [f64; 3]) {
-    if partition.applied_origin == origin {
-        return;
-    }
-    let delta: [f64; 3] = std::array::from_fn(|i| partition.applied_origin[i] - origin[i]);
-    let roots = partition
-        .cells
-        .values()
-        .flat_map(|c| c.roots.iter().copied())
-        .chain(partition.proxies.values().map(|(_, e)| *e));
-    let roots: Vec<Entity> = roots.collect();
-    for entity in roots {
-        if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-            for (axis, d) in delta.iter().enumerate() {
-                transform.position[axis] = (f64::from(transform.position[axis]) + d) as f32;
-            }
-        }
-    }
-    partition.applied_origin = origin;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -750,7 +724,6 @@ fn apply_cell(
     let shift: [f64; 3] = std::array::from_fn(|i| cell_origin[i] - origin[i]);
     let (layer, key) = (partition.cells[&id].layer.clone(), id.key.0);
     let mut spawned = Vec::with_capacity(scene.entities.len());
-    let mut roots = Vec::new();
     let mut authored_all = Vec::with_capacity(scene.entities.len());
     for mut authored in scene.entities {
         if authored.parent.is_none()
@@ -767,9 +740,6 @@ fn apply_cell(
             layer: layer.clone(),
             proxy: false,
         });
-        if authored.parent.is_none() {
-            roots.push(entity);
-        }
         spawned.push((authored.id.clone(), entity));
         authored_all.push(authored);
     }
@@ -794,7 +764,6 @@ fn apply_cell(
     }
     if let Some(cell) = partition.cells.get_mut(&id) {
         cell.spawned = spawned;
-        cell.roots = roots;
     }
     Ok(())
 }

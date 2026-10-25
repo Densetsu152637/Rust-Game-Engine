@@ -1,8 +1,23 @@
 use super::*;
+use crate::world::coordinates::WorldOrigin;
+/// Navigation meshes, `target` and `waypoints` are absolute world coordinates (equal to local
+/// ones while `WorldOrigin.offset` is zero). A follower walks its path in the local frame of
+/// the origin that was current when the path was planned (`frame`) and converts to the
+/// current local frame when it writes the `Transform`, so origin rebasing never moves it.
 struct Follower {
     config: NavigationAgent,
     agent: engine_navigation::Agent,
     notified: bool,
+    frame: [f64; 3],
+}
+fn origin(world: &World) -> [f64; 3] {
+    world
+        .get_resource::<WorldOrigin>()
+        .map_or([0.0; 3], |o| o.offset)
+}
+/// `point` (in the frame `from`) expressed in the frame `to`, rounded once.
+fn reframe(point: [f32; 3], from: [f64; 3], to: [f64; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| (f64::from(point[i]) + from[i] - to[i]) as f32)
 }
 #[derive(Default)]
 pub(super) struct Navigation {
@@ -42,6 +57,7 @@ impl Navigation {
             {
                 continue;
             }
+            let frame = origin(world);
             let position = world_pose(world, entity)?.2;
             let mut agent = engine_navigation::Agent::new(position).map_err(mapped)?;
             let mut notified = config.waypoints.is_empty();
@@ -71,12 +87,17 @@ impl Navigation {
                 let path = if query_work > 1_000_000 {
                     NavPath::BudgetExceeded
                 } else {
+                    let start = reframe(position.to_array(), frame, [0.0; 3]);
                     self.meshes[id]
-                        .find_path(position.to_array(), target, config.query)
+                        .find_path(start, target, config.query)
                         .map_err(mapped)?
                 };
                 match path {
                     NavPath::Reached { points, polygons } => {
+                        let points: Vec<[f32; 3]> = points
+                            .into_iter()
+                            .map(|p| reframe(p, [0.0; 3], frame))
+                            .collect();
                         // Nearest queries may project a distant authored pose onto a floor.
                         // Snap before following so the unvalidated connector is never walked.
                         if let Some(start) = points.first() {
@@ -113,7 +134,13 @@ impl Navigation {
                 }
             } else {
                 agent
-                    .set_path(config.waypoints.iter().copied().map(Vec3::from).collect())
+                    .set_path(
+                        config
+                            .waypoints
+                            .iter()
+                            .map(|w| Vec3::from(reframe(*w, [0.0; 3], frame)))
+                            .collect(),
+                    )
                     .map_err(mapped)?;
             }
             self.followers.insert(
@@ -122,6 +149,7 @@ impl Navigation {
                     config,
                     agent,
                     notified,
+                    frame,
                 },
             );
         }
@@ -134,19 +162,24 @@ impl Navigation {
         Ok(())
     }
     pub fn step(&mut self, world: &mut World, dt: f32) -> Result<()> {
+        let current = origin(world);
         for (e, follower) in &mut self.followers {
             follower
                 .agent
                 .advance(dt, follower.config.speed)
                 .map_err(mapped)?;
-            crate::transforms::set_world_position(world, *e, follower.agent.position().to_array())?;
+            let walked = follower.agent.position().to_array();
+            let position = reframe(walked, follower.frame, current);
+            crate::transforms::set_world_position(world, *e, position)?;
             if follower.agent.arrived() && !follower.notified {
+                let absolute: [f64; 3] =
+                    std::array::from_fn(|i| f64::from(walked[i]) + follower.frame[i]);
                 emit(
                     world,
                     *e,
                     None,
                     "navigation.arrived",
-                    serde_json::json!({"position":follower.agent.position().to_array()}),
+                    serde_json::json!({"position":position,"absolute":absolute}),
                 )?;
                 follower.notified = true;
             }
