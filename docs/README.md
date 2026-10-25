@@ -127,6 +127,10 @@
 - [Network transports](networking-transport.md): the `MessageEndpoint` lane/delivery
   contract over TCP and QUIC, limits, congestion control, caller rustls configs and
   loss/latency simulation.
+- [Scalable replication](networking-replication.md): the sans-IO `engine-net-replication`
+  crate: generation-checked entity IDs, a typed/quantized component and RPC registry, delta
+  compression against acknowledged baselines under loss and reordering, interest management,
+  priority and bandwidth budgets, validated RPCs, the bounded wire format and telemetry.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,
   typed adapters, hierarchy, events, batches and prefabs shared with MCP.
 - [Scheduled events](scheduled-events.md): CLI/MCP event injection, callback

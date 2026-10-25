@@ -1,0 +1,13 @@
+[package]
+name = "engine-net-replication"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Scalable sans-IO state replication: compact NetIds, quantized delta compression against acknowledged baselines, interest management, bandwidth budgets and validated RPCs"
+
+[dependencies]
+engine-network = { path = "../engine-network" }
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
