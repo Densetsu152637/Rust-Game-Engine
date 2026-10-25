@@ -18,11 +18,14 @@ const SIZE: u32 = 96;
 /// Orthographic view height (m).
 const VIEW_HEIGHT: f32 = 10.0;
 
-fn quad(corners: [[f32; 3]; 4], normal: [f32; 3]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>) {
+/// Positions, normals and indices of one mesh part.
+type Part = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>);
+
+fn quad(corners: [[f32; 3]; 4], normal: [f32; 3]) -> Part {
     (corners.to_vec(), vec![normal; 4], vec![0, 1, 2, 0, 2, 3])
 }
 
-fn mesh(parts: &[(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>)]) -> Arc<Mesh> {
+fn mesh(parts: &[Part]) -> Arc<Mesh> {
     let mut vertices = Vec::new();
     let mut normals = Vec::new();
     let mut indices = Vec::new();

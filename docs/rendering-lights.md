@@ -202,7 +202,9 @@ with the fragment's world position, view direction and `@builtin(position)`;
 the built-in `lit.wgsl` is the reference. Lower-level functions for custom
 shading models: `engine_light_incident(light, world, n, v)` (direction and
 irradiance without shadows), `engine_light_visibility(light, world, n)`,
-`engine_light_contribution(...)`, `engine_brdf(surface, v, l)`,
+`engine_light_contribution(...)`, `engine_light_contribution_screen(...)` (with a
+screen-space visibility), `engine_indirect_lighting(surface, v, frag)` (the ambient /
+indirect term with the screen-lighting inputs), `engine_brdf(surface, v, l)`,
 `engine_cascade_index(light, world)` (debug views), `engine_cluster_index(frag,
 depth)`, `engine_view_depth(world)`, `engine_range_window` and
 `engine_distance_falloff`. Every function is valid in non-uniform control flow
@@ -264,7 +266,9 @@ cascades replace the fixed volume). `ambient` stays; `exposure` is new.
 
 ## Limits
 
-- No image-based or indirect lighting; the ambient term is a constant.
+- No image-based lighting; the ambient term is a constant unless the ray-traced GI,
+  AO or reflection features write the screen-lighting inputs
+  ([rendering-raytracing.md](rendering-raytracing.md#frame-integration)).
 - Area light specular is a representative-point approximation; area shadows
   come from the centre. Disc and sphere lights are not implemented.
 - Every shadow view draws every opaque caster (no per-view caster culling) and

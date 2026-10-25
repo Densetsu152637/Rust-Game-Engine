@@ -1036,7 +1036,7 @@ impl RtHost {
             .into_iter()
             .filter(|e| view.features.get(e.feature()) == Some(true))
             .collect();
-        self.authored = authored.clone();
+        self.authored = authored;
         if wanted.is_empty() && !self.registered {
             return Ok(());
         }
@@ -1103,7 +1103,7 @@ impl RtHost {
             return;
         }
         let shared = lock(&self.shared);
-        let authored = self.authored.clone().unwrap_or_default();
+        let authored = self.authored.unwrap_or_default();
         let base = authored.status(&shared.status);
         let effect_status = |effect: Effect| -> RtEffectStatus {
             let outcome = &shared.outcomes[effect as usize];

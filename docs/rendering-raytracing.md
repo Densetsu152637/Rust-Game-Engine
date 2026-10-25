@@ -6,8 +6,8 @@ tier, BLAS/TLAS management, reusable WGSL ray-query and shading libraries, frame
 lighting kernels on G-buffer textures (RT shadows with an optional soft sun, ambient
 occlusion, reflections, diffuse GI), an SVGF-style spatio-temporal denoiser for their
 signals, a reference path tracer, and validated settings with per-effect status. The
-kernels take and produce standalone textures; wiring them into frame stages through the
-render extension API is a later step, so nothing here changes the current frame.
+kernels take and produce standalone textures; the desktop renderer runs them as the
+`engine.rt.*` frame features with raster fallbacks ([Frame integration](#frame-integration)).
 
 Ordinary builds need no SDK: wgpu `=30.0.1` with its `vulkan`, `dx12`, `metal` and `wgsl`
 features, all already in `Cargo.lock`.
@@ -88,11 +88,11 @@ let rt = match RtDevice::new(&adapter, &device, &queue) {
   `max_acceleration_structures_per_shader_stage` 1,
   `max_buffers_and_acceleration_structures_per_shader_stage` 29) and never lowers a value.
   `RtFeatureRequest::none()` adds nothing.
-- `engine-render-wgpu`'s `GpuContext::device_descriptor` does not yet carry
-  `experimental_features`; the render-architecture work (C1) adds the composition hook
-  through which this request is merged. Until then the crate is used with
-  `RtDevice::open_standalone` (own instance, Vulkan adapter, device and failure callbacks)
-  or with a host-built device as in `tests/gpu_tiers.rs`.
+- The renderer merges the request through the C1 device hook
+  (`DeviceFeatureRequest::new("engine-render-rt").require(features).with_limits(limits)
+  .with_experimental(experimental)`, see [Frame integration](#frame-integration));
+  standalone tools use `RtDevice::open_standalone` (own instance, Vulkan adapter, device
+  and failure callbacks) or a host-built device as in `tests/gpu_tiers.rs`.
 - `RtDevice::new` installs no wgpu callbacks on a shared device (the renderer owns them);
   forward a loss with `rt.report_device_lost(message)`.
 - `probe_adapters(backends)` lists every adapter's eligibility and reason without opening
@@ -522,8 +522,115 @@ and `denoise` are for the frame integration; the kernels ignore them.
 | `ray_traced` | otherwise | `None`, or a note: reflections name their roughness cutoff; "not denoised: ..." when the denoiser settings are invalid or a soft shadow has `denoise = false` |
 
 The status describes what this crate's kernels would run for the settings on that tier. It
-does not claim that a frame runs them; the renderer reports that once the effects are
-wired into frame stages.
+does not claim that a frame runs them; the desktop renderer reports what each frame actually
+ran (below).
+
+## Frame integration
+
+The desktop renderer (`engine-desktop`, `src/renderer/rt.rs`) owns the integration;
+`engine-render-pipeline` stays RT-free and only gained the generic screen-lighting inputs
+described in [render architecture](rendering-architecture.md#screen-lighting-inputs).
+`engine-desktop` depends on this crate unconditionally (no SDK is involved).
+
+### Device
+
+- `prepare_ray_tracing(&instance, surface, &mut options, &frame)` runs before device
+  creation when the first frame's camera has a `RayTracing` component with any effect
+  enabled: it picks the adapter, calls `RtFeatureRequest::for_adapter` and adds
+  `DeviceFeatureRequest::new("engine-render-rt").require(rt.features)
+  .with_limits(limits).with_experimental(rt.experimental)` (limits = `Limits::default()`
+  raised by `merge_limits`) to `WgpuOptions::requirements`. The window runner
+  (`WindowSurface::with_ray_tracing`), `render_screenshot` and
+  `OffscreenSprites::wgpu_ray_traced` use it; an `Err` (for example the DX12/FXC reason)
+  is handed to `GpuRenderer::note_ray_tracing_request` and becomes the fallback reason.
+- The first frame that runs an `engine.rt.*` feature calls `RtDevice::new(&adapter,
+  &device, &queue)` on the renderer's own device once (the self-test, about 100 ms) and
+  forwards `GpuContext::on_device_lost` to `RtDevice::report_device_lost`. A device created
+  without the request reports `device_missing_feature`; there is no retry.
+
+### Scene sync
+
+Before each view, `RtHost` syncs one `RtScene` from `SceneRenderFrame.meshes`: opaque draws
+with vertices and indices only. One BLAS per mesh asset keyed by its `Arc<Mesh>` address
+(the same identity as the GPU mesh cache; vertex normals when the mesh has one per
+vertex); instance `i` is draw `i` (row-major transform from the draw's model matrix, mask
+`0x02 | 0x01` for `cast_shadows`, material `i`); instances are updated in place only when
+their descriptor changed, dead meshes are removed, and `commit()` runs only when the scene
+is dirty. Materials: albedo = `MeshMaterial.tint.rgb`, emission = tint for `unlit`
+materials, otherwise 0 (there is no authored emissive). The status carries `blas_count`,
+`instance_count`, `triangle_count` and `last_blas_built` (0 on an unchanged frame).
+
+### Features
+
+| Feature | Stage | Ray traced | Fallback (`fallback`) |
+| --- | --- | --- | --- |
+| `engine.rt.shadows` | Prepass | `ShadowMaskKernel` towards the first directional light, mask 0x01 (casters); denoised only for soft shadows | the shadow maps (`shadow_maps`) |
+| `engine.rt.ao` | Prepass | `AmbientOcclusionKernel`, denoised (`Scalar`) | screen-space hemisphere SSAO, 16 samples, radius = `ambient_occlusion.radius` (`ssao`) |
+| `engine.rt.reflections` | Prepass | `ReflectionKernel` with a zero roughness texture (mirror rays everywhere), denoised (`RgbHitDistance`) | nothing (`none`) |
+| `engine.rt.gi` | Prepass | `DiffuseGiKernel`, denoised (`Rgb`) | the constant ambient (`constant_ambient`) |
+
+All four run after `engine.prepass.normals` and `engine.prepass.motion`, are disabled by
+default, and declare `needs { normals, motion, screen_lighting }`. An enabled `RayTracing`
+effect inserts `true` for its feature into the view's overrides unless
+`Camera3D.render_features` already names it, so a camera can force a feature off (status:
+disabled, "engine.rt.x is disabled by Camera3D.render_features") or on with the default
+settings. The features are registered in the reserved namespace
+(`FeatureRegistry::register_engine`) the first time a frame wants one.
+
+Per frame and view, the first running feature reconstructs the RT G-buffer: a compute pass
+writes world positions (`Rgba32Float`, w = 1 where the normal prepass covered the pixel)
+from the prepass depth and the inverse jittered view-projection; normals are the C1 normal
+target. Each effect then records its kernel into the Prepass encoder, denoises with its own
+`Denoiser` per view (C1 motion vectors; `camera_cut = ViewData.reset_history`, which the
+native path sets after `GpuRenderer::reset_temporal_history`), and a blit pass writes the
+result into its screen-lighting input. The sun is the first directional light of the
+frame's light list (direction and `color x intensity` in shading units); the kernels' sky
+is the camera ambient (zenith = horizon), so open surfaces keep the ambient level.
+
+### How the lit shader consumes the effects
+
+`engine::lighting` reads the four screen-lighting textures (`engine::view` bindings 7-10)
+at the fragment's pixel; every material that uses `engine_direct_lighting` and
+`engine_indirect_lighting` (the built-in `lit.wgsl` does) gets the effects:
+
+- Shadows: `screen_shadow.x` replaces the first directional light's shadow-map visibility
+  where `screen_shadow.y = 1` (written by `engine.rt.shadows`), otherwise multiplies it
+  (the cleared value 1 changes nothing). `receive_shadows = false` ignores both.
+- AO: `screen_ao.x` multiplies the diffuse ambient / indirect term.
+- GI: where `screen_indirect.a >= 0.5`, `rgb` (irradiance / pi) replaces the constant
+  ambient; the term is `albedo x (1 - metallic) x incident x ao`.
+- Reflections: where `screen_reflection.a >= 0` (= the roughness cutoff), surfaces with
+  roughness <= cutoff add `rgb x F x (1 - roughness / cutoff)`, with
+  `F = f0 + (max(1 - roughness, f0) - f0) (1 - n.v)^5` and `f0 = mix(0.04, albedo,
+  metallic)`.
+
+Without any `engine.rt.*` feature the bindings hold 1x1 neutral placeholders and the lit
+result is bit-identical to before (every existing pixel test passes unchanged).
+
+### Status
+
+`GpuRenderer::ray_tracing_status()` (`RayTracingReport`, published to
+`RayTracingControl` and `RuntimeSnapshot.ray_tracing`, and returned by `project_run_headless`
+and `render_screenshot` as `ray_tracing`) reports `state`, `tier` (`hardware` /
+`unavailable`), the tier `reason`, scene counts and per effect `effect`, `mode`
+(`ray_traced` / `fallback` / `disabled`), `denoised`, `fallback` and `reason`.
+`GpuRenderer::rt_effects_status()` returns the same as `RtEffectsStatus`. The reason starts
+from `RtEffectsSettings::status` and is replaced by what the frame met: the tier text (for
+example "ray tracing unavailable: the device was created without EXPERIMENTAL_RAY_QUERY
+...; using the raster fallback"), a scene sync error, a kernel error, or "the scene has no
+directional light to trace shadows for". Headless runs report `not_rendered` with each
+enabled effect as `fallback` ("no frame has been rendered").
+
+### Measured (RTX 5080, Vulkan, 96 x 96, `tests/ray_tracing.rs` in engine-desktop)
+
+| Test | Result (8-bit sRGB output) |
+| --- | --- |
+| Floor shadowed by a 2 m box, sun (1, 1, 0), shadow maps off | RT: occluded 34, lit 163 (ray_traced, 2 BLAS, 2 instances; second frame 0 BLAS built); without RT shadows the occluded pixel reads 163 |
+| Same scene, device without the RT request, shadow maps on | occluded 34, lit 163; `fallback` / `shadow_maps` with the device_missing_feature reason |
+| Floor-wall crease, ambient only, radius 1 | crease 170 without AO, 141.8 with RT AO (16 rays, denoised), 146.6 with the SSAO fallback; open floor 170 in all three |
+| Denoised RT AO (1 ray) | mean frame-to-frame difference 0.188 after 24 static frames, 4.436 right after a camera cut, 31.875 undenoised |
+| Mirror floor (metallic 1, roughness 0) below a red unlit box | reflecting pixel (243, 63, 63), sky-only pixel (63, 63, 63); reflections off or device without RT: (0, 0, 0), status `disabled` / `fallback` (`none`) |
+| White floor beside a red wall, sun (1, 1, 0), 16 paths x 2 bounces | floor next to the wall R/G 1.000 without GI, 1.179 with GI; fallback (`constant_ambient`) 1.000 |
 
 ## Tests
 
@@ -544,9 +651,13 @@ wired into frame stages.
   ray-tracing pipelines, no TLAS refit or BLAS compaction (wgpu 30).
 - Mesh edits that change a mesh's size repack all shared geometry buffers (CPU copies of
   mesh data are kept for this).
-- Kernels write standalone textures: wiring them into frame stages, authored components
-  and MCP control follow through the render extension API (C1); `RtEffectsSettings` and
-  `RtEffectsStatus` already serialize for that.
+- Frame integration: reflections trace mirror rays for every pixel (no roughness G-buffer;
+  the lit shader applies the material roughness), so glossy lobes are not sampled; RT
+  effects see opaque meshes only, with tint albedo and unlit emission (no textures);
+  transparent meshes are lit without RT inputs (they read the screen inputs of the opaque
+  surface behind them); custom vertex displacement is not in the BLAS. XR eye views run
+  the effects with their own textures and denoisers (the scene sync repeats per view and
+  builds nothing when unchanged); only the camera view writes the status.
 - G-buffer input is world position (no depth plus inverse view-projection path); one
   denoiser instance per signal and view; uniform buffers and bind groups are created per
   dispatch.
