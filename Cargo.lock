@@ -1391,7 +1391,11 @@ dependencies = [
 name = "engine-acoustics-gpu"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "engine-acoustics",
+ "naga",
+ "pollster 0.4.0",
+ "wgpu",
 ]
 
 [[package]]
@@ -1445,11 +1449,15 @@ dependencies = [
  "arboard",
  "bevy_ecs",
  "bytemuck",
+ "engine-acoustics",
+ "engine-acoustics-gpu",
  "engine-audio",
  "engine-core",
  "engine-dlss",
  "engine-project",
  "engine-render",
+ "engine-render-pipeline",
+ "engine-render-rt",
  "engine-render-wgpu",
  "epaint_default_fonts",
  "gilrs",
@@ -1458,6 +1466,8 @@ dependencies = [
  "naga",
  "pollster 0.4.0",
  "serde",
+ "serde_json",
+ "tempfile",
  "wgpu",
  "winit",
 ]
@@ -1528,6 +1538,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-mesh-lod"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+]
+
+[[package]]
 name = "engine-navigation"
 version = "0.1.0"
 dependencies = [
@@ -1568,6 +1585,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "blake3",
+ "engine-acoustics",
  "engine-animation",
  "engine-assets",
  "engine-audio",
@@ -1595,6 +1613,33 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "naga",
+]
+
+[[package]]
+name = "engine-render-pipeline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "bytemuck",
+ "engine-render-wgpu",
+ "glam 0.34.1",
+ "naga",
+ "pollster 0.4.0",
+ "wgpu",
+]
+
+[[package]]
+name = "engine-render-rt"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.34.1",
+ "naga",
+ "pollster 0.4.0",
+ "serde",
+ "serde_json",
+ "wgpu",
 ]
 
 [[package]]

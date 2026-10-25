@@ -8,6 +8,7 @@ engine-assets = { path = "../engine-assets" }
 engine-network = { path = "../engine-network" }
 engine-core = { path = "../engine-core" }
 engine-audio = { path = "../engine-audio" }
+engine-acoustics = { path = "../engine-acoustics" }
 engine-physics = { path = "../engine-physics" }
 engine-animation = { path = "../engine-animation" }
 engine-navigation = { path = "../engine-navigation" }

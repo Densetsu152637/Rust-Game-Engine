@@ -7,10 +7,13 @@ GameSystems sets. Native systems mutate these types and the core extracts custom
 components into its separate render world. No authored schema or reflection
 registration is required for arbitrary native types.
 
-CustomTriangle implements the public NativeRenderPass trait. It owns its uniform
-buffer, bind group, pipeline layout and WGSL shader/pipeline. prepare creates GPU
-resources for the host target format; encode reads an extracted custom component,
-writes its color uniform and issues a real wgpu render pass after engine draws.
+CustomTriangle implements the public render feature trait
+(`engine_desktop::render_pipeline::PipelineFeature`) in the overlay stage. It owns
+its uniform buffer, bind group, pipeline layout and WGSL shader/pipeline, built for
+the output format on first use; encode reads an extracted custom component from
+the feature context, writes its color uniform and issues a real wgpu render pass
+after the engine's 3D output and 2D sprites. Registration goes through the
+`PipelineFeatures` world resource (see docs/rendering-architecture.md).
 The same registration is taken by the native desktop runner at startup.
 
 From the repository root:

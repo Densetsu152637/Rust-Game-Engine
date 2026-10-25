@@ -1,5 +1,5 @@
 use engine_core::EngineApp;
-use engine_desktop::{GpuContext, GpuRenderer, NativeRenderPasses, OffscreenTarget, RenderLimits};
+use engine_desktop::{GpuContext, GpuRenderer, OffscreenTarget, PipelineFeatures, RenderLimits};
 use engine_project::{Camera2D, runtime::RenderFrame};
 use native_extension_gameplay::*;
 
@@ -35,11 +35,11 @@ fn external_custom_pass_verifies_real_offscreen_pixels() {
     let gpu = pollster::block_on(GpuContext::headless()).expect("real GPU adapter");
     let target = OffscreenTarget::new(&gpu, 64, 64).unwrap();
     let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default()).unwrap();
-    let passes = app
+    let features = app
         .world_mut()
-        .remove_resource::<NativeRenderPasses>()
+        .remove_resource::<PipelineFeatures>()
         .unwrap();
-    renderer.set_passes(passes).unwrap();
+    renderer.set_features(features).unwrap();
     let frame = RenderFrame {
         camera: Camera2D::default(),
         draws: vec![],

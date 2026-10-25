@@ -1,12 +1,19 @@
 # Scene rendering
 
 `Runtime::extract_scene_frame` produces immutable `SceneRenderFrame` snapshots.
-The desktop path renders a directional shadow map, depth-tested 3D meshes
-(optionally through [DLSS Super Resolution](#temporal-upscaling-dlss-super-resolution)),
-then 2D sprites/UI, optionally with
+The desktop path renders the 3D scene through the HDR render pipeline
+([render architecture](rendering-architecture.md)): shadow maps of the scene's
+lights ([lights and shadows](rendering-lights.md)), instanced depth-tested meshes
+into `Rgba16Float` scene colour, registered render features, the output operator
+into the target (optionally through
+[DLSS Super Resolution](#temporal-upscaling-dlss-super-resolution)), then 2D
+sprites/UI and overlay features, optionally with
 [DLSS Frame Generation](#frame-generation-dlss-frame-generation) between
-presented frames. `RenderFrame`, `Draw`, `SpriteRenderer::render`, offscreen sprite
-rendering, custom WGSL and native render callbacks remain available.
+presented frames. `RenderFrame`, `Draw`, `SpriteRenderer::render`, offscreen
+rendering, custom WGSL materials and native render features are available.
+`Camera3D.render_features` enables or disables render features per camera
+(for example `{"engine.shadows": false}`); see
+[render architecture](rendering-architecture.md#authored-data-status-and-mcp).
 
 ## Camera and lighting
 
@@ -16,16 +23,16 @@ Coordinates are right-handed, Y up, camera forward negative Z, GPU depth 0 to 1.
 The camera transform must be invertible. Stable authored ID order selects the
 first active camera. Without one, extraction retains the existing 2D behavior.
 
-The camera's `lighting` object supplies one directional light: `direction` points
-from the surface toward the light, `color` is linear RGB in 0..1, `intensity` is
-0..100, and `ambient` is 0..1. Direction must be finite and nonzero. Default light
-is `[0.4,0.7,1]`, white, intensity 3 and ambient 0.08. Native users edit the same
-`Camera3D` component; MCP component inspection and edits expose the same schema.
+The camera's `lighting` object holds view-wide values only: `ambient` (0..1,
+default 0.08) and `exposure` (default 1), the factor from photometric light
+units to output. Lights are separate `DirectionalLight`, `PointLight`,
+`SpotLight` and `AreaLight` components, with their shadows; see
+[lights and shadows](rendering-lights.md), including the migration from the
+former camera light. Native users edit the same components; MCP component
+inspection and edits expose the same schema.
 
 ```json
-{"Camera3D":{"lighting":{"direction":[0.6,1,0.8],"intensity":3,
-  "shadows":{"enabled":true,"resolution":1024,"center":[0,0,0],
-             "extent":20,"depth":100,"bias":0.001}}}}
+{"Camera3D":{"lighting":{"ambient":0.05,"exposure":1}}}
 ```
 
 ## Physically based materials
@@ -44,7 +51,8 @@ The BRDF combines GGX/Trowbridge-Reitz normal distribution, separable Smith
 masking-shadowing, Schlick Fresnel, and energy-weighted Lambert diffuse. The
 nonmetal reflectance at normal incidence is 0.04; metal reflectance uses base
 color. Perceptual roughness is squared for the GGX alpha parameter, with a 0.045
-roughness floor to bound the specular singularity. Direct lighting is linear;
+roughness floor to bound the specular singularity. Every light of the view
+(clustered for local lights) contributes through `engine::lighting`. Direct lighting is linear;
 RGBA8 sRGB targets encode output. Values above the target range clip. Ambient is
 a simple diffuse term, not environment-map lighting or global illumination.
 There is no HDR tone mapper, IBL, clear coat, transmission or multi-scattering
@@ -77,30 +85,19 @@ The model and texture-channel conventions follow the
 (accessed 2026-10-24). This renderer implements the specified base BRDF components;
 it does not claim complete glTF rendering conformance.
 
-## Directional shadow mapping
+## Shadows
 
-`lighting.shadows.enabled` defaults to false. When enabled, the wgpu backend
-renders opaque caster triangle geometry into a `Depth32Float` texture before
-the color pass. The built-in shader projects world positions into this map and
-performs a 3x3 percentage-closer filter using explicit depth comparisons and
-receiver-plane depth correction for sloped surfaces. This
-is an actual geometry depth pass, so moving occluders changes receiver pixels.
-Shadowing affects direct lighting; the ambient term remains visible.
-
-`resolution` must be a power of two in 64..4096 and fit the GPU limit. `center`
-is the world-space shadow volume center (each coordinate within +/-1000000), `extent` its square width/height
-(0.01..100000), and `depth` its length along the light direction (0.1..100000).
-The volume is fixed in world space; positions outside it are lit. `bias` is a
-normalized depth comparison offset in 0..0.1 (default 0.001). Adjust it with
-volume depth/resolution to balance acne and detached shadows. There are no
-cascades, automatic camera fitting, point/spot shadows, alpha-tested casters or
-translucent shadow transmission. Transparent draws do not cast shadows.
+Shadow maps are per light: cascaded shadow maps for directional lights, a
+perspective view for spot lights and six cube faces for point and area lights,
+all in one per-view shadow atlas with PCF or PCSS filtering. They are documented
+with the lights in [lights and shadows](rendering-lights.md); the former
+fixed-volume camera shadow (`lighting.shadows`) is superseded by cascades.
 
 `MeshMaterial.cast_shadows` and `receive_shadows` default to true. Custom vertex
 shader displacement is not replayed in the shadow pass; such materials should
-opt out of casting or provide a native implementation. Native render passes
-still receive the shared device/queue and run after engine draws, including the
-2D overlay of an upscaled frame.
+opt out of casting or provide a native render feature. Transparent draws do not
+cast shadows. Overlay-stage render features run after the output operator and the
+2D overlay, also in an upscaled frame.
 
 ## Temporal upscaling (DLSS Super Resolution)
 
@@ -176,26 +173,27 @@ the feature to generated project builds.
 
 An active frame, in queue order:
 
-1. **Color**: the 3D scene (shadow pass, opaque and transparent draws, custom
-   WGSL) renders into the NGX `Rgba16Float` input at the render size. The view
-   projection is premultiplied by a clip-space translation of
+1. **Scene stages**: the render pipeline renders the view at the render size
+   (shadow, prepass, opaque, sky and transparent stages, custom WGSL and render
+   features) into its `Rgba16Float` HDR colour and `Depth32Float` depth. The
+   view projection is premultiplied by a clip-space translation of
    `(2*jx/w, -2*jy/h)` for a Halton(2,3) jitter `(jx, jy)` in render pixels
    (x right, y down), with `ceil(8 * scale^2)` phases clamped to 8..256. The
    projection aspect is that of the 3D viewport (output) size.
-2. **Depth and motion**: opaque meshes are re-rasterized with the same jittered
-   matrix by the engine motion shader into an `Rgba32Float` intermediate: clip
-   depth (0..1, not inverted) and current-to-previous motion in render pixels,
-   from unjittered current and previous camera matrices and each mesh's
-   previous model matrix (matched by stable draw ID; a new ID has camera
-   motion only). A native pass splits it into the NGX `R32Float` depth and
-   `Rg16Float` motion inputs (motion scale 1, render-resolution vectors).
-3. **Evaluate**: `Session::evaluate` with the jitter, measured frame time and
+2. **Motion**: the view requests motion vectors, so the motion prepass
+   rasterizes opaque meshes with the jittered matrix into `Rg16Float`
+   current-to-previous motion in render pixels, from unjittered current and
+   previous camera matrices and each mesh's previous model matrix (matched by
+   stable draw ID; a new ID has camera motion only).
+3. **NGX inputs**: in the pipeline's host upscale hook the HDR colour is copied
+   into the NGX colour input, depth is exported into `R32Float` (0..1, not
+   inverted) and motion copied into the `Rg16Float` input (motion scale 1).
+4. **Evaluate**: `Session::evaluate` with the jitter, measured frame time and
    reset flag; it waits for GPU completion.
-4. **Composite**: the display-size output is written into the 3D viewport. As
-   in the native path there is no tone mapper; values above the target range
-   clip.
-5. **Overlay**: 2D sprites and UI render at output resolution over the
-   composite (`FrameDesc.preserve_color`), then native render passes.
+5. **Finish**: the display-size output replaces the Upscale stage; HDR
+   post-processing features, the output operator (by default a linear clamp,
+   so values above the target range clip) and the 2D sprites/UI and overlay
+   features follow at output resolution.
 
 History resets on the first frame of a session, quality or output-size change,
 any projection change, an explicit reset request, a scene revision change in
@@ -208,13 +206,14 @@ the desktop runner, and any frame rendered without DLSS in between.
 - Custom vertex displacement and CPU-skinned or geometry-override deformation
   are not in the motion vectors: such meshes report camera and model-matrix
   motion only.
-- In an upscaled frame, 2D world-space sprites are drawn after upscaling and no
-  longer depth-test against 3D geometry.
+- 2D world-space sprites are drawn after the 3D output and do not depth-test
+  against 3D geometry (in every frame, not only upscaled ones).
 - One NGX runtime may exist per process; a second DLSS renderer falls back.
 - The NGX adapter copies inputs/outputs and waits for each evaluation. No frame
   rate improvement is claimed; measure before relying on one.
 - Editor viewports (`OffscreenSprites`) render natively. Only Windows x86_64 on
-  an RTX 5080 has been validated.
+  an RTX 5080 has been validated (before the HDR pipeline; this machine has no
+  NGX SDK to re-run the SDK tests).
 
 ## Frame generation (DLSS Frame Generation)
 
@@ -231,8 +230,8 @@ frame and 4 inserts three. Scene validation rejects other multipliers, and
 `component_set` edits the field. At runtime the renderer also checks NGX's
 `MultiFrameCountMax` (5 on the tested RTX 5080 / driver 617.14); a larger
 request falls back with that limit in the reason. Frame generation works with
-or without Super Resolution: without SR, depth and motion are rendered at the
-3D viewport size; with SR they are the NGX SR inputs at the render size.
+or without Super Resolution: depth and motion are exported from the render
+pipeline at the render size (the 3D viewport size without SR).
 
 ### Control and status
 
@@ -252,9 +251,8 @@ Fallback reasons include those of Super Resolution plus: the device was
 prepared without Frame Generation extensions; FG device preparation failed;
 `FrameGenerator` creation failed (for example the FG runtime
 `nvngx_dlssg.dll` is missing next to `nvngx_dlss.dll`); a multiplier above
-NGX's maximum; native render passes are registered (they target the
-presentation format, while generated frames use the engine's `Rgba8Unorm`
-backbuffer); and an evaluation failure, after which only real frames are
+NGX's maximum; overlay render features are registered (they draw after the
+HUD, which generated frames do not contain); and an evaluation failure, after which only real frames are
 presented until the request or size changes.
 
 ### Device and runtime
@@ -272,13 +270,14 @@ runtime even when `upscaler.mode` is `none`.
 
 For each real frame (sizes are those of the 3D viewport, the "output"):
 
-1. The 3D scene renders into the HUD-less color: an `Rgba8Unorm` texture
-   written through an sRGB view, so it holds the same encoded bytes as an sRGB
-   swapchain. With SR, the upscaled output is composited into it; without SR,
-   the scene renders at output size without jitter.
-2. The engine depth/motion pass writes `R32Float` depth and `Rg16Float`
-   current-to-previous pixel motion at the render size (SR inputs, or engine
-   textures without SR).
+1. The render pipeline renders the scene with the HUD-less color as its
+   output target: an `Rgba8Unorm` texture written through an sRGB view, so it
+   holds the same encoded bytes as an sRGB swapchain. With SR the view is
+   super-resolved as above; without SR it renders at output size without
+   jitter. Sprites are skipped.
+2. The host hook exports `R32Float` depth and copies `Rg16Float`
+   current-to-previous pixel motion at the render size into the generator's
+   textures.
 3. The HUD-less color is copied into the backbuffer and 2D sprites/UI are drawn
    over it. The two images differ only where UI is drawn.
 4. For indices `1..=multiplier-1`, `FrameGenerator::evaluate` generates the
@@ -331,7 +330,7 @@ for even motion without judder or a stuttering HUD, and compare the
 
 ### Frame generation limitations
 
-- Native render passes disable frame generation (fallback with reason).
+- Overlay render features disable frame generation (fallback with reason).
 - No UI alpha recomposition, `OutputReal`, `NotRenderingGameFrames`, HDR or
   dynamic resolution parameters; SDR `Rgba8Unorm` only.
 - Generated frames inherit the motion limits above (transparent surfaces,
@@ -343,27 +342,20 @@ for even motion without judder or a stuttering HUD, and compare the
 
 ## Shader and native contracts
 
-Legacy vertex locations remain 0 position (`vec3<f32>`), 1 UV (`vec2<f32>`), and
-2 color (`vec4<f32>`), at byte offsets 0, 12 and 20. Location 3 adds an optional
-normal (`vec3<f32>`) at byte 36; the desktop upload stride is now 48 bytes.
-Entry points remain `vs_main` and `fs_main`. Uniforms are supplied only when
-reflected as used by the selected shader:
-
-| Group/binding | Value | Bytes |
-| --- | --- | --- |
-| 0/0 | projection x view x model, column-major | 64 |
-| 0/1 | model-to-world matrix | 64 |
-| 0/2 | inverse-transpose model matrix | 64 |
-| 2/0 | tint vec4; options vec4: unlit, metallic, roughness, receive-shadow | 32 |
-| 2/1 | light VP matrix; eye, direction, radiance/ambient, shadow enable/bias vec4s | 128 |
-| 2/2 | normal-map enable/scale, metallic-roughness-map enable, reserved | 16 |
-
-Texture 1/0 and nearest clamp sampler 1/1 retain the existing contract. Linear
-data textures use 1/2 and 1/3; the generated `texture_depth_2d` shadow map uses
-3/0. Other resource types/uniform slots, wrong sizes, missing vertex inputs and
-invalid WGSL fail before submission. `DrawCommand.shadow` exposes the neutral
-caster matrix/resolution to native producers; all casters in a frame use one
-resolution. The recording backend records commands but does not generate pixels.
+Mesh vertex locations are 0 position (`vec3<f32>`), 1 UV (`vec2<f32>`), 2 color
+(`vec4<f32>`) and 3 normal (`vec3<f32>`, zero without authored normals) in a
+48-byte vertex. Material shaders follow the
+[material shader contract](rendering-architecture.md#material-shader-contract):
+they `#import engine::material`, define `vs_main`/`fs_main` and use the engine
+functions and bindings it declares (instance transforms, view, light list,
+shadow visibility, the material textures at group 1 and `material`/`maps` at
+group 2); declaring any other binding fails before submission with
+`unsupported material binding`. The same source runs on 2D sprites with a
+`MeshMaterial` (unlit, sprite implementation of `engine::material`). Invalid
+WGSL, missing entry points and contract violations fail before submission. The
+recording backend records sprite commands and validates 3D scenes without
+drawing them. Native code adds passes as
+[render features](rendering-architecture.md#feature-registration).
 
 ## Verification and example
 
@@ -372,8 +364,10 @@ Run `cargo run -p engine-desktop --example pbr_shadows -- output.png`, or use
 
 `cargo test -p engine-desktop --test scene3d -- --include-ignored --nocapture`
 runs real GPU readback assertions for depth, custom WGSL/2D, material factors,
-normal/MR maps and linear channel handling, shadow occlusion, caster/receiver
-switches, and shadow-map resizing. GPU tests fail if an adapter is unavailable.
+normal/MR maps and linear channel handling, cascaded shadow occlusion without
+acne, caster/receiver switches, and shadow-map resizing. GPU tests fail if an
+adapter is unavailable. Light and shadow measurements are in
+[lights and shadows](rendering-lights.md#measured-results).
 Set `ENGINE_PBR_CAPTURE` to an absolute PNG path to retain the shadow test image.
 Project rendering/import tests cover authored round trips, invalid settings and
 asset kinds, texture mappings, and normal-array boundary failures.

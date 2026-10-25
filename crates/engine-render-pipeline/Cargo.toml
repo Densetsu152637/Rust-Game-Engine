@@ -1,0 +1,19 @@
+[package]
+name = "engine-render-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The 3D frame graph: render feature registration, per-view data, HDR targets, light lists, instanced draws, WGSL composition and device feature composition."
+
+[dependencies]
+anyhow.workspace = true
+bevy_ecs.workspace = true
+bytemuck.workspace = true
+engine-render-wgpu.workspace = true
+glam.workspace = true
+naga = { workspace = true, features = ["wgsl-in"] }
+pollster = "0.4"
+wgpu = { workspace = true, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "gles", "wgsl"] }
+
+[lints]
+workspace = true

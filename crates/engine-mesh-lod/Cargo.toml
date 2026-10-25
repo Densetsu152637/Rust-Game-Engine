@@ -1,0 +1,11 @@
+[package]
+name = "engine-mesh-lod"
+version = "0.1.0"
+edition = "2024"
+description = "Pure-Rust CPU mesh LOD toolkit: quadric edge-collapse simplification, LOD chains and selection, HLOD clustering, frustum culling math."
+
+[dependencies]
+glam = { workspace = true }
+
+[lints]
+workspace = true

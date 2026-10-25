@@ -16,7 +16,8 @@ engine is built this way.
 | `engine-text` | Independent CPU text library (fonts, shaping, layout, caret, glyph atlases) without ECS, window or GPU ownership |
 | `engine-locale` | Independent localization library (Fluent string tables, fallback, pseudo-localization, settings descriptor) without ECS, window, GPU or file-system ownership |
 | `engine-network` | Owned network endpoints, validated input/state and bounded transport work |
-| `engine-audio` | Clips, mixer, spatial sources and native CPAL output |
+| `engine-audio` | Clips, mixer, spatial sources, binaural/reverb/Doppler acoustic DSP and native CPAL output |
+| `engine-acoustics`, `engine-acoustics-gpu` | Acoustic world, CPU ray-traced propagation and the GPU ray-query/compute tiers; the host injects the GPU tiers into `engine-project` |
 | `engine-render`, `engine-render-wgpu` | GPU-free rendering contract and real wgpu implementation |
 | `engine-project` | Authored schemas/catalog, runtime adapters, events, UI, content extraction and scene documents |
 | `engine-desktop` | Window/input/device lifecycle, 2D/3D rendering and headless execution |
@@ -188,7 +189,9 @@ by stable `(producer, draw)` keys. `RecordingBackend` is the deterministic headl
 backend used by tests. `engine-render-wgpu` is the only GPU backend: wgpu already
 abstracts Vulkan, DX12, Metal and GL, selected with `WgpuBackends` or
 `ENGINE_RENDER_BACKEND`, so there is no separate native-API backend.
-`NativeRenderPass` remains wgpu-specific by design. See
+The 3D scene renders through `engine-render-pipeline` (wgpu-specific by
+design); native render features plug into its stages. See
+[Render architecture](rendering-architecture.md) and
 [Desktop rendering](desktop-2d-rendering.md).
 
 The desktop scene path combines a depth-tested 3D pass with the 2D/UI overlay in
@@ -196,9 +199,10 @@ one submission. `Camera3D` provides perspective or orthographic projection;
 `MeshMaterial` selects textures, tint, unlit/lit behavior and custom WGSL. Opaque
 objects write depth; transparent objects test depth and sort by object origin.
 The built-in shader is metallic-roughness PBR with optional base-color, normal and
-metallic-roughness textures and one directional light with an optional shadow map;
-skinned meshes are deformed on the CPU. Image-based lighting, cascaded or
-point/spot shadows and GPU skinning are not provided. Supported shader bindings,
+metallic-roughness textures, lit by clustered directional, point, spot and area
+light components with cascaded, spot and cube shadows in a shadow atlas
+([lights and shadows](rendering-lights.md)); skinned meshes are deformed on the
+CPU. Image-based lighting and GPU skinning are not provided. Supported shader bindings,
 materials and limits are in [3D scene rendering](rendering3d.md). The optional
 `engine-dlss` crate (see [DLSS](dlss.md)) is a standalone Super Resolution library,
 not part of the default render path.
@@ -265,7 +269,7 @@ current design:
 
 The workspace supplies working feature foundations with explicit failure paths,
 not AAA readiness or full parity with a mature commercial engine. Important gaps
-include image-based lighting and cascaded/point/spot shadows, animation
+include image-based lighting, animation
 graphs/IK/retargeting, crowd avoidance, multiplayer prediction/matchmaking/NAT
 traversal, DLSS Frame Generation/Ray Reconstruction/neural rendering,
 text-input/accessibility UI, and platform-certified distribution. Domain docs

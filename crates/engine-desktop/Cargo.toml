@@ -14,11 +14,15 @@ anyhow = "1"
 arboard = { version = "=3.7.0", optional = true, default-features = false }
 bevy_ecs.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
+engine-acoustics = { path = "../engine-acoustics" }
+engine-acoustics-gpu = { path = "../engine-acoustics-gpu" }
 engine-core = { path = "../engine-core" }
 engine-audio = { path = "../engine-audio" }
 engine-dlss = { path = "../engine-dlss", optional = true }
 engine-project = { path = "../engine-project" }
 engine-render = { path = "../engine-render" }
+engine-render-pipeline = { path = "../engine-render-pipeline" }
+engine-render-rt = { path = "../engine-render-rt" }
 engine-render-wgpu = { path = "../engine-render-wgpu" }
 gilrs = "=0.11.2"
 glam.workspace = true
@@ -42,3 +46,5 @@ dlss = ["dep:engine-dlss", "engine-dlss/ngx-vulkan"]
 epaint_default_fonts = "=0.37.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 naga = { version = "=30.0.1", features = ["wgsl-in"] }
+serde_json = "1"
+tempfile = "3"

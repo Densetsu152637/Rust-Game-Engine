@@ -1,16 +1,20 @@
 use crate::accessibility::AccessBridge;
 use crate::{
     BACKEND_ENV_VAR, CameraView, DlssConfig, DlssRequest, FrameHistory, FramePacer,
-    GpuRequirements, NativeRenderPasses, RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
+    GpuRequirements, PipelineFeatures, RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
     input::{Gamepads, PressLatch, TextBridge, sample_tick, window_input},
 };
 use anyhow::{Context, Result, ensure};
+pub use engine_acoustics::BackendPreference;
+use engine_acoustics::ServiceMode;
+use engine_acoustics_gpu::{GpuOptions, gpu_backends};
 use engine_audio::{AudioConfig, AudioEngine};
 use engine_project::{
     EventSchedule, EventTrace, Runtime,
+    acoustics::{AcousticControl, AcousticHost},
     input::{ActionMapper, RawInput, merge_input},
     remap_ui::RawInputTokens,
-    rendering3d::{FrameGenerationControl, UpscalerControl},
+    rendering3d::{FrameGenerationControl, RenderPipelineControl, UpscalerControl},
     runtime::{InputSettings, RuntimeSnapshot},
     ui_tree::GameUi,
 };
@@ -47,6 +51,9 @@ pub struct RunOptions {
     /// Stable-ID events injected immediately before their zero-based fixed tick.
     pub events: EventSchedule,
     pub user_data: Option<PathBuf>,
+    /// Replaces the scene's authored `AcousticEnvironment.backend` for the whole
+    /// run (`--acoustics-backend`). `None` keeps the authored request.
+    pub acoustics_backend: Option<BackendPreference>,
     /// Checked at tick boundaries. Cooperative shutdown runs game cleanup before
     /// releasing native devices; the generation launcher owns the flag.
     pub shutdown: Option<Arc<AtomicBool>>,
@@ -59,6 +66,7 @@ impl Default for RunOptions {
             inputs: BTreeMap::new(),
             events: EventSchedule::default(),
             user_data: None,
+            acoustics_backend: None,
             shutdown: None,
         }
     }
@@ -72,6 +80,53 @@ pub struct RunReport {
     pub fixed_delta: f64,
     pub scene: RuntimeSnapshot,
     pub presented_frames: u64,
+}
+
+/// Parse an `--acoustics-backend` value: `auto`, `ray_query`, `compute` or `cpu`.
+/// The component spellings `gpu_ray_query` and `gpu_compute` are accepted too.
+pub fn parse_acoustics_backend(text: &str) -> Result<BackendPreference> {
+    Ok(match text {
+        "auto" => BackendPreference::Auto,
+        "cpu" => BackendPreference::Cpu,
+        "compute" | "gpu_compute" => BackendPreference::GpuCompute,
+        "ray_query" | "gpu_ray_query" => BackendPreference::GpuRayQuery,
+        other => anyhow::bail!(
+            "unknown acoustics backend {other:?}; expected auto, ray_query, compute or cpu"
+        ),
+    })
+}
+
+/// Give the runtime its acoustic propagation backends: the GPU tiers in the
+/// design's Auto order (ray query, then compute; the service appends the CPU
+/// tier), a synchronous service for headless runs so they stay deterministic, and
+/// the mixer rate for convolution kernels. A host that already called
+/// [`Runtime::set_acoustics`] keeps its own configuration. The GPU tiers open
+/// their own wgpu devices when the service first selects them, independent of the
+/// renderer, and only for a scene with an `engine.AcousticEnvironment`; a forced
+/// `cpu` never opens one.
+pub fn configure_acoustics(
+    runtime: &mut Runtime,
+    headless: bool,
+    backend: Option<BackendPreference>,
+) -> Result<()> {
+    if !runtime.app().world().contains_resource::<AcousticHost>() {
+        let mode = if headless {
+            ServiceMode::Synchronous
+        } else {
+            ServiceMode::Threaded
+        };
+        runtime.set_acoustics(gpu_backends(&GpuOptions::default()), mode)?;
+    }
+    runtime.set_acoustics_output_rate(AudioConfig::default().sample_rate)?;
+    if let Some(preference) = backend
+        && let Some(mut control) = runtime
+            .app_mut()
+            .world_mut()
+            .get_resource_mut::<AcousticControl>()
+    {
+        control.override_backend = Some(preference);
+    }
+    Ok(())
 }
 
 /// Pick the wgpu graphics API for a run. An explicit `option` wins and the
@@ -150,6 +205,7 @@ pub fn run_with_wgpu_backends(
         AudioEngine::device(AudioConfig::default())?
     };
     runtime.set_audio(audio.control())?;
+    configure_acoustics(&mut runtime, options.headless, options.acoustics_backend)?;
     let mapper = ActionMapper::new(runtime.bindings().clone())?;
     let start = runtime.start();
     if let Err(error) = start {
@@ -194,6 +250,9 @@ pub fn run_with_wgpu_backends(
         event_trace: EventTrace::default(),
     };
     let event_result = event_loop.run_app(&mut app).context("desktop event loop");
+    // Stopping shuts the acoustics service down and drops its status, so the
+    // report keeps the status of the last tick.
+    let acoustics = app.runtime.acoustics_status();
     let cleanup = app.runtime.stop().map_err(anyhow::Error::from);
     let audio_error = app.audio.device_error();
     app.audio.shutdown();
@@ -213,7 +272,11 @@ pub fn run_with_wgpu_backends(
         profile: app.runtime.app().profile(),
         ticks: app.ticks,
         fixed_delta: FIXED_DELTA,
-        scene: app.runtime.try_snapshot()?,
+        scene: {
+            let mut scene = app.runtime.try_snapshot()?;
+            scene.acoustics = acoustics;
+            scene
+        },
         presented_frames: app.presented_frames,
     })
 }
@@ -257,8 +320,9 @@ fn run_headless(
             audio.mix(&mut audio_frame)?;
             ticks += 1;
         }
-        Ok(())
+        publish_preview_status(&mut runtime)
     })();
+    let acoustics = runtime.acoustics_status();
     let cleanup = runtime.stop().map_err(anyhow::Error::from);
     audio.shutdown();
     combine(result, cleanup)?;
@@ -267,7 +331,11 @@ fn run_headless(
         profile: runtime.app().profile(),
         ticks,
         fixed_delta: FIXED_DELTA,
-        scene: runtime.try_snapshot()?,
+        scene: {
+            let mut scene = runtime.try_snapshot()?;
+            scene.acoustics = acoustics;
+            scene
+        },
         presented_frames: 0,
     })
 }
@@ -281,6 +349,37 @@ fn publish_upscaler_status(runtime: &mut Runtime, renderer: &crate::GpuRenderer)
     if let Some(mut control) = world.get_resource_mut::<FrameGenerationControl>() {
         control.status = renderer.frame_generation_status().clone();
     }
+    if let Some(mut control) = world.get_resource_mut::<RenderPipelineControl>() {
+        control.status = renderer.pipeline_status().clone();
+    }
+    if let Some(mut control) = world.get_resource_mut::<engine_project::lights::LightingControl>() {
+        control.status = renderer.lighting_status().clone();
+    }
+    if let Some(mut control) = world.get_resource_mut::<engine_project::post::PostControl>() {
+        control.status = renderer.post_status().clone();
+    }
+    if let Some(mut control) =
+        world.get_resource_mut::<engine_project::raytracing::RayTracingControl>()
+    {
+        control.status = renderer.ray_tracing_status().cloned();
+    }
+}
+
+/// Publish the render feature state a renderer would resolve for the active
+/// camera; headless runs never render, so the state stays `not_rendered`.
+fn publish_preview_status(runtime: &mut Runtime) -> Result<()> {
+    let Some(requested) = runtime.render_pipeline_status() else {
+        return Ok(());
+    };
+    let world = runtime.app_mut().world_mut();
+    let status = crate::preview_pipeline_status(
+        world.get_resource::<PipelineFeatures>(),
+        &requested.overrides,
+    )?;
+    if let Some(mut control) = world.get_resource_mut::<RenderPipelineControl>() {
+        control.status = status;
+    }
+    Ok(())
 }
 
 fn stop_requested(runtime: &Runtime, options: &RunOptions) -> bool {
@@ -519,7 +618,7 @@ impl ApplicationHandler for DesktopRunner {
                 .unwrap_or_default();
             // NGX extensions must be requested at device creation.
             let request = DlssRequest::for_frame(&frame, &dlss);
-            let mut host = pollster::block_on(WindowSurface::with_upscaler(
+            let mut host = pollster::block_on(WindowSurface::with_ray_tracing(
                 window,
                 RenderLimits::default(),
                 WgpuOptions {
@@ -529,14 +628,15 @@ impl ApplicationHandler for DesktopRunner {
                 },
                 &dlss,
                 request,
+                Some(&frame),
             ))?;
-            let passes = self
+            let features = self
                 .runtime
                 .app_mut()
                 .world_mut()
-                .remove_resource::<NativeRenderPasses>()
+                .remove_resource::<PipelineFeatures>()
                 .unwrap_or_default();
-            host.renderer.set_passes(passes)?;
+            host.renderer.set_features(features)?;
             // Failure to initialize the controller service is propagated. A
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);

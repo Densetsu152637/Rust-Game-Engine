@@ -146,6 +146,8 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `asset_list` | `kind` (enum), `offset`, `limit` | Catalog entries: ID, kind, path, size. |
 | `asset_info` | `asset` (ID) | Kind, path, size, kind-specific details (texture size and format, mesh vertex/triangle count and bounds, font glyphs, script line count, scene entity count) and where the asset is used (scene, entity, component, field), including `MeshMaterial` `shader`, `texture`, `normal_texture` and `metallic_roughness_texture` references. |
 | `navigation_query` | `path`, `start`, `goal`, `query` | A bounded path through a saved navigation document: `status` (`reached`, `unreachable` or `budget_exceeded`), `points` and `polygons`. Uses the same query API as native agents; see [Navigation meshes](navigation.md). |
+| `acoustics_inspect` | `scene` (default: startup scene), `include_entities` | The scene's acoustic world without running game code: `environment` summary (null without an enabled `engine.AcousticEnvironment`), `world` statistics and bounds, resolved `materials`, box `rooms` with Sabine and Eyring RT60 per band, the 2D `proxy` (metres per unit, enclosed air volume and areas), up to 256 `contributors` and `warnings` (ignored components, a closed room that leaks traced energy). See [Spatial audio and acoustics](acoustics.md). |
+| `acoustics_query` | `scene`, `listener` (`position`, `forward`, `up`), `sources` (1-16 `{position, radius_m}`), `quality` | CPU-tier propagation from each source to the listener: `visible_fraction`, `direct_gain_db` per band (125, 500, 2000, 8000 Hz; occlusion only, without the distance law), `distance_m`, up to 16 early `reflections` (order, delay, length, gain, direction), the `reverb` (`rt60_s`, `level_db`, `predelay_ms`, `mean_free_path_m`, `escaped_fraction`) and a `room_estimate` when the listener is inside a `room` volume. Positions are in scene units and a 2D proxy maps them. Deterministic: identical calls return identical JSON. |
 | `locale_list` | `max_missing` | The `locale_config`, default locale and per locale: string_table files (with hashes), key count, translation coverage, missing and extra keys. See [Localization tools](#localization-tools). |
 | `locale_messages` | `locale` (required), `key`, `prefix`, `args`, `offset`, `limit` | A locale's messages with exact Fluent source, file and line; `key` adds a formatted preview (plural `args`, fallback). |
 | `locale_pseudo_preview` | `text` or `key` (+ `locale`, `args`), `options` | Pseudo-localized text (accents, expansion, markers, RTL mirror) with placeables and markup preserved. |
@@ -172,6 +174,7 @@ nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
 | `component_remove` | `entity`, `component` | yes / yes | Removes one component; removing an absent one is a no-op. |
 | `file_write` | `path`, `content`, `expected_hash` | yes / yes | Creates or overwrites a UTF-8 text file. |
 | `navigation_bake` | `meshes` (1-128 mesh assets), `output`, `settings`, `obstacles` | no / no | Bakes world-space floor meshes and box obstacles into a new navigation JSON file (never overwrites) and returns the asset entry to add to `project.json`. |
+| `acoustics_bake` | `scene`, `output`, `include` (`meshes`, `proxy2d`, `volumes`) | no / no | Writes the scene's acoustic source geometry (meshes, instances, volumes, proxy footprints and resolved materials) as a sealed `AcousticWorldDocument` JSON file after replaying it through the world builder; never overwrites. Returns `path`, `triangles`, `hash` (of the file), `content_hash` (the document's own) and the `acoustics` asset entry to add to `project.json`. |
 
 | `locale_set_message` | `locale`, `ftl` (required), `file`, `expected_hash` | yes / yes | Adds or replaces one Fluent message or term in a locale's `.ftl` file; validated with the Fluent parser first. |
 | `locale_remove_message` | `locale`, `id` (required), `file`, `expected_hash` | yes / no | Removes one message or term and its attached comment from a locale's `.ftl` file. |
@@ -275,7 +278,8 @@ a long build blocks other requests on that connection.
 
 `render_screenshot` uses the engine's real renderer on an offscreen target (the same
 path as a window), so sprites, meshes and script-created UI panels appear as in the
-game; native render passes registered by the game run too. It needs a GPU adapter. A
+game; render features registered by the game run too, and `render_pipeline`
+reports their per-camera state. It needs a GPU adapter. A
 host without one gets the structured error `gpu_unavailable` (use
 `project_run_headless` instead). Images are returned inline, so the PNG must fit the
 1 MiB response limit after base64 encoding; otherwise the error `image_too_large`
@@ -433,7 +437,13 @@ commands as human controllers, with revision checks and dry runs. See
 
 `project_run_headless` also returns CPU `profile` aggregates and the newest 32
 retained frames (`profile_frames_truncated` indicates trimming), optional
-`network` status and `input_devices` descriptors, bindings and diagnostics.
+`network` status, `input_devices` descriptors, bindings and diagnostics, and
+`render_pipeline` (registered render features and their state in the active
+camera view, the camera's `render_features` overrides; `not_rendered` headless).
+`acoustics` carries `RuntimeSnapshot.acoustics` (requested and active backend,
+state, fallback reason, adapter, world statistics, update counters and timings,
+mixer counters and at most 32 per-source entries; null without an
+`engine.AcousticEnvironment`); `render_screenshot` returns the same object.
 Each telemetry field is capped at 64 KiB. Oversized fields become null and are
 named in `telemetry_omitted`; absent optional services are simply null.
 
