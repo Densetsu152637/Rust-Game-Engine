@@ -196,6 +196,7 @@ impl Project {
             }
         }
         crate::acoustics::validate_scene(self, scene)?;
+        crate::networking::validate_scene(scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.

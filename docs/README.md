@@ -123,7 +123,11 @@
   bindings with plural arguments, the runtime language switch, per-locale fonts and asset
   overrides and the `locale_*` MCP tools.
 - [Multiplayer](networking.md): authoritative sessions, mutual-TLS 1.3 transport,
-  replication, ownership, runtime integration and plaintext trusted-LAN limits.
+  replication, ownership, runtime integration and plaintext trusted-LAN limits; delta mode
+  over any transport (TCP or QUIC) with the `engine.NetworkReplication`, `NetworkHitboxes`,
+  `NetworkVoice` and `NetworkSession` components, RPCs and events, lag-compensated queries,
+  voice, link simulation, network telemetry and the `network_inspect` /
+  `network_settings_set` MCP tools.
 - [Network transports](networking-transport.md): the `MessageEndpoint` lane/delivery
   contract over TCP and QUIC, limits, congestion control, caller rustls configs and
   loss/latency simulation.
