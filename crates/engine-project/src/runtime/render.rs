@@ -171,6 +171,14 @@ impl Runtime {
             offset: [0.0; 3],
         });
     }
+    /// State of the UI render features of `engine-ui-render`; see
+    /// [`crate::ui_tree::UiRenderStatus`].
+    pub fn ui_render_status(&self) -> Option<crate::ui_tree::UiRenderStatus> {
+        self.app
+            .world()
+            .get_resource::<crate::ui_tree::UiGpuQueue>()
+            .map(crate::ui_tree::UiGpuQueue::status)
+    }
     /// The shaping text engine, when the project has `font_face` assets (to read
     /// its status, set the language or replace fallback chains).
     pub fn text_engine(&self) -> Option<&Arc<crate::ui_tree::EngineTextBackend>> {
@@ -365,15 +373,44 @@ impl Runtime {
                 offset: [0.0; 3],
             });
         }
-        for text in crate::world_text::extract(world, self.content.text.as_deref())? {
-            self.push_world_text(&mut draws, text);
+        // Content the UI render features draw leaves the 2D path (the routing
+        // rule is documented on `UiGpuQueue`).
+        let queue = world.get_resource::<crate::ui_tree::UiGpuQueue>();
+        let routing = queue
+            .map(|q| {
+                q.route(
+                    render3d::active_camera3d(world).map(|(_, camera)| &camera.render_features),
+                )
+            })
+            .unwrap_or_default();
+        let mut world_items = vec![];
+        if routing.world_ui {
+            world_items = crate::world_text::extract_items(world, self.content.text.as_deref())?;
+        } else {
+            for text in crate::world_text::extract(world, self.content.text.as_deref())? {
+                self.push_world_text(&mut draws, text);
+            }
         }
-        draws.extend(crate::ui_tree::extract_world_with(
+        let ui = crate::ui_tree::extract_world_routed(
             world,
             camera.logical_size,
             &self.ui_text(),
             &self.content.textures,
-        )?);
+            routing,
+        )?;
+        draws.extend(ui.draws);
+        if let Some(queue) = queue.filter(|q| q.any_registered()) {
+            world_items.extend(ui.panels);
+            queue.publish(crate::ui_tree::UiGpuFrame {
+                ui_size: camera.logical_size,
+                sdf_text: ui.sdf_text,
+                world: world_items,
+                color_filter: world
+                    .get_resource::<crate::accessibility::AccessibilityControl>()
+                    .map(|c| c.settings.color_filter_settings())
+                    .unwrap_or_default(),
+            });
+        }
         draws.sort_by(|a, b| {
             (a.space == DrawSpace::Ui, a.layer, &a.id).cmp(&(
                 b.space == DrawSpace::Ui,

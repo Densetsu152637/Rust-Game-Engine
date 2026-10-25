@@ -705,7 +705,7 @@ fn selection_rule_prefers_font_faces_and_falls_back_to_bitmap() {
 }
 
 #[test]
-fn sdf_requests_are_reported_and_served_by_a_coverage_atlas() {
+fn sdf_requests_without_the_render_feature_are_reported_and_use_a_coverage_atlas() {
     let mut engine = EngineTextBackend::new(AtlasConfig::default()).unwrap();
     assert_eq!(engine.render_status().state, TextRenderState::Coverage);
     engine
@@ -727,7 +727,7 @@ fn sdf_requests_are_reported_and_served_by_a_coverage_atlas() {
             .fallback_reason
             .as_deref()
             .unwrap()
-            .contains("deferred")
+            .contains("not registered")
     );
     // It still draws, through a coverage atlas at the needed pixel size.
     let laid = engine.layout(&plain("SDF")).unwrap();

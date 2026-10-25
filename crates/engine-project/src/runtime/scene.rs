@@ -35,6 +35,11 @@ pub struct RuntimeSnapshot {
     /// reason; absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ray_tracing: Option<crate::raytracing::RayTracingReport>,
+    /// State of the UI render features (`ui.sdf_text`, `ui.world`,
+    /// `ui.color_filter`): on the GPU, or the precise reason a feature's content
+    /// stays on the 2D path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_render: Option<crate::ui_tree::UiRenderStatus>,
     /// Acoustic propagation state; absent without an `engine.AcousticEnvironment`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustics: Option<engine_acoustics::AcousticStatus>,
@@ -201,6 +206,7 @@ impl Runtime {
             lighting: self.lighting_status(),
             post: self.post_status(),
             ray_tracing: self.ray_tracing_status(),
+            ui_render: self.ui_render_status(),
             acoustics: self.acoustics_status(),
             ticks: self.ticks,
             scene,

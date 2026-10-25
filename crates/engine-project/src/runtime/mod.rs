@@ -77,6 +77,9 @@ impl Runtime {
             .insert_resource(ProjectResource(Arc::new(project.clone())));
         crate::simulation::register_components(&mut app)?;
         crate::ui_tree::register(&mut app)?;
+        if let Some(text) = &content.text {
+            text.attach_gpu(app.world().resource::<crate::ui_tree::UiGpuQueue>().clone());
+        }
         crate::accessibility::register(&mut app)?;
         crate::world_text::register(&mut app)?;
         crate::networking::register(&mut app)?;

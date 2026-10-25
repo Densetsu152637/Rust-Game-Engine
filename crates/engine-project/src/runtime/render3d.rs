@@ -371,7 +371,7 @@ impl Runtime {
 }
 
 /// The first active camera in stable authored-ID order.
-fn active_camera3d(world: &World) -> Option<(Entity, &Camera3D)> {
+pub(super) fn active_camera3d(world: &World) -> Option<(Entity, &Camera3D)> {
     world
         .iter_entities()
         .filter_map(|entity| {
