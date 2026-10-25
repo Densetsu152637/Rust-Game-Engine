@@ -225,6 +225,9 @@ fn footprint_of(
                 radius: b.radius * radius_scale,
                 rotation,
             },
+            // Hulls, meshes, heightfields, compounds and cylinders have no 2D acoustic
+            // footprint yet: they are skipped rather than approximated.
+            _ => return None,
         };
         return Some((shape, mobility));
     }
