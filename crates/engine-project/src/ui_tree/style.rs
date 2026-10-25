@@ -267,6 +267,14 @@ pub struct UiStyle {
     pub font: String,
     #[serde(skip_serializing_if = "default_font_scale")]
     pub font_scale: f32,
+    /// Paint opacity in 0..=1, multiplied into the node's and its descendants'
+    /// draws. It never affects layout or hit testing.
+    #[serde(skip_serializing_if = "default_opacity")]
+    pub opacity: f32,
+    /// Paint scale about the border-box centre, applied to the node's and its
+    /// descendants' draws. It never affects layout or hit testing.
+    #[serde(skip_serializing_if = "default_scale")]
+    pub scale: f32,
 }
 
 impl UiStyle {
@@ -324,6 +332,8 @@ impl UiStyle {
         accent: [0.25, 0.6, 1.0, 1.0],
         font: String::new(),
         font_scale: 1.0,
+        opacity: 1.0,
+        scale: 1.0,
     };
 
     /// Resolved per-side padding.
@@ -362,6 +372,8 @@ default_check!(
     default_foreground: foreground: [f32; 4],
     default_accent: accent: [f32; 4],
     default_font_scale: font_scale: f32,
+    default_opacity: opacity: f32,
+    default_scale: scale: f32,
 );
 
 fn extent(value: f32) -> bool {
@@ -453,6 +465,10 @@ impl UiStyle {
             && s.font_scale.is_finite()
             && (0.01..=16.0).contains(&s.font_scale)
             && s.font.len() <= 128
+            && s.opacity.is_finite()
+            && (0.0..=1.0).contains(&s.opacity)
+            && s.scale.is_finite()
+            && (0.0..=16.0).contains(&s.scale)
             && colors
                 .iter()
                 .flatten()

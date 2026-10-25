@@ -19,9 +19,12 @@ validation), `layout` (taffy integration), `text` (text backend contract),
 `navigation` (tab order and spatial focus), `text_edit` (text-input event
 model), `chrome` (shared widget geometry), `interaction` (`GameUi`), `render`
 (draw extraction), `schema` (authoring descriptor), `builder` (native
-constructors) and `world` (ECS integration). Theme, binding, animation and
-accessibility layers are expected to add sibling modules; `UiNode::classes`
-is already reserved for selector matching.
+constructors) and `world` (ECS integration). The styling layer adds
+`selector`, `stylesheet`, `animation`, `resolve`, `binding`, `world_panel` and
+`style_schema` (themes, state selectors, transitions, data binding and
+world-space panels: see [ui-styling.md](ui-styling.md)); `UiNode::classes`
+are the class names those selectors match. Accessibility layers are expected
+to add further sibling modules.
 
 ## Authored component
 
@@ -384,8 +387,9 @@ Each box emits up to four draws, in paint order:
 Base draws use the root's layer. Open dialogs and their backdrop use
 `UI_DIALOG_LAYER` (`i32::MAX - 1`), and popups and tooltips use
 `UI_POPUP_LAYER` (`i32::MAX`), so they paint above every root layer. Draw IDs
-sort in paint order. This is baseline styling; themes and state-dependent
-visuals belong to the styling layer.
+sort in paint order. This is baseline styling; themes, state-dependent looks,
+opacity/scale and world-space panels are described in
+[ui-styling.md](ui-styling.md).
 
 `Runtime` integrates the UI as follows:
 
@@ -426,7 +430,10 @@ snapshotted as one component. To stay under the limit:
 - Split large UIs into several roots; each root is its own component.
 - Use a `virtual_list` for repeated rows.
 
-The planned stylesheet layer (`classes`) will remove repeated per-node styles.
+The stylesheet layer ([ui-styling.md](ui-styling.md)) removes the repeated
+per-node styles: the same grid with its styles in a theme is 70,041 bytes, and
+a 1017-node screen of nested layout containers with classes is 60,717 bytes
+(104,731 with the look written inline).
 Raising the catalog limit is a cross-domain decision and was deliberately not
 taken here.
 

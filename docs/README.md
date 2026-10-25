@@ -60,6 +60,9 @@
 - [Retained game UI](game-ui.md): taffy flexbox/grid layout, widget set (text input,
   dropdown, scroll/virtual lists, tabs, modal dialogs, tooltips), spatial navigation,
   text backend and text-edit event contracts, limits.
+- [UI styling](ui-styling.md): themes with tokens and selector rules (kind, class, id, state
+  pseudo-classes), cascade and specificity, transitions and keyframe animation with
+  reduced motion, data binding with a string-resolver seam, world-space UI panels.
 - [Text engine](text.md): the standalone `engine-text` crate: font fallback, shaping,
   bidi, line breaking, rich-text markup, caret geometry and coverage/SDF glyph atlases.
 - [Localization](localization.md): the standalone `engine-locale` crate: Fluent string tables,

@@ -29,6 +29,11 @@ pub struct UiRenderState {
     pub tooltip: Option<(String, String, [f32; 2])>,
     /// Active dialog and its highlighted button.
     pub dialog_choice: Option<(String, u32)>,
+    /// The root is drawn from a theme; state looks come from its rules, so the
+    /// built-in pressed darkening is skipped.
+    pub themed: bool,
+    /// Per-item text of virtual-list template nodes (`itemText` bindings).
+    pub item_texts: UiItemTexts,
 }
 
 impl UiRoot {
@@ -83,6 +88,8 @@ impl UiRoot {
             textures,
             viewport,
             draws: vec![],
+            latest: vec![None; self.tree.nodes.len()],
+            xf: PaintTransform::IDENTITY,
         };
         let mut backdrop = false;
         for (order, bounds) in laid.boxes.iter().enumerate() {
@@ -126,6 +133,29 @@ struct Painter<'a> {
     textures: &'a BTreeMap<String, Arc<Texture>>,
     viewport: [u32; 2],
     draws: Vec<Draw>,
+    /// Border box of the most recently painted instance of each node, for
+    /// scale pivots of ancestors.
+    latest: Vec<Option<Rect>>,
+    /// Paint transform of the node being painted (`UiStyle::scale`).
+    xf: PaintTransform,
+}
+
+/// `p -> scale * p + translate`: the composed paint scales of a node's
+/// ancestors-or-self, each about its own border-box centre.
+#[derive(Clone, Copy)]
+struct PaintTransform {
+    scale: f32,
+    translate: [f32; 2],
+}
+
+impl PaintTransform {
+    const IDENTITY: Self = Self {
+        scale: 1.0,
+        translate: [0.0; 2],
+    };
+    fn is_identity(&self) -> bool {
+        self.scale == 1.0 && self.translate == [0.0; 2]
+    }
 }
 
 /// Glyph quads grouped by atlas page.
@@ -169,6 +199,20 @@ impl Painter<'_> {
         if mesh.indices.is_empty() {
             return;
         }
+        let (mut mesh, mut clip) = (mesh, clip);
+        if !self.xf.is_identity() {
+            let PaintTransform { scale, translate } = self.xf;
+            for v in &mut mesh.vertices {
+                v.position[0] = v.position[0] * scale + translate[0];
+                v.position[1] = v.position[1] * scale + translate[1];
+            }
+            clip = Rect {
+                x: clip.x * scale + translate[0],
+                y: clip.y * scale + translate[1],
+                width: clip.width * scale,
+                height: clip.height * scale,
+            };
+        }
         self.draws.push(Draw {
             id,
             mesh: Arc::new(mesh),
@@ -211,15 +255,59 @@ impl Painter<'_> {
         self.text.layout(&text_request(node, text, kind, width))
     }
 
+    /// Opacity product and paint transform inherited by `node` from itself and
+    /// its ancestors (`UiStyle::opacity` and `UiStyle::scale`).
+    fn paint_inheritance(&self, node: usize) -> (f32, PaintTransform) {
+        let nodes = &self.root.tree.nodes;
+        let mut opacity = 1.0;
+        let mut xf = PaintTransform::IDENTITY;
+        let mut cursor = Some(node);
+        while let Some(n) = cursor {
+            let style = &nodes[n].style;
+            opacity *= style.opacity;
+            if style.scale != 1.0
+                && let Some(rect) = self.latest[n]
+            {
+                let k = style.scale;
+                let c = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
+                xf.scale *= k;
+                xf.translate = [
+                    xf.translate[0] * k + c[0] * (1.0 - k),
+                    xf.translate[1] * k + c[1] * (1.0 - k),
+                ];
+            }
+            cursor = self.laid.hierarchy.parents[n];
+        }
+        (opacity, xf)
+    }
+
     fn node(&mut self, key: &str, layer: i32, bounds: &UiBox) -> Result<()> {
         let node = &self.root.tree.nodes[bounds.node];
+        self.latest[bounds.node] = Some(bounds.rect);
+        // Virtual-list replicas show their bound per-item text.
+        let patched;
+        let node = match bounds
+            .item
+            .and_then(|item| self.state.item_texts.text(&node.id, item))
+        {
+            Some(text) => {
+                patched = node.with_bound_text(text);
+                &patched
+            }
+            None => node,
+        };
         let clip = bounds.visible();
         if clip.width <= 0.0 || clip.height <= 0.0 {
             return Ok(());
         }
+        let (opacity, xf) = self.paint_inheritance(bounds.node);
+        if opacity <= 0.0 {
+            return Ok(());
+        }
+        self.xf = xf;
         let style = &node.style;
         let enabled = self.root.enabled && bounds.enabled;
-        let alpha = if enabled { 1.0 } else { 0.5 };
+        let alpha = (if enabled { 1.0 } else { 0.5 }) * opacity;
         let focused = enabled
             && bounds.item.is_none()
             && self.state.focus.as_deref() == Some(node.id.as_str());
@@ -230,7 +318,7 @@ impl Painter<'_> {
         let mut top = Mesh::default();
         let mut batch = TextBatch::default();
         let mut background = style.background;
-        if pressed {
+        if pressed && !self.state.themed {
             for c in &mut background[..3] {
                 *c *= 0.8;
             }
@@ -478,6 +566,7 @@ impl Painter<'_> {
         }
         self.push_text(key, batch, layer, text_clip);
         self.push(format!("{key}:3"), top, None, layer, clip);
+        self.xf = PaintTransform::IDENTITY;
         Ok(())
     }
 

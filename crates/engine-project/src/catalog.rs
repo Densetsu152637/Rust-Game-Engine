@@ -44,10 +44,8 @@ impl ComponentCatalog {
         let mut result = Self::default();
         for d in crate::simulation::component_descriptors()
             .into_iter()
-            .chain([
-                crate::ui_tree::descriptor(),
-                crate::networking::descriptor(),
-            ])
+            .chain(crate::ui_tree::descriptors())
+            .chain([crate::networking::descriptor()])
             .chain(descriptors)
         {
             if d.name.len() > 128
@@ -86,9 +84,7 @@ impl ComponentCatalog {
             return Err(invalid("Component exceeds 64KiB"));
         }
         validate_value(&descriptor.schema, &value.data, 0)?;
-        if name == "engine.UiRoot" {
-            serde_json::from_value::<crate::ui_tree::UiRoot>(value.data.clone())?.validate()?;
-        }
+        crate::ui_tree::validate_component(name, &value.data)?;
         Ok(())
     }
     pub fn validate_entity(&self, scene: &crate::Scene, entity: &crate::SceneEntity) -> Result<()> {
