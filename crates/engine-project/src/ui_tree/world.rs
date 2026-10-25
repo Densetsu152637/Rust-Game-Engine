@@ -37,6 +37,7 @@ pub fn tick_world(
     ctx: &UiTickContext<'_>,
     input: &crate::ActionFrame,
 ) -> Result<()> {
+    ctx.text.begin_frame();
     let sources = roots(world);
     let mut roots: Vec<_> = sources
         .iter()

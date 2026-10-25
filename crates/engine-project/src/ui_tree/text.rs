@@ -116,7 +116,7 @@ pub struct UiTextLayout {
 pub trait UiTextBackend: Send + Sync {
     fn measure(&self, request: &UiTextRequest<'_>) -> Result<UiTextMetrics>;
     fn layout(&self, request: &UiTextRequest<'_>) -> Result<UiTextLayout>;
-    /// Called once per rendered frame before text is laid out for drawing, so
+    /// Called at the start of every UI tick and every draw extraction, so
     /// backends with a glyph cache can age it. The default does nothing.
     fn begin_frame(&self) {}
 }

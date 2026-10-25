@@ -6,8 +6,12 @@ geometry for text input, glyph atlases (coverage and signed distance field) and
 renderer-neutral glyph quads. It depends on no engine crate, no GPU API and no windowing
 library, and never reads system fonts on its own.
 
-Status: standalone library (UI parity phase A). It is **not yet wired** into `ui_tree`,
-`engine-project` content, the desktop renderer or MCP; see [Not yet integrated](#not-yet-integrated).
+Status: integrated into the game UI (UI parity phase B). The library itself stays free of
+engine, GPU and windowing code; `engine-project` plugs it in as a `UiTextBackend`, loads
+TrueType/OpenType faces as `font_face` assets, draws rich labels, text inputs and
+world-space text through it, and `engine-desktop` forwards typed text and IME events. See
+[Game UI integration](#game-ui-integration). Not integrated: GPU SDF rendering (deferred,
+see [SDF status](#sdf-status)).
 
 ## Pipeline
 
@@ -189,6 +193,162 @@ multi-channel distance pages produced elsewhere (2); `params.y` biases the edge 
 bolder, for outlines or glow passes); `params.z` scales the anti-aliasing width. Distance
 edges use `smoothstep` over the screen-space derivative (`fwidth`). Output is straight alpha.
 
+## Game UI integration
+
+The integration lives in `engine-project` (`ui_tree::EngineTextBackend`, `content::font_face`,
+`world_text`) and `engine-desktop` (`input::text`). Dependency direction is unchanged:
+`engine-text` depends on no engine crate.
+
+### Font assets
+
+| Asset kind | File | Purpose |
+| --- | --- | --- |
+| `font_face` | `.ttf`, `.otf`, `.ttc` or `.otc` (at most 32 MiB) | One font file; a collection registers every face. The asset ID is the default family name. |
+| `font_config` | JSON, `schema: 1`, at most 256 KiB, at most one per project | Groups files into families, sets pixel sizes and atlas modes, configures fallback chains. |
+
+Both are ordinary manifest `assets` entries (`{"id":"ui","kind":"font_face","path":"fonts/Inter.ttf"}`),
+so projects edited through MCP or by hand use the same path. `Project::load` and
+`Project::validate` load every font asset; `asset_list` accepts the kinds and `asset_info`
+reports faces (family, weight, italic) and config counts.
+
+```json
+{
+  "schema": 1,
+  "defaultFamily": "ui",
+  "defaultSize": 16,
+  "faces": { "ui-bold": { "family": "ui" } },
+  "families": { "ui": { "size": 18, "atlas": "coverage" } },
+  "fallback": {
+    "default": ["emoji"],
+    "byScript": { "Arab": ["naskh"] },
+    "byLanguage": { "ja": ["jp"] }
+  }
+}
+```
+
+- `faces` maps a `font_face` asset ID to the logical family it registers under (default: its
+  own ID), so a regular and a bold file become one family and `[b]` picks the real bold face.
+- `families` sets, per family, the pixel size at `fontScale` 1 (default `defaultSize`, 16) and
+  the atlas request (`coverage` or `sdf`).
+- `fallback` is the `FallbackConfig` (`default`, `byScript`, `byLanguage`) by family name. Every
+  family it names must exist. `EngineTextBackend::set_fallback` and `set_language` replace the
+  chains and the shaping language at run time (the hooks for per-language fonts).
+- `defaultFamily` is used by nodes whose `style.font` is empty.
+
+Errors: `asset.font_face.extension`, `asset.font_face.too_large`, `asset.font_face.invalid`
+(unparseable; carries the `text.font.*` reason), `asset.font_config.invalid`,
+`asset.font_config.unknown_face`, `asset.font_config.unknown_family` and
+`asset.font_config.duplicate` (a second `font_config`). Unknown JSON fields are rejected.
+
+### Backend selection
+
+`style.font` is a family key. Keys that resolve to an engine family (case-insensitive) are
+laid out by `engine-text`; any other key uses the bitmap font of that name (`font` assets), so
+existing projects are unaffected, and a key that is neither is `render.font.unknown`. The
+runtime passes `SelectingTextBackend` (`Runtime::ui_text()`); the engine is `Runtime::text_engine()`.
+
+- Pixel size is the family size times `fontScale`. `[size=N]` in markup is absolute pixels.
+- Plain text, text inputs and labels are laid out with the node's `foreground` colour; markup
+  may override it per span. Wrapping is `max_width`, alignment is start.
+- Requests are cached (up to 512 shaped and 512 rasterised layouts) so the several measure and
+  layout calls per tick shape a string once. A change of fallback or language clears the cache.
+- Markup uses the bracket syntax of this crate with `UnknownTagPolicy::Literal`: `[note]` stays
+  text, a malformed known tag such as `[color=zz]` is `text.markup.bad_value`.
+  `ui_tree::validate_markup` checks markup without laying it out. The bitmap backend instead
+  strips `<...>` tags.
+- Limits: 64 KiB of text per request (`ui.text.invalid`), the `TextLimits` of this crate otherwise.
+
+Atlas pages are 1024 x 1024, at most four. The backend publishes each page as an `Arc<Texture>`
+snapshot and republishes it only when the atlas reports the page dirty or recycled, so the
+renderer (which uploads per `Arc` identity) uploads a page once per change.
+`EngineTextBackend::stats()` reports `texture_uploads`, cached glyphs, evictions and cache sizes.
+`begin_frame()` runs at the start of every UI tick and every extraction; pages unused in the current frame are recycled when
+every page is full, and a frame that needs more glyphs than fit fails with `text.atlas.full`.
+
+### Rich labels, links and inline images
+
+`rich_label` markup supports the [tags above](#rich-text-markup):
+
+- `[link=id]` regions come back as `UiTextLayout::links`. Clicking a link, or `ui_confirm` on
+  the focused label (first link), emits `ui.link_activated` with the link ID as `value`
+  (payload `{node, action, value}`). A rich label is a pointer target and focusable only when its
+  markup contains `[link=`; set `nav.focusable` to `false` to keep it pointer-only. Links get no
+  implicit styling; combine them with `[color]` and `[u]`.
+- `[img=key width=W height=H]` reserves the size on the baseline. `key` is a runtime `texture`
+  asset ID; the image is drawn as its own quad (one draw per texture, ID suffix `:2~NNN`), tinted
+  by the label's opacity. A missing texture is `render.texture.unknown`.
+
+### Text input
+
+Text inputs on a shaped font take caret, selection, hit test and Up/Down movement from
+`TextLayout` (`UiTextGeometry`). The caret and `GameUi::ime_area()` are correct in wrapped and
+right-to-left text, selections may be several rectangles, and the IME preedit is drawn as an
+underline under its range at the caret. The preedit text is inserted into the laid-out string, so it
+wraps with the value. In multiline inputs Up and Down move to the nearest caret stop on the
+neighbouring wrapped line (Shift extends the selection); `ime_area()` is always inside the
+input's rectangle because the view scrolls to keep the caret visible.
+
+### Desktop forwarding: typed text and IME
+
+`engine-desktop` (`input::text`) translates winit events with the pure functions
+`translate_key`, `translate_ime` and `translate_window_event`, and queues the result with
+`GameUi::push_text_event` only while a text input is focused:
+
+| winit | `UiTextEvent` |
+| --- | --- |
+| `KeyEvent::text` of a press (control characters removed, cut to 1024 bytes) | `Insert` |
+| Backspace, Delete, arrows, Home, End, Enter, Escape | `Key` (Shift extends; Ctrl, or Option on macOS, selects word motion) |
+| Ctrl+A/C/X/V (Cmd on macOS), Shift+Insert, Ctrl+Insert, Shift+Delete | `Key` SelectAll, Copy, Cut, Paste |
+| `Ime::Preedit(text, cursor)` | `Preedit` (an invalid cursor range keeps the text and drops the cursor) |
+| `Ime::Commit(text)` | `Commit` |
+| `Ime::Disabled` | `Preedit` with empty text (clears the composition) |
+
+Ctrl or Cmd chords that are not editing shortcuts type nothing; AltGr (Ctrl+Alt) still types.
+After each simulation tick the runner calls `Window::set_ime_allowed` when the focus state
+changes and `Window::set_ime_cursor_area` with the caret rectangle mapped through the camera fit
+(`ime_cursor_area`). Events the UI rejects (a full queue) are dropped.
+
+Copy, cut and paste use a process-local in-memory clipboard by default. The cargo feature
+`system-clipboard` of `engine-desktop` (`arboard`, MIT OR Apache-2.0) installs the operating
+system clipboard when the window opens, falling back to the in-memory one if it cannot be opened.
+
+### World-space text (`engine.WorldText`)
+
+An entity with `Transform` and `engine.WorldText` (editable with `component_set`, validated by
+`world_text::WorldText::validate`) is laid out at `size x pixelsPerUnit` pixels and emitted as
+`DrawSpace::World` meshes, one per atlas page, textured with the coverage atlas.
+
+| Field | Meaning |
+| --- | --- |
+| `text`, `markup` | up to 4096 bytes; `markup` enables the rich tags (validated when set) |
+| `font` | family key; empty uses `defaultFamily` |
+| `size` | em height in world units (0.001 to 1000) |
+| `pixelsPerUnit` | raster density (1 to 512); `size x pixelsPerUnit` must be 1 to 512 pixels |
+| `color` | straight-alpha RGBA, 0 to 1 |
+| `align` | `start`, `end`, `left`, `right`, `center` inside the text box |
+| `maxWidth` | wrap width in world units; absent never wraps |
+| `anchor` | point of the text box at the entity origin, `[0,0]` top-left to `[1,1]` bottom-right |
+| `billboard` | ignore the entity rotation so the text stays upright on screen |
+| `atlas` | `coverage` or `sdf` (see below) |
+| `layer`, `visible` | draw layer and visibility |
+
+Quad corners are `world_matrix * scale(1/ppu, -1/ppu, 1) * translate(-anchor * box)` applied
+with `engine_text::transform_quads`. A project with world text needs at least one `font_face`
+(`render.font.unknown` otherwise). `DrawSpace::World` draws use the 2D world camera, so
+`billboard` means "do not rotate"; a depth-tested 3D placement facing a `Camera3D` needs the render
+extension API (see below).
+
+### SDF status
+
+Requests for SDF text are accepted (`font_config` `atlas: "sdf"`, `WorldText.atlas: "sdf"`) and
+reported by `EngineTextBackend::render_status()` as `TextRenderStatus { requested: sdf,
+state: sdf_fallback, sdf_families, sdf_requests, fallback_reason }`. They are **rendered through a
+coverage atlas at the pixel size actually needed**. GPU SDF rendering (`GLYPH_SHADER_WGSL` through
+an Overlay-stage `PipelineFeature`) is deferred because the render extension API
+(`PipelineFeature`, Overlay stage) lives on `claude/parity-rendering` and is not on this branch.
+The seam is the `FontAtlasMode` request: when the render feature exists, a pass can switch the
+families that request SDF to an `AtlasConfig::sdf()` atlas without changing authored data.
+
 ## Limits and errors
 
 | `TextLimits` field | Default | Error code |
@@ -234,12 +394,17 @@ was not built: multi-channel pages would need coloured RGB, which conflicts with
 white-RGB page contract; the shader keeps a median mode for externally generated pages.
 Revisit if world-space text needs sharper corners than SDF provides at large magnification.
 
-## Not yet integrated
+## Integration status and limitations
 
-Phase B work (other UI leaves) and current limitations:
+Integrated: `UiTextBackend`, `font_face`/`font_config` assets, rich labels (links, inline images),
+text input with IME on shaped fonts, desktop typed-text and IME forwarding, world-space text.
+Not integrated or limited:
 
-- No `UiTextBackend` implementation, no `engine-project` font assets, no MCP tools, no
-  desktop renderer pass: `GLYPH_SHADER_WGSL` is source only and the atlas is CPU memory.
+- GPU SDF rendering is deferred (see [SDF status](#sdf-status)); there is no MCP tool dedicated to
+  fonts beyond the generic asset and `component_set` tools.
+- UI text is rasterised at logical pixel size and scaled by the camera fit (no physical-pixel
+  rasterisation), and world text at a fixed `pixelsPerUnit`.
+- World text draws in the 2D world pass only; there is no depth-tested 3D text yet.
 - Colour glyphs (COLR, CBDT, sbix, SVG) are not rendered; colour-only emoji fonts produce
   no quads. Monochrome outline emoji (Noto Emoji) work.
 - Outlines are unhinted and variable fonts use their default instance (no axis selection).
@@ -253,3 +418,4 @@ Phase B work (other UI leaves) and current limitations:
   trailing whitespace returns the next line's start index.
 - SDF distances are measured to every contour, so overlapping contours (common in variable
   fonts) can show faint interior seams under strong bias values.
+- Typed keys also reach gameplay actions bound to them while a text input is focused.

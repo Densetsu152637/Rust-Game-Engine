@@ -60,8 +60,10 @@
 - [Retained game UI](game-ui.md): taffy flexbox/grid layout, widget set (text input,
   dropdown, scroll/virtual lists, tabs, modal dialogs, tooltips), spatial navigation,
   text backend and text-edit event contracts, limits.
-- [Text engine](text.md): the standalone `engine-text` crate: font fallback, shaping,
-  bidi, line breaking, rich-text markup, caret geometry and coverage/SDF glyph atlases.
+- [Text engine](text.md): the `engine-text` crate (font fallback, shaping, bidi, line
+  breaking, rich-text markup, caret geometry, coverage/SDF glyph atlases) and its game UI
+  integration: `font_face`/`font_config` assets, the shaping `UiTextBackend`, rich labels
+  with links and inline images, IME and typed text, world-space text and SDF status.
 - [Localization](localization.md): the standalone `engine-locale` crate: Fluent string tables,
   plurals, locale fallback, runtime language switch, pseudo-localization and settings.
 - [Multiplayer](networking.md): authoritative sessions, mutual-TLS 1.3 transport,
