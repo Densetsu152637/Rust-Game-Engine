@@ -135,6 +135,9 @@
   `engine-net-predict` crate (client prediction and reconciliation, redundant input
   transport, prediction keys for abilities, GGPO-style rollback, rewound hitbox queries),
   its limits and trust model.
+- [Voice chat transport](networking-voice.md): the sans-IO `engine-net-voice` crate:
+  pluggable codec trait with a raw-PCM path, server routing (channel/proximity with server
+  positions), adaptive jitter buffer and packet-loss concealment hooks.
 - [Online services](online-services.md): the self-hostable `engine-online` crate and
   `engine-online-server` reference server: Ed25519 tokens bound to the client's TLS certificate,
   the admission gate, lobby / session browser, rule-based matchmaking with a widening skill
