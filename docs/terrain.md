@@ -255,6 +255,28 @@ terrain, or a 6 m ridge (about 80 degrees), makes the same query `Unreachable`.
 - depth is written in the scene pass (`LessEqual`). `world.terrain.normals` (`Prepass`, after
   `engine.prepass.normals`) draws the same surface into the normals target and scene depth
   when a running feature needs normals.
+- **Shadows.** `world.terrain.shadow` (`Shadow`, after `engine.shadows`) renders terrain depth
+  into a per-view terrain shadow map: a `Depth32Float` array of `SHADOW_MAP_SIZE` (1024)
+  texels per edge with one layer per cascade (`MAX_CASCADES` = 4 layers, 16 MiB per view),
+  using the engine's own cascade matrices of the first directional light
+  (`engine_shadows[shadow_index + cascade]`; cascades the light does not have are clipped in
+  the vertex shader). Every camera-selected node is drawn without frustum culling, holes cast
+  nothing. The colour pass samples the map with the engine's cascade selection and blend and
+  the light's depth / normal bias (in this map's texels), 3 x 3 PCF, and multiplies the result
+  into the first directional light's visibility next to the engine shadow atlas, so terrain
+  shadows terrain and engine meshes (boxes, characters) still shadow terrain through the atlas.
+- **Motion vectors.** `world.terrain.motion` (`Opaque`, after `world.terrain`) runs when a
+  feature or the host needs motion (DLSS requests it): it redraws the colour pass's nodes into
+  the motion target (current-to-previous, render pixels, y down, like
+  `engine.prepass.motion`) with a `LessEqual` test against the depth the colour pass wrote
+  (`@invariant` positions, no depth write), so it covers exactly the visible terrain. The
+  previous position replays the geomorph with the view's previous terrain-local viewer
+  (`TerrainInstance::previous_viewer`) and the previous terrain transform under the previous
+  view-projection, so camera motion, terrain transform changes (for example origin shifts) and
+  geomorph changes are all reported; the per-view history advances in the colour pass and
+  resets with `ViewData::reset_history`. It runs in `Opaque` rather than `Prepass` because the
+  engine's motion prepass depth is private: a prepass terrain pass could not depth-test against
+  engine meshes.
 
 Textures are re-uploaded whole when a terrain's heightfield revision or layers change.
 
@@ -269,11 +291,17 @@ let status = engine_world_render::enable(app)?; // install + register into Pipel
 `register(&mut PipelineFeatures)` (merged into the world's resource, created if missing).
 Games that build `PipelineFeatures` themselves call both separately. The desktop runner
 hands the world's `PipelineFeatures` to `GpuRenderer::set_features` and supplies the render
-world to features, so nothing else is needed; `engine-desktop` does not enable terrain by
-default (default host wiring is a rendering-domain decision). `Camera3D.render_features`
-can disable `world.terrain` per camera. `TerrainRenderStatusHandle::get()` reports views,
-terrains, nodes, culled nodes, draw calls, uploads, whether the normals pass ran and notes
-(for example a missing `TerrainRenderSet` when `install` was not called).
+world to features. **The desktop host enables the world features by default**
+(`engine_desktop::install_default_render_features`, called by the windowed runner and the
+screenshot path before the runtime starts: `engine_world_render::install_missing` +
+`register_missing`, which skip any module the game installed or registered itself), so an
+authored terrain renders through the GPU feature without game code; headless runs only list the
+features in the preview status and keep the CPU fallback. `Camera3D.render_features` can
+disable `world.terrain` (or `world.terrain.shadow`, `world.terrain.motion`) per camera.
+`TerrainRenderStatusHandle::get()` reports views, terrains, nodes, culled nodes, draw calls,
+uploads, whether the normals, shadow (and its draw calls) and motion passes ran, whether the
+colour pass used the terrain shadow map, and notes (for example a missing `TerrainRenderSet`
+when `install` was not called).
 
 Verified on this machine (RTX 5080, Vulkan,
 `cargo test -p engine-world-render --test gpu_terrain -- --ignored --test-threads=1`):
@@ -286,12 +314,31 @@ Verified on this machine (RTX 5080, Vulkan,
   camera (82 nodes over three levels, 1700 vertices mid-morph) rendered by the
   feature and by the CPU chunk meshes as unlit scene meshes gives **0** coverage
   mismatches over 19200 pixels (10175 terrain pixels).
+- terrain shadows: a 12 m ridge on flat ground under a shadowed sun 31 degrees up shadows the
+  ground 10 m behind it down to the ambient term (linear luminance 0.040, expected 0.04;
+  shadowed / lit 0.235), ground 28 m behind the crest is lit again (1.00 of the lit
+  reference), the shadow pass makes 4 draw calls (one per layer) and disabling
+  `world.terrain.shadow` for the view brings the ratio back to 1.00;
+- an engine box mesh (6 m cube, light at 45 degrees) shadows the terrain through the engine
+  atlas: ambient-only luminance 0.040 in its shadow, shadowed / lit 0.183;
+- motion vectors with `host_needs.motion` (as DLSS asks): a 2 m camera pan gives
+  4.31..5.34 px of motion at three terrain points, worst error 0.023 px against the
+  analytic reprojection; a 1.5 m terrain move under a static camera gives 2.69 px against
+  2.66 px expected; sky pixels stay 0 and with `world.terrain.motion` disabled terrain
+  pixels stay 0.
 
 ### Limits
 
-- Terrain casts no shadows (no `Shadow`-stage pass) and writes no motion vectors (DLSS/TAA
-  see static terrain as camera-motion-free); prepasses and shadows are deferred to the
-  rendering domain's shadow/motion extension points.
+- Terrain shadows reach only the terrain's own colour pass: features cannot render into the
+  engine shadow atlas (`FeatureContext` exposes neither the atlas layer views nor the per-light
+  shadow draw rectangles; both are crate-private in `engine-render-pipeline`), so engine meshes,
+  foliage and water do not receive terrain shadows. Only the first directional light's
+  cascades are covered; local lights get no terrain shadow.
+- All four cascade layers are cleared and drawn every frame (the cascade count is only on the
+  GPU), each with every camera-selected node: no per-cascade culling.
+- Motion of a node that changed LOD level between frames uses the current node's morph with
+  the previous viewer (the previous selection is not kept); popping-free by construction of the
+  geomorph, but not an exact history.
 - Back faces are culled (terrain is seen from above; mirrored transforms are not supported).
 - One albedo texture size (256) per layer; no normal maps, triplanar mapping or height
   blending between layers.
