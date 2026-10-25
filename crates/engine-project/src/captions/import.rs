@@ -2,7 +2,8 @@
 //!
 //! Supported: cue timings (`hh:mm:ss.mmm`, `mm:ss.mmm`, SRT's `hh:mm:ss,mmm`),
 //! optional cue identifiers, multi-line text, `<v Speaker>` voice tags (WebVTT),
-//! `<b>`, `<i>` and `<u>` (mapped to `[b]`, `[i]`, `[u]`), other tags removed,
+//! `<b>`, `<i>` and `<u>` (mapped to `[b]`, `[i]`, `[u]`; unbalanced tags are repaired),
+//! other tags removed, voice classes (`<v.loud Bob>`) ignored,
 //! the HTML entities `&amp; &lt; &gt; &nbsp;`. A cue whose whole text is in square
 //! brackets (`[door creaks]`) becomes a `sound_effect` cue without the brackets
 //! (the presenter adds them back). `NOTE`, `STYLE` and `REGION` blocks and cue
@@ -191,16 +192,23 @@ fn parse_timestamp(text: &str) -> Option<f64> {
     )
 }
 
-/// Convert cue markup to engine markup; returns the first voice name.
+/// Deepest nesting of `<b>`, `<i>` and `<u>` kept; deeper opening tags are dropped.
+const MAX_STYLE_DEPTH: usize = 16;
+
+/// Convert cue markup to engine markup; returns the first voice name. Tags the engine
+/// markup cannot represent are removed. Unbalanced style tags are repaired instead of
+/// failing the import: a stray closing tag is dropped, a closing tag that skips over
+/// open inner tags closes them first, and tags still open at the end are closed.
 fn convert_text(raw: &str) -> (Option<String>, String) {
     let mut out = String::new();
     let mut voice = None;
+    let mut open: Vec<&str> = Vec::new();
     let mut rest = raw;
-    while let Some(open) = rest.find('<') {
-        push_plain(&mut out, &rest[..open]);
-        let after = &rest[open + 1..];
+    while let Some(start) = rest.find('<') {
+        push_plain(&mut out, &rest[..start]);
+        let after = &rest[start + 1..];
         let Some(close) = after.find('>') else {
-            push_plain(&mut out, &rest[open..]);
+            push_plain(&mut out, &rest[start..]);
             rest = "";
             break;
         };
@@ -213,27 +221,46 @@ fn convert_text(raw: &str) -> (Option<String>, String) {
             .unwrap_or("");
         match (name, closing) {
             ("v", false) if voice.is_none() => {
-                let who = tag[1..].trim().to_owned();
+                // `<v.class1.class2 Speaker Name>`: the classes end at the first whitespace.
+                let who = tag[1..]
+                    .split_once(char::is_whitespace)
+                    .map_or("", |(_, annotation)| annotation.trim());
                 if !who.is_empty() {
-                    voice = Some(who);
+                    voice = Some(who.to_owned());
                 }
             }
             ("b" | "i" | "u", false) => {
-                out.push('[');
-                out.push_str(name);
-                out.push(']');
+                if open.len() < MAX_STYLE_DEPTH {
+                    open.push(name);
+                    out.push('[');
+                    out.push_str(name);
+                    out.push(']');
+                }
             }
             ("b" | "i" | "u", true) => {
-                out.push_str("[/");
-                out.push_str(name);
-                out.push(']');
+                if let Some(depth) = open.iter().rposition(|n| *n == name) {
+                    while open.len() > depth {
+                        close_style(&mut out, open.pop());
+                    }
+                }
             }
             _ => {}
         }
         rest = &after[close + 1..];
     }
     push_plain(&mut out, rest);
+    while !open.is_empty() {
+        close_style(&mut out, open.pop());
+    }
     (voice, out)
+}
+
+fn close_style(out: &mut String, name: Option<&str>) {
+    if let Some(name) = name {
+        out.push_str("[/");
+        out.push_str(name);
+        out.push(']');
+    }
 }
 
 fn push_plain(out: &mut String, text: &str) {

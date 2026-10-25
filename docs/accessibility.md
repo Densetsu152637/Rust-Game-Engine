@@ -120,7 +120,7 @@ that gained or lost `focused`.
 | Widget | Role | Name | Value / states | Actions |
 | --- | --- | --- | --- | --- |
 | `container` | `group` | label only | | |
-| `label`, `rich_label` | `label` | text (markup stripped) | | `click` when the markup has a `[link=` tag |
+| `label`, `rich_label` | `label` | text; for `rich_label` the plain text of the markup (bracket tags removed, escapes resolved, `<...>` tags and entities of the bitmap dialect removed, inline images dropped; unknown tags stay literal as they do when drawn, and markup that does not parse still has every `[...]` group removed) | | `click` when the markup has a `[link=` tag |
 | `image`, `nine_slice` | `image` | label, else tooltip | | |
 | `button` | `button` | text | | `focus`, `click` |
 | `toggle` | `check_box` | text | `checked` | `focus`, `click` |
@@ -131,7 +131,7 @@ that gained or lost `focused`.
 | `scroll_view` | `scroll_view` | label only | scroll offsets | |
 | `list` | `list` | label only | | children below |
 | list child (container, label or image) | `list_item` | own text, else descendant text | `selected`, position | `click` selects |
-| `virtual_list` | `list` | label only | size of set | replicas as `list_item` with `item` IDs |
+| `virtual_list` | `list` | label only | size of set | replicas as `list_item` with `item` IDs; a replica is named from its bound per-item text (`itemText` bindings, see [ui-styling.md](ui-styling.md)), as it is drawn, so rows have distinct names |
 | `tabs` | `tab_list` | label only | | synthetic `tab` children; selected panel as `tab_panel` named by its tab |
 | `modal_dialog` | `dialog` | title | `modal` | synthetic `button` children |
 
@@ -504,8 +504,12 @@ Overlapping cues are allowed. Files are at most 4 MiB. Errors have stable codes:
 converts WebVTT (starts with `WEBVTT`) or SRT into the same model: timings
 (`hh:mm:ss.mmm`, `mm:ss.mmm`, SRT `hh:mm:ss,mmm`), identifiers, multi-line text,
 `<b>`, `<i>`, `<u>` (to `[b]`, `[i]`, `[u]`), HTML entities `&amp; &lt; &gt; &nbsp;`.
+Unbalanced style tags are repaired rather than failing the import: an unclosed `<i>` is
+closed at the end of the cue, a stray closing tag is dropped and a closing tag that skips
+over open inner tags closes them first (nesting is kept to 16 levels).
 **Voice tags** `<v Speaker>text</v>` create a speaker (ID from the name, colours cycling
-through a six-colour palette) and set the cue's speaker. A cue whose whole text is in square
+through a six-colour palette) and set the cue's speaker; WebVTT classes are ignored, so
+`<v.loud Bob>` names the speaker `Bob`. A cue whose whole text is in square
 brackets (`[door creaks]`) becomes a `sound_effect` cue without the brackets. Other tags,
 cue settings after the end time, `NOTE`, `STYLE` and `REGION` blocks are dropped. The result
 is validated; bad timings give `captions.import.timing`. The importer is a library function;

@@ -172,6 +172,9 @@ pub struct GameUi {
     ui_scale: f32,
     /// Accessibility tree, assistive-technology requests and their outcomes.
     access: AccessState,
+    /// Per-item texts of virtual-list templates per root, set before each
+    /// tick so the accessibility tree names the rows as they are drawn.
+    item_texts: BTreeMap<String, UiItemTexts>,
 }
 
 struct Target {
@@ -406,6 +409,11 @@ impl GameUi {
 
     pub(super) fn set_scale(&mut self, scale: f32) {
         self.ui_scale = scale;
+    }
+
+    /// Per-item texts of virtual-list templates per root for the next tick.
+    pub(super) fn set_item_texts(&mut self, texts: BTreeMap<String, UiItemTexts>) {
+        self.item_texts = texts;
     }
 
     pub fn preedit(&self) -> Option<&UiPreedit> {

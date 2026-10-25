@@ -573,6 +573,8 @@ pub(super) struct AccessInput<'a> {
     pub viewport: [u32; 2],
     /// UI scale: layout units to window logical pixels.
     pub scale: f32,
+    /// Bound per-item texts of virtual-list templates, by root ID.
+    pub item_texts: &'a BTreeMap<String, UiItemTexts>,
 }
 
 struct FrameView<'a> {
@@ -581,6 +583,8 @@ struct FrameView<'a> {
     laid: &'a Laid,
     /// (node, item) -> box index.
     lookup: BTreeMap<(usize, Option<u32>), usize>,
+    /// Bound per-item texts of this root's virtual-list rows.
+    item_texts: Option<&'a UiItemTexts>,
 }
 
 struct Builder<'a> {
@@ -629,6 +633,7 @@ impl AccessTree {
                     .rev()
                     .map(|(i, b)| ((b.node, b.item), i))
                     .collect(),
+                item_texts: input.item_texts.get(id),
             };
             let mut group = AccessNode::new(AccessId::root_group(id.clone()), AccessRole::Group);
             group.states.disabled = !root.enabled;
@@ -726,6 +731,18 @@ impl Builder<'_> {
     fn node(&mut self, view: &FrameView<'_>, b: usize, slot: Slot) -> Option<AccessId> {
         let bounds = &view.laid.boxes[b];
         let node = &view.root.tree.nodes[bounds.node];
+        // Virtual-list rows are named from their bound per-item text, like drawing.
+        let patched;
+        let node = match bounds
+            .item
+            .and_then(|item| view.item_texts?.text(&node.id, item))
+        {
+            Some(text) => {
+                patched = node.with_bound_text(text);
+                &patched
+            }
+            None => node,
+        };
         let authored = node.accessibility.as_ref();
         if authored.is_some_and(|a| a.hidden) {
             return None;
@@ -1029,7 +1046,7 @@ impl Builder<'_> {
             }
             UiWidget::RichLabel { markup } => {
                 out.role = AccessRole::Label;
-                out.name = tip_name(&strip_markup(markup));
+                out.name = tip_name(&text::plain_markup_text(markup));
             }
             UiWidget::Image { .. } | UiWidget::NineSlice { .. } => out.role = AccessRole::Image,
             UiWidget::Button { text, .. } => {

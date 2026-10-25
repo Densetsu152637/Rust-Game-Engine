@@ -16,6 +16,12 @@ pub const MAX_THEME_KEYFRAMES: usize = 64;
 pub const MAX_THEME_DEPTH: usize = 4;
 /// Compiled rules (one per selector of every rule) in one composed theme.
 pub const MAX_COMPILED_RULES: usize = 2048;
+/// Cascade budget of one composed theme: the sum of the selector costs over its compiled
+/// rules. A cascade matches every rule against every node (at most `MAX_UI_NODES`), so this
+/// bounds the work to about `MAX_UI_NODES * MAX_THEME_COST` steps per cascade (the debug-build
+/// worst case is under one second). 2048 plain selectors cost 16 384; each descendant
+/// combinator costs a full tree depth.
+pub const MAX_THEME_COST: u32 = 40_000;
 
 /// Names of themes, tokens and keyframes.
 pub(super) fn valid_name(name: &str) -> bool {
@@ -295,7 +301,7 @@ impl UiTheme {
             }
         }
         if self.extends.is_none() {
-            self.compile(&self.tokens, &self.keyframes, 0)?;
+            check_cost(&self.compile(&self.tokens, &self.keyframes, 0)?)?;
         }
         Ok(())
     }
@@ -333,6 +339,20 @@ impl UiTheme {
         }
         Ok(out)
     }
+}
+
+/// Rejects a rule set whose cascade cost exceeds [`MAX_THEME_COST`].
+fn check_cost(rules: &[CompiledRule]) -> Result<()> {
+    let cost: u64 = rules.iter().map(|r| u64::from(r.selector.cost())).sum();
+    if cost > u64::from(MAX_THEME_COST) {
+        return Err(Error::new(
+            "ui.style.cascade_budget",
+            format!(
+                "Theme selectors cost {cost}, the cascade budget is {MAX_THEME_COST} (descendant combinators cost most)"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -442,6 +462,7 @@ impl UiComposedTheme {
                 return Err(style_error("A composed theme has at most 2048 selectors"));
             }
         }
+        check_cost(&rules)?;
         rules.sort_by_key(|r| (r.specificity, r.order));
         Ok(Self {
             name: chain.last().map(|t| t.name.clone()).unwrap_or_default(),

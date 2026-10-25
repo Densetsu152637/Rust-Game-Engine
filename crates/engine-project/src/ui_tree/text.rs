@@ -315,6 +315,56 @@ fn plain_text<'a>(request: &UiTextRequest<'a>) -> std::borrow::Cow<'a, str> {
     }
 }
 
+/// The text a screen reader should read for rich-label markup: the bracket
+/// markup of `engine-text` without its tags and with its escapes resolved,
+/// and the bitmap dialect's `<...>` tags and entities removed as well (see
+/// [`strip_markup`]). Unknown tags stay literal, as they do when drawn. Markup
+/// that does not parse (a known tag with a bad value, unbalanced tags) falls
+/// back to dropping every `[...]` group so the name never shows raw tags.
+pub(crate) fn plain_markup_text(markup: &str) -> String {
+    let bracketed = if markup.contains(['[', '\\']) {
+        let options = engine_text::MarkupOptions {
+            unknown_tags: engine_text::UnknownTagPolicy::Literal,
+            ..engine_text::MarkupOptions::default()
+        };
+        match engine_text::RichText::from_markup(markup, &options) {
+            // Inline images leave an object-replacement placeholder behind.
+            Ok(rich) => rich.text.replace('\u{fffc}', ""),
+            Err(_) => strip_brackets(markup),
+        }
+    } else {
+        markup.to_owned()
+    };
+    strip_markup(&bracketed)
+}
+
+/// Lenient fallback for markup that does not parse: drop every `[...]` group
+/// and resolve the bracket and backslash escapes.
+fn strip_brackets(markup: &str) -> String {
+    let mut out = String::with_capacity(markup.len());
+    let mut chars = markup.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.clone().next() {
+                Some(n @ ('[' | ']' | '\\')) => {
+                    out.push(n);
+                    chars.next();
+                }
+                _ => out.push('\\'),
+            },
+            '[' => {
+                let rest = chars.as_str();
+                match rest.find(']') {
+                    Some(end) => chars = rest[end + 1..].chars(),
+                    None => out.push('['),
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Remove `<...>` tags and decode the four basic entities. An unterminated
 /// `<` is kept literally.
 pub fn strip_markup(markup: &str) -> String {

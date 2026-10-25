@@ -117,7 +117,13 @@ pub fn parse_markup(source: &str, options: &MarkupOptions) -> Result<RichText, T
                 }
             }
             '[' => {
-                let close = rest[1..].find(']').filter(|&i| i <= MAX_TAG_BYTES);
+                // Look at most one tag length ahead: scanning the whole remainder makes a long
+                // run of unterminated `[` quadratic.
+                let mut window = (MAX_TAG_BYTES + 1).min(rest.len() - 1);
+                while !rest[1..].is_char_boundary(window) {
+                    window -= 1;
+                }
+                let close = rest[1..1 + window].find(']');
                 let Some(close) = close else {
                     if options.unknown_tags == UnknownTagPolicy::Literal {
                         literal.push('[');

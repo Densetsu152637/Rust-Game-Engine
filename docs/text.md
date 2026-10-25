@@ -173,6 +173,20 @@ underlines).
 | `Coverage` | anti-aliased coverage at the exact requested size (1/64 px quantised); quads snap pens to whole pixels | crisp screen UI |
 | `Sdf { base_px, spread_px }` | true signed distance at `base_px` (default 48), alpha = 0.5 + d / (2·spread) (default spread 6), inside > 0.5, non-zero winding | scalable and world-space text; one bitmap serves every size |
 
+### SDF cost
+
+Generating a distance field is the expensive raster path. Each pixel of the glyph bitmap
+looks only at the outline segments that can be within `spread + bold + 1` px of it (an 8 px
+grid of candidate segments; everything farther saturates to 0 or 255 anyway, so the output
+equals the exhaustive search, which a unit test checks). Before any pixel is computed the
+generator sums the work (pixels times candidate segments, plus one step per segment per bitmap
+row) and fails with `text.atlas.glyph_too_expensive` above 100 million steps, or when the grid
+would need more than 8 million segment/cell entries. An outline of 16 384 segments each
+spanning a 1000 px bitmap is rejected in milliseconds; before this bound the same glyph would
+have needed about 10^13 distance evaluations. Ordinary glyphs use well under one percent of the
+budget. `[` scanning in markup looks at most 512 bytes ahead per bracket, so a long run of
+unterminated `[` is linear in the input.
+
 - Packing: shelf packing per page with `padding` empty pixels around every glyph bitmap.
 - Eviction: page-granular LRU. Call `begin_frame()` once per frame; when every page is full,
   the least recently used page that was not used in the current frame is cleared (its
@@ -252,7 +266,10 @@ runtime passes `SelectingTextBackend` (`Runtime::ui_text()`); the engine is `Run
 - Plain text, text inputs and labels are laid out with the node's `foreground` colour; markup
   may override it per span. Wrapping is `max_width`, alignment is start.
 - Requests are cached (up to 512 shaped and 512 rasterised layouts) so the several measure and
-  layout calls per tick shape a string once. A change of fallback or language clears the cache.
+  layout calls per tick shape a string once. A full cache drops its least recently used quarter
+  (128 entries) at once, so a working set below 512 requests is never evicted and a larger one
+  degrades gradually instead of falling off a cliff. A change of fallback or language clears the
+  cache.
 - Markup uses the bracket syntax of this crate with `UnknownTagPolicy::Literal`: `[note]` stays
   text, a malformed known tag such as `[color=zz]` is `text.markup.bad_value`.
   `ui_tree::validate_markup` checks markup without laying it out. The bitmap backend instead
@@ -362,8 +379,9 @@ the render features of [engine-ui-render](ui-render.md) when they are registered
   `ui.world`.
 
 `EngineTextBackend::render_status()` reports `TextRenderStatus { requested, state, sdf_families,
-sdf_requests, sdf_gpu_layouts, screen, world, fallback_reason }`: `state` is `sdf` when both
-paths draw on the GPU, `sdf_fallback` otherwise, and `screen` / `world` carry each path's
+sdf_requests, sdf_gpu_layouts, screen, world, fallback_reason }`: `state` is `sdf` when every
+path in use draws on the GPU (`screen` is in use once an SDF family exists, `world` once a
+`WorldText` asked for SDF), `sdf_fallback` otherwise, and `screen` / `world` carry each path's
 `gpu` or `fallback` state with the precise reason (feature not registered, registered but not
 prepared by a wgpu renderer, disabled for the camera through `Camera3D.render_features`, or no
 active `Camera3D` for world text). In every fallback case the text is **rendered through a
@@ -390,7 +408,9 @@ empty, unsorted, overlapping, off a char boundary, malformed image span),
 `max_lines` 0, language longer than 64 bytes), `text.atlas.config` (page size outside
 64–8192, 1–64 pages, padding above 8, SDF base outside 8–256 or spread outside 1–32),
 `text.atlas.full`, `text.atlas.glyph_too_large` (bitmap larger than a page),
-`text.atlas.glyph_too_complex` (more than 16 384 outline segments). Every bound is checked
+`text.atlas.glyph_too_complex` (more than 16 384 outline segments),
+`text.atlas.glyph_too_expensive` (distance-field generation would need more than 100 million
+steps; see [SDF cost](#sdf-cost)). Every bound is checked
 before the corresponding work; hostile input returns an error, never a panic (covered by a
 deterministic pseudo-random input test).
 
@@ -420,6 +440,13 @@ Revisit if world-space text needs sharper corners than SDF provides at large mag
 Integrated: `UiTextBackend`, `font_face`/`font_config` assets, rich labels (links, inline images),
 text input with IME on shaped fonts, desktop typed-text and IME forwarding, world-space text.
 Not integrated or limited:
+
+- IME is unit-tested at the translation layer only (`translate_ime` and the `UiTextEvent`
+  preedit/commit handling); no OS IME session (candidate window, composition on a real input
+  method) has been observed on any platform.
+- World panels receive no typed text and no IME: the desktop runner pushes text events only to
+  the screen UI (`GameUi`), so a `text_input` inside an `engine.UiWorldPanel` cannot be typed
+  into (see [ui-styling.md](ui-styling.md#known-gaps)).
 
 - There is no MCP tool dedicated to fonts beyond the generic asset and `component_set` tools.
 - SDF text has no outline, glow or soft-shadow style, and screen SDF text composites above the
