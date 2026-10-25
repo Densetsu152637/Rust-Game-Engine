@@ -271,11 +271,13 @@ once localization is *active* (a locale catalog is loaded); in a project without
 
 Slots that accept references (`engine.UiRoot`): `label.text`, `button.text`, `toggle.text`,
 `rich_label.markup`, `text_input.placeholder`, `dropdown.options[]` and `.placeholder`,
-`tabs.labels[]`, `modal_dialog.title` and `.buttons[]`, and every node's `tooltip.text`.
+`tabs.labels[]`, `modal_dialog.title` and `.buttons[]`, every node's `tooltip.text`, and every node's `accessibility.label` and `.description`.
 `engine.WorldText.text` accepts one too. Text values (a text input's `text`) are never
 references. Translations may contain rich-text markup: `[b]Bold[/b]` survives translation and
-pseudo-localization; a translation whose markup the text engine rejects is drawn literally
-(brackets escaped) instead of failing the frame.
+pseudo-localization; a translation whose markup the text engine rejects, or that the length
+limits cut inside a tag, is drawn literally (brackets escaped) instead of failing the frame.
+`accessibility.label` and `.description` accept references too, so the screen-reader name and
+description follow the locale.
 
 **Resolution happens on the effective root, not in the component.** Layout, interaction and
 drawing read a per-tick copy of the `UiRoot` in which references are replaced; the stored
@@ -347,7 +349,9 @@ tick:
   families. They are `font_face` asset IDs or `font_config` families.
 - **Assets.** `asset_overrides` map an asset key to another for the locale (fallback chain
   applied): `image.texture`, `nine_slice.texture`, a node's `style.font` and
-  `engine.WorldText.font`. The replacement must exist (`asset.locale_config.unknown_asset`). The
+  `engine.WorldText.font`. The replacement must exist (`asset.locale_config.unknown_asset`) and,
+  like the keys it replaces, be at most 128 bytes (longer ones are `asset.locale_config.invalid`;
+  settings built in code that skip that check have the override ignored where it is used). The
   stored key stays authored.
 - **Event.** `locale.changed` is queued with `{"locale", "previous", "generation"}` whenever the
   locale itself changes (not for pseudo toggles, reloads or re-selecting the same locale).

@@ -99,7 +99,7 @@ pub use selector::{MAX_SELECTOR_COMPOUNDS, MAX_SELECTOR_LEN, MAX_SELECTOR_LIST};
 pub(crate) use shaped_text::PlacedText;
 pub use shaped_text::{
     EngineTextBackend, SdfPathStatus, TextRenderState, TextRenderStatus, UiTextStats,
-    validate_markup,
+    escape_markup, validate_markup,
 };
 pub use style::{
     MAX_GRID_TRACKS, MAX_UI_EXTENT, UiAlign, UiEdges, UiGridFlow, UiGridPlacement, UiInset,

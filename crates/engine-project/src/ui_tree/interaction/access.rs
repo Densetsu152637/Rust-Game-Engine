@@ -476,6 +476,7 @@ fn set_text(
     text: &str,
     events: &mut Vec<UiWidgetEvent>,
 ) -> UiAccessStatus {
+    let spare = MAX_UI_ROOT_TEXT.saturating_sub(roots[target.root].1.tree.text_bytes());
     let node = node_mut(roots, target);
     let UiWidget::TextInput {
         text: value,
@@ -489,7 +490,11 @@ fn set_text(
         return UiAccessStatus::Unsupported;
     };
     let chars = text.chars().count() as u32;
+    // `maxLength` counts characters; the value is also bounded in bytes by the
+    // string limit and by what is left of the root's text budget.
     if chars > *max_length
+        || text.len() > MAX_UI_TEXT
+        || text.len() > value.len() + spare
         || (!*multiline && text.contains('\n'))
         || text
             .chars()

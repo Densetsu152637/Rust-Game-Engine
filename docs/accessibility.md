@@ -298,7 +298,7 @@ Each UI tick, `accessibility::sync`:
 | --- | --- | --- |
 | `uiScale` | 0.5 to 4, 1 | Scales layout, drawing and hit testing together, see below. |
 | `textScale` | 0.5 to 4, 1 | Multiplies every node's `fontScale` (result clamped to 16). Authored data is not modified. Applies to screen UI and world panels. |
-| `minTextSize` | 0 to 96 px, 0 (off) | Smallest line height text may have **on screen**, measured per font with the active text backend (so UI scale is accounted for). Raises `fontScale` when needed. |
+| `minTextSize` | 0 to 96 px, 0 (off) | Smallest line height text may have **on screen**, measured per font with the active text backend (so UI scale is accounted for). Raises `fontScale` when needed. World panels are not UI-scaled, so for them the floor is in panel pixels (no division by `uiScale`). |
 | `reducedMotion` | false | `UiStyleSettings::set_reduced_motion`; a root's `reducedMotion` still overrides it. |
 | `screenReader` | false | Build the accessibility tree every tick. |
 | `focusThickness` | 1 to 16 px, 2 | Focus ring thickness. |
@@ -374,7 +374,14 @@ affected by `uiScale`.
 ### Focus ring
 
 The ring drawn on the focused widget follows `focusThickness` and
-`focusHighContrast` (`UiRenderState::focus_thickness`, `focus_contrast`).
+`focusHighContrast` (`UiRenderState::focus_thickness`, `focus_contrast`), on screen
+roots and world panels alike.
+
+`AccessibilityControl::settings` is a public field, so the scalings read from it
+(`UiScaling::of`) are clamped to the validated ranges (a non-finite value becomes
+1, or 0 for `minTextSize`): `uiScale` 0 cannot produce an infinite layout
+viewport. Text scale and `fontScale` can together ask for a pixel size outside
+what the text engine accepts; the shaping backend clamps it to 1..=512 px.
 
 ## Input-remapping screen
 
@@ -560,10 +567,12 @@ The lowest entity carrying the component supplies `font`, `bottomMargin` and `ma
 
 ### Presentation
 
-Each tick, before the UI tick, the runtime builds a `UiRoot` with the authored ID
-`captions` and writes it to a generated entity (not part of the scene). It is an ordinary
-root: themes and [stylesheets](ui-styling.md) can target `captions` and its `captions.cue.N`
-labels, and it is drawn by the same extraction as all UI, so `uiScale` applies.
+Each tick, before the UI tick, the runtime builds a `UiRoot` and writes it to a generated
+entity (not part of the scene). Its root key (`CAPTION_ROOT_ID`, in events and accessibility
+IDs) starts with a control character, which no scene entity ID may contain, so a game's own
+UI root named `captions` cannot collide with it. It is an ordinary
+root: themes and [stylesheets](ui-styling.md) can target its root node `captions` and the
+`captions.cue.N` labels, and it is drawn by the same extraction as all UI, so `uiScale` applies.
 
 - **Layer.** `CAPTION_LAYER` (1000000): above ordinary UI roots, below the modal-dialog
   layer (`UI_DIALOG_LAYER`) and popup layer (`UI_POPUP_LAYER`), so dialogs and dropdowns draw

@@ -1219,6 +1219,7 @@ impl GameUi {
             (style.font.clone(), style.font_scale, style.foreground)
         };
         let width = target.bounds.content.width;
+        let spare = MAX_UI_ROOT_TEXT.saturating_sub(roots[target.root].1.tree.text_bytes());
         {
             let node = node_mut(roots, target);
             let UiWidget::TextInput {
@@ -1233,11 +1234,13 @@ impl GameUi {
             else {
                 return;
             };
+            let max_bytes = MAX_UI_TEXT.min(value.len() + spare);
             let mut edit = Edit {
                 value,
                 caret,
                 anchor,
                 max_length: *max_length,
+                max_bytes,
                 multiline: *multiline,
                 password: *password,
             };

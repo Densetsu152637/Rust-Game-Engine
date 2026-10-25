@@ -10,7 +10,10 @@
 //!
 //! A translation cannot make a root invalid: every expansion is cut to the
 //! limit of its slot (4096 bytes for text, 256 for short labels, 1024 for
-//! tooltips) and to what is left of the root's 64 KiB text budget.
+//! tooltips and accessibility descriptions) and to what is left of the root's
+//! 64 KiB text budget, which counts accessibility labels and descriptions too.
+//! Translated rich text whose markup the text engine would reject (including a
+//! translation cut mid-tag) is shown literally, brackets escaped.
 use super::*;
 use crate::localization::Localization;
 use std::collections::BTreeSet;
@@ -29,6 +32,7 @@ impl Resolver<'_> {
         let Some(mut resolved) = self.loc.resolve_text(text, markup) else {
             return;
         };
+        let full = resolved.len();
         if resolved.len() > limit {
             resolved.truncate(resolved.floor_char_boundary(limit));
         }
@@ -36,6 +40,10 @@ impl Resolver<'_> {
         if growth > self.spare {
             let keep = resolved.len() - (growth - self.spare);
             resolved.truncate(resolved.floor_char_boundary(keep));
+        }
+        if markup && resolved.len() != full {
+            // Cutting a translation can leave a tag open; show it literally then.
+            resolved = shaped_text::fit_markup(&resolved, resolved.len());
         }
         self.spare = self
             .spare
@@ -84,10 +92,20 @@ impl Resolver<'_> {
         if let Some(tooltip) = &mut node.tooltip {
             self.resolve(&mut tooltip.text, false, MAX_TOOLTIP_TEXT);
         }
+        if let Some(access) = &mut node.accessibility {
+            if let Some(label) = &mut access.label {
+                self.resolve(label, false, MAX_UI_LABEL);
+            }
+            if let Some(description) = &mut access.description {
+                self.resolve(description, false, MAX_ACCESS_DESCRIPTION);
+            }
+        }
     }
 }
 
 fn assets(loc: &Localization, node: &mut UiNode) {
+    // `Localization::asset` never returns a key past the 128-byte limit of
+    // texture and font references.
     if let UiWidget::Image { texture, .. } | UiWidget::NineSlice { texture, .. } = &mut node.widget
     {
         *texture = loc.asset(texture);
@@ -95,14 +113,6 @@ fn assets(loc: &Localization, node: &mut UiNode) {
     if !node.style.font.is_empty() {
         node.style.font = loc.asset(&node.style.font);
     }
-}
-
-fn text_total(root: &UiRoot) -> usize {
-    root.tree
-        .nodes
-        .iter()
-        .map(|n| n.widget.text_bytes() + n.tooltip.as_ref().map_or(0, |t| t.text.len()))
-        .sum()
 }
 
 /// `root` with message references resolved and locale asset overrides applied,
@@ -124,7 +134,7 @@ pub fn localize_root(root: &UiRoot, loc: &Localization) -> Option<UiRoot> {
         .collect();
     let mut resolver = Resolver {
         loc,
-        spare: MAX_UI_ROOT_TEXT.saturating_sub(text_total(root)),
+        spare: MAX_UI_ROOT_TEXT.saturating_sub(root.tree.text_bytes()),
     };
     let mut out: Option<UiRoot> = None;
     for (index, node) in root.tree.nodes.iter().enumerate() {
@@ -132,7 +142,13 @@ pub fn localize_root(root: &UiRoot, loc: &Localization) -> Option<UiRoot> {
             || node
                 .tooltip
                 .as_ref()
-                .is_some_and(|t| t.text.starts_with('@'));
+                .is_some_and(|t| t.text.starts_with('@'))
+            || node.accessibility.as_ref().is_some_and(|a| {
+                [&a.label, &a.description]
+                    .into_iter()
+                    .flatten()
+                    .any(|s| s.starts_with('@'))
+            });
         let asset = overrides
             && (matches!(
                 node.widget,

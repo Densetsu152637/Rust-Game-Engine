@@ -163,13 +163,23 @@ fn hostile_requests_return_errors() {
         ..plain("a")
     };
     assert!(engine.layout(&bad_scale).is_err());
+    // A scale that would leave the 1..=512 px range clamps instead of erroring:
+    // UI scale settings are player-controlled and must not fail the frame.
     let huge = UiTextRequest {
         scale: 1000.0,
         ..plain("a")
     };
+    let clamped = engine.layout(&huge).unwrap();
+    assert_eq!(engine.pixel_size("ui", 1000.0), Some(512.0));
     assert_eq!(
-        engine.layout(&huge).unwrap_err().diagnostics[0].code,
-        "text.input.size_out_of_range"
+        clamped.metrics,
+        engine
+            .layout(&UiTextRequest {
+                scale: 512.0 / 20.0,
+                ..plain("a")
+            })
+            .unwrap()
+            .metrics
     );
     assert_eq!(
         engine

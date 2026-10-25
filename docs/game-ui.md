@@ -189,14 +189,14 @@ Widget values live in the `UiRoot`, so snapshots include them and
 | --- | --- | --- |
 | `container` | none | Background and children. |
 | `label` | `text` | Wrapped text in the content box. |
-| `rich_label` | `markup` | Markup stored as a plain string; the backend interprets it. The shaping backend reads `[b]`, `[color=#rrggbb]`, `[size=N]`, `[link=id]`, `[img=key width=W height=H]` markup (see [Rich labels](text.md#rich-labels-links-and-inline-images)); the bitmap backend strips `<...>` tags and decodes `&lt; &gt; &amp; &quot;`. A rich label whose markup has a `[link=` tag is a pointer target and focusable; clicking a link, or `ui_confirm` on the focused label (first link), sends `ui.link_activated` with the link ID. |
+| `rich_label` | `markup` | Markup stored as a plain string; the backend interprets it. The shaping backend reads `[b]`, `[color=#rrggbb]`, `[size=N]`, `[link=id]`, `[img=key width=W height=H]` markup (see [Rich labels](text.md#rich-labels-links-and-inline-images)); the bitmap backend strips `<...>` tags and decodes `&lt; &gt; &amp; &quot;`. Authored markup is validated with the root: a malformed known tag (an unclosed `[b]`, `[size=9999]`) is rejected like any other invalid field. Text a data binding supplies is not validated up front; a binding (and a translation) whose markup the text engine would reject, or that the 4096-byte slot cuts mid-tag, is shown literally with its brackets escaped instead of failing the frame. A rich label whose markup has a `[link=` tag is a pointer target and focusable; clicking a link, or `ui_confirm` on the focused label (first link), sends `ui.link_activated` with the link ID. |
 | `image` | `texture`, `uv` `[u,v,w,h]`, `tint`, `fit` (`stretch`, `contain`, `cover`) | Textured quad in the content box; `cover` crops the UV rectangle. |
 | `nine_slice` | `texture`, `slices` (texture px l,t,r,b), `border` (logical px, default = slices), `center`, `tint` | Nine textured quads over the border box (replaces the background); borders shrink proportionally when they exceed the box. |
 | `button` | `text`, `action` | `ui.clicked` on the pressed edge or `ui_confirm`. |
 | `toggle` | `text`, `checked`, `action` | `ui.value_changed` with the new bool. |
 | `slider` | `value`, `min`, `max`, `step`, `action` | Pointer drag or `ui_left`/`ui_right`; snaps to steps, `ui.value_changed`. |
 | `progress` | `value`, `min`, `max` | Fill bar. |
-| `text_input` | `text`, `placeholder`, `maxLength` (chars, at most 4096), `password`, `multiline`, `caret`, `anchor`, `action` | See the text-edit model. Password inputs render `*` per character. |
+| `text_input` | `text`, `placeholder`, `maxLength` (chars, at most 4096; the value is also bounded in bytes, see the text-edit model), `password`, `multiline`, `caret`, `anchor`, `action` | See the text-edit model. Password inputs render `*` per character. |
 | `dropdown` | `options` (at most 64), `selected`, `placeholder`, `maxVisible`, `action` | Click or `ui_confirm` opens a popup above all UI; `ui.selection_changed` with the index. |
 | `scroll_view` | `offset` `[x,y]`, `axes` (`horizontal`, `vertical`, `both`), `scrollbars`, `action` | Clamped scrolling by wheel (40 px per notch), content drag and scrollbar thumb drag; `ui.scrolled` with the offset. Scrollbars reserve an 8 px gutter. |
 | `list` | `selected`, `action` | Children are the items; click or `ui_up`/`ui_down` selects; `ui.selection_changed`. |
@@ -220,7 +220,7 @@ Each node can also carry:
 
 Any text slot may hold a message reference instead of text: `label.text`, `button.text`,
 `toggle.text`, `rich_label.markup`, `text_input.placeholder`, `dropdown.options` and
-`placeholder`, `tabs.labels`, `modal_dialog.title` and `buttons`, and `tooltip.text`. A text
+`placeholder`, `tabs.labels`, `modal_dialog.title` and `buttons`, `tooltip.text`, and a node's `accessibility.label` and `description`. A text
 that is exactly `@message` (or `@message.attribute`) shows that message of the current locale
 (`{message}` while no locale defines it); `@@...` is a literal text starting with `@`; anything
 else, including `Hello @name`, is ordinary text. Plurals and other variants are expressed in the
@@ -392,7 +392,13 @@ pub enum UiTextEvent {
 - **Enter and Escape:** Enter inserts a newline in multiline inputs and emits
   `ui.text_submitted` otherwise. Escape leaves the input.
 - **Inserted text:** control characters are dropped (newlines are kept only in
-  multiline inputs) and the result is truncated to `maxLength`.
+  multiline inputs) and the result is truncated to `maxLength` characters, to
+  the 4096-byte string limit and to what is left of the root's 64 KiB text
+  budget, never splitting a character. `maxLength` counts characters, so
+  multi-byte text reaches the byte limit first (1365 three-byte characters).
+  Typing, paste, IME commit and `data` bindings on `text` truncate this way; an
+  assistive-technology `set_text` that would exceed a bound is rejected
+  (`UiAccessStatus::Rejected`) instead.
 - **IME:** a preedit is drawn underlined at the caret but is not part of the
   value. `Commit` clears the preedit and inserts its text. With the shaping
   backend the caret, selection and underline come from `engine-text` geometry,
@@ -467,7 +473,8 @@ Every bound below returns an error and never panics:
   (virtual-list replicas included), 64 nodes per virtual-list template.
 - 128-byte IDs, actions, fonts and texture keys; 4096-byte strings; 256-byte
   option/tab/button labels, placeholders and dialog titles; 1024-byte tooltips;
-  64 KiB of text per root.
+  64 KiB of text per root (widget strings, tooltips, accessibility labels and
+  descriptions together).
 - 64 dropdown options, 32 tabs, 4 dialog buttons, 64 grid tracks per axis,
   16 classes per node; lengths, offsets, margins and gaps within ±16384; scroll
   offsets within 0..=1e7.

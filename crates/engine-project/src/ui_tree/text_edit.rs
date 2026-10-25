@@ -125,6 +125,10 @@ pub(super) struct Edit<'a> {
     pub caret: &'a mut u32,
     pub anchor: &'a mut u32,
     pub max_length: u32,
+    /// Most bytes the value may hold: the string limit, further capped by what
+    /// is left of the root's text budget. `max_length` counts characters, so
+    /// multi-byte text needs this second bound.
+    pub max_bytes: usize,
     pub multiline: bool,
     pub password: bool,
 }
@@ -184,15 +188,29 @@ impl Edit<'_> {
         }
     }
 
-    /// Replace the selection with `text`, truncated to fit `max_length`.
+    /// Replace the selection with `text`, truncated to fit `max_length`
+    /// characters and `max_bytes` bytes.
     fn replace(&mut self, chars: &mut Vec<char>, text: &str) -> bool {
         let (start, end) = self.selection();
-        let filtered: Vec<char> = text
+        let room = (self.max_length as usize).saturating_sub(chars.len() - (end - start));
+        let kept_bytes: usize = chars[..start]
+            .iter()
+            .chain(&chars[end..])
+            .map(|c| c.len_utf8())
+            .sum();
+        let mut bytes_room = self.max_bytes.saturating_sub(kept_bytes);
+        let mut inserted: Vec<char> = Vec::new();
+        for c in text
             .chars()
             .filter(|c| !c.is_control() || *c == '\t' || (*c == '\n' && self.multiline))
-            .collect();
-        let room = (self.max_length as usize).saturating_sub(chars.len() - (end - start));
-        let inserted = &filtered[..filtered.len().min(room)];
+        {
+            if inserted.len() >= room || c.len_utf8() > bytes_room {
+                break;
+            }
+            bytes_room -= c.len_utf8();
+            inserted.push(c);
+        }
+        let inserted = &inserted[..];
         if start == end && inserted.is_empty() {
             return false;
         }
@@ -331,8 +349,8 @@ impl Edit<'_> {
             }
             UiEditKey::Paste => {
                 if let Some(text) = clipboard.get() {
-                    let text: String = text.chars().take(MAX_TEXT_EVENT_BYTES).collect();
-                    outcome.changed = self.replace(&mut chars, &text);
+                    let text = &text[..text.floor_char_boundary(MAX_TEXT_EVENT_BYTES)];
+                    outcome.changed = self.replace(&mut chars, text);
                 }
             }
             UiEditKey::Enter if self.multiline => outcome.changed = self.replace(&mut chars, "\n"),
