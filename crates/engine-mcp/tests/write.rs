@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 13] = [
+const WRITE_TOOLS: [&str; 14] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -34,6 +34,7 @@ const WRITE_TOOLS: [&str; 13] = [
     "locale_set_message",
     "locale_remove_message",
     "locale_add_locale",
+    "ui_edit",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -87,13 +88,14 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 31);
+    assert_eq!(names.len(), 34);
     // Registration order: the 12 original read tools, the 8 original write
     // tools, the navigation pair (bake writes, query only reads), the
     // acoustics tools (inspect and query read, bake writes), then the locale
-    // tools (three reads, three writes).
+    // tools (three reads, three writes), then the UI authoring tools (inspect
+    // and preview read, edit writes).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 18);
+    assert_eq!(read_only_names.len(), 20);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -101,8 +103,13 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(names[22], "acoustics_inspect");
     assert_eq!(names[23], "acoustics_query");
     assert_eq!(names[24], "acoustics_bake");
-    assert_eq!(names[25..28], read_only_names[15..]);
-    assert_eq!(names[28..], WRITE_TOOLS[10..]);
+    assert_eq!(names[25..28], read_only_names[15..18]);
+    assert_eq!(names[28..31], WRITE_TOOLS[10..13]);
+    assert_eq!(names[31..33], read_only_names[18..]);
+    assert_eq!(names[33], "ui_edit");
+    assert_eq!(read_only_names[18], "ui_inspect");
+    assert_eq!(read_only_names[19], "ui_preview");
+    assert_eq!(WRITE_TOOLS[13], "ui_edit");
     assert_eq!(read_only_names[12], "navigation_query");
     assert_eq!(read_only_names[13], "acoustics_inspect");
     assert_eq!(read_only_names[14], "acoustics_query");
@@ -137,6 +144,7 @@ fn write_tool_annotations_are_accurate() {
     expect("component_remove", true, true);
     expect("file_write", true, true);
     expect("asset_import_model", false, false);
+    expect("ui_edit", true, false);
     for tool in tools
         .iter()
         .filter(|t| t["annotations"]["readOnlyHint"] == true)

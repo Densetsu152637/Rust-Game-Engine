@@ -80,8 +80,18 @@ pub struct UiInspection {
     pub issues_truncated: bool,
 }
 
+/// Three decimals, as `f64`, so values print short (`33.333`).
+fn round3(value: f32) -> f64 {
+    (f64::from(value) * 1000.0).round() / 1000.0
+}
+
 fn rect_json(rect: Rect) -> Value {
-    json!([rect.x, rect.y, rect.width, rect.height])
+    json!([
+        round3(rect.x),
+        round3(rect.y),
+        round3(rect.width),
+        round3(rect.height)
+    ])
 }
 
 impl UiNodeLayout {
@@ -104,8 +114,8 @@ impl UiNodeLayout {
             object.insert("item".into(), json!(item));
         }
         if self.scroll_max != [0.0; 2] {
-            object.insert("scroll".into(), json!(self.scroll));
-            object.insert("scroll_max".into(), json!(self.scroll_max));
+            object.insert("scroll".into(), json!(self.scroll.map(round3)));
+            object.insert("scroll_max".into(), json!(self.scroll_max.map(round3)));
         }
         if !self.states.is_empty() {
             object.insert("states".into(), json!(state_names(self.states)));

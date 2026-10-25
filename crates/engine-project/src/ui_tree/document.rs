@@ -395,6 +395,25 @@ impl UiWidget {
     }
 }
 
+impl UiRoot {
+    /// The root as component JSON (`engine.UiRoot` data): default values are
+    /// omitted and `f32` fields print as their shortest decimal.
+    pub fn to_json(&self) -> Value {
+        serde_json::to_string(self)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(Value::Null)
+    }
+
+    /// Hex BLAKE3 digest of the component JSON; equal roots have equal
+    /// hashes, so it detects stale edits.
+    pub fn content_hash(&self) -> String {
+        blake3::hash(&serde_json::to_vec(self).unwrap_or_default())
+            .to_hex()
+            .to_string()
+    }
+}
+
 // ---- tree helpers ----
 
 /// Vector indices of `index` and its descendants, in vector order.
@@ -1050,7 +1069,7 @@ impl UiDocument {
 
     /// The root as component JSON (omitting default values).
     pub fn to_json(&self) -> Value {
-        serde_json::to_value(&self.root).unwrap_or(Value::Null)
+        self.root.to_json()
     }
 
     pub fn theme(&self) -> Option<&UiTheme> {
