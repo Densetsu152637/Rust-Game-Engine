@@ -127,28 +127,26 @@ fn pbr_and_shadow_controls_validate_and_round_trip_through_authored_components()
         .camera3d
         .as_mut()
         .unwrap();
-    camera.lighting.shadows.enabled = true;
-    camera.lighting.shadows.resolution = 512;
-    camera.lighting.intensity = 4.0;
+    camera.lighting.exposure = 0.5;
+    let mut sun = engine_project::lights::DirectionalLight::default();
+    sun.shadows.enabled = true;
+    sun.shadows.resolution = 512;
+    sun.lux = 4.0;
+    project.scene.entities[0].components.directional_light = Some(sun);
     project.validate_scene(&project.scene).unwrap();
     let runtime = Runtime::new(project).unwrap();
     let frame = runtime.extract_scene_frame().unwrap();
     assert_eq!(frame.meshes[0].material.metallic, 0.8);
     assert!(!frame.meshes[0].material.cast_shadows);
-    assert_eq!(
-        frame.camera3d.unwrap().camera.lighting.shadows.resolution,
-        512
-    );
+    assert_eq!(frame.camera3d.unwrap().camera.lighting.exposure, 0.5);
+    let engine_project::lights::SceneLight::Directional(light) = &frame.lights[0].light else {
+        panic!("{:?}", frame.lights);
+    };
+    assert_eq!(light.shadows.resolution, 512);
     let snapshot = runtime.try_snapshot().unwrap();
-    let value = serde_json::to_value(
-        snapshot.scene.entities[0]
-            .components
-            .camera3d
-            .as_ref()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(value["lighting"]["shadows"]["enabled"], true);
+    let value = serde_json::to_value(&snapshot.scene.entities[0].components).unwrap();
+    assert_eq!(value["DirectionalLight"]["shadows"]["enabled"], true);
+    assert_eq!(value["Camera3D"]["lighting"]["exposure"], 0.5);
 }
 #[test]
 fn invalid_pbr_light_and_shadow_values_are_rejected_at_boundary() {
@@ -165,19 +163,19 @@ fn invalid_pbr_light_and_shadow_values_are_rejected_at_boundary() {
         assert!(material.validate().is_err());
     }
     for resolution in [0, 63, 65, 8192] {
+        let mut light = engine_project::lights::DirectionalLight::default();
+        light.shadows.resolution = resolution;
+        assert!(light.validate().is_err());
+    }
+    for exposure in [0.0, -1.0, f32::NAN, 1e6] {
         let mut camera = Camera3D::default();
-        camera.lighting.shadows.resolution = resolution;
+        camera.lighting.exposure = exposure;
         assert!(camera.validate().is_err());
     }
-    let mut light = SceneLighting {
-        direction: [0.0; 3],
-        ..Default::default()
-    };
-    assert!(light.validate().is_err());
-    light.direction = [0.0, 1.0, 0.0];
-    light.validate().unwrap();
-    light.shadows.bias = f32::NAN;
-    assert!(light.validate().is_err());
+    let mut lighting = SceneLighting::default();
+    lighting.validate().unwrap();
+    lighting.ambient = f32::NAN;
+    assert!(lighting.validate().is_err());
     let dir = fixture();
     let mut project = Project::load(dir.path().join("project.json")).unwrap();
     project.scene.entities[2]

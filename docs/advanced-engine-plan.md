@@ -62,5 +62,5 @@ scale. Security controls and limitations require an independent scoped review.
 | Desktop portability | Implemented, hosted results unverified | macOS data-alias fix and `scripts/ci/check-desktop-examples.sh` on Linux/macOS jobs; hosted runner results must be recorded separately |
 | DLSS | Super Resolution crate only | Optional standalone `engine-dlss` crate ([DLSS](dlss.md)); Frame Generation and Ray Reconstruction are not implemented and DLSS 5 neural rendering is deferred (no SDK access) |
 
-Known remaining boundaries: no image-based lighting, cascaded or point/spot
-shadows, crowd avoidance, prediction/rollback, matchmaking or NAT traversal.
+Known remaining boundaries: no image-based lighting (cascaded, spot and point
+shadows exist: [lights and shadows](rendering-lights.md)), crowd avoidance, prediction/rollback, matchmaking or NAT traversal.

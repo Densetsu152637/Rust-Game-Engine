@@ -157,6 +157,9 @@ XR eyes use `LEFT_EYE`/`RIGHT_EYE`.
 | 1 | `var<storage, read> engine_lights: EngineLightList` |
 | 2 | `var<storage, read> engine_shadows: array<EngineShadow>` |
 | 3 | `var engine_shadow_atlas: texture_depth_2d_array` |
+| 4 | `var<storage, read> engine_clusters: EngineClusterGrid` |
+| 5 | `var<storage, read> engine_cluster_lights: array<u32>` |
+| 6 | `var engine_shadow_sampler: sampler_comparison` |
 
 `EngineView` fields in order (all `mat4x4<f32>` then `vec4`):
 `clip_from_world` (jittered: rasterize with it), `unjittered_clip_from_world`,
@@ -185,29 +188,16 @@ clip space, depth 0 near .. 1 far, not reversed. Helpers:
 Built-in prepasses use engine transforms: custom vertex displacement is not
 replayed in normal, motion or shadow passes. Motion is opaque-only.
 
-### Light list (`EngineLightList`, stable layout)
+### Light list and clusters
 
-Header `counts: vec4<u32>` (x = light count) then `array<EngineLight>`; the
-buffer always holds at least one (zeroed) light. `EngineLight` (80 bytes):
-
-| Offset | Field | Meaning |
-| --- | --- | --- |
-| 0 | `color: vec3<f32>` | linear RGB |
-| 12 | `intensity: f32` | directional radiance = `color * intensity` |
-| 16 | `position: vec3<f32>` | point/spot/area position |
-| 28 | `range: f32` | 0 = unbounded |
-| 32 | `direction: vec3<f32>` | directional: surface → light; spot/area: light forward |
-| 44 | `kind: u32` | 0 directional, 1 point, 2 spot, 3 area |
-| 48 | `params: vec4<f32>` | spot: cos inner, cos outer; area: half width, half height, two-sided |
-| 64 | `shadow_index: i32` | index into `engine_shadows`, -1 none |
-| 68 | `flags: u32`, `reserved: vec2<u32>` | zero |
-
-`EngineShadow` (80 bytes): `clip_from_world: mat4x4<f32>`, `params` (x bias,
-y atlas layer, z resolution, w 1). One atlas resolution per frame (64..=4096,
-power of two), at most 16 layers, 4096 lights. Only directional lights are
-shaded by the built-in material today; the other kinds are carried and
-validated for the lights feature. When `engine.shadows` is disabled every
-`shadow_index` is uploaded as -1.
+Header `counts: vec4<u32>` (x = light count, y = directional count; directional
+lights come first) then `array<EngineLight>` (80 bytes each). `EngineShadow`
+is 128 bytes. Bindings 4-6 carry the clustered light grid built by the
+`engine.lights.clusters` Prepare-stage node. The authoritative field tables,
+cluster layout and the material lighting functions
+(`engine_direct_lighting`, `engine_light_contribution`, ...) are in
+[lights and shadows](rendering-lights.md#wgsl-contract). When `engine.shadows`
+is disabled every `shadow_index` is uploaded as -1.
 
 ## Instanced draws
 
@@ -439,8 +429,7 @@ integration and requests fall back with the build reason.
 
 ## Limits and deferred work
 
-- Only directional lights are shaded; point/spot/area are layout-reserved.
-- One shadow atlas resolution per frame; no cascades yet (lights feature).
+- Lights and shadows: see [rendering-lights.md](rendering-lights.md#limits).
 - Prepasses and shadows ignore custom vertex displacement; transparent meshes
   write no motion or depth.
 - The default output is a linear clamp (no exposure or tonemapping curve;

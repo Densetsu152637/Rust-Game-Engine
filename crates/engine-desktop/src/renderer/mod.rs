@@ -28,6 +28,7 @@ pub use temporal::{halton, jitter_matrix, jitter_offset, jitter_phase_count, pix
 use crate::{GpuContext, RenderTargetInfo, UpscalerDevice};
 use anyhow::{Context, Result, ensure};
 use engine_core::bevy_ecs::world::World;
+use engine_project::lights::LightingStatus;
 use engine_project::rendering3d::{
     FrameGenerationMode, FrameGenerationSettings, FrameGenerationStatus, RenderFeatureView,
     RenderPipelineState, RenderPipelineStatus, SceneRenderFrame, TextureStreamMode, UpscalerMode,
@@ -36,7 +37,7 @@ use engine_project::rendering3d::{
 use engine_project::runtime::RenderFrame;
 use engine_render::RenderTarget;
 use engine_render_pipeline::{
-    FeatureOverrides, GpuTexture, HostStages, HostUpscale, LightList, OutputTarget,
+    FeatureOverrides, GpuTexture, HostStages, HostUpscale, LightingReport, OutputTarget,
     PipelineFeatures, SceneFrame, ScenePipeline, SceneTextures, Stage, ViewData, ViewId, ViewKind,
     ViewReport, Viewport, names,
 };
@@ -113,6 +114,7 @@ pub struct GpuRenderer {
     #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
     depth_export: Option<Arc<engine_render_pipeline::DepthExport>>,
     status: RenderPipelineStatus,
+    lighting: LightingStatus,
     upscaler: upscale::Upscaler,
     framegen: framegen::FrameGeneration,
 }
@@ -234,6 +236,7 @@ impl GpuRenderer {
             uploads: Default::default(),
             depth_export: None,
             status: RenderPipelineStatus::default(),
+            lighting: LightingStatus::default(),
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
             framegen: framegen::FrameGeneration::new(),
         })
@@ -267,6 +270,12 @@ impl GpuRenderer {
     /// (or overlay-only frame).
     pub fn pipeline_status(&self) -> &RenderPipelineStatus {
         &self.status
+    }
+
+    /// Light culling, clustering and shadow allocation of the last camera
+    /// view.
+    pub fn lighting_status(&self) -> &LightingStatus {
+        &self.lighting
     }
 
     /// Discard upscaler and frame generation history before the next frame
@@ -497,10 +506,7 @@ impl GpuRenderer {
         let size = (output.size[0], output.size[1]);
         // Every check runs before any upload or submission.
         self.sprites.validate_scene(frame, size)?;
-        let lights = match &frame.camera3d {
-            Some(camera) => scene3d::light_list(&camera.camera.lighting)?,
-            None => LightList::default(),
-        };
+        let lights = scene3d::light_list(frame)?;
         let mode = if sprites {
             SpriteMode::Over(self.sprites.build_overlay(frame, size)?)
         } else {
@@ -513,6 +519,7 @@ impl GpuRenderer {
             scene,
             uploads,
             status,
+            lighting,
             ..
         } = self;
         let scene = scene.as_mut().expect("created above");
@@ -546,6 +553,7 @@ impl GpuRenderer {
             .unwrap_or_default();
         if view.kind == ViewKind::Camera {
             *status = status_of(&report, RenderPipelineState::Rendered, &overrides);
+            *lighting = lighting_status_of(&report.lighting, frame.lights.len());
         }
         Ok((report, stats))
     }
@@ -1267,6 +1275,41 @@ fn stream_copies(
         .filter(|s| s.mode == TextureStreamMode::External)
         .filter_map(|s| Some((streams.get(&s.name)?, s.texture.clone())))
         .collect()
+}
+
+/// The lighting status of a view report (bounded: at most four reasons).
+fn lighting_status_of(report: &LightingReport, authored: usize) -> LightingStatus {
+    let stats = report.cluster_stats;
+    LightingStatus {
+        state: RenderPipelineState::Rendered,
+        authored: authored as u64,
+        submitted: report.submitted as u64,
+        culled: report.culled as u64,
+        over_budget: report.over_budget as u64,
+        directional: report.directional as u64,
+        local: report.local as u64,
+        cluster_mode: report.cluster_mode.name().into(),
+        clustered: report.clustered as u64,
+        cluster_dims: report.cluster_dims,
+        cluster_overflowed: stats.map(|s| s.overflowed_clusters),
+        cluster_longest_list: stats.map(|s| s.longest_list),
+        cluster_gpu_ms: stats
+            .and_then(|s| s.gpu_nanoseconds)
+            .map(|ns| ns as f64 / 1.0e6),
+        shadows_enabled: report.shadows_enabled,
+        shadowed_lights: report.shadowed_lights as u64,
+        shadow_views: report.shadow_views as u64,
+        shadow_dropped: report.shadow_dropped as u64,
+        atlas_page_size: report.atlas_page_size,
+        atlas_pages: report.atlas_pages,
+        atlas_texels_used: report.atlas_texels_used,
+        atlas_texels_capacity: report.atlas_texels_capacity,
+        overflow: report
+            .overflow
+            .iter()
+            .map(|r| engine_project::rendering3d::bounded_upscaler_reason(r))
+            .collect(),
+    }
 }
 
 /// The status of a view report, bounded for snapshots.

@@ -73,11 +73,10 @@ fn scene(upscaler: UpscalerSettings) -> SceneRenderFrame {
         vec![0, 1, 2],
         [1.0; 4],
     );
-    let mut camera = Camera3D {
+    let camera = Camera3D {
         upscaler,
         ..Default::default()
     };
-    camera.lighting.direction = [0.3, 0.8, 1.0];
     let hud = mesh(
         &[
             [8.0, 8.0, 0.5],
@@ -147,6 +146,14 @@ fn scene(upscaler: UpscalerSettings) -> SceneRenderFrame {
             ),
         ],
         materials2d: Default::default(),
+        lights: vec![
+            engine_project::lights::LightInstance3D::directional_toward(
+                "sun",
+                [0.3, 0.8, 1.0],
+                Default::default(),
+            )
+            .unwrap(),
+        ],
         streams: vec![],
     }
 }

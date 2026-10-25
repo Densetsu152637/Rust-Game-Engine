@@ -501,85 +501,38 @@ impl Camera3D {
         Ok(())
     }
 }
-/// One directional light, plus a bounded orthographic shadow volume in world space.
+/// View-wide lighting of a camera. Lights are entities with
+/// `DirectionalLight`, `PointLight`, `SpotLight` or `AreaLight` components
+/// (see [`crate::lights`]).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SceneLighting {
-    /// World-space direction from a surface toward the light; normalized by the renderer.
-    pub direction: [f32; 3],
-    pub color: [f32; 3],
-    pub intensity: f32,
+    /// Ambient radiance added to lit materials, 0..1 (already exposed).
     pub ambient: f32,
-    pub shadows: ShadowSettings,
+    /// Linear factor from photometric light units to output: a 1 lux
+    /// directional light on a white diffuse surface gives `exposure / pi`.
+    /// Physically based scenes use `1 / (1.2 * 2^EV100)`, for example about
+    /// 2.5e-5 for sunlight at EV100 15. Range 1e-8..=1000.
+    pub exposure: f32,
 }
 impl Default for SceneLighting {
     fn default() -> Self {
         Self {
-            direction: [0.4, 0.7, 1.0],
-            color: [1.0; 3],
-            intensity: 3.0,
             ambient: 0.08,
-            shadows: ShadowSettings::default(),
-        }
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub struct ShadowSettings {
-    pub enabled: bool,
-    pub resolution: u32,
-    pub center: [f32; 3],
-    pub extent: f32,
-    pub depth: f32,
-    /// Constant normalized-depth bias, applied during receiver comparison.
-    pub bias: f32,
-}
-impl Default for ShadowSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            resolution: 1024,
-            center: [0.0; 3],
-            extent: 20.0,
-            depth: 100.0,
-            bias: 0.001,
+            exposure: 1.0,
         }
     }
 }
 impl SceneLighting {
     pub fn validate(&self) -> Result<()> {
-        let s = &self.shadows;
-        if !self
-            .direction
-            .iter()
-            .chain(&self.color)
-            .chain(&s.center)
-            .all(|n| n.is_finite())
-            || self.direction.iter().map(|n| n * n).sum::<f32>() < 1e-12
-            || !self
-                .direction
-                .iter()
-                .map(|n| n * n)
-                .sum::<f32>()
-                .is_finite()
-            || s.center.iter().any(|n| n.abs() > 1_000_000.0)
-            || self.color.iter().any(|n| !(0.0..=1.0).contains(n))
-            || !self.intensity.is_finite()
-            || !(0.0..=100.0).contains(&self.intensity)
-            || !self.ambient.is_finite()
+        if !self.ambient.is_finite()
             || !(0.0..=1.0).contains(&self.ambient)
-            || !(64..=4096).contains(&s.resolution)
-            || !s.resolution.is_power_of_two()
-            || !s.extent.is_finite()
-            || !(0.01..=100_000.0).contains(&s.extent)
-            || !s.depth.is_finite()
-            || !(0.1..=100_000.0).contains(&s.depth)
-            || !s.bias.is_finite()
-            || !(0.0..=0.1).contains(&s.bias)
+            || !self.exposure.is_finite()
+            || !(1e-8..=1000.0).contains(&self.exposure)
         {
             return Err(Error::new(
                 "lighting.invalid",
-                "Lighting requires finite bounded values, nonzero direction and power-of-two shadow resolution 64..4096",
+                "Camera lighting requires ambient in 0..1 and exposure in 1e-8..1000",
             ));
         }
         Ok(())
@@ -673,6 +626,8 @@ pub struct SceneRenderFrame {
     pub sprites: RenderFrame,
     pub camera3d: Option<CameraInstance3D>,
     pub meshes: Vec<MeshDraw3D>,
+    /// Enabled light components in stable entity ID order.
+    pub lights: Vec<crate::lights::LightInstance3D>,
     pub materials2d: BTreeMap<String, MaterialSnapshot>,
     /// Texture streams sampled by the draws of this frame.
     pub streams: Vec<StreamFrame>,
@@ -688,6 +643,7 @@ impl From<RenderFrame> for SceneRenderFrame {
             sprites,
             camera3d: None,
             meshes: vec![],
+            lights: vec![],
             materials2d: BTreeMap::new(),
             streams: Vec::new(),
         }

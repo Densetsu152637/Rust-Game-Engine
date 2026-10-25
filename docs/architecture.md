@@ -196,9 +196,10 @@ one submission. `Camera3D` provides perspective or orthographic projection;
 `MeshMaterial` selects textures, tint, unlit/lit behavior and custom WGSL. Opaque
 objects write depth; transparent objects test depth and sort by object origin.
 The built-in shader is metallic-roughness PBR with optional base-color, normal and
-metallic-roughness textures and one directional light with an optional shadow map;
-skinned meshes are deformed on the CPU. Image-based lighting, cascaded or
-point/spot shadows and GPU skinning are not provided. Supported shader bindings,
+metallic-roughness textures, lit by clustered directional, point, spot and area
+light components with cascaded, spot and cube shadows in a shadow atlas
+([lights and shadows](rendering-lights.md)); skinned meshes are deformed on the
+CPU. Image-based lighting and GPU skinning are not provided. Supported shader bindings,
 materials and limits are in [3D scene rendering](rendering3d.md). The optional
 `engine-dlss` crate (see [DLSS](dlss.md)) is a standalone Super Resolution library,
 not part of the default render path.
@@ -265,7 +266,7 @@ current design:
 
 The workspace supplies working feature foundations with explicit failure paths,
 not AAA readiness or full parity with a mature commercial engine. Important gaps
-include image-based lighting and cascaded/point/spot shadows, animation
+include image-based lighting, animation
 graphs/IK/retargeting, crowd avoidance, multiplayer prediction/matchmaking/NAT
 traversal, DLSS Frame Generation/Ray Reconstruction/neural rendering,
 text-input/accessibility UI, and platform-certified distribution. Domain docs

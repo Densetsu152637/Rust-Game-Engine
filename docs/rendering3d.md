@@ -2,9 +2,10 @@
 
 `Runtime::extract_scene_frame` produces immutable `SceneRenderFrame` snapshots.
 The desktop path renders the 3D scene through the HDR render pipeline
-([render architecture](rendering-architecture.md)): a directional shadow map,
-instanced depth-tested meshes into `Rgba16Float` scene colour, registered
-render features, the output operator into the target (optionally through
+([render architecture](rendering-architecture.md)): shadow maps of the scene's
+lights ([lights and shadows](rendering-lights.md)), instanced depth-tested meshes
+into `Rgba16Float` scene colour, registered render features, the output operator
+into the target (optionally through
 [DLSS Super Resolution](#temporal-upscaling-dlss-super-resolution)), then 2D
 sprites/UI and overlay features, optionally with
 [DLSS Frame Generation](#frame-generation-dlss-frame-generation) between
@@ -22,16 +23,16 @@ Coordinates are right-handed, Y up, camera forward negative Z, GPU depth 0 to 1.
 The camera transform must be invertible. Stable authored ID order selects the
 first active camera. Without one, extraction retains the existing 2D behavior.
 
-The camera's `lighting` object supplies one directional light: `direction` points
-from the surface toward the light, `color` is linear RGB in 0..1, `intensity` is
-0..100, and `ambient` is 0..1. Direction must be finite and nonzero. Default light
-is `[0.4,0.7,1]`, white, intensity 3 and ambient 0.08. Native users edit the same
-`Camera3D` component; MCP component inspection and edits expose the same schema.
+The camera's `lighting` object holds view-wide values only: `ambient` (0..1,
+default 0.08) and `exposure` (default 1), the factor from photometric light
+units to output. Lights are separate `DirectionalLight`, `PointLight`,
+`SpotLight` and `AreaLight` components, with their shadows; see
+[lights and shadows](rendering-lights.md), including the migration from the
+former camera light. Native users edit the same components; MCP component
+inspection and edits expose the same schema.
 
 ```json
-{"Camera3D":{"lighting":{"direction":[0.6,1,0.8],"intensity":3,
-  "shadows":{"enabled":true,"resolution":1024,"center":[0,0,0],
-             "extent":20,"depth":100,"bias":0.001}}}}
+{"Camera3D":{"lighting":{"ambient":0.05,"exposure":1}}}
 ```
 
 ## Physically based materials
@@ -50,7 +51,8 @@ The BRDF combines GGX/Trowbridge-Reitz normal distribution, separable Smith
 masking-shadowing, Schlick Fresnel, and energy-weighted Lambert diffuse. The
 nonmetal reflectance at normal incidence is 0.04; metal reflectance uses base
 color. Perceptual roughness is squared for the GGX alpha parameter, with a 0.045
-roughness floor to bound the specular singularity. Direct lighting is linear;
+roughness floor to bound the specular singularity. Every light of the view
+(clustered for local lights) contributes through `engine::lighting`. Direct lighting is linear;
 RGBA8 sRGB targets encode output. Values above the target range clip. Ambient is
 a simple diffuse term, not environment-map lighting or global illumination.
 There is no HDR tone mapper, IBL, clear coat, transmission or multi-scattering
@@ -83,30 +85,19 @@ The model and texture-channel conventions follow the
 (accessed 2026-10-24). This renderer implements the specified base BRDF components;
 it does not claim complete glTF rendering conformance.
 
-## Directional shadow mapping
+## Shadows
 
-`lighting.shadows.enabled` defaults to false. When enabled, the wgpu backend
-renders opaque caster triangle geometry into a `Depth32Float` texture before
-the color pass. The built-in shader projects world positions into this map and
-performs a 3x3 percentage-closer filter using explicit depth comparisons and
-receiver-plane depth correction for sloped surfaces. This
-is an actual geometry depth pass, so moving occluders changes receiver pixels.
-Shadowing affects direct lighting; the ambient term remains visible.
-
-`resolution` must be a power of two in 64..4096 and fit the GPU limit. `center`
-is the world-space shadow volume center (each coordinate within +/-1000000), `extent` its square width/height
-(0.01..100000), and `depth` its length along the light direction (0.1..100000).
-The volume is fixed in world space; positions outside it are lit. `bias` is a
-normalized depth comparison offset in 0..0.1 (default 0.001). Adjust it with
-volume depth/resolution to balance acne and detached shadows. There are no
-cascades, automatic camera fitting, point/spot shadows, alpha-tested casters or
-translucent shadow transmission. Transparent draws do not cast shadows.
+Shadow maps are per light: cascaded shadow maps for directional lights, a
+perspective view for spot lights and six cube faces for point and area lights,
+all in one per-view shadow atlas with PCF or PCSS filtering. They are documented
+with the lights in [lights and shadows](rendering-lights.md); the former
+fixed-volume camera shadow (`lighting.shadows`) is superseded by cascades.
 
 `MeshMaterial.cast_shadows` and `receive_shadows` default to true. Custom vertex
 shader displacement is not replayed in the shadow pass; such materials should
-opt out of casting or provide a native render feature. Overlay-stage render
-features run after the output operator and the 2D overlay, also in an
-upscaled frame.
+opt out of casting or provide a native render feature. Transparent draws do not
+cast shadows. Overlay-stage render features run after the output operator and the
+2D overlay, also in an upscaled frame.
 
 ## Temporal upscaling (DLSS Super Resolution)
 
@@ -373,8 +364,10 @@ Run `cargo run -p engine-desktop --example pbr_shadows -- output.png`, or use
 
 `cargo test -p engine-desktop --test scene3d -- --include-ignored --nocapture`
 runs real GPU readback assertions for depth, custom WGSL/2D, material factors,
-normal/MR maps and linear channel handling, shadow occlusion, caster/receiver
-switches, and shadow-map resizing. GPU tests fail if an adapter is unavailable.
+normal/MR maps and linear channel handling, cascaded shadow occlusion without
+acne, caster/receiver switches, and shadow-map resizing. GPU tests fail if an
+adapter is unavailable. Light and shadow measurements are in
+[lights and shadows](rendering-lights.md#measured-results).
 Set `ENGINE_PBR_CAPTURE` to an absolute PNG path to retain the shadow test image.
 Project rendering/import tests cover authored round trips, invalid settings and
 asset kinds, texture mappings, and normal-array boundary failures.

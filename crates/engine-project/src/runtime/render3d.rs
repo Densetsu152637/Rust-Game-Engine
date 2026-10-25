@@ -117,6 +117,7 @@ impl Runtime {
             .draws
             .retain(|draw| !mesh_ids.contains(&draw.id));
         frame.materials2d.retain(|id, _| !mesh_ids.contains(id));
+        frame.lights = extract_lights(world)?;
         Ok(frame)
     }
     /// A catalog texture, or the current frame of a `stream:<name>` texture
@@ -152,6 +153,21 @@ impl Runtime {
             .map(|control| control.status.clone())
             .unwrap_or_default();
         status.overrides = camera.render_features.clone();
+        Some(status)
+    }
+    /// The renderer-reported lighting state of the active camera view.
+    /// Before any 3D frame the state is `not_rendered` with the number of
+    /// enabled authored lights; `None` without an active 3D camera.
+    pub fn lighting_status(&self) -> Option<crate::lights::LightingStatus> {
+        let world = self.app.world();
+        active_camera3d(world)?;
+        let mut status = world
+            .get_resource::<crate::lights::LightingControl>()
+            .map(|control| control.status.clone())
+            .unwrap_or_default();
+        if status.state == RenderPipelineState::NotRendered {
+            status.authored = extract_lights(world).map_or(0, |lights| lights.len() as u64);
+        }
         Some(status)
     }
     /// The renderer-reported upscaler state. Before any 3D frame was presented
@@ -245,4 +261,67 @@ fn effective_frame_generation(world: &World, camera: &Camera3D) -> FrameGenerati
         .and_then(|control| control.override_settings)
         .filter(|settings| settings.validate().is_ok())
         .unwrap_or(camera.frame_generation)
+}
+
+/// Enabled light components in stable entity ID order, with validated
+/// values and world transforms (identity for a directional light without
+/// a Transform).
+fn extract_lights(world: &World) -> Result<Vec<crate::lights::LightInstance3D>> {
+    use crate::lights::{
+        AreaLight, DirectionalLight, LightInstance3D, PointLight, SceneLight, SpotLight,
+    };
+    let mut lights = Vec::new();
+    for entity in world.iter_entities() {
+        let mut found = Vec::new();
+        if let Some(light) = entity.get::<DirectionalLight>().filter(|l| l.enabled) {
+            light.validate()?;
+            found.push(SceneLight::Directional(light.clone()));
+        }
+        if let Some(light) = entity.get::<PointLight>().filter(|l| l.enabled) {
+            light.validate()?;
+            found.push(SceneLight::Point(light.clone()));
+        }
+        if let Some(light) = entity.get::<SpotLight>().filter(|l| l.enabled) {
+            light.validate()?;
+            found.push(SceneLight::Spot(light.clone()));
+        }
+        if let Some(light) = entity.get::<AreaLight>().filter(|l| l.enabled) {
+            light.validate()?;
+            found.push(SceneLight::Area(light.clone()));
+        }
+        if found.is_empty() {
+            continue;
+        }
+        let id = entity
+            .get::<AuthoredId>()
+            .map(|id| id.id.clone())
+            .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
+        let directional_only = found
+            .iter()
+            .all(|light| matches!(light, SceneLight::Directional(_)));
+        let matrix = if entity.get::<Transform>().is_some() {
+            crate::world_transform(world, entity.id())?.matrix
+        } else if directional_only {
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        } else {
+            return Err(Error::new(
+                "render.light.transform",
+                format!("{id}: PointLight, SpotLight and AreaLight require Transform"),
+            ));
+        };
+        for light in found {
+            lights.push(LightInstance3D {
+                id: id.clone(),
+                light,
+                world: matrix,
+            });
+        }
+    }
+    lights.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(lights)
 }

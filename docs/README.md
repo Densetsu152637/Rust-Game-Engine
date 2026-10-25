@@ -29,8 +29,9 @@
 - [Programmable world](../examples/programmable-world/README.md): a 3D scene and
   retained HUD connected through typed callbacks, physics, animation and navigation;
   GPU-free default execution and an optional desktop window.
-- [PBR and shadows](../examples/pbr-shadows/README.md): three PBR spheres and a
-  directional shadow map, rendered to PNG or a window by an `engine-desktop` example.
+- [PBR and shadows](../examples/pbr-shadows/README.md): three PBR spheres lit by a
+  cascaded-shadow sun, a PCSS spot light and a point light, rendered to PNG or a
+  window by an `engine-desktop` example.
 - [Moving entity](../assets/scripts/moving_entity/src/lib.rs): the smallest script
   crate.
 
@@ -39,13 +40,16 @@
 - [Desktop rendering](desktop-2d-rendering.md): CPU content, the render contract,
   wgpu host and native render-feature extensions.
 - [3D scene rendering](rendering3d.md): cameras, depth, metallic-roughness PBR
-  materials, directional shadow maps, transparent draws and custom WGSL.
+  materials, transparent draws and custom WGSL.
 - [Mesh LOD, HLOD and culling](rendering-lod.md): the CPU engine-mesh-lod crate:
   quadric mesh simplification, LOD chains and selection, HLOD clusters, frustum culling.
 - [Render architecture](rendering-architecture.md): the render extension API
   (features, stages, per-view data, HDR targets, light list, instancing), WGSL
   composition and the material shader contract, device feature composition,
   XR eye targets and texture streams.
+- [Lights and shadows](rendering-lights.md): directional, point, spot and area
+  light components in photometric units, clustered forward shading, cascaded,
+  spot and cube shadows in a shadow atlas with PCF/PCSS, and lighting status.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Hardware ray tracing core](rendering-raytracing.md): `engine-render-rt` tiers and

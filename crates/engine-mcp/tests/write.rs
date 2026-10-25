@@ -1168,3 +1168,63 @@ fn component_set_edits_the_camera_upscaler_request() {
     );
     rejected(dir.path(), &bad, "component_invalid", &original);
 }
+
+// ---- lights -----------------------------------------------------------------------------
+
+#[test]
+fn component_set_adds_edits_and_validates_light_components() {
+    let dir = fixture();
+    let schema = data(
+        dir.path(),
+        "component_schema",
+        json!({"component":"SpotLight"}),
+    );
+    let properties = &schema["components"][0]["schema"]["properties"];
+    assert_eq!(
+        properties["shadows"]["properties"]["filter"]["enum"],
+        json!(["hard", "pcf", "pcss"])
+    );
+    assert_eq!(properties["lumens"]["default"], 800);
+    let set = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"SpotLight","value":{"lumens":1200,"range":9,
+            "shadows":{"enabled":true,"filter":"pcss","source_radius":0.2}}}),
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    let spot = &set["entity"]["components"]["SpotLight"];
+    assert_eq!(spot["lumens"], 1200.0);
+    assert_eq!(spot["shadows"]["filter"], "pcss");
+    let merged = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"SpotLight","value":{"outer_angle_radians":0.8},"merge":true}),
+    );
+    assert_eq!(merged["ok"], true, "{merged}");
+    assert_eq!(
+        merged["entity"]["components"]["SpotLight"]["outer_angle_radians"],
+        0.8
+    );
+    assert_eq!(
+        merged["entity"]["components"]["SpotLight"]["lumens"],
+        1200.0
+    );
+    let original = bytes(dir.path(), START);
+    let bad = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"SpotLight","value":{"inner_angle_radians":0.9,
+            "outer_angle_radians":0.5}}),
+    );
+    rejected(dir.path(), &bad, "light.spot.invalid", &original);
+    let bad = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":rev(dir.path()),"entity":"camera",
+            "component":"DirectionalLight","value":{"shadows":{"cascades":9}}}),
+    );
+    rejected(dir.path(), &bad, "light.shadows.invalid", &original);
+}

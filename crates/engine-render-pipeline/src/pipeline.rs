@@ -10,9 +10,11 @@ use crate::feature::{
     Stage,
 };
 use crate::instancing::DrawStats;
+use crate::lighting::{LightingFrame, LightingRenderer, LightingReport, ViewLighting};
 use crate::lights::LightList;
 use crate::shader::ShaderComposer;
-use crate::targets::{DEPTH_FORMAT, FrameTargets, Target};
+use crate::shadows::ShadowAtlasConfig;
+use crate::targets::{FrameTargets, Target};
 use crate::view::{VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId};
 use anyhow::{Context, Result, bail, ensure};
 use bevy_ecs::world::World;
@@ -21,6 +23,9 @@ use std::collections::HashMap;
 
 /// Stable names of the built-in features.
 pub mod names {
+    /// Prepare stage: the light cluster grid (compute). Disabled, every
+    /// fragment loops over all uploaded local lights.
+    pub const CLUSTERS: &str = "engine.lights.clusters";
     /// Shadow stage: shadow casters into the view's shadow atlas.
     pub const SHADOWS: &str = "engine.shadows";
     /// Prepass stage: world normals, when a running feature needs them.
@@ -98,94 +103,10 @@ pub struct ViewReport {
     pub draw_calls: usize,
     pub instances: usize,
     pub features: ResolvedFeatures,
+    /// Light culling, clustering and shadow allocation of the frame.
+    pub lighting: LightingReport,
     /// The host aborted the frame in its upscale hook.
     pub aborted: bool,
-}
-
-struct Atlas {
-    resolution: u32,
-    layers: u32,
-    array_view: wgpu::TextureView,
-    layer_views: Vec<wgpu::TextureView>,
-}
-
-impl Atlas {
-    fn new(device: &wgpu::Device, resolution: u32, layers: u32) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("engine shadow atlas"),
-            size: wgpu::Extent3d {
-                width: resolution,
-                height: resolution,
-                depth_or_array_layers: layers,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let array_view = texture.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
-        let layer_views = (0..layers)
-            .map(|layer| {
-                texture.create_view(&wgpu::TextureViewDescriptor {
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    base_array_layer: layer,
-                    array_layer_count: Some(1),
-                    ..Default::default()
-                })
-            })
-            .collect();
-        Self {
-            resolution,
-            layers,
-            array_view,
-            layer_views,
-        }
-    }
-}
-
-struct GrowBuffer {
-    buffer: wgpu::Buffer,
-    capacity: u64,
-}
-
-impl GrowBuffer {
-    fn new(device: &wgpu::Device, label: &str, capacity: u64, usage: wgpu::BufferUsages) -> Self {
-        Self {
-            buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: capacity,
-                usage: usage | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            capacity,
-        }
-    }
-
-    /// Write `bytes`, growing first; `true` when the buffer was replaced.
-    fn write(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        label: &str,
-        bytes: &[u8],
-    ) -> bool {
-        let grown = self.capacity < bytes.len() as u64;
-        if grown {
-            *self = Self::new(
-                device,
-                label,
-                (bytes.len() as u64).next_power_of_two(),
-                wgpu::BufferUsages::STORAGE,
-            );
-        }
-        queue.write_buffer(&self.buffer, 0, bytes);
-        grown
-    }
 }
 
 struct ViewState {
@@ -193,81 +114,31 @@ struct ViewState {
     history: ViewHistory,
     mesh: MeshViewState,
     uniform: wgpu::Buffer,
-    lights: GrowBuffer,
-    shadows: GrowBuffer,
-    atlas: Atlas,
-    bind_group: wgpu::BindGroup,
-    /// Placeholder atlas of `shadow_group`.
-    no_atlas: Atlas,
-    /// The view group with a placeholder atlas: bound while the Shadow stage
-    /// renders into the real atlas (a texture cannot be sampled and written
-    /// in one pass).
-    shadow_group: wgpu::BindGroup,
+    /// Light list, shadows, atlas, clusters and the `engine::view` groups.
+    lighting: ViewLighting,
     report: ViewReport,
     final_hdr: Option<wgpu::Texture>,
 }
 
 impl ViewState {
-    fn new(device: &wgpu::Device, layouts: &PipelineLayouts) -> Self {
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+    fn new(gpu: &GpuContext, layouts: &PipelineLayouts, lighting: &LightingRenderer) -> Self {
+        let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("engine view"),
             size: VIEW_UNIFORM_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let lights = GrowBuffer::new(device, "engine lights", 256, wgpu::BufferUsages::STORAGE);
-        let shadows = GrowBuffer::new(device, "engine shadows", 256, wgpu::BufferUsages::STORAGE);
-        let atlas = Atlas::new(device, 64, 1);
-        let bind_group = view_bind_group(device, layouts, &uniform, &lights, &shadows, &atlas);
-        let no_atlas = Atlas::new(device, 1, 1);
-        let shadow_group = view_bind_group(device, layouts, &uniform, &lights, &shadows, &no_atlas);
+        let lighting = ViewLighting::new(gpu, layouts, lighting, &uniform);
         Self {
             targets: None,
             history: ViewHistory::default(),
             mesh: MeshViewState::default(),
             uniform,
-            lights,
-            shadows,
-            atlas,
-            bind_group,
-            no_atlas,
-            shadow_group,
+            lighting,
             report: ViewReport::default(),
             final_hdr: None,
         }
     }
-}
-
-fn view_bind_group(
-    device: &wgpu::Device,
-    layouts: &PipelineLayouts,
-    uniform: &wgpu::Buffer,
-    lights: &GrowBuffer,
-    shadows: &GrowBuffer,
-    atlas: &Atlas,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("engine view"),
-        layout: &layouts.view,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: lights.buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: shadows.buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(&atlas.array_view),
-            },
-        ],
-    })
 }
 
 fn layouts(device: &wgpu::Device) -> PipelineLayouts {
@@ -304,6 +175,7 @@ fn layouts(device: &wgpu::Device) -> PipelineLayouts {
     };
     let float = wgpu::TextureSampleType::Float { filterable: true };
     let d2 = wgpu::TextureViewDimension::D2;
+    let [clusters, cluster_lights, shadow_sampler] = crate::lighting::view_layout_entries(all);
     PipelineLayouts {
         view: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("engine::view"),
@@ -325,6 +197,9 @@ fn layouts(device: &wgpu::Device) -> PipelineLayouts {
                     wgpu::TextureSampleType::Depth,
                     wgpu::TextureViewDimension::D2Array,
                 ),
+                clusters,
+                cluster_lights,
+                shadow_sampler,
             ],
         }),
         instances: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -356,6 +231,7 @@ fn layouts(device: &wgpu::Device) -> PipelineLayouts {
 pub fn builtin_registry() -> Result<FeatureRegistry> {
     let mut registry = FeatureRegistry::default();
     for descriptor in [
+        FeatureDescriptor::new(names::CLUSTERS, Stage::Prepare),
         FeatureDescriptor::new(names::SHADOWS, Stage::Shadow),
         FeatureDescriptor::new(names::NORMALS, Stage::Prepass),
         FeatureDescriptor::new(names::MOTION, Stage::Prepass),
@@ -388,6 +264,8 @@ pub struct ScenePipeline {
     upscale: UpscalePass,
     views: HashMap<ViewId, ViewState>,
     shadow_alignment: u32,
+    lighting: LightingRenderer,
+    atlas: ShadowAtlasConfig,
 }
 
 impl ScenePipeline {
@@ -399,6 +277,7 @@ impl ScenePipeline {
         let output = OutputPass::new(device)?;
         let upscale = UpscalePass::new(device)?;
         let registry = builtin_registry()?;
+        let lighting = LightingRenderer::new(&gpu).context("creating the lighting passes")?;
         let shadow_alignment = device.limits().min_uniform_buffer_offset_alignment.max(16);
         Ok(Self {
             gpu,
@@ -410,7 +289,20 @@ impl ScenePipeline {
             upscale,
             views: HashMap::new(),
             shadow_alignment,
+            lighting,
+            atlas: ShadowAtlasConfig::default(),
         })
+    }
+
+    /// Shadow atlas page size and page budget of every view.
+    pub fn shadow_atlas(&self) -> ShadowAtlasConfig {
+        self.atlas
+    }
+
+    pub fn set_shadow_atlas(&mut self, config: ShadowAtlasConfig) -> Result<()> {
+        config.validate()?;
+        self.atlas = config;
+        Ok(())
     }
 
     pub fn gpu(&self) -> &GpuContext {
@@ -519,10 +411,12 @@ impl ScenePipeline {
         let device = self.gpu.device.clone();
         let queue = self.gpu.queue.clone();
         let layouts = &self.layouts;
+        let gpu = &self.gpu;
+        let lighting = &self.lighting;
         let state = self
             .views
             .entry(view.id)
-            .or_insert_with(|| ViewState::new(&device, layouts));
+            .or_insert_with(|| ViewState::new(gpu, layouts, lighting));
 
         // CPU validation and uploads first: nothing is encoded on failure.
         self.mesh
@@ -545,50 +439,25 @@ impl ScenePipeline {
         if needs.motion {
             targets.ensure_motion(&device);
         }
-        let shadows_run = resolved.is_enabled(names::SHADOWS) && !frame.lights.shadows.is_empty();
-        let mut lights = frame.lights.clone();
-        if !shadows_run {
-            for light in &mut lights.lights {
-                light.shadow_index = -1;
-            }
-        }
-        let (resolution, layers) = lights.atlas();
-        let mut rebind =
-            state
-                .lights
-                .write(&device, &queue, "engine lights", &lights.light_bytes());
-        rebind |= state
-            .shadows
-            .write(&device, &queue, "engine shadows", &lights.shadow_bytes());
-        if state.atlas.resolution != resolution || state.atlas.layers != layers {
-            state.atlas = Atlas::new(&device, resolution, layers);
-            rebind = true;
-        }
-        if rebind {
-            state.bind_group = view_bind_group(
-                &device,
+        let light_count = state
+            .lighting
+            .prepare(
+                &self.gpu,
                 layouts,
+                &self.lighting,
                 &state.uniform,
-                &state.lights,
-                &state.shadows,
-                &state.atlas,
-            );
-            state.shadow_group = view_bind_group(
-                &device,
-                layouts,
-                &state.uniform,
-                &state.lights,
-                &state.shadows,
-                &state.no_atlas,
-            );
-        }
+                &LightingFrame {
+                    view,
+                    lights: frame.lights,
+                    shadows: resolved.is_enabled(names::SHADOWS),
+                    clusters: resolved.is_enabled(names::CLUSTERS),
+                    atlas: self.atlas,
+                },
+            )
+            .context("preparing lights")?;
         let current = view.clip_from_world();
         let previous = state.history.previous(current, view.reset_history);
-        let uniform = view.uniform(
-            previous,
-            state.history.frame_index(),
-            lights.lights.len() as u32,
-        );
+        let uniform = view.uniform(previous, state.history.frame_index(), light_count);
         queue.write_buffer(&state.uniform, 0, bytemuck::bytes_of(&uniform));
 
         let mut stats = DrawStats::default();
@@ -623,10 +492,10 @@ impl ScenePipeline {
                         output: &mut self.output,
                         upscale: &self.upscale,
                         shadow_alignment: self.shadow_alignment,
+                        lighting: &self.lighting,
                         state,
                         view,
                         frame,
-                        lights: &lights,
                         needs,
                     },
                     stage,
@@ -643,6 +512,7 @@ impl ScenePipeline {
                 }),
             );
             queue.submit([finished.finish()]);
+            state.lighting.after_submit();
             let targets = io.targets.as_ref().expect("targets set above");
             let textures = SceneTextures {
                 hdr: &targets.hdr,
@@ -667,6 +537,7 @@ impl ScenePipeline {
                 view: Some(view.id),
                 aborted: true,
                 features: resolved,
+                lighting: state.lighting.report.clone(),
                 ..Default::default()
             };
             state.report = report.clone();
@@ -701,7 +572,7 @@ impl ScenePipeline {
                         &self.gpu,
                         layouts,
                         &mut self.registry,
-                        &state.bind_group,
+                        state.lighting.bind_group(),
                         view,
                         frame.world,
                         &mut encoder,
@@ -721,10 +592,10 @@ impl ScenePipeline {
                         output: &mut self.output,
                         upscale: &self.upscale,
                         shadow_alignment: self.shadow_alignment,
+                        lighting: &self.lighting,
                         state,
                         view,
                         frame,
-                        lights: &lights,
                         needs,
                     },
                     stage,
@@ -758,6 +629,7 @@ impl ScenePipeline {
             draw_calls: stats.draw_calls,
             instances: stats.instances,
             features: resolved,
+            lighting: state.lighting.report.clone(),
             aborted: false,
         };
         state.report = report.clone();
@@ -784,10 +656,12 @@ impl ScenePipeline {
         view.features = overrides.clone();
         let device = self.gpu.device.clone();
         let layouts = &self.layouts;
+        let gpu = &self.gpu;
+        let lighting = &self.lighting;
         let state = self
             .views
             .entry(OVERLAY_ONLY)
-            .or_insert_with(|| ViewState::new(&device, layouts));
+            .or_insert_with(|| ViewState::new(gpu, layouts, lighting));
         let uniform = view.uniform(view.clip_from_world(), 0, 0);
         self.gpu
             .queue
@@ -812,7 +686,7 @@ impl ScenePipeline {
             &self.gpu,
             layouts,
             &mut self.registry,
-            &state.bind_group,
+            state.lighting.bind_group(),
             &view,
             world,
             &mut encoder,
@@ -946,10 +820,10 @@ struct StageRun<'a, 'f> {
     output: &'a mut OutputPass,
     upscale: &'a UpscalePass,
     shadow_alignment: u32,
+    lighting: &'a LightingRenderer,
     state: &'a mut ViewState,
     view: &'a ViewData,
     frame: &'a SceneFrame<'f>,
-    lights: &'a LightList,
     needs: crate::feature::FeatureNeeds,
 }
 
@@ -994,9 +868,9 @@ fn run_stage(
                     stage,
                     view: run.view,
                     view_bind_group: if stage == Stage::Shadow {
-                        &run.state.shadow_group
+                        run.state.lighting.shadow_group()
                     } else {
-                        &run.state.bind_group
+                        run.state.lighting.bind_group()
                     },
                     layouts: run.layouts,
                     world: run.frame.world,
@@ -1021,8 +895,16 @@ fn run_builtin(
     io: &mut FrameIo,
     stats: &mut DrawStats,
 ) -> Result<bool> {
+    if name == names::CLUSTERS {
+        if !run.state.lighting.dispatch {
+            return Ok(false);
+        }
+        run.lighting
+            .encode_clusters(encoder, &mut run.state.lighting);
+        return Ok(true);
+    }
     let state = &*run.state;
-    let view_group = &state.bind_group;
+    let view_group = state.lighting.bind_group();
     let device = &run.gpu.device;
     let targets = io.targets.as_mut().context("no scene targets")?;
     let scene_pass = |encoder: &'_ mut wgpu::CommandEncoder, targets: &FrameTargets, label| {
@@ -1052,15 +934,20 @@ fn run_builtin(
     };
     match name {
         names::SHADOWS => {
-            if run.lights.shadows.is_empty() {
+            let draws = &state.lighting.draws;
+            if draws.is_empty() {
                 return Ok(false);
             }
-            for (index, layer) in state.atlas.layer_views.iter().enumerate() {
+            let atlas = state.lighting.atlas();
+            for (layer, target) in atlas.layer_views.iter().enumerate() {
+                if !draws.iter().any(|d| d.layer == layer as u32) {
+                    continue;
+                }
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("engine shadow layer"),
+                    label: Some("engine shadow atlas page"),
                     color_attachments: &[],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: layer,
+                        view: target,
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(1.0),
                             store: wgpu::StoreOp::Store,
@@ -1069,12 +956,15 @@ fn run_builtin(
                     }),
                     ..Default::default()
                 });
-                if index < run.lights.shadows.len() {
+                for draw in draws.iter().filter(|d| d.layer == layer as u32) {
+                    let size = draw.size as f32;
+                    pass.set_viewport(draw.x as f32, draw.y as f32, size, size, 0.0, 1.0);
+                    pass.set_scissor_rect(draw.x, draw.y, draw.size, draw.size);
                     *stats += run.mesh.draw_shadow(
                         &mut pass,
-                        &state.shadow_group,
+                        state.lighting.shadow_group(),
                         &state.mesh,
-                        index as u32,
+                        draw.index,
                         run.shadow_alignment,
                     );
                 }
