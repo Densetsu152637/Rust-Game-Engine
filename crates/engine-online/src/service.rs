@@ -868,7 +868,12 @@ impl OnlineService {
                         subject: ticket.subject.clone(),
                         team: team as u8,
                         candidates: ticket.candidates.clone(),
-                        rtt_ms: ticket.rtt_ms,
+                        // Prefer the freshest transport measurement over the one at enqueue time.
+                        rtt_ms: self
+                            .peers
+                            .get(&ticket.peer)
+                            .and_then(|p| p.rtt_ms)
+                            .or(ticket.rtt_ms),
                     });
                     tickets.push((ticket.peer, ticket.id));
                 }
