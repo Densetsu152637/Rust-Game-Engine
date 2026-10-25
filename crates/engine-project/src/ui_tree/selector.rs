@@ -9,6 +9,10 @@ pub const MAX_SELECTOR_LEN: usize = 256;
 pub const MAX_SELECTOR_COMPOUNDS: usize = 4;
 /// Most selectors in one comma-separated list.
 pub const MAX_SELECTOR_LIST: usize = 8;
+/// Cost of matching a simple selector (and applying its style) to one node.
+const SELECTOR_BASE_COST: u32 = 8;
+/// Added cost of a child combinator.
+const CHILD_COST: u32 = 1;
 
 /// Selector names of every widget kind (the serialized `kind` tags).
 pub(super) const KIND_NAMES: [&str; 16] = [
@@ -116,6 +120,21 @@ impl Selector {
             kinds += u32::from(c.kind.is_some());
         }
         (ids.min(255) << 16) | (classes.min(255) << 8) | kinds.min(255)
+    }
+
+    /// Relative cost of matching this selector against one node: a base cost, one
+    /// unit per child combinator and a full tree depth per descendant combinator
+    /// (the walk up the ancestors). Themes are budgeted by the sum of these.
+    pub fn cost(&self) -> u32 {
+        SELECTOR_BASE_COST
+            + self
+                .combinators
+                .iter()
+                .map(|c| match c {
+                    Combinator::Child => CHILD_COST,
+                    Combinator::Descendant => MAX_UI_DEPTH as u32,
+                })
+                .sum::<u32>()
     }
 
     /// Whether the selector selects `node`. Combinator steps are resolved over

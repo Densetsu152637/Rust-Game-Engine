@@ -123,3 +123,102 @@ fn virtual_list_rows_in_the_access_tree_carry_their_bound_item_text() {
     assert_eq!(names.len(), 3, "rows must have distinct names: {names:?}");
     assert!(names[1].contains("Bow"), "{names:?}");
 }
+
+// ---- L1: cascade budget ------------------------------------------------------
+
+fn worst_theme(rules: usize, selector: &str, lists: usize) -> UiTheme {
+    let list = vec![selector; lists].join(", ");
+    serde_json::from_value(json!({
+        "version":1,"name":"worst",
+        "rules": (0..rules).map(|_| json!({"selector": list, "style":{"opacity":0.5}})).collect::<Vec<_>>()
+    }))
+    .unwrap()
+}
+
+/// `chains` paths of `depth` containers each under one root container.
+fn deep_root(chains: usize, depth: usize) -> UiRoot {
+    let mut nodes = vec![UiNode::container("r", UiLayout::Column)];
+    for c in 0..chains {
+        let mut parent = "r".to_owned();
+        for d in 0..depth {
+            let id = format!("n{c}_{d}");
+            nodes.push(UiNode::container(id.clone(), UiLayout::Column).child_of(parent));
+            parent = id;
+        }
+    }
+    nodes.truncate(1024);
+    root(nodes)
+}
+
+fn compose(rules: usize, selector: &str, lists: usize) -> Result<UiComposedTheme, String> {
+    let mut set = UiThemeSet::default();
+    set.insert(worst_theme(rules, selector, lists))
+        .and_then(|_| set.compose("worst"))
+        .map_err(|e| e.diagnostics[0].code.clone())
+}
+
+#[test]
+fn a_theme_that_would_stall_the_cascade_is_rejected_when_composed() {
+    // 2048 compiled rules of four chained descendant compounds: ~7.5 s per cascade (debug)
+    // on a 1009-node tree before the budget existed.
+    assert_eq!(
+        compose(256, "* * * *", 8).err().as_deref(),
+        Some("ui.style.cascade_budget")
+    );
+    // The same shape within the budget composes and cascades.
+    let theme = compose(200, "* * * *", 1).expect("200 rules fit the budget");
+    let started = std::time::Instant::now();
+    let out = UiStyleRuntime::default()
+        .resolve("hud", &deep_root(16, 63), &theme, &Default::default())
+        .unwrap();
+    println!("worst allowed cascade: {:?}", started.elapsed());
+    assert_eq!(out.tree.nodes.len(), 1009);
+    // Nodes under at least three ancestors match `* * * *`.
+    let deep = out.tree.find("n0_5").unwrap();
+    assert_eq!(out.tree.nodes[deep].style.opacity, 0.5);
+}
+
+#[test]
+fn ordinary_themes_stay_far_inside_the_budget() {
+    // The most rules a theme may compile, as plain selectors.
+    assert!(compose(MAX_COMPILED_RULES / 8, "button", 8).is_ok());
+    // Hundreds of two-level descendant rules.
+    assert!(compose(400, ".menu .item", 1).is_ok());
+    assert!(compose(250, ".menu .item .row", 1).is_ok());
+    // The budget is on the sum: too many descendant rules are refused...
+    assert_eq!(
+        compose(400, ".menu .item .row", 1).err().as_deref(),
+        Some("ui.style.cascade_budget")
+    );
+    // ...and the limit on compiled rules still reports first when it is the cause.
+    assert!(compose(MAX_COMPILED_RULES / 8 + 1, "button", 8).is_err());
+}
+
+#[test]
+fn the_budget_covers_the_whole_extends_chain() {
+    let theme = |name: &str, extends: Option<&str>, rules: usize| -> UiTheme {
+        let mut theme = worst_theme(rules, ".a .b .c", 1);
+        theme.name = name.into();
+        theme.extends = extends.map(str::to_owned);
+        theme
+    };
+    let mut set = UiThemeSet::default();
+    // 200 rules of cost 8 + 2 * 64 = 136 each: 27 200 alone, 54 400 together.
+    set.insert(theme("base", None, 200)).unwrap();
+    set.insert(theme("derived", Some("base"), 200)).unwrap();
+    assert!(set.compose("base").is_ok());
+    assert_eq!(
+        set.compose("derived")
+            .err()
+            .map(|e| e.diagnostics[0].code.clone())
+            .as_deref(),
+        Some("ui.style.cascade_budget")
+    );
+}
+
+#[test]
+fn an_authored_theme_over_budget_is_rejected_by_validation() {
+    let theme = worst_theme(256, "* * * *", 8);
+    let error = UiThemeSet::default().insert(theme).unwrap_err();
+    assert_eq!(error.diagnostics[0].code, "ui.style.cascade_budget");
+}

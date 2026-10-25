@@ -107,8 +107,9 @@ pub use style::{
 };
 pub use style_schema::{descriptors, validate_component};
 pub use stylesheet::{
-    MAX_COMPILED_RULES, MAX_THEME_DEPTH, MAX_THEME_KEYFRAMES, MAX_THEME_RULES, MAX_THEME_TOKENS,
-    UiComposedTheme, UiRule, UiStyleDelta, UiTheme, UiThemeSet, UiToken, UiTokens,
+    MAX_COMPILED_RULES, MAX_THEME_COST, MAX_THEME_DEPTH, MAX_THEME_KEYFRAMES, MAX_THEME_RULES,
+    MAX_THEME_TOKENS, UiComposedTheme, UiRule, UiStyleDelta, UiTheme, UiThemeSet, UiToken,
+    UiTokens,
 };
 pub use text::{
     BitmapTextBackend, NullTextBackend, SelectingTextBackend, UiCaretStop, UiGlyphQuad,
