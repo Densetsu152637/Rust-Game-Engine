@@ -39,6 +39,7 @@ parts). Joints are separate components: `engine.PhysicsJoint2D` and
 `engine.PhysicsJoint3D` ([Physics joints](physics-joints.md)). Kinematic bodies can be driven by
 `engine.CharacterController2D/3D` ([Character controllers](physics-character.md)).
 Bodies can shatter into debris with `engine.Destructible3D` ([Physics destruction](physics-destruction.md)).
+Dynamic bodies can be driven as raycast vehicles with `engine.Vehicle3D` ([Raycast vehicles](physics-vehicles.md)).
 
 Dynamic bodies own world translation/rotation. Direct Transform writes do not
 teleport dynamic bodies. Changing body configuration rebuilds the body with the

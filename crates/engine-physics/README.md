@@ -66,6 +66,12 @@ gravity, `character_jump`, platform riding, an own autostep, `character_state(id
 `drain_character_events`. Drive it with `set_character_velocity`. See
 [docs/physics-character.md](../../docs/physics-character.md).
 
+3D only: a dynamic body becomes a raycast vehicle with `insert_vehicle(id, VehicleDesc)`:
+per-wheel ray (or sphere) suspension, a Pacejka slip-based tyre model with a friction ellipse,
+an engine/gearbox/differential drivetrain, `set_vehicle_controls`, `vehicle_state`,
+`vehicle_wheel_states` and `drain_vehicle_events`. See
+[docs/physics-vehicles.md](../../docs/physics-vehicles.md).
+
 `drain_events` reports sorted start/stop transitions for active solid contacts
 and sensor intersections between fixed steps. Initial overlaps are reported on
 the first step; removed bodies produce stop events on the next step. Events are
@@ -78,7 +84,7 @@ collider layers. Direction is normalized, distances are in world units, and
 equal-distance hits choose the lower application ID. No broad-phase performance
 claim is made for this query path.
 
-This foundation does not yet expose character controllers, vehicles, shape casts, save-state serialization, or ECS
+This foundation does not expose save-state serialization or ECS
 scheduling. It does not promise cross-platform bitwise determinism. New ECS
 adapters should preserve legacy kinematic gameplay behavior and make rigid-body
 authority opt-in.
