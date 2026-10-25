@@ -76,6 +76,20 @@ pub(crate) struct Bucket {
     pub last_tick: u32,
 }
 
+impl Bucket {
+    /// Refills at `per_sec` (capped at one second's worth) and takes one token if available.
+    pub(crate) fn take(&mut self, tick: u32, tick_rate: f32, per_sec: f32) -> bool {
+        let elapsed = tick.saturating_sub(self.last_tick) as f32;
+        self.tokens = (self.tokens + elapsed * per_sec / tick_rate).min(per_sec);
+        self.last_tick = tick;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
+}
+
 pub(crate) struct PeerState {
     pub view: Option<([f32; 3], f32)>,
     pub next_seq: u32,
@@ -84,11 +98,22 @@ pub(crate) struct PeerState {
     pub sent: Vec<SentPacket>,
     pub largest_acked: Option<u32>,
     pub buckets: Vec<Bucket>,
+    /// Shared bucket for unknown-id and wrong-direction calls.
+    pub invalid_bucket: Bucket,
+    /// Events of this peer queued since the last drain (reserved share accounting).
+    pub pending_events: usize,
+    /// The `RpcRejected` subset of `pending_events`.
+    pub pending_rejections: usize,
     pub tel: PeerTelemetry,
 }
 
 impl PeerState {
-    pub(crate) fn new(peer: PeerId, rpc_count: usize, rpc_burst: impl Fn(usize) -> f32) -> Self {
+    pub(crate) fn new(
+        peer: PeerId,
+        rpc_count: usize,
+        invalid_burst: f32,
+        rpc_burst: impl Fn(usize) -> f32,
+    ) -> Self {
         Self {
             view: None,
             next_seq: 1,
@@ -102,6 +127,12 @@ impl PeerState {
                     last_tick: 0,
                 })
                 .collect(),
+            invalid_bucket: Bucket {
+                tokens: invalid_burst,
+                last_tick: 0,
+            },
+            pending_events: 0,
+            pending_rejections: 0,
             tel: PeerTelemetry {
                 peer,
                 ..PeerTelemetry::default()

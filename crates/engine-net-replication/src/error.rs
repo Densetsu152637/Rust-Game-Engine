@@ -9,7 +9,8 @@ pub type Result<T> = std::result::Result<T, ReplicationError>;
 ///
 /// `Malformed`, `Limit` and `SchemaMismatch` describe untrusted peer bytes: the caller may count
 /// them and disconnect a repeat offender. `Invalid`, `Registry` and the `Unknown*` variants are
-/// caller-side misuse of the native API.
+/// caller-side misuse of the native API. `Backpressure` is flow control: the packet had valid
+/// framing but was not consumed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplicationError {
     /// Packet bytes violate the wire format (truncated, bad count, bad UTF-8, non-finite float...).
@@ -24,6 +25,9 @@ pub enum ReplicationError {
     Registry(String),
     UnknownPeer(PeerId),
     UnknownEntity(NetId),
+    /// The peer's reserved event share cannot hold this packet's RPC calls; nothing was
+    /// consumed. Drain events and offer the packet again, or stop reading that peer.
+    Backpressure(PeerId),
 }
 
 impl fmt::Display for ReplicationError {
@@ -36,6 +40,7 @@ impl fmt::Display for ReplicationError {
             Self::Registry(m) => write!(f, "invalid replication registry: {m}"),
             Self::UnknownPeer(p) => write!(f, "unknown replication peer {p}"),
             Self::UnknownEntity(e) => write!(f, "unknown replication entity {e}"),
+            Self::Backpressure(p) => write!(f, "replication event share of peer {p} is full"),
         }
     }
 }

@@ -301,13 +301,25 @@ instead of being sent.
 - **Client to server:** `client.call_server(rpc, entity, &args)` builds the packet.
   `server.receive` validates each call independently: registered ID, direction, rate (a token
   bucket of `max_calls_per_sec` tokens, refilled at that rate per second of server ticks; **every**
-  attempt consumes a token, so malformed spam is throttled too), target presence, that the entity
+  attempt consumes a token, so malformed spam is throttled too: calls with an unknown ID or the
+  wrong direction draw from one per-peer invalid-call bucket of `max_rpcs_per_packet` tokens per
+  second and become `RateLimited` once it is empty), target presence, that the entity
   exists **and is live for the caller** (an entity the caller cannot see is indistinguishable from
   one that does not exist), ownership, then argument decoding (arity, types, lengths, finiteness,
   no trailing bytes). Success yields `ServerEvent::RpcReceived`; failure yields
   `ServerEvent::RpcRejected { reason, .. }` with a reason from `RpcRejectReason` and `receive`
   still returns `Ok`: soft failures never disconnect. Only a packet whose *framing* is invalid is
-  an `Err`.
+  an `Err`, apart from backpressure below.
+- **Server event queue, per peer:** each peer owns a reserved share of
+  `peer_event_capacity() = max(max_pending_events / max_peers, max_rpcs_per_packet)` events
+  between `drain_events` calls (64 with defaults), so one peer cannot displace another peer's
+  `RpcReceived`; the queue as a whole holds at most `max_peers` shares. At most a quarter of a
+  share holds `RpcRejected` events; later rejections are counted in `rpc_rejected` and
+  `rpc_rejections_coalesced` but not queued. A reliable `RpcReceived` is never dropped: an RPC
+  packet whose calls might not fit the sender's remaining share is refused whole with
+  `ReplicationError::Backpressure(peer)` and counted in `rpc_packets_refused`, nothing in it
+  consumed. Drain events and offer the packet again, or stop reading that peer. `remove_peer`
+  discards the peer's undrained events. `ServerTelemetry::events_dropped` stays 0.
 
 ## Wire format (version 1)
 
@@ -356,7 +368,7 @@ each malformed class explicitly.
 | `max_rpcs_per_packet` | 16 | calls per RPC packet |
 | `max_rpc_payload_bytes` | 1024 | encoded arguments of one call |
 | `max_in_flight_packets` | 256 | unacknowledged packets tracked per peer |
-| `max_pending_events` | 4096 | buffered events; newer ones are dropped and counted |
+| `max_pending_events` | 4096 | buffered events; the server splits it into per-peer shares (backpressure when full), the client drops newer ones and counts them |
 | `max_view_radius` / `max_abs_position` | 1e6 / 1e7 | accepted view radius and coordinates |
 
 `ServerConfig` tunes `tick_rate_hz`, `grid_cell_size`, `relevance_hysteresis`,
@@ -393,7 +405,8 @@ property values, no credentials): per-peer bytes and packets for the last tick a
 `compression_ratio` (an estimate of what resending every relevant entity in full each tick would
 have cost, divided by bytes actually sent), `unacked_packets`, `ack_lag_packets`,
 `oldest_unacked_age_ticks`, `packets_acked / lost`, `oversize_blocks`, and RPC counts
-(`rpc_received`, `rpc_rejected` with a per-reason breakdown, `rpc_sent`). `client.telemetry()`
+(`rpc_received`, `rpc_rejected` with a per-reason breakdown, `rpc_rejections_coalesced`,
+`rpc_packets_refused`, `rpc_sent`). `client.telemetry()`
 counts packets, duplicates, rejections, stale blocks, RPCs and dropped events. Use
 `ack_lag_packets` or `oldest_unacked_age_ticks` to detect a stalled peer.
 
@@ -458,5 +471,7 @@ Residual risks and limits:
 integration suites: `sync` (convergence, compression, ordering, `NetId` reuse, callbacks, events,
 delivery classes, rate caps), `relevancy` (radius, hysteresis, re-entry, information leaks,
 callbacks), `budget` (hard limits, freshness, priority, starvation), `rpc` (every rejection
-reason, rate limits, multicast) and `robustness` (fuzzing and malformed packets). The shared
+reason, rate limits, multicast, a peer flooding 4296 invalid calls in one tick without evicting
+another peer's valid call, and explicit backpressure once a peer's event share is full) and
+`robustness` (fuzzing and malformed packets). The shared
 helpers live in `engine_net_replication::testing` (seeded `Rng`, `LossyLink`, `Simulation`).

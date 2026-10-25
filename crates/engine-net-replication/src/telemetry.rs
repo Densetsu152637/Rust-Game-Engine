@@ -71,6 +71,12 @@ pub struct PeerTelemetry {
     pub rpc_received: u64,
     pub rpc_rejected: u64,
     pub rpc_rejected_by_reason: BTreeMap<&'static str, u64>,
+    /// Rejections counted above but not queued as `RpcRejected` because the peer already had
+    /// its cap of rejection events pending.
+    pub rpc_rejections_coalesced: u64,
+    /// RPC packets refused with `ReplicationError::Backpressure` because the peer's reserved
+    /// event share could not hold their calls.
+    pub rpc_packets_refused: u64,
     pub rpc_sent: u64,
 }
 
@@ -90,6 +96,8 @@ pub struct ServerTelemetry {
     pub tick: u32,
     pub entities: usize,
     pub peers: Vec<PeerTelemetry>,
+    /// Always 0 on the server since event capacity is reserved per peer; kept for format
+    /// compatibility. See `PeerTelemetry::rpc_packets_refused`.
     pub events_dropped: u64,
 }
 
