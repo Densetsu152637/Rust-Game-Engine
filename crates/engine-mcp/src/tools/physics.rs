@@ -61,7 +61,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                         ("point", vector("Point to project or test.")),
                         (
                             "rotation",
-                            json!({"description":"Query shape rotation: quaternion [x,y,z,w] (3D) or an angle in radians (2D).","oneOf":[{"type":"number"},{"type":"array","minItems":4,"maxItems":4,"items":{"type":"number"}}]}),
+                            json!({"type":"array","minItems":1,"maxItems":4,"items":{"type":"number"},"description":"Query shape rotation: quaternion [x,y,z,w] (3D) or a one-element angle in radians [angle] (2D)."}),
                         ),
                         (
                             "max_distance",
@@ -263,6 +263,13 @@ fn query(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
         if let Some(value) = args.get(key).filter(|v| !v.is_null()) {
             request.insert(key.into(), value.clone());
         }
+    }
+    // A one-element array is a 2D angle; the request type takes a bare number.
+    if let Some(Value::Array(angle)) = request.get("rotation")
+        && let [single] = angle.as_slice()
+    {
+        let single = single.clone();
+        request.insert("rotation".into(), single);
     }
     // The shape object is flattened into the request, its `type` becoming `shape`.
     if let Some(shape) = Args(args).optional_object("shape")? {

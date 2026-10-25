@@ -282,7 +282,7 @@ fn both_flags_list_everything() {
         &[],
         &[request(1, "tools/list", json!({}))],
     );
-    assert_eq!(tool_names(&session).len(), 28);
+    assert_eq!(tool_names(&session).len(), 30);
 }
 
 #[test]

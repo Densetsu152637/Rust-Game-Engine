@@ -267,7 +267,7 @@ fn two_dimensional_scenes_and_alternate_scenes_are_supported() {
         dir.path(),
         "physics_query",
         json!({"kind":"shape_cast","dimension":"2d","shape":{"type":"ball","radius":0.5},
-            "position":[-6,4],"rotation":0.0,"direction":[0,-1]}),
+            "position":[-6,4],"rotation":[0.0],"direction":[0,-1]}),
     );
     assert_eq!(cast["hits"][0]["entity"], "floor", "{cast}");
     // A 3D query against a 2D-only scene finds nothing; a different scene is selectable.

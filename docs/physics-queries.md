@@ -173,7 +173,7 @@ advance `ticks` (0..=3600) ticks of `dt` (default 1/60 s) and answer from the re
 `shape_cast` (`shape`, `position`, `rotation`, `direction`, `max_distance`), `overlap`
 (`shape`, `position`, `rotation`) or `point` (`point`, `contains`), plus `dimension`
 (`"3d"` default or `"2d"`), `limit` (1..=1024) and `filter` (`layers`, `mask`, `exclude`
-authored ids, `sensors`, `kinds`). `shape` is `{type: ball|box|capsule|cylinder|convex_hull,
+authored ids, `sensors`, `kinds`). `rotation` is a quaternion `[x,y,z,w]` (3D) or `[angle]` (2D); `shape` is `{type: ball|box|capsule|cylinder|convex_hull,
 ...}`. The result is `{dimension, ticks, count, truncated, hits: [{entity, entity_bits,
 distance, ...}]}`.
 
