@@ -14,6 +14,12 @@ use world::{Core, Extension};
 #[path = "features/joints/dim2.rs"]
 mod joints;
 pub use joints::{Angles, Dof, Frame, JointDesc, JointState};
+#[path = "features/character.rs"]
+mod character;
+pub use character::{
+    Autostep, CharacterDesc, CharacterEvent, CharacterEventKind, CharacterState,
+    MAX_CHARACTER_EVENTS,
+};
 #[path = "features/queries.rs"]
 mod queries;
 pub use queries::{

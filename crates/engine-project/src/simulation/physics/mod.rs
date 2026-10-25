@@ -21,6 +21,7 @@ use bevy_ecs::prelude::*;
 use engine_physics::{World2D, World3D};
 mod api;
 mod bodies;
+mod character;
 mod contacts;
 mod debug_view;
 mod descriptors;
@@ -32,6 +33,10 @@ mod stepping;
 mod types;
 pub use api::*;
 pub(crate) use bodies::Bodies;
+pub use character::{
+    AutostepSettings, CharacterController2D, CharacterController3D, CharacterReadout,
+    character_impulse, character_jump, character_state, set_character_velocity,
+};
 pub use debug_view::*;
 pub use joints::{
     AxisKind, AxisSetting, BrokenJoint, JointKind, JointMotor, JointReadout, JointStatus,
@@ -55,6 +60,7 @@ fn features() -> Vec<Box<dyn Feature>> {
     vec![
         Box::new(contacts::Contacts),
         Box::new(joints::Joints::new()),
+        Box::new(character::Characters::new()),
     ]
 }
 
