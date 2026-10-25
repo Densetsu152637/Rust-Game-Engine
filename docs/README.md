@@ -86,6 +86,8 @@
   rigid-body proxy coupling and renderer outputs.
 - [Navigation meshes](navigation.md): layered polygon NavMesh baking, bounded path
   queries, authored `NavigationAgent` data and MCP navigation tools.
+- [Crowds, carving and off-mesh links](ai-crowds.md): ORCA crowd steering, formations,
+  dynamic navmesh obstacles, off-mesh links and their authored components.
 - [Physics library](../crates/engine-physics/README.md),
   [animation library](../crates/engine-animation/README.md), and
   [navigation library](../crates/engine-navigation/README.md): native APIs and limits.

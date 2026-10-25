@@ -2,7 +2,9 @@
 
 `Runtime::new` installs Rapier 2D/3D, animation playback and waypoint navigation.
 All projects automatically expose `engine.PhysicsBody2D`, `engine.PhysicsBody3D`,
-`engine.PhysicsSettings`, `engine.AnimationPlayer`, `engine.SkinBinding` and `engine.NavigationAgent` in the component catalog,
+`engine.PhysicsSettings`, `engine.AnimationPlayer`, `engine.SkinBinding`, `engine.NavigationAgent` and the crowd components
+(`engine.CrowdAgent`, `engine.NavigationObstacle`, `engine.OffMeshLink`, `engine.Formation`;
+see [ai-crowds.md](ai-crowds.md)) in the component catalog,
 including MCP discovery. No game registration is required. Custom values use
 `{"version":1,"data":{...}}` in the entity's `components.custom` map.
 The `engine.*` namespace is reserved.
