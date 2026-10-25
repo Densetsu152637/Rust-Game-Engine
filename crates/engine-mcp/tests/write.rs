@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 17] = [
+const WRITE_TOOLS: [&str; 22] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -38,6 +38,11 @@ const WRITE_TOOLS: [&str; 17] = [
     "pcg_create",
     "pcg_edit",
     "pcg_run",
+    "terrain_create",
+    "terrain_sculpt",
+    "terrain_paint",
+    "terrain_holes",
+    "terrain_navmesh",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -91,12 +96,12 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 37);
+    assert_eq!(names.len(), 43);
     // Registration order: the 12 original read tools, the 8 original write
     // tools, then the navigation pair (bake writes, query only reads), then the
     // acoustics tools (inspect and query read, bake writes), then the physics pair (both read).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 20);
+    assert_eq!(read_only_names.len(), 21);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -117,13 +122,17 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(read_only_names[17..19], ["tilemap_info", "tilemap_query"]);
     // Then the pcg family.
     assert_eq!(
-        names[33..],
+        names[33..37],
         ["pcg_create", "pcg_edit", "pcg_validate", "pcg_run"]
     );
     assert_eq!(read_only_names[19], "pcg_validate");
+    // Then the terrain family: five writers, then its read-only info tool.
+    assert_eq!(names[37..42], WRITE_TOOLS[17..]);
+    assert_eq!(names[42], "terrain_info");
+    assert_eq!(read_only_names[20], "terrain_info");
     assert_eq!(WRITE_TOOLS[8], "navigation_bake");
     assert_eq!(WRITE_TOOLS[9], "acoustics_bake");
-    assert_eq!(WRITE_TOOLS[14..], ["pcg_create", "pcg_edit", "pcg_run"]);
+    assert_eq!(WRITE_TOOLS[14..17], ["pcg_create", "pcg_edit", "pcg_run"]);
 }
 
 #[test]
@@ -153,6 +162,9 @@ fn write_tool_annotations_are_accurate() {
     expect("component_remove", true, true);
     expect("file_write", true, true);
     expect("asset_import_model", false, false);
+    expect("terrain_create", false, false);
+    expect("terrain_sculpt", true, false);
+    expect("terrain_navmesh", false, false);
     for tool in tools
         .iter()
         .filter(|t| t["annotations"]["readOnlyHint"] == true)

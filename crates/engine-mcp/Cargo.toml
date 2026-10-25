@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 engine-pcg = { path = "../engine-pcg" }
 engine-project = { path = "../engine-project" }
+engine-terrain = { path = "../engine-terrain" }
 engine-tilemap = { path = "../engine-tilemap" }
 base64.workspace = true
 blake3 = "1"
