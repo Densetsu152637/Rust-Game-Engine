@@ -324,13 +324,21 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
             {
                 fields.push(("engine.SkinBinding", "model", model));
             }
-            if let Some(navmesh) = c
-                .custom
-                .get("engine.NavigationAgent")
-                .and_then(|v| v.data.get("navmesh"))
-                .and_then(Value::as_str)
-            {
-                fields.push(("engine.NavigationAgent", "navmesh", navmesh));
+            for component in [
+                "engine.NavigationAgent",
+                "engine.CrowdAgent",
+                "engine.NavigationObstacle",
+                "engine.OffMeshLink",
+                "engine.Formation",
+            ] {
+                if let Some(navmesh) = c
+                    .custom
+                    .get(component)
+                    .and_then(|v| v.data.get("navmesh"))
+                    .and_then(Value::as_str)
+                {
+                    fields.push((component, "navmesh", navmesh));
+                }
             }
             for (component, field, id) in fields {
                 if id == asset.id {
