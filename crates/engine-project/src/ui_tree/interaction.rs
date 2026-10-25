@@ -1348,6 +1348,7 @@ impl GameUi {
                 .dialog_choice
                 .as_ref()
                 .and_then(|(k, c)| mine(k).map(|n| (n, *c))),
+            ..Default::default()
         }
     }
 }

@@ -5,31 +5,55 @@
 //! backend contract), `navigation` (tab order + spatial focus), `text_edit`
 //! (text-input event model), `interaction` (`GameUi` resource), `render`
 //! (draw extraction), `schema` (authoring descriptor), `builder` (native
-//! constructors) and `world` (ECS integration).
+//! constructors) and `world` (ECS integration). The styling layer
+//! (`docs/ui-styling.md`) adds `selector`, `stylesheet` (themes and cascade),
+//! `animation` (transitions, keyframes), `resolve` (the one style-resolution
+//! step), `binding` (data binding), `world_panel` (world-space panels) and
+//! `style_schema` (their descriptors).
 use crate::{Error, Result, ui::Rect};
 use bevy_ecs::prelude::Component;
 use serde::{Deserialize, Serialize};
 
+mod animation;
+mod binding;
 mod builder;
 mod chrome;
 mod interaction;
 mod layout;
 mod navigation;
 mod render;
+mod resolve;
 mod schema;
+mod selector;
 mod shaped_text;
 mod style;
+mod style_schema;
+mod stylesheet;
 mod text;
 mod text_edit;
 mod tree;
 mod widget;
 mod world;
+mod world_panel;
 
+pub use animation::{
+    Easing, InfiniteTag, MAX_ANIMATION_ITERATIONS, MAX_KEYFRAMES, MAX_MOTION_SECONDS,
+    MAX_RULE_TRANSITIONS, UiAnimProperty, UiAnimation, UiAnimationDirection, UiAnimationPhase,
+    UiIterations, UiKeyframe, UiKeyframes, UiTransition, UiValue,
+};
+pub use binding::{
+    MAX_BIND_ARGS, MAX_BIND_FORMAT, MAX_BIND_PATH, MAX_BIND_SEGMENTS, MAX_DATA_BYTES,
+    MAX_DATA_DEPTH, MAX_DATA_ITEMS, MAX_DATA_STRING, MAX_UI_BINDINGS, UiBindMode, UiBindProperty,
+    UiBinding, UiBindingState, UiBindingStats, UiData, UiDataContext, UiItemTextSource,
+    UiItemTexts, UiPathSegment, UiStringResolver, parse_path,
+};
 pub use interaction::{GameUi, UiInteraction, UiStateFlags, UiTickContext, UiWidgetEvent};
 pub use layout::{MAX_UI_BOXES, UiBox};
 pub use navigation::UiDirection;
 pub use render::{UI_DIALOG_LAYER, UI_POPUP_LAYER, UiRenderState};
+pub use resolve::{UiStyleRuntime, UiStyleSettings};
 pub use schema::descriptor;
+pub use selector::{MAX_SELECTOR_COMPOUNDS, MAX_SELECTOR_LEN, MAX_SELECTOR_LIST};
 pub use shaped_text::{
     EngineTextBackend, SDF_DEFERRED_REASON, TextRenderState, TextRenderStatus, UiTextStats,
     validate_markup,
@@ -37,6 +61,11 @@ pub use shaped_text::{
 pub use style::{
     MAX_GRID_TRACKS, MAX_UI_EXTENT, UiAlign, UiEdges, UiGridFlow, UiGridPlacement, UiInset,
     UiJustify, UiLayout, UiLength, UiPosition, UiStyle, UiTrack, UiTrackSize, UiWrap,
+};
+pub use style_schema::{descriptors, validate_component};
+pub use stylesheet::{
+    MAX_COMPILED_RULES, MAX_THEME_DEPTH, MAX_THEME_KEYFRAMES, MAX_THEME_RULES, MAX_THEME_TOKENS,
+    UiComposedTheme, UiRule, UiStyleDelta, UiTheme, UiThemeSet, UiToken, UiTokens,
 };
 pub use text::{
     BitmapTextBackend, NullTextBackend, SelectingTextBackend, UiCaretStop, UiGlyphQuad,
@@ -52,7 +81,11 @@ pub use widget::{
     MAX_UI_ROOT_TEXT, MAX_UI_TEXT, MAX_VIRTUAL_ITEMS, MAX_VIRTUAL_VISIBLE, UiImageFit,
     UiNavigation, UiScrollAxes, UiTooltip, UiWidget, virtual_range,
 };
-pub use world::{extract_world, extract_world_with, register, tick_world};
+pub use world::{extract_world, extract_world_with, register, reset_world, tick_world};
+pub use world_panel::{
+    MAX_PANEL_PIXELS, PANEL_Z_STEP, UiBillboard, UiWorldPanel, UiWorldPanels, UiWorldPointer,
+    camera2d_ray, camera3d_ray, clip_quads, world_mesh,
+};
 
 /// Nodes per root (natively built trees). Authored JSON is additionally bound
 /// by the 64 KiB component limit; serialization omits default values, so a
@@ -70,6 +103,15 @@ pub struct UiRoot {
     pub layer: i32,
     pub visible: bool,
     pub enabled: bool,
+    /// Theme name for this root; unset uses `UiStyleSettings::active_theme`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// Reduced-motion override for this root; unset follows the global setting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reduced_motion: Option<bool>,
+    /// Data bindings of widget properties to the `UiDataContext`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<UiBinding>,
 }
 
 impl Default for UiRoot {
@@ -80,6 +122,9 @@ impl Default for UiRoot {
             layer: 0,
             visible: true,
             enabled: true,
+            theme: None,
+            reduced_motion: None,
+            bindings: vec![],
         }
     }
 }
@@ -105,8 +150,7 @@ pub struct UiNode {
     pub visible: bool,
     #[serde(skip_serializing_if = "is_true")]
     pub enabled: bool,
-    /// Reserved for the styling layer (stylesheet class selectors); validated
-    /// but not interpreted by layout, interaction or rendering yet.
+    /// Class names matched by `.class` stylesheet selectors.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub classes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -180,6 +224,14 @@ impl UiRoot {
         if self.version != 1 {
             return Err(invalid("Unsupported UiRoot version"));
         }
-        self.tree.validate()
+        if self
+            .theme
+            .as_deref()
+            .is_some_and(|t| !stylesheet::valid_name(t))
+        {
+            return Err(invalid("Invalid theme name"));
+        }
+        let hierarchy = self.tree.hierarchy()?;
+        binding::validate_all(&self.bindings, &self.tree.nodes, &hierarchy)
     }
 }

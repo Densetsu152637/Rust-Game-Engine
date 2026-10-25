@@ -69,7 +69,9 @@ pub fn descriptor() -> ComponentDescriptor {
             "gridAutoFlow":{"type":"string","enum":["row","column","row_dense","column_dense"]},
             "gridColumn":placement,"gridRow":placement,
             "clip":{"type":"boolean"},"background":color,"foreground":color,"accent":color,
-            "font":short,"fontScale":{"type":"number","minimum":0.01,"maximum":16}
+            "font":short,"fontScale":{"type":"number","minimum":0.01,"maximum":16},
+            "opacity":{"type":"number","minimum":0,"maximum":1},
+            "scale":{"type":"number","minimum":0,"maximum":16}
         }),
     ]);
     let strings = |max: usize| json!({"type":"array","maxItems":max,"items":label});
@@ -132,7 +134,10 @@ pub fn descriptor() -> ComponentDescriptor {
                 "nodes":{"type":"array","maxItems":MAX_UI_NODES,"items":node}
             }},
             "layer":{"type":"integer","minimum":i32::MIN,"maximum":i32::MAX},
-            "visible":{"type":"boolean"},"enabled":{"type":"boolean"}
+            "visible":{"type":"boolean"},"enabled":{"type":"boolean"},
+            "theme":{"type":"string","minLength":1,"maxLength":64},
+            "reducedMotion":{"type":"boolean"},
+            "bindings":{"type":"array","maxItems":MAX_UI_BINDINGS,"items":style_schema::binding_schema()}
         }}),
         defaults: json!({"version":1,"tree":{"nodes":[]},"layer":0,"visible":true,"enabled":true}),
         requires: vec![],

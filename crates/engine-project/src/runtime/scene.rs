@@ -130,6 +130,7 @@ impl Runtime {
             .world_mut()
             .resource_mut::<crate::ui_tree::GameUi>()
             .clear();
+        crate::ui_tree::reset_world(self.app.world_mut());
         crate::audio::synchronize(self.app.world_mut())?;
         self.attach_scripts()?;
         Ok(())
