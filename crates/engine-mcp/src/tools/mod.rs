@@ -9,6 +9,7 @@ mod files;
 mod locale;
 mod model_import;
 mod navigation;
+mod networking;
 mod physics;
 mod project;
 mod scene;
@@ -83,6 +84,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(physics::tools());
     tools.extend(locale::tools());
     tools.extend(ui::tools());
+    tools.extend(networking::tools());
     tools
 }
 

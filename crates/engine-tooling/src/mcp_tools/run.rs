@@ -90,7 +90,8 @@ impl Tool for RunTool {
                 ("event_trace_truncated", json!({"type":"boolean"})),
                 ("profile", json!({"type":["object","null"]})),
                 ("profile_frames_truncated", json!({"type":"boolean"})),
-                ("network", json!({"type":["object","null"]})),
+                ("network", json!({"type":["object","null"], "description":
+                    "Network session status: role, mode (snapshot or delta), transport kind and security, peers (at most 16) with per-peer link statistics (rtt, bytes, packets, lost, dropped_unreliable), replication telemetry (bytes per tick, compression ratio, relevant/sent/deferred entities, RPC counters), voice and lag-compensation counters and the active link simulation. Pass it to network_inspect for an analysis. Null without an attached session; dropped when above 64 KiB."})),
                 ("input_devices", json!({"type":["object","null"]})),
                 ("upscaler", json!({"type":["object","null"], "description":
                     "Temporal upscaler request and what the renderer did (state not_rendered in headless runs)."})),
