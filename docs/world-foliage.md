@@ -154,6 +154,18 @@ terrain keeps its dirty region private, so foliage does not receive regions: **a
 Painted (native `paint`) instances live in the field until the next regeneration; export them
 with `export_asset` and use `asset` mode to keep hand-painted content.
 
+### Origin shifts
+
+Instance positions live in the local frame of `WorldOrigin` (asset files hold absolute
+positions; `export_asset` writes absolute positions). After an origin shift the service
+translates the field into the new frame (f64, rounded once), drops the CPU cluster entities
+the coordinates service had already shifted and rebuilds them from the translated field, and
+does not count the terrain's moved matrix as a ground change, so a rebase never regenerates
+foliage (tested: same 512 instances within f32 rounding, attempts unchanged). Generated
+placement hashes cells of the local frame at generation time, so regenerating (an edited
+component) under a different origin yields a different pattern; see
+[large-world coordinates](world-coordinates.md#limits).
+
 ### Render path rule (no double draw)
 
 Foliage draws through the GPU feature when `render_mode` is `gpu`, or `auto` while the

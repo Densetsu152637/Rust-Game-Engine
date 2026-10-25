@@ -6,7 +6,7 @@ descriptors, typed ECS adapters, installed services and per-tick hooks:
 
 | Submodule | Feature |
 | --------- | ------- |
-| `coordinates` | Large-world coordinates |
+| `coordinates` | Large-world coordinates ([guide](world-coordinates.md)) |
 | `terrain` | Heightmap terrain ([guide](terrain.md)) |
 | `foliage` | Foliage and vegetation |
 | `water` | Ocean, lake and river water |
@@ -30,6 +30,16 @@ descriptors, typed ECS adapters, installed services and per-tick hooks:
   (view-dependent level of detail and render geometry).
 
 A hook error fails the tick with its diagnostic, like the simulation hooks.
+
+## Coordinates
+
+`coordinates` runs first in `pre_simulation` and is the **single owner of origin shifts**:
+when `WorldOrigin` moves it shifts every root `Transform` once and teleports physics bodies.
+Feature services never shift entities themselves. A service that caches world-space data
+outside entity transforms remembers the `WorldOrigin.offset` that data is expressed in and
+re-expresses it when the offset differs (navigation paths, foliage fields). Services that
+need absolute positions (cell grids, noise domains, wave phases) compute
+`WorldOrigin.offset + local` in f64. See [large-world coordinates](world-coordinates.md).
 
 ## Rendering
 

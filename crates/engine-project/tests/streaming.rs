@@ -1,5 +1,5 @@
 //! Authored `engine.WorldPartition` scene -> Runtime -> streamed cells, layers, HLOD, events.
-use engine_project::world::coordinates::WorldOrigin;
+use engine_project::world::coordinates::{self, WorldOrigin};
 use engine_project::world::streaming::{
     self, CellState, EVENT_CELL_LOADED, EVENT_CELL_UNLOADED, PartitionStatus, StreamedCell,
     WorldPartition,
@@ -460,16 +460,25 @@ fn rebasing_the_origin_keeps_streamed_content_in_place() {
         runtime.app().world().get::<Transform>(a).unwrap().position,
         [110.25, 0.0, 10.25]
     );
-    // Shift the origin by +100 m along x and keep the source at the same absolute place.
-    runtime.app_mut().world_mut().insert_resource(WorldOrigin {
-        offset: [100.0, 0.0, 0.0],
-    });
-    move_scout(&mut runtime, [-50.0, 0.0, 50.0]);
+    // Shift the origin by +100 m along x. The coordinates service shifts every root once: the
+    // cell content and the scout (the source) keep their absolute places.
+    coordinates::rebase_now(runtime.app_mut().world_mut(), [100.0, 0.0, 0.0]).unwrap();
+    let scout = runtime.entity("scout").unwrap();
+    assert_eq!(
+        runtime
+            .app()
+            .world()
+            .get::<Transform>(scout)
+            .unwrap()
+            .position,
+        [-50.0, 0.0, 50.0]
+    );
+    tick(&mut runtime);
     tick(&mut runtime);
     assert_eq!(
         runtime.app().world().get::<Transform>(a).unwrap().position,
         [10.25, 0.0, 10.25],
-        "same absolute position, new local coordinates"
+        "same absolute position, new local coordinates, shifted exactly once"
     );
     assert_eq!(loaded(&runtime), [0, 1, 2]);
     assert_eq!(status(&runtime).total_unloaded, 0);

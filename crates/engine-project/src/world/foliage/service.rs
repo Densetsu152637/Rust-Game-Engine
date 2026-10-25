@@ -118,6 +118,8 @@ struct State {
     attempts: u64,
     scatter: Vec<TypeReport>,
     render_error: Option<String>,
+    /// `WorldOrigin.offset` the field's positions are expressed in (assets are absolute: zero).
+    frame: [f64; 3],
 }
 
 impl State {
@@ -136,6 +138,7 @@ impl State {
             attempts: 0,
             scatter: Vec::new(),
             render_error: None,
+            frame: [0.0; 3],
         }
     }
 }
@@ -256,6 +259,7 @@ fn generate(
     state.types = component.types.clone();
     state.field = Arc::new(result.field);
     state.scatter = result.types;
+    state.frame = crate::world::coordinates::origin(world);
     Ok(())
 }
 
@@ -280,6 +284,7 @@ fn load_asset_mode(world: &World, component: &FoliageComponent, state: &mut Stat
     validate_types(&types).map_err(mapped)?;
     state.types = types;
     state.field = Arc::new(asset.field);
+    state.frame = [0.0; 3];
     state.scatter.clear();
     state.notes.retain(|n| !n.starts_with("type override"));
     state.notes.extend(notes);
@@ -317,12 +322,41 @@ fn ground_label(component: &FoliageComponent) -> String {
     }
 }
 
+/// Moves the instances into the current `WorldOrigin` frame when it differs from the one they
+/// are expressed in (after an origin shift, or for absolute asset positions). The coordinates
+/// service already shifted the CPU cluster entities; they are dropped and rebuilt from the
+/// moved field so nothing is shifted twice. Returns whether the frame changed.
+fn reexpress(world: &mut World, state: &mut State) -> Result<bool> {
+    let offset = crate::world::coordinates::origin(world);
+    if state.frame == offset {
+        return Ok(false);
+    }
+    let delta: [f64; 3] = std::array::from_fn(|i| state.frame[i] - offset[i]);
+    if !state.field.is_empty() {
+        let mut moved = FoliageField::new(state.field.cell_size()).map_err(mapped)?;
+        moved
+            .extend(state.field.iter().map(|instance| {
+                let mut instance = *instance;
+                for (value, delta) in instance.position.iter_mut().zip(delta) {
+                    *value = (f64::from(*value) + delta) as f32;
+                }
+                instance
+            }))
+            .map_err(mapped)?;
+        state.field = Arc::new(moved);
+        state.cpu.clear(world);
+    }
+    state.frame = offset;
+    Ok(true)
+}
+
 fn sync_one(
     world: &mut World,
     entity: Entity,
     id: &str,
     component: &FoliageComponent,
     state: &mut State,
+    rebased: bool,
 ) {
     let key = component.generation_key();
     let ground = ground::resolve(world, component);
@@ -330,6 +364,11 @@ fn sync_one(
         .as_ref()
         .map(|g| g.key.clone())
         .map_err(|e| e.to_string());
+    if rebased && ground_key.is_ok() && state.ground_key.as_ref().is_some_and(|k| k.is_ok()) {
+        // The terrain matrix or surface changed with the origin, not its content: keep the
+        // translated instances instead of regenerating them in the new frame.
+        state.ground_key = Some(ground_key.clone());
+    }
     let key_changed = state.applied.as_ref() != Some(&key);
     let ground_changed = state.ground_key.as_ref() != Some(&ground_key);
     if !key_changed && !ground_changed {
@@ -391,13 +430,20 @@ pub fn sync_foliage(world: &mut World) -> Result<()> {
             .states
             .remove(&entity)
             .unwrap_or_else(State::new);
+        let rebased = reexpress(world, &mut state);
         if let Err(error) = component.validate() {
             if state.diagnostics != [error.to_string()] {
                 log(world, &id, &error.to_string());
                 state.diagnostics = vec![error.to_string()];
             }
         } else {
-            sync_one(world, entity, &id, &component, &mut state);
+            let rebased = rebased.as_ref().is_ok_and(|r| *r);
+            sync_one(world, entity, &id, &component, &mut state, rebased);
+        }
+        // A freshly loaded asset holds absolute positions.
+        if let Err(error) = rebased.and_then(|_| reexpress(world, &mut state)) {
+            log(world, &id, &error.to_string());
+            state.diagnostics = vec![error.to_string()];
         }
         world
             .resource_mut::<Foliages>()
@@ -665,10 +711,25 @@ pub fn types(world: &World, entity: Entity) -> Option<Vec<FoliageType>> {
 }
 
 /// The live instances as `.foliage` file bytes (write them to the asset to keep edits).
+/// Positions are written in absolute coordinates (`WorldOrigin.offset + local`).
 pub fn export_asset(world: &mut World, entity: Entity) -> Result<Vec<u8>> {
     let field = field(world, entity)?;
     let types = types(world, entity).unwrap_or_default();
-    engine_foliage::asset::encode(&types, &field).map_err(mapped)
+    let offset = crate::world::coordinates::origin(world);
+    if offset == [0.0; 3] {
+        return engine_foliage::asset::encode(&types, &field).map_err(mapped);
+    }
+    let mut absolute = FoliageField::new(field.cell_size()).map_err(mapped)?;
+    absolute
+        .extend(field.iter().map(|instance| {
+            let mut instance = *instance;
+            for (value, offset) in instance.position.iter_mut().zip(offset) {
+                *value = (f64::from(*value) + offset) as f32;
+            }
+            instance
+        }))
+        .map_err(mapped)?;
+    engine_foliage::asset::encode(&types, &absolute).map_err(mapped)
 }
 
 /// Counts for telemetry and tests; `None` before the entity's first sync.

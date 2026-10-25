@@ -8,7 +8,8 @@
 //! cells are spawned on the main thread within the per-tick budget. Unloading despawns exactly
 //! the entities the cell spawned. Positions are handled in f64 absolute space via
 //! [`WorldOrigin`](super::coordinates::WorldOrigin), so cells may be any distance from the
-//! origin and rebasing the origin keeps streamed content in place.
+//! origin; rebasing the origin keeps streamed content in place because the coordinates service
+//! shifts cell roots and proxies with every other root entity.
 //!
 //! See `docs/streaming.md`.
 mod api;

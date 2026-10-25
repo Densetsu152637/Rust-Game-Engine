@@ -197,6 +197,7 @@ impl Project {
             }
         }
         crate::acoustics::validate_scene(self, scene)?;
+        crate::world::coordinates::validate_scene(scene)?;
         crate::world::pcg::validate_scene(self, scene)?;
         crate::world::streaming::validate_scene(self, scene)?;
         crate::world::terrain::validate_scene(self, scene)?;
