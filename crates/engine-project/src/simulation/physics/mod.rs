@@ -24,6 +24,7 @@ mod bodies;
 mod contacts;
 mod debug_view;
 mod descriptors;
+mod destruction;
 mod joints;
 mod queries;
 mod request;
@@ -33,6 +34,12 @@ mod types;
 pub use api::*;
 pub(crate) use bodies::Bodies;
 pub use debug_view::*;
+pub use destruction::{
+    DebrisFragment, DebrisSettings, Destructible3D, DestructibleMesh, DestructibleStatus,
+    FracturePattern, FractureReport, Fractured, FragmentInfo, FragmentRender, RecyclePolicy,
+    ThresholdMode, debris_count, destructible_status, fracture_now, fragment_mesh, fragments,
+    preview_fracture, set_fracture_threshold,
+};
 pub use joints::{
     AxisKind, AxisSetting, BrokenJoint, JointKind, JointMotor, JointReadout, JointStatus,
     PhysicsJoint2D, PhysicsJoint3D, add_joint_2d, add_joint_3d, broken_joints, clear_joint_motor,
@@ -55,6 +62,7 @@ fn features() -> Vec<Box<dyn Feature>> {
     vec![
         Box::new(contacts::Contacts),
         Box::new(joints::Joints::new()),
+        Box::new(destruction::Destruction),
     ]
 }
 
