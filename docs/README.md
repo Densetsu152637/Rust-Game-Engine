@@ -140,6 +140,10 @@
   the admission gate, lobby / session browser, rule-based matchmaking with a widening skill
   window, deterministic host migration with epoch fencing, the bounded `Lane::SESSION` JSON
   protocol, server configuration, deployment and threat model.
+- [NAT traversal and relay](online-nat-relay.md): the `engine-net-nat` crate (reflexive
+  discovery, candidate sets, HMAC-authenticated hole punching, the QUIC/control
+  `DemuxSocket`, the two-party relay with `RelaySocket` and the self-hosted
+  `engine-relay-server` binary), wire formats, NAT types handled and the threat model.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,
   typed adapters, hierarchy, events, batches and prefabs shared with MCP.
 - [Scheduled events](scheduled-events.md): CLI/MCP event injection, callback
