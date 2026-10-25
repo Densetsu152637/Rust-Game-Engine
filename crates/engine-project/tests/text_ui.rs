@@ -1051,7 +1051,8 @@ fn world_text_extracts_world_space_draws_with_transformed_corners() {
 #[test]
 fn world_text_anchor_and_billboard_place_the_text_box() {
     let base = json!({"version":1,"text":"Hi","font":"ui","size":2.0,"pixelsPerUnit":32.0});
-    let spun = json!({"position":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.70710678,0.70710678]});
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let spun = json!({"position":[0.0,0.0,0.0],"rotation":[0.0,0.0,half,half]});
     let flat = json!({"position":[0.0,0.0,0.0]});
     let extent = |data: Value, transform: Value| {
         let (_dir, runtime) = world_text_runtime(data, transform);

@@ -119,7 +119,8 @@ impl Content {
                     faces.insert(asset.id.clone(), Arc::new(content::load_font_face(&path)?));
                 }
                 "font_config" => {
-                    if config.replace(content::load_font_config(&path)?).is_some() {
+                    let loaded = content::load_font_config(&path)?;
+                    if config.replace(loaded).is_some() {
                         return Err(Error::new(
                             "asset.font_config.duplicate",
                             "A project may declare at most one font_config asset",

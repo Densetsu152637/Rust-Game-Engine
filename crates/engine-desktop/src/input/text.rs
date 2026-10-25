@@ -28,15 +28,16 @@ pub struct TextModifiers {
 }
 
 /// Modifier tracking for [`translate_window_event`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TextInputState {
     pub modifiers: TextModifiers,
     /// Command shortcuts use Cmd and word motion uses Option, as on macOS.
     pub macos: bool,
 }
 
-impl Default for TextInputState {
-    fn default() -> Self {
+impl TextInputState {
+    /// State with the shortcut conventions of the platform this build targets.
+    pub fn native() -> Self {
         Self {
             modifiers: TextModifiers::default(),
             macos: cfg!(target_os = "macos"),
@@ -220,11 +221,21 @@ pub fn ime_cursor_area(area: Rect, camera: &CameraView) -> ImeCursorArea {
 
 /// Window-side text input state: modifier tracking and the IME flags last
 /// sent to the window, so the platform is only told about changes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct TextBridge {
     state: TextInputState,
     ime_allowed: bool,
     area: Option<ImeCursorArea>,
+}
+
+impl Default for TextBridge {
+    fn default() -> Self {
+        Self {
+            state: TextInputState::native(),
+            ime_allowed: false,
+            area: None,
+        }
+    }
 }
 
 impl TextBridge {
