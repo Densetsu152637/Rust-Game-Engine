@@ -369,6 +369,8 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.NetworkReplica",
         "engine.PhysicsBody2D",
         "engine.PhysicsBody3D",
+        "engine.PhysicsJoint2D",
+        "engine.PhysicsJoint3D",
         "engine.PhysicsSettings",
         "engine.SkinBinding",
         "engine.UiRoot",

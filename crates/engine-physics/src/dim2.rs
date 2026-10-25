@@ -13,7 +13,7 @@ use world::{Core, Extension};
 // Feature registrations: one `#[path] mod` item each (docs/physics.md#extension-seams).
 #[path = "features/joints/dim2.rs"]
 mod joints;
-pub use joints::JointDesc;
+pub use joints::{Angles, Dof, Frame, JointDesc, JointState};
 #[path = "features/queries.rs"]
 mod queries;
 pub use queries::{

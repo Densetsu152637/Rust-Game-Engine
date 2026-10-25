@@ -35,8 +35,8 @@ combine rules, `sensor`, `layer`, `mask`, `preset`, `layer_name`). Defaults come
 from the catalog. Motion is `fixed`, `dynamic`, or `kinematic`. Layer/mask
 filtering uses mutual intersection. Fixed sensors detect kinematic entries/exits.
 Each entity has one body and one collider (a compound collider may hold several
-parts); authored joint components are not supplied. Native `engine-physics`
-worlds offer fixed/revolute joints and impulses.
+parts). Joints are separate components: `engine.PhysicsJoint2D` and
+`engine.PhysicsJoint3D` ([Physics joints](physics-joints.md)).
 
 Dynamic bodies own world translation/rotation. Direct Transform writes do not
 teleport dynamic bodies. Changing body configuration rebuilds the body with the

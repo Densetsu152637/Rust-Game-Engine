@@ -26,6 +26,7 @@ mod debug_view;
 mod descriptors;
 mod queries;
 mod request;
+mod joints;
 mod settings;
 mod stepping;
 mod types;
@@ -35,6 +36,10 @@ pub use debug_view::*;
 pub use queries::*;
 pub use request::{
     MAX_QUERY_LIMIT, MAX_QUERY_TICKS, QueryRequest, debug_scene, query_scene, run_query,
+pub use joints::{
+    AxisKind, AxisSetting, BrokenJoint, JointKind, JointMotor, JointReadout, JointStatus,
+    PhysicsJoint2D, PhysicsJoint3D, add_joint_2d, add_joint_3d, broken_joints, clear_joint_motor,
+    joint_state, joint_status, remove_joint, set_joint_break_limits, set_joint_motor,
 };
 pub(crate) use settings::Resolved;
 pub use settings::{
@@ -46,7 +51,10 @@ pub use types::*;
 
 /// Physics features in execution order. Add one entry per feature.
 fn features() -> Vec<Box<dyn Feature>> {
-    vec![Box::new(contacts::Contacts)]
+    vec![
+        Box::new(contacts::Contacts),
+        Box::new(joints::Joints::new()),
+    ]
 }
 
 /// The engine-physics worlds owned by the service. Body IDs are `Entity::to_bits()`.
