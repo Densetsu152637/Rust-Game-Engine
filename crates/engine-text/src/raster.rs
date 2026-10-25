@@ -322,7 +322,7 @@ impl SdfGrid {
             let last = (hi + reach + 0.5)
                 .floor()
                 .min((cells * SDF_CELL - 1) as f32);
-            (first <= last).then(|| (first as u32 / SDF_CELL, last as u32 / SDF_CELL))
+            (first <= last).then_some((first as u32 / SDF_CELL, last as u32 / SDF_CELL))
         };
         let ranges: Vec<Option<(u32, u32, u32, u32)>> = lines
             .iter()
