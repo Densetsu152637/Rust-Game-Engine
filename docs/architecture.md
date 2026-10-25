@@ -13,6 +13,7 @@ engine is built this way.
 | `engine-log`, `engine-platform` | Logging/history and explicit host capability contracts |
 | `engine-assets` | glTF/GLB import, fingerprints and typed asset ownership |
 | `engine-physics`, `engine-animation`, `engine-navigation` | Independent simulation libraries without ECS or window ownership |
+| `engine-text` | Independent CPU text library (fonts, shaping, layout, caret, glyph atlases) without ECS, window or GPU ownership |
 | `engine-network` | Owned network endpoints, validated input/state and bounded transport work |
 | `engine-audio` | Clips, mixer, spatial sources and native CPAL output |
 | `engine-render`, `engine-render-wgpu` | GPU-free rendering contract and real wgpu implementation |
