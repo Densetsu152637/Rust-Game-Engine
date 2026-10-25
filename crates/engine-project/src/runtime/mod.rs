@@ -81,6 +81,11 @@ impl Runtime {
             text.attach_gpu(app.world().resource::<crate::ui_tree::UiGpuQueue>().clone());
         }
         crate::accessibility::register(&mut app)?;
+        crate::captions::register(&mut app)?;
+        app.world_mut()
+            .resource_mut::<crate::captions::Captions>()
+            .style
+            .rich_text = content.text.is_some();
         crate::world_text::register(&mut app)?;
         crate::networking::register(&mut app)?;
         crate::acoustics::register(&mut app)?;
@@ -300,6 +305,7 @@ impl Runtime {
             dt,
             text: &ui_text,
         };
+        crate::captions::tick(self.app.world_mut(), dt)?;
         crate::ui_tree::tick_world(self.app.world_mut(), &ui_context, &ui_input)?;
         let mut scripts = std::mem::take(&mut self.scripts);
         let mut failure = None;
