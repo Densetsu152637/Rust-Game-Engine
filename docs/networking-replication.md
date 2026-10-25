@@ -21,8 +21,9 @@ What it provides:
 - a versioned wire format with hand-written bounded decoding, and nonsecret telemetry.
 
 Out of scope: transport and sockets, session handshake, client-side prediction/reconciliation,
-voice, and the mapping of authored `engine.NetworkReplica` entities (a later integration step
-maps string IDs to `NetId` and authored components to the registry).
+voice, and the mapping of authored `engine.NetworkReplica` entities (the runtime adapter maps string
+IDs to `NetId` and authored components to the registry; see
+[delta mode](networking.md#delta-mode-endpoints-and-components)).
 
 ## Quick start
 

@@ -6,6 +6,10 @@ edition = "2024"
 [dependencies]
 engine-assets = { path = "../engine-assets" }
 engine-network = { path = "../engine-network" }
+engine-net-predict = { path = "../engine-net-predict" }
+engine-net-quic = { path = "../engine-net-quic" }
+engine-net-replication = { path = "../engine-net-replication" }
+engine-net-voice = { path = "../engine-net-voice" }
 engine-core = { path = "../engine-core" }
 engine-destruction = { path = "../engine-destruction" }
 engine-fluids = { path = "../engine-fluids" }

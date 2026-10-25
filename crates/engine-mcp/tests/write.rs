@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 14] = [
+const WRITE_TOOLS: [&str; 15] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -35,6 +35,7 @@ const WRITE_TOOLS: [&str; 14] = [
     "locale_remove_message",
     "locale_add_locale",
     "ui_edit",
+    "network_settings_set",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -88,14 +89,15 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 36);
+    assert_eq!(names.len(), 38);
     // Registration order: the 12 original read tools, the 8 original write
     // tools, the navigation pair (bake writes, query only reads), the
     // acoustics tools (inspect and query read, bake writes), the physics pair
     // (both read), then the locale tools (three reads, three writes), then the
-    // UI authoring tools (inspect and preview read, edit writes).
+    // UI authoring tools (inspect and preview read, edit writes), then the
+    // networking tools (inspect reads, settings_set writes).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 22);
+    assert_eq!(read_only_names.len(), 23);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -107,7 +109,11 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(names[26], "physics_debug");
     assert_eq!(names[27..30], read_only_names[17..20]);
     assert_eq!(names[30..33], WRITE_TOOLS[10..13]);
-    assert_eq!(names[33..35], read_only_names[20..]);
+    assert_eq!(names[33..35], read_only_names[20..22]);
+    assert_eq!(names[36], "network_inspect");
+    assert_eq!(names[37], "network_settings_set");
+    assert_eq!(read_only_names[22], "network_inspect");
+    assert_eq!(WRITE_TOOLS[14], "network_settings_set");
     assert_eq!(names[35], "ui_edit");
     assert_eq!(read_only_names[20], "ui_inspect");
     assert_eq!(read_only_names[21], "ui_preview");

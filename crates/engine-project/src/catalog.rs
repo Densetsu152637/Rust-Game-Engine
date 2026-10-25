@@ -48,10 +48,10 @@ impl ComponentCatalog {
             .chain([
                 crate::accessibility::descriptor(),
                 crate::captions::descriptor(),
-                crate::networking::descriptor(),
                 crate::world_text::descriptor(),
             ])
             .chain(crate::acoustics::descriptors())
+            .chain(crate::networking::descriptors())
             .chain(descriptors)
         {
             if d.name.len() > 128
@@ -98,6 +98,7 @@ impl ComponentCatalog {
                 .validate()?;
         }
         crate::acoustics::validate_component(name, &value.data)?;
+        crate::networking::validate_component(name, &value.data)?;
         Ok(())
     }
     pub fn validate_entity(&self, scene: &crate::Scene, entity: &crate::SceneEntity) -> Result<()> {

@@ -180,13 +180,15 @@ there is no online revocation fetch or automatic account service.
 Native runtime callbacks can call `disconnect_peer(world, peer_id)` to close a
 server peer and remove its grants, or use `Server::disconnect` before attachment.
 
-No matchmaking, NAT traversal, reconnect/session recovery, rollback/prediction,
-delta compression or anti-cheat assurance is implemented. Internet use of this
-replication protocol requires a reachable TCP listener or host-supplied
-connection, and TCP head-of-line latency remains. The separate `engine-net-quic`
-`MessageEndpoint` transport provides per-lane streams, datagrams and congestion
-control ([network transports](networking-transport.md)). The native target scope is Windows,
-Linux and macOS; browser/mobile/console transports are outside this implementation.
+No matchmaking, NAT traversal, reconnect/session recovery or anti-cheat assurance is
+implemented in this legacy snapshot protocol. Delta compression, prediction and rollback live in
+the lane-based stack (`engine-net-replication`, `engine-net-predict`), which the runtime adapter
+drives in [delta mode](#delta-mode-endpoints-and-components). Internet use of the snapshot
+protocol requires a reachable TCP listener or host-supplied connection, and TCP head-of-line
+latency remains. The separate `engine-net-quic` `MessageEndpoint` transport provides per-lane
+streams, datagrams and congestion control ([network transports](networking-transport.md)). The
+native target scope is Windows, Linux and macOS; browser/mobile/console transports are outside
+this implementation.
 
 TLS on the existing framed TCP path preserves authority and runtime contracts
 while using a maintained cryptographic implementation. QUIC/UDP needed new
@@ -282,3 +284,164 @@ spawn/despawn, unknown-ID filtering, script authority conflicts, opt-in loading,
 scene-transition guards, and shutdown disconnects through ordinary runtime ticks.
 The runtime suite also runs TLS authorization, status/authentication events and
 authoritative input callbacks followed by remote pose replication and disconnect.
+
+## Delta mode, endpoints and components
+
+The runtime adapter has two modes, selected by `NetworkSettings::mode`:
+
+| Mode | Transport | Wire |
+| --- | --- | --- |
+| `Snapshot` (default) | TCP `Server`/`Client` through `attach_server`/`attach_client` | whole-snapshot JSON, the legacy event API described above |
+| `Delta` | any `MessageEndpoint` | [`engine-net-replication`](networking-replication.md) deltas on `Lane::REPLICATION`, RPCs on `Lane::RPC`, input on `Lane::INPUT`, voice on `Lane::VOICE` |
+
+`attach_endpoint_server(runtime, Box<dyn MessageEndpoint + Send>, settings)` and
+`attach_endpoint_client` accept a TCP `Server`/`Client`, a `QuicServer`/`QuicClient`
+(see [network transports](networking-transport.md)) or any wrapper; endpoint attachment is always
+`Delta`, and `attach_server`/`attach_client` take the same path when
+`settings.mode == NetworkMode::Delta`. The endpoint is driven through
+`MessageEndpoint::poll` (the TCP poll-API latch from the transport page applies), and
+`NetworkSettings::conditions` wraps it in a `ConditionedEndpoint` so loss, latency, jitter,
+duplication, reordering and bandwidth limits apply to received traffic; give both runtimes
+conditions to impair both directions. `set_conditions(world, Option<NetworkConditions>)` swaps
+the simulation at runtime (events still held by the previous simulator are discarded). Keys and
+certificates are created natively (`QuicServerSecurity::new`, `from_rustls_config`, ...) and handed
+over inside the endpoint; they never appear in settings, scene data or MCP.
+
+A delta-mode server replicates every authored `server` replica after each simulation step. The
+stable string ID travels once with the spawn (`engine.id`); the pose properties `position`,
+`rotation`, `scale` and `velocity` are delta-compressed against per-peer acknowledged baselines
+(rotation is quantized to 12-bit smallest-three, the rest is exact `f32`), and every peer has a hard
+byte budget per tick (`NetworkSettings::bytes_per_second`). The string-ID to `NetId` map stays
+inside the session. A client reacts only to IDs it authored as `remote` templates and spawns and
+despawns them from those templates exactly as in snapshot mode: unknown IDs are ignored, the
+single-writer and template checks are unchanged, and a malformed or schema-mismatched packet is
+counted (`counters.malformed_packets`) and never applied. A peer that sends more than 64 malformed
+packets is disconnected. Client smoothing (`remote_smoothing_hz`, 0 = snap) blends toward the latest
+authoritative pose. The client's own server-assigned peer ID is not visible through
+`MessageEndpoint`, so `NetworkStatus::peer_id` is `None` in delta mode; read peer IDs from the
+server's `peers` or the `network.connected` event. Server and client must use the same
+`max_entities`, `rpc_calls_per_second` and `state_properties`; the report's
+`replication.schema_hash` must be equal on both ends.
+
+### Authored components
+
+| Component | Fields | Purpose |
+| --- | --- | --- |
+| `engine.NetworkReplica` | `authority: server\|remote` | pose authority (both modes), see above |
+| `engine.NetworkReplication` | `priority` 0.1..16 (snapped to 0.25, 0.5, 1, 2, 4 or 8), `relevance: always\|spatial\|owner_only`, `max_update_hz` (0 = every tick) | per-entity delta rules; requires `engine.NetworkReplica`. `spatial` entities reach peers whose view sphere contains them; `owner_only` entities are not replicated until `assign_owner` grants an owner. Changing the rule at runtime respawns the entity for its peers. `max_update_hz` throttles pose writes on the server |
+| `engine.NetworkHitboxes` | `layers` (non-zero bitmask), `hitboxes[]` of `sphere`/`capsule`/`box` with `part` | lag-compensation volumes (requires Transform), recorded every tick |
+| `engine.NetworkVoice` | `channel`, `proximity_distance` (0 = session distance) | voice participant; the peer that owns the entity speaks from its position |
+| `engine.NetworkSession` | `mode`, `conditions`, `bytes_per_second`, `view_radius`, `max_entities`, `rpc_calls_per_second`, `property_events`, `remote_smoothing_hz`, `lag_rewind_ticks`, `history_ticks`, `voice{...}` | singleton project defaults; no Transform required, at most one per scene |
+
+All four new components are catalog components: schema-validated by `component_set`, listed by
+`component_schema`, and checked again with typed validation when a project loads (out-of-range
+priority or rate, unknown relevance, empty or invalid hitboxes, bad conditions, a second session
+component, a replication rule without a replica). `NetworkSettings::from_scene(scene)` /
+`from_runtime(&runtime)` turn `engine.NetworkSession` into settings; native code adjusts the value
+and passes it to `attach_*`. This is how conditions and replication defaults set through MCP reach
+headless runs.
+
+### Peers, views, RPCs, state and events
+
+- `assign_owner`, `revoke_owner` and `disconnect_peer` behave as in snapshot mode; ownership also
+  sets the replication owner (`owner_only` visibility, ownership-checked RPCs) and the voice position.
+- A peer's interest sphere is `NetworkSettings::view_radius` around its first owned entity;
+  `set_peer_view(world, peer, Some(center), radius)` pins a center and a per-peer radius (`None`
+  releases the center). Spatial entities outside the sphere (plus 10 % hysteresis) are never
+  encoded for the peer; re-entering sends the full current state.
+- Input uses the same `send_input(world, InputCommand)` on `Lane::INPUT` with the snapshot-mode
+  rules (ownership, finite movement in [-1, 1], strictly increasing tick, bounded tick lead) and
+  raises `network.input` / `network.input_rejected`.
+- RPCs carry a name (at most 64 bytes) and a JSON payload (at most 768 bytes). Client:
+  `rpc_to_server(world, ClientRpcTarget::{Session | Entity(id) | Owned(id)}, name, &json)`. The
+  server validates rate (`rpc_calls_per_second` per peer), visibility, ownership and argument shape
+  and raises `network.rpc` `{peer_id, name, entity_id, owned, payload}` targeted at the entity;
+  rejections raise `network.rpc_rejected` and count in telemetry.
+  `NetworkSettings::rpc_allowlist` restricts which names become events. Server:
+  `rpc_to_clients(world, RpcRecipient::{Peer | Owner | Relevant}, name, entity, &json)` raises
+  `network.rpc` on clients. Treat every payload as untrusted data.
+- `NetworkSettings::state_properties` declares custom replicated properties (`bool`, `i32`, `f32`,
+  `string` up to 64 bytes) on every replicated entity; `set_state` writes them on the server,
+  `state` reads them anywhere and `network.property_changed {entity_id, property, old, new}`
+  announces changes on clients. `property_events: true` also reports pose properties.
+- Other events: `network.authenticated`, `network.connected`, `network.disconnected`,
+  `network.entity_spawned`, `network.entity_despawned`, `network.owner_changed`. Event-queue
+  overflow in delta mode is counted (`counters.events_dropped`) instead of failing the tick.
+- Lane payloads the engine does not interpret (prediction traffic on `Lane::INPUT`,
+  `Lane::SESSION`, `Lane::DEFAULT`, application lanes 8..=15) are queued in a bounded inbox (256
+  messages, 1 MiB) for `take_lane_payloads(world)`; `send_lane_payload` sends them.
+  `Lane::REPLICATION`, `Lane::RPC` and `Lane::VOICE` are engine-owned.
+
+### Lag compensation
+
+Entities with `engine.NetworkHitboxes` have their world pose recorded into an
+`engine_net_predict::ColliderHistory` after every server step (`history_ticks`).
+`lag_compensated_raycast(world, &LagRaycast { shooter, view_tick, ray, layer_mask })` rewinds to the
+tick the shooter claims to have seen, clamped by `LagCompensator` to `lag_rewind_ticks` and the
+recorded history (future or non-finite claims are refused), skips the shooter's own entities (as
+granted by `assign_owner`) and returns the entity ID, part, distance and point.
+`lag_compensated_overlap_sphere` does the same for areas. A client reads `view_tick(world)` (the
+server tick it is displaying minus `interpolation_delay_ticks`) and sends it in a "fire" RPC; the
+`network.rpc` handler calls the raycast and applies damage itself. The claimed tick is
+attacker-controlled; the clamp bounds how far back a hostile client can reach. The report's
+`lag_comp` counts queries, clamped and rejected claims.
+
+### Prediction
+
+`engine_project::networking::predict` re-exports `engine-net-predict` (`PredictionClient`,
+`InputSender`/`InputReceiver`, `PredictionLedger`/`KeyValidator`, `RollbackSession`, ...). Recipe:
+create the sender and receiver natively, send their bytes with
+`send_lane_payload(world, peer, Lane::INPUT.0, delivery, &bytes)` (the engine input command is a
+different message kind and coexists), and feed the results of `take_lane_payloads` to the receiver
+after checking `is_prediction_payload`. Reconcile against the replicated pose (`position`, `state`)
+and the server tick in the report. There is no authored prediction marker: prediction is a
+native-only API because it needs a game-specific deterministic simulation (see
+[prediction](networking-prediction.md)).
+
+### Voice
+
+With `NetworkSettings::voice` set, the server creates a `VoiceRouter` (routing `global`, `channel`,
+`proximity` or `channel_proximity` plus `max_distance`) and every `engine.NetworkVoice` entity owned
+by a peer supplies that peer's authoritative position and channel. A speaker's `proximity_distance`
+can only narrow the session distance. Clients call `send_voice_frame(world, &pcm,
+end_of_talkspurt)` with one codec frame of 16-bit mono PCM (default raw PCM at 16 kHz and 20 ms,
+320 samples; `VoiceSettings::codec` plugs in a real codec) and `pull_voice(world)` returns at most
+one decoded or concealed frame per speaker from the jitter buffer, timed by the session's
+simulation clock. Moderation: `set_voice_muted`, `set_voice_speaking_allowed` (server) and
+`set_voice_channel` (client). Positions reach listeners only under proximity routing (see
+[voice](networking-voice.md)). Capture, playback and spatial mixing belong to the audio domain.
+
+### Telemetry
+
+`NetworkStatus` (the `network` field of `RuntimeSnapshot` and of `project_run_headless`) adds
+`mode`, `transport`, `security`, `conditions`, `peer_count`, `links[]` (per peer: `rtt_ms`,
+sent/received bytes and packets, `lost_packets`, `dropped_unreliable`, congestion window, queued
+bytes), `replication` (schema hash, tick, entities, per-peer `PeerTelemetry`: bytes per tick and in
+total, compression ratio, relevant/sent/deferred entities, unacked packets, acked/lost packets,
+oversize blocks, RPC received/rejected with reasons/refused/sent; on a client `ClientTelemetry`),
+`counters` (RPC, malformed packets, dropped events, send errors, inbox drops, entity churn),
+`voice` and `lag_comp`. Peers in `peers`, `links` and `replication.peers` are capped at
+`max_reported_peers` (16 by default; `peer_count` and `peers_truncated` give the totals), so the
+section stays far below the 64 KiB per-section bound `project_run_headless` enforces. Counters
+contain no property values, keys or certificates.
+
+### MCP
+
+- `network_inspect` (read): `scene` summarizes the authored setup; `report` analyses a
+  `project_run_headless` result, runtime snapshot or its `network` object (role, mode, transport,
+  peers, link statistics, replication telemetry and findings such as packet loss, high RTT,
+  backpressure or oversize blocks).
+- `network_settings_set` (write): writes `engine.NetworkSession` (mode, link-simulation conditions,
+  bandwidth, view radius, RPC rate, smoothing, lag-compensation window, voice defaults), overlaying
+  existing fields and creating the carrying entity when needed.
+- Every network component is editable with `component_set` and `component_remove` and
+  schema-checked. No tool accepts keys, certificates or addresses.
+
+### Verification
+
+`cargo test -p engine-project --test networking_delta` runs runtimes over loopback QUIC (synthetic
+rcgen identities) and TCP: authoritative movement, relevancy hiding a far entity, ownership-checked
+input, an RPC round trip, convergence under 30 % loss with latency and jitter, state properties and
+property events, lag-compensated raycasts against rewound poses, proximity voice routing with raw
+PCM frames, lane payloads, telemetry bounds and schema rejection. The snapshot-mode suite
+(`--test networking`) is unchanged. `cargo test -p engine-mcp --test networking` covers the tools.
