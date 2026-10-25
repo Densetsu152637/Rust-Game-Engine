@@ -1291,6 +1291,7 @@ dependencies = [
  "engine-streaming",
  "engine-terrain",
  "engine-tilemap",
+ "engine-water",
  "glam 0.34.1",
  "regex",
  "serde",
@@ -1387,6 +1388,7 @@ dependencies = [
  "engine-streaming",
  "engine-terrain",
  "engine-tilemap",
+ "engine-water",
  "engine-xpbd",
  "fs2",
  "glam 0.34.1",
@@ -1494,6 +1496,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-water"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-world-render"
 version = "0.1.0"
 dependencies = [
@@ -1506,6 +1517,7 @@ dependencies = [
  "engine-render-pipeline",
  "engine-render-wgpu",
  "engine-terrain",
+ "engine-water",
  "glam 0.34.1",
  "serde_json",
  "tempfile",

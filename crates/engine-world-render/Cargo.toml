@@ -3,7 +3,7 @@ name = "engine-world-render"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Render features for world building (world.terrain, world.foliage; later world.water) through the render extension API."
+description = "Render features for world building (world.terrain, world.foliage, world.water) through the render extension API."
 
 [dependencies]
 anyhow.workspace = true
@@ -14,6 +14,7 @@ engine-foliage = { path = "../engine-foliage" }
 engine-project = { path = "../engine-project" }
 engine-render-pipeline = { path = "../engine-render-pipeline" }
 engine-terrain = { path = "../engine-terrain" }
+engine-water = { path = "../engine-water" }
 glam.workspace = true
 wgpu.workspace = true
 

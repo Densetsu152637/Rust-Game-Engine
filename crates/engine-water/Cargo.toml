@@ -1,0 +1,16 @@
+[package]
+name = "engine-water"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Surface water model: Gerstner wave sets, a Tessendorf FFT ocean (Phillips/JONSWAP), lakes, spline rivers with a flow field, surface/underwater queries, shoreline attenuation and buoyancy forces."
+
+[dependencies]
+glam.workspace = true
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

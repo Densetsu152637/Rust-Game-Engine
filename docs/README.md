@@ -144,5 +144,9 @@
   absolute positions, `engine.LargeWorld` and `engine.AbsolutePosition`, how physics,
   navigation, streaming, terrain, foliage and PCG follow a shift, the `world.origin_shifted`
   event, telemetry and the camera-relative rendering property.
+- [Ocean, lake and river water](world-water.md): Gerstner waves and the Tessendorf FFT
+  ocean (`engine-water`), spline rivers with a flow field, `engine.WaterBody` shoreline
+  attenuation over terrain, `engine.Buoyancy`, underwater fog, the CPU surface fallback,
+  the `world.water` GPU features and the `water_*` MCP tools.
 
 Per-crate details are in `crates/*/README.md`.

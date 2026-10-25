@@ -1,7 +1,7 @@
 //! Render features for world building, one module per feature, drawn through the render
-//! extension API (`engine-render-pipeline`). Today: [`terrain`] (`world.terrain`) and
-//! [`foliage`] (`world.foliage`); `world.water` will live here too. See docs/terrain.md and
-//! docs/world-foliage.md.
+//! extension API (`engine-render-pipeline`): [`terrain`] (`world.terrain`, docs/terrain.md),
+//! [`foliage`] (`world.foliage`, docs/world-foliage.md) and [`water`] (`world.water`,
+//! `world.water.underwater`, docs/world-water.md).
 //!
 //! A host enables the terrain feature in two parts, both before the runner starts:
 //!
@@ -18,6 +18,7 @@
 //! [`enable`] does both and merges into an existing `PipelineFeatures` resource.
 pub mod foliage;
 pub mod terrain;
+pub mod water;
 
 use anyhow::Result;
 use bevy_ecs::prelude::*;
@@ -33,6 +34,10 @@ pub mod names {
     pub const TERRAIN_NORMALS: &str = "world.terrain.normals";
     /// Instanced foliage meshes and impostors with wind (`Opaque` stage, after `engine.opaque`).
     pub const FOLIAGE: &str = "world.foliage";
+    /// Water surfaces (`Transparent` stage, before `engine.transparent`).
+    pub const WATER: &str = "world.water";
+    /// Underwater fog (`Transparent` stage, after `engine.transparent` and `world.water`).
+    pub const WATER_UNDERWATER: &str = "world.water.underwater";
 }
 
 pub use terrain::{
@@ -40,18 +45,25 @@ pub use terrain::{
     TerrainRenderStatusHandle, extract_terrain,
 };
 
-/// Registers `world.terrain` and `world.terrain.normals`; returns a handle that reports what
-/// the features drew in the last view.
+/// Registers every world feature (`world.terrain`, `world.terrain.normals`, `world.foliage`,
+/// `world.water`, `world.water.underwater`); returns the terrain status handle. Use
+/// [`register_all`] for every feature's handle.
 pub fn register(features: &mut PipelineFeatures) -> Result<TerrainRenderStatusHandle> {
     foliage::register(features)?;
+    water::register(features)?;
     terrain::register(features)
 }
 
 /// [`register`] returning the status handle of every feature.
 pub fn register_all(features: &mut PipelineFeatures) -> Result<RenderStatusHandles> {
     let foliage = foliage::register(features)?;
+    let water = water::register(features)?;
     let terrain = terrain::register(features)?;
-    Ok(RenderStatusHandles { terrain, foliage })
+    Ok(RenderStatusHandles {
+        terrain,
+        foliage,
+        water,
+    })
 }
 
 /// Status handles of the features [`register_all`] registered.
@@ -59,6 +71,7 @@ pub fn register_all(features: &mut PipelineFeatures) -> Result<RenderStatusHandl
 pub struct RenderStatusHandles {
     pub terrain: TerrainRenderStatusHandle,
     pub foliage: foliage::FoliageRenderStatusHandle,
+    pub water: water::WaterRenderStatusHandle,
 }
 
 /// Adds the `Extract`-stage system copying `engine_project::world::terrain::TerrainRenderSet`
@@ -67,6 +80,7 @@ pub struct RenderStatusHandles {
 pub fn install(app: &mut EngineApp) {
     terrain::install(app);
     foliage::install(app);
+    water::install(app);
 }
 
 /// [`install`] plus [`register`] into the world's `PipelineFeatures` resource (created when

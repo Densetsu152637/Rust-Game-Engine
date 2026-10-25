@@ -366,6 +366,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.AnimationPlayer",
         "engine.AudioEmitter",
         "engine.AudioListener",
+        "engine.Buoyancy",
         "engine.CharacterController2D",
         "engine.CharacterController3D",
         "engine.Cloth",
@@ -390,6 +391,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.Tilemap",
         "engine.UiRoot",
         "engine.Vehicle3D",
+        "engine.WaterBody",
         "engine.WorldPartition",
     ]);
     assert_eq!(names, expected);

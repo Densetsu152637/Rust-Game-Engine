@@ -9,7 +9,7 @@ descriptors, typed ECS adapters, installed services and per-tick hooks:
 | `coordinates` | Large-world coordinates ([guide](world-coordinates.md)) |
 | `terrain` | Heightmap terrain ([guide](terrain.md)) |
 | `foliage` | Foliage and vegetation |
-| `water` | Ocean, lake and river water |
+| `water` | Ocean, lake and river water ([guide](world-water.md)) |
 | `streaming` | Level streaming and world partition ([guide](streaming.md)) |
 | `pcg` | Procedural content generation ([guide](pcg.md)) |
 | `tilemap` | 2D tilemaps |
