@@ -44,3 +44,6 @@ All inputs are validated (finite, bounded, explicit limits such as
 Iteration is in stable order, so identical runs are bitwise identical on the same
 build and platform. Solver choice, parameters, measured stability and
 performance, and limits are in [docs/physics-fluids.md](../../docs/physics-fluids.md).
+
+Engine integration (`engine.FluidVolume`, rigid coupling, the `physics.fluid.capacity_reached`
+event and render data) lives in `engine-project`.

@@ -187,6 +187,77 @@ iteration, 16x16 cloth of 1 m x 1 m unless noted):
 | Cloth on a box moving at 0.5 m/s (friction 0.8) | Cloth reaches 0.500 m/s; reported reaction matches the cloth momentum within 0.11%. |
 | 32x32 cloth on a sphere with wind and tethers (release) | 2.1 ms per 1/60 s step on the reference machine (`tests/perf.rs`, ignored by default). |
 
+## Authored component: `engine.Cloth`
+
+Add `engine.Cloth` to an entity with a `Transform` (MCP: `component_set`). It needs no
+`engine.PhysicsBody3D`; scenes with only deformables still step.
+
+| Field | Meaning |
+| --- | --- |
+| `source` | `grid` (default) or `mesh`. |
+| `size`, `resolution` | Grid width (X) and depth (Z) in meters and segments per side (1..=128). The grid is centred on the entity and faces +Y; vertex `(i, j)` has index `j * (resolution[0] + 1) + i` at `x = -w/2 + i w / nu`, `z = +d/2 - j d / nv`. |
+| `positions`, `triangles` | Inline entity-local mesh (up to 16,384 vertices and 32,768 triangles). Importing a model mesh node is not wired. |
+| `fixed` | Grid edge held in world space: `none`, `min_x`, `max_x`, `min_z`, `max_z`, `corners`. |
+| `pinned` | More particle indices (<= 4096) fixed at their creation position. |
+| `attachments` | Up to 64 `{particle, entity, offset?}`. Each tick the particle is held at the pose of the authored entity (a skinned bone or joint) transformed by `offset` (entity-local). Without `offset` the particle keeps its creation position relative to the entity. The target is read once per simulation tick and reached exactly at the end of the tick's first step. A missing entity fails validation with `engine.Cloth: attachment entity X does not exist`. |
+| `density` | Mass per area, kg/m^2. |
+| `stretch_compliance`, `bend_compliance`, `tether_slack` | Material; `tether_slack >= 1` enables long-range tethers. |
+| `damping`, `thickness`, `friction`, `drag`, `lift` | Damping rate, collision margin, friction and aerodynamic coefficients. |
+| `wind`, `air_density` | Air velocity (m/s) and density; wind is per component (no scene-level setting). |
+| `gravity_scale`, `substeps`, `iterations` | Multiplier on scene gravity, solver substeps (1..=64) and iterations (1..=16) per physics step. |
+| `two_way`, `coupling_scale`, `collision_mask` | See below. |
+
+`physics.cloth.torn` is not implemented (cloth does not tear).
+
+### Rigid coupling
+
+Every engine-physics substep the feature turns the 3D rigid bodies near the object into
+collider proxies (current pose, linear and angular velocity, material friction), steps the
+solver with the same fixed `dt`, and applies the reported reaction impulse (linear, plus the
+angular part about the body origin) to **dynamic** bodies, multiplied by `coupling_scale`.
+`two_way: false` keeps the one-way collision. Bodies are used when `material.layer &
+collision_mask != 0` (sensors never collide).
+
+| Body shape | Proxy |
+| --- | --- |
+| box, ball, capsule | exact |
+| cylinder | local bounding box (`radius`, `half_height`) |
+| convex hull | local bounding box of the hull points |
+| compound | local bounding box of the parts' bounding spheres |
+| trimesh, heightfield | **not coupled** (no simple plane/box path exists; put a fixed box collider under them) |
+
+Only bodies within the object's bounds plus 0.25 m are passed to the solver; more than
+1024 (cloth, soft body) or 256 (fluid) nearby proxies fail the step with a named error rather
+than dropping bodies silently.
+
+### Transforms and render data
+
+Particles simulate in **world space**. The entity `Transform` is only the creation anchor
+(the mesh is placed with its world pose when the object is built); it is not written back
+and moving it later does not move the object. Structural edits (mesh, size, resolution,
+pins, density) rebuild the object at the entity's current pose; material, wind, damping,
+gravity scale, substeps and coupling edits apply live.
+
+After each frame in which the simulation stepped, the feature publishes the `PhysicsRenderData`
+world resource (`engine_project::simulation::physics::PhysicsRenderData`) for a render feature
+to read from the extracted world (see [render architecture](rendering-architecture.md)):
+
+```rust
+pub struct PhysicsRenderData {
+    pub frame: u64,                                    // bumped on every refresh
+    pub cloths: BTreeMap<Entity, ClothRender>,         // { positions, normals, triangles: Arc<[[u32; 3]]> }
+    pub soft_bodies: BTreeMap<Entity, SoftBodyRender>, // { positions, normals, triangles (surface), volume, rest_volume }
+    pub fluids: BTreeMap<Entity, FluidRender>,         // { positions, velocities, densities, surface, particle_radius,
+                                                       //   rest_density, capacity, domain_min, domain_max }
+}
+```
+
+`deformable_debug_segments(&World, max_segments)` returns cloth and soft-body edges and
+fluid particles (a short velocity tick, brighter on the surface) as world-space segments,
+bounded and only when `engine.PhysicsSettings.debug` is on. The engine-physics debug
+contributor hook takes a stateless function pointer, so these segments are not merged into
+`debug_view`.
+
 ## Deferred
 
 - **Self-collision** (cloth-cloth and cloth-soft body): needs a spatial hash with

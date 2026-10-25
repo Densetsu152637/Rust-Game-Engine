@@ -190,6 +190,77 @@ Release build, this machine, single thread, default parameters: a 10,000-particl
 iterations), so it is slower than real time at this size; a 100 x 48 x 50 density grid
 (240,000 samples) takes 39 ms.
 
+## Authored component: `engine.FluidVolume`
+
+Add `engine.FluidVolume` to an entity with a `Transform`. The domain, fills, emitters and
+kill volumes are entity-local and axis aligned: the entity's translation and scale place them
+(they follow the entity every tick) and its rotation is ignored.
+
+| Field | Meaning |
+| --- | --- |
+| `domain_min`, `domain_max`, `restitution`, `wall_friction` | The closed box and its walls. |
+| `particle_radius`, `kernel_scale`, `rest_density`, `viscosity`, `vorticity`, `substeps`, `iterations`, `relaxation`, `tensile_k`, `tensile_dq`, `max_speed`, `surface_threshold` | The `FluidParams` described above; all live-editable. |
+| `gravity_scale` | Multiplier on scene gravity. |
+| `capacity` | Most particles (1..=131,072); emitters stop at capacity. |
+| `fills` | Up to 8 `{shape: box/sphere, center, half_extents / radius, velocity}` lattice fills, run at creation and again when the list is edited. |
+| `emitters` | Up to 16: `kind: rate` (`center`, `half_extents`, `per_second`, `velocity`, `seed`) or `nozzle` (`position`, `direction`, `nozzle_radius`, `speed`), plus `lifetime` and `enabled`. |
+| `kill_volumes` | Up to 16 regions that remove particles. |
+| `two_way`, `coupling_scale`, `collision_mask` | See below. |
+
+Event `physics.fluid.capacity_reached` (target: the volume entity; payload `capacity`,
+`particles`, `dropped`) fires once each time an emitter fills the volume; it re-arms when
+the volume drops below capacity again. At most 32 volumes per scene. The fluid's reaction
+impulse (buoyancy and drag) on a dynamic body is applied as returned by the step.
+
+### Rigid coupling
+
+Every engine-physics substep the feature turns the 3D rigid bodies near the object into
+collider proxies (current pose, linear and angular velocity, material friction), steps the
+solver with the same fixed `dt`, and applies the reported reaction impulse (linear, plus the
+angular part about the body origin) to **dynamic** bodies, multiplied by `coupling_scale`.
+`two_way: false` keeps the one-way collision. Bodies are used when `material.layer &
+collision_mask != 0` (sensors never collide).
+
+| Body shape | Proxy |
+| --- | --- |
+| box, ball, capsule | exact |
+| cylinder | local bounding box (`radius`, `half_height`) |
+| convex hull | local bounding box of the hull points |
+| compound | local bounding box of the parts' bounding spheres |
+| trimesh, heightfield | **not coupled** (no simple plane/box path exists; put a fixed box collider under them) |
+
+Only bodies within the object's bounds plus 0.25 m are passed to the solver; more than
+1024 (cloth, soft body) or 256 (fluid) nearby proxies fail the step with a named error rather
+than dropping bodies silently.
+
+### Transforms and render data
+
+Particles simulate in **world space**. The entity `Transform` is only the creation anchor
+(the mesh is placed with its world pose when the object is built); it is not written back
+and moving it later does not move the object. Structural edits (mesh, size, resolution,
+pins, density) rebuild the object at the entity's current pose; material, wind, damping,
+gravity scale, substeps and coupling edits apply live.
+
+After each frame in which the simulation stepped, the feature publishes the `PhysicsRenderData`
+world resource (`engine_project::simulation::physics::PhysicsRenderData`) for a render feature
+to read from the extracted world (see [render architecture](rendering-architecture.md)):
+
+```rust
+pub struct PhysicsRenderData {
+    pub frame: u64,                                    // bumped on every refresh
+    pub cloths: BTreeMap<Entity, ClothRender>,         // { positions, normals, triangles: Arc<[[u32; 3]]> }
+    pub soft_bodies: BTreeMap<Entity, SoftBodyRender>, // { positions, normals, triangles (surface), volume, rest_volume }
+    pub fluids: BTreeMap<Entity, FluidRender>,         // { positions, velocities, densities, surface, particle_radius,
+                                                       //   rest_density, capacity, domain_min, domain_max }
+}
+```
+
+`deformable_debug_segments(&World, max_segments)` returns cloth and soft-body edges and
+fluid particles (a short velocity tick, brighter on the surface) as world-space segments,
+bounded and only when `engine.PhysicsSettings.debug` is on. The engine-physics debug
+contributor hook takes a stateless function pointer, so these segments are not merged into
+`debug_view`.
+
 ## Limits and deferred work
 
 - CPU only and single-threaded. GPU acceleration (compute-shader PBF) and multi-threaded
@@ -206,4 +277,4 @@ iterations), so it is slower than real time at this size; a 100 x 48 x 50 densit
   momentum symmetry.
 - No surface tension, multiphase or foam/spray models; the colour-field surface flag is a
   heuristic.
-- Authored components, MCP tools, events and rendering features come in follow-up steps.
+- Drawing the particles (or a surface) is a rendering-domain follow-up; the data is in `PhysicsRenderData`.

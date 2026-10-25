@@ -367,7 +367,9 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.AudioListener",
         "engine.CharacterController2D",
         "engine.CharacterController3D",
+        "engine.Cloth",
         "engine.Destructible3D",
+        "engine.FluidVolume",
         "engine.NavigationAgent",
         "engine.NetworkReplica",
         "engine.PhysicsBody2D",
@@ -377,6 +379,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.PhysicsSettings",
         "engine.Ragdoll",
         "engine.SkinBinding",
+        "engine.SoftBody",
         "engine.UiRoot",
         "engine.Vehicle3D",
     ]);
