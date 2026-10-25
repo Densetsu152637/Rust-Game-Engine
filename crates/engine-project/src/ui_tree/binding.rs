@@ -798,17 +798,24 @@ fn clip_text(mut text: String, limit: usize) -> String {
     text
 }
 
-/// Store a normalized binding value into the widget or node.
-fn apply_value(node: &mut UiNode, property: UiBindProperty, value: &Value) {
+/// Store a normalized binding value into the widget or node. `spare` is how
+/// many bytes the root's text budget still has room for: bound text is cut to
+/// its slot plus that, so a binding cannot make the root invalid.
+fn apply_value(node: &mut UiNode, property: UiBindProperty, value: &Value, spare: usize) {
     use UiBindProperty as P;
     match property {
         P::Text => {
             let text = value.as_str().unwrap_or_default().to_owned();
+            let cap = |current: &str| MAX_UI_TEXT.min(current.len().saturating_add(spare));
             match &mut node.widget {
                 UiWidget::Label { text: t }
                 | UiWidget::Button { text: t, .. }
-                | UiWidget::Toggle { text: t, .. } => *t = clip_text(text, MAX_UI_TEXT),
-                UiWidget::RichLabel { markup } => *markup = clip_text(text, MAX_UI_TEXT),
+                | UiWidget::Toggle { text: t, .. } => *t = clip_text(text, cap(t)),
+                // Bound markup is run-time data nobody validated: a cut or
+                // malformed tag shows literally instead of failing the frame.
+                UiWidget::RichLabel { markup } => {
+                    *markup = shaped_text::fit_markup(&text, cap(markup))
+                }
                 UiWidget::TextInput {
                     text: t,
                     max_length,
@@ -817,11 +824,18 @@ fn apply_value(node: &mut UiNode, property: UiBindProperty, value: &Value) {
                     multiline,
                     ..
                 } => {
+                    // `maxLength` counts characters; the value is bounded in bytes too.
+                    let max_bytes = cap(t);
+                    let mut bytes = 0;
                     let cleaned: String = text
                         .chars()
                         .map(|c| if c == '\n' && !*multiline { ' ' } else { c })
                         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
                         .take(*max_length as usize)
+                        .take_while(|c| {
+                            bytes += c.len_utf8();
+                            bytes <= max_bytes
+                        })
                         .collect();
                     let chars = cleaned.chars().count() as u32;
                     *caret = (*caret).min(chars);
@@ -989,7 +1003,12 @@ impl UiNode {
     /// Copy of this node showing `text` (labels, buttons, toggles, rich labels).
     pub(super) fn with_bound_text(&self, text: String) -> Self {
         let mut node = self.clone();
-        apply_value(&mut node, UiBindProperty::Text, &Value::String(text));
+        apply_value(
+            &mut node,
+            UiBindProperty::Text,
+            &Value::String(text),
+            MAX_UI_TEXT,
+        );
         node
     }
 }
@@ -1137,6 +1156,7 @@ impl UiBindingState {
             .map(|b| index.get(b.node.as_str()).copied())
             .collect();
         let resolver = resolver.as_deref();
+        let mut spare = MAX_UI_ROOT_TEXT.saturating_sub(root.tree.text_bytes());
         for (i, binding) in root.bindings.iter().enumerate() {
             let Some(node) = targets[i] else {
                 continue;
@@ -1149,7 +1169,9 @@ impl UiBindingState {
             let node = &mut root.tree.nodes[node];
             match source {
                 Some(value) if state.last[i].as_ref() != Some(&value) => {
-                    apply_value(node, binding.property, &value);
+                    let before = node.widget.text_bytes();
+                    apply_value(node, binding.property, &value, spare);
+                    spare = (spare + before).saturating_sub(node.widget.text_bytes());
                     state.last[i] = Some(value);
                     stats.applied += 1;
                     if binding.mode == UiBindMode::TwoWay {

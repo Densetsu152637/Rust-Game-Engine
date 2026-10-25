@@ -478,7 +478,7 @@ impl EngineTextBackend {
 
     /// Pixel size a request is drawn at.
     pub fn pixel_size(&self, font: &str, scale: f32) -> Option<f32> {
-        self.family(font).map(|f| f.size * scale)
+        self.family(font).map(|f| clamp_px(f.size * scale))
     }
 
     /// Record that a draw asked for SDF (reported by [`Self::render_status`]).
@@ -511,7 +511,7 @@ impl EngineTextBackend {
         let family = self
             .family(request.font)
             .ok_or_else(|| Error::new("render.font.unknown", request.font))?;
-        let px = family.size * request.scale;
+        let px = clamp_px(family.size * request.scale);
         let markup = request.kind == UiTextKind::Markup;
         let key = Key {
             sdf: false,
@@ -639,6 +639,49 @@ fn parse(text: &str, markup: bool) -> Result<RichText> {
 /// Validate rich-text markup without laying it out (authoring tools).
 pub fn validate_markup(markup: &str) -> Result<()> {
     parse(markup, true).map(|_| ())
+}
+
+/// Escape `text` so rich-text markup shows it literally.
+pub fn escape_markup(text: &str) -> String {
+    escape_markup_within(text, usize::MAX)
+}
+
+/// [`escape_markup`], stopping before the output would pass `cap` bytes (an
+/// escape pair is never split, so the result always parses).
+fn escape_markup_within(text: &str, cap: usize) -> String {
+    let mut out = String::with_capacity(text.len().min(cap) + 8);
+    for c in text.chars() {
+        let escaped = matches!(c, '\\' | '[' | ']');
+        if out.len() + c.len_utf8() + usize::from(escaped) > cap {
+            break;
+        }
+        if escaped {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `text` cut to at most `cap` bytes, as valid markup: kept as authored when
+/// the text engine accepts the cut, otherwise shown literally (brackets
+/// escaped, never partly cut). Cutting valid markup can leave a tag open, and
+/// run-time text (data bindings, translations) is not checked by validation,
+/// so every place that caps or stores such text goes through this.
+pub(crate) fn fit_markup(text: &str, cap: usize) -> String {
+    let cut = &text[..text.floor_char_boundary(cap.min(text.len()))];
+    if validate_markup(cut).is_ok() {
+        cut.to_owned()
+    } else {
+        escape_markup_within(cut, cap)
+    }
+}
+
+/// Pixel size within what the text engine accepts. UI and text scale
+/// multiply the family size and can leave the range; clamping keeps measuring
+/// and drawing working at the nearest legal size.
+fn clamp_px(px: f32) -> f32 {
+    px.clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end())
 }
 
 /// Caret stops at every grapheme boundary of plain text.

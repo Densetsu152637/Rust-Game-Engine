@@ -278,6 +278,12 @@ every page is full, and a frame that needs more glyphs than fit fails with `text
 - `[img=key width=W height=H]` reserves the size on the baseline. `key` is a runtime `texture`
   asset ID; the image is drawn as its own quad (one draw per texture, ID suffix `:2~NNN`), tinted
   by the label's opacity. A missing texture is `render.texture.unknown`.
+- The backend itself is strict: malformed markup in a request is a `text.markup.*` error.
+  Authored markup is checked by `UiRoot` validation ("RichLabel markup invalid"), and text
+  that arrives at run time (data bindings, translations, virtual-list item texts) is made valid
+  before it reaches a `rich_label`: markup the text engine rejects, or that a length limit cut
+  inside a tag, is kept as literal text with its brackets escaped. The desktop runner ends the
+  process on a tick or extraction error, so run-time data must not be able to raise one.
 
 ### Text input
 
@@ -373,7 +379,7 @@ headless sprite backends keep this path. Authored data is unchanged by any of th
 | `max_text_bytes` (text and markup source) | 256 KiB | `text.input.too_long` |
 | `max_spans` (also markup tags) | 4096 | `text.input.too_many_spans` |
 | `max_glyphs` | 65 536 | `text.input.too_many_glyphs` |
-| `min_font_px` / `max_font_px` | 1 / 512 | `text.input.size_out_of_range` |
+| `min_font_px` / `max_font_px` | 1 / 512 | `text.input.size_out_of_range`. The UI backend clamps the pixel size (family size x `fontScale` x text scale) into this range when measuring and drawing, so scale settings never produce the error; `font_face` / `font_config` sizes outside it are still rejected at load. |
 | `max_markup_depth` | 32 | `text.markup.too_deep` |
 | `max_fallback_entries` | 256 | `text.font.fallback_limit` |
 

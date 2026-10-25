@@ -507,6 +507,14 @@ impl UiWidget {
             {
                 return fail("Dialog title, buttons or bar heights invalid");
             }
+            // The text engine rejects a malformed known tag; catching it here
+            // keeps it out of the frame. (Run-time text goes through
+            // `fit_markup` instead.)
+            Self::RichLabel { markup } => {
+                if let Err(e) = shaped_text::validate_markup(markup) {
+                    return fail(&format!("RichLabel markup invalid ({e})"));
+                }
+            }
             _ => {}
         }
         Ok(())

@@ -55,20 +55,24 @@ impl UiNode {
 }
 
 impl UiTree {
-    pub(super) fn hierarchy(&self) -> Result<Hierarchy> {
-        if self.nodes.len() > MAX_UI_NODES {
-            return Err(invalid("UI exceeds 1024 nodes"));
-        }
-        let text: usize = self
-            .nodes
+    /// Bytes counted against the root's text budget: widget strings, tooltips
+    /// and accessibility labels and descriptions.
+    pub(super) fn text_bytes(&self) -> usize {
+        self.nodes
             .iter()
             .map(|n| {
                 n.widget.text_bytes()
                     + n.tooltip.as_ref().map_or(0, |t| t.text.len())
                     + n.accessibility.as_ref().map_or(0, |a| a.text_bytes())
             })
-            .sum();
-        if text > MAX_UI_ROOT_TEXT {
+            .sum()
+    }
+
+    pub(super) fn hierarchy(&self) -> Result<Hierarchy> {
+        if self.nodes.len() > MAX_UI_NODES {
+            return Err(invalid("UI exceeds 1024 nodes"));
+        }
+        if self.text_bytes() > MAX_UI_ROOT_TEXT {
             return Err(invalid("UI root text exceeds 64KiB"));
         }
         let mut index = BTreeMap::new();
