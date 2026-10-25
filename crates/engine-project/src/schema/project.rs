@@ -43,6 +43,7 @@ impl Project {
                 "navigation",
                 "acoustics",
                 "pcg",
+                "partition",
                 "lut",
                 "tileset",
                 "tilemap",
@@ -195,6 +196,7 @@ impl Project {
         }
         crate::acoustics::validate_scene(self, scene)?;
         crate::world::pcg::validate_scene(self, scene)?;
+        crate::world::streaming::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.
@@ -215,6 +217,12 @@ impl Project {
                 }
                 "pcg" => {
                     crate::world::pcg::load_graph(self, &asset.id)?;
+                }
+                "partition" => {
+                    let manifest = crate::world::streaming::load_manifest(self, &asset.id)?;
+                    for cell in &manifest.cells {
+                        confined_file(&self.root, Path::new(&cell.file))?;
+                    }
                 }
                 "acoustics" => {
                     let bytes =

@@ -368,6 +368,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.CharacterController2D",
         "engine.CharacterController3D",
         "engine.Cloth",
+        "engine.DataLayer",
         "engine.Destructible3D",
         "engine.FluidVolume",
         "engine.NavigationAgent",
@@ -381,9 +382,11 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.Ragdoll",
         "engine.SkinBinding",
         "engine.SoftBody",
+        "engine.StreamingSource",
         "engine.Tilemap",
         "engine.UiRoot",
         "engine.Vehicle3D",
+        "engine.WorldPartition",
     ]);
     assert_eq!(names, expected);
     assert!(result["scene_rules"].as_array().unwrap().len() >= 4);

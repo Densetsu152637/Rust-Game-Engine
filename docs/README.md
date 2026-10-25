@@ -129,5 +129,8 @@
   path, native painting API and MCP tilemap tools.
 - [Procedural content generation](pcg.md): seeded noise, the node graph and executor
   (`engine-pcg`), `engine.PcgVolume` runtime generation and the `pcg_*` MCP tools.
+- [Level streaming](streaming.md): world partition cells, streaming sources, hysteresis
+  and budgets, data layers, HLOD proxies, `engine.WorldPartition`, the native API and
+  the `streaming_*` MCP tools (`engine-streaming`).
 
 Per-crate details are in `crates/*/README.md`.

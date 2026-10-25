@@ -1274,9 +1274,12 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "engine-mesh-lod",
  "engine-pcg",
  "engine-project",
+ "engine-streaming",
  "engine-tilemap",
+ "glam 0.34.1",
  "regex",
  "serde",
  "serde_json",
@@ -1368,6 +1371,7 @@ dependencies = [
  "engine-network",
  "engine-pcg",
  "engine-physics",
+ "engine-streaming",
  "engine-tilemap",
  "engine-xpbd",
  "fs2",
@@ -1424,6 +1428,14 @@ dependencies = [
  "engine-render",
  "pollster 0.4.0",
  "wgpu",
+]
+
+[[package]]
+name = "engine-streaming"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

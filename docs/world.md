@@ -10,7 +10,7 @@ descriptors, typed ECS adapters, installed services and per-tick hooks:
 | `terrain` | Heightmap terrain |
 | `foliage` | Foliage and vegetation |
 | `water` | Ocean, lake and river water |
-| `streaming` | Level streaming and world partition |
+| `streaming` | Level streaming and world partition ([guide](streaming.md)) |
 | `pcg` | Procedural content generation ([guide](pcg.md)) |
 | `tilemap` | 2D tilemaps |
 

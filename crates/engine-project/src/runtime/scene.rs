@@ -35,6 +35,10 @@ pub struct RuntimeSnapshot {
     /// Acoustic propagation state; absent without an `engine.AcousticEnvironment`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustics: Option<engine_acoustics::AcousticStatus>,
+    /// Level streaming state per partition (bounded: counts, at most 64 loaded cell names and
+    /// 16 diagnostics each); absent without an active `engine.WorldPartition`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<crate::world::streaming::StreamingStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -193,6 +197,7 @@ impl Runtime {
             post: self.post_status(),
             ray_tracing: self.ray_tracing_status(),
             acoustics: self.acoustics_status(),
+            streaming: crate::world::streaming::snapshot(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self
