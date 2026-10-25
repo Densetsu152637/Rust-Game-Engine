@@ -26,7 +26,7 @@ pub use component::{
 pub use navigation::{navigation_document, navigation_input as navigation_input_for};
 pub use service::{
     MAX_COLLIDER_TILES, MAX_TERRAINS, ResolvedLayer, TerrainGpuRenderer, TerrainRenderItem,
-    TerrainRenderSet, TerrainStatus, Terrains, export_asset, height_at_world, heightfield,
+    TerrainRenderSet, TerrainStatus, Terrains, export_asset, failure, height_at_world, heightfield,
     navigation_input, paint_holes, paint_layer, sculpt, status, sync_terrains,
     update_terrain_render, with_heightfield, world_to_local,
 };

@@ -293,3 +293,49 @@ fn engine_foliage_component_is_editable_through_component_set() {
     let project = engine_project::Project::load(dir.path().join("project.json")).unwrap();
     project.validate().unwrap();
 }
+
+/// A huge area at a high density would draw millions of candidates before any cap applied:
+/// scatter and paint refuse up front with a clear limit error and write nothing.
+#[test]
+fn candidate_explosions_are_refused_before_drawing_by_scatter_and_paint() {
+    let dir = project();
+    let dense = json!({"name":"dense","mesh":"grass","density":64.0});
+    let started = std::time::Instant::now();
+    let refused = write(
+        dir.path(),
+        "foliage_scatter",
+        json!({"output":"assets/huge.foliage","types":[dense.clone()],
+            "center":[0,64,0],"size":[500,128,500],"ground":{"height":0}}),
+    );
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(refused.to_string().contains("candidates"), "{refused}");
+    assert!(!dir.path().join("assets/huge.foliage").exists());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let small = write(
+        dir.path(),
+        "foliage_scatter",
+        json!({"output":"assets/small.foliage","types":[dense],
+            "center":[0,64,0],"size":[4,128,4],"ground":{"height":0}}),
+    );
+    assert_eq!(small["ok"], true, "{small}");
+    let stats = data(
+        dir.path(),
+        "foliage_info",
+        json!({"path":"assets/small.foliage"}),
+    );
+    let painted = write(
+        dir.path(),
+        "foliage_paint",
+        json!({"path":"assets/small.foliage","expected_hash":stats["hash"],
+            "ground":{"height":0},
+            "ops":[{"op":"add","type":"dense","center":[0,0],"radius":400,"seed":1}]}),
+    );
+    assert_eq!(painted["ok"], false, "{painted}");
+    assert!(painted.to_string().contains("candidates"), "{painted}");
+    let after = data(
+        dir.path(),
+        "foliage_info",
+        json!({"path":"assets/small.foliage"}),
+    );
+    assert_eq!(after["hash"], stats["hash"], "the asset is untouched");
+}

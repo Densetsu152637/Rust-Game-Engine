@@ -228,6 +228,19 @@ impl GerstnerSet {
             .collect()
     }
 
+    /// The same set with time `t` (f64 seconds) folded into every wave's phase: evaluating the
+    /// result at time 0 equals evaluating `self` at `t`. Each `omega * t` is computed in f64 and
+    /// wrapped to one turn, so a clock hours past the start loses no phase accuracy to f32.
+    pub fn at_time(&self, t: f64) -> Self {
+        let tau = std::f64::consts::TAU;
+        let mut set = self.clone();
+        for w in &mut set.waves {
+            let phase = (f64::from(w.phase) - f64::from(w.omega) * t).rem_euclid(tau);
+            w.phase = phase as f32;
+        }
+        set
+    }
+
     /// Displacement of rest point `x0` at time `t`, with every amplitude multiplied by `scale`
     /// (shoreline attenuation; 1 = authored).
     pub fn evaluate(&self, x0: Vec2, t: f32, scale: f32) -> WavePoint {

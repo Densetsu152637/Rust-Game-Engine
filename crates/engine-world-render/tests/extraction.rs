@@ -97,3 +97,25 @@ fn cpu_render_mode_keeps_the_fallback_with_the_renderer_installed() {
         .expect("extracted");
     assert!(set.items.is_empty(), "the GPU feature skips cpu terrains");
 }
+
+#[test]
+fn a_failed_registration_leaves_no_gpu_markers_and_the_cpu_fallback_drawing() {
+    let (_dir, project) = project("auto");
+    let mut runtime = Runtime::new(project).unwrap();
+    // The game already registered the world features (and not the renderer): `enable`
+    // cannot register them again.
+    let mut features = PipelineFeatures::default();
+    engine_world_render::register(&mut features).unwrap();
+    runtime.app_mut().world_mut().insert_resource(features);
+    assert!(engine_world_render::enable(runtime.app_mut()).is_err());
+    let world = runtime.app().world();
+    assert!(!engine_world_render::installed(world));
+    assert!(!world.contains_resource::<engine_project::world::foliage::FoliageGpuRenderer>());
+    assert!(!world.contains_resource::<engine_project::world::water::WaterGpuRenderer>());
+    runtime.start().unwrap();
+    runtime.tick(0.02, InputSnapshot::default()).unwrap();
+    assert!(
+        chunk_meshes(&runtime) > 0,
+        "auto terrain falls back to CPU chunks"
+    );
+}

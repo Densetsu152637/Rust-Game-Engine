@@ -35,14 +35,23 @@ rejected, at most 32 per set):
 `engine_foliage::scatter(types, &dyn Surface, &ScatterParams)` is a pure function of its
 inputs. Per type, in list order:
 
-1. **Candidates.** The plane is cut into a fixed world grid whose cell is the power of two
+1. **Candidates.** The plane is cut into a fixed world grid (in **absolute** coordinates,
+   `WorldOrigin.offset + local` in f64, like PCG's noise domain) whose cell is the power of two
    giving about two candidates per cell for the type's density. Each cell seeds a generator
    from `(seed, cell, type)`, draws `floor(density * area)` candidates plus one more with the
    fractional probability, and draws every attribute (position, density roll, scale, yaw,
    tilt, priority, wind phase) in a fixed order whether or not the candidate survives.
    Consequently a region's candidates do not depend on other regions (painting a brush draws
    the candidates a full scatter would have), and relaxing one limit never reshuffles the
-   survivors of another.
+   survivors of another. Because cells are absolute, the same seed gives the same forest at
+   any origin offset and after any streamed reload (`ScatterParams::origin` /
+   `PaintContext::origin`; authored files and MCP tools use origin 0). The expected candidate
+   count (`area x density`) is checked **before** anything is drawn against
+   `16 x max_instances` (never above 2 000 000): beyond it the call fails with
+   `foliage.limit.candidates` instead of materialising millions of candidates (500 x 500 m at
+   density 64 would be 16 million, over 500 MB); lower the density, shrink the area or raise
+   `max_instances`. Scatter, native paint and the MCP `foliage_scatter` / `foliage_paint`
+   tools share this check.
 2. **Filters**, in order: placement box and surface bounds, exclusion zones, density map
    (accepted when the density roll is below the map value), terrain holes (a `HoleMask`),
    ground height, altitude, slope, and the exclusion radii of earlier types. The limits are
@@ -136,7 +145,9 @@ The service (`Foliages` resource) works in the world hooks:
 - `post_transforms` (`update_foliage_render`): picks the render path and builds CPU clusters
   for the active `Camera3D`, or publishes the `FoliageRenderSet`.
 
-At most 16 foliage entities. Generated entities carry `FoliageGenerated { owner }` and ids
+At most 16 foliage entities; one more is skipped with a reason (`foliage::failure`, logged
+once) and never fails the tick. A foliage entity without an authored id registered in the
+entity lookup is skipped the same way. Generated entities carry `FoliageGenerated { owner }` and ids
 `foliage:<owner id>/cell/<x>,<z>/<type name>`.
 
 ### Following the terrain
@@ -162,9 +173,12 @@ translates the field into the new frame (f64, rounded once), drops the CPU clust
 the coordinates service had already shifted and rebuilds them from the translated field, and
 does not count the terrain's moved matrix as a ground change, so a rebase never regenerates
 foliage (tested: same 512 instances within f32 rounding, attempts unchanged). Generated
-placement hashes cells of the local frame at generation time, so regenerating (an edited
-component) under a different origin yields a different pattern; see
-[large-world coordinates](world-coordinates.md#limits).
+placement hashes cells in absolute coordinates, so regenerating (an edited component, a
+streamed reload) under a different origin yields the same absolute forest (tested: two
+origins, every instance of one within 1 mm of an instance of the other). Asset mode loads
+absolute positions, re-expresses them into the current frame **before** projecting them onto
+the (local-frame) ground, so a foliage asset loaded at a non-zero offset keeps every instance
+and its height (tested at offset 2048 on a sloped terrain, heights within 1e-3).
 
 ### Render path rule (no double draw)
 

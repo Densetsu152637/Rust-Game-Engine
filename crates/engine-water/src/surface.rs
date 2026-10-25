@@ -261,7 +261,9 @@ pub struct WaterSurface {
     pub waves: Waves,
     pub optics: WaterOptics,
     pub shoreline: ShorelineSettings,
-    /// Seconds of wave time.
+    /// Seconds of wave time for the waves that read it. A Gerstner set can be baked to its
+    /// time with [`crate::GerstnerSet::at_time`] (then `time` is 0); the ocean frame carries
+    /// its own time.
     pub time: f32,
 }
 impl WaterSurface {

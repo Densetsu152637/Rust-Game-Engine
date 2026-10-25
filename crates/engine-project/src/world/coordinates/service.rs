@@ -232,7 +232,16 @@ fn auto_rebase(world: &mut World) -> Result<()> {
     }
     let snap = f64::from(settings.snap);
     let target: [f64; 3] = std::array::from_fn(|i| (absolute[i] / snap).round() * snap);
-    shift(world, offset, target, ShiftCause::Threshold).map(|_| ())
+    // A shift that cannot happen (an anchor beyond MAX_ABSOLUTE, unsupported physics state)
+    // leaves the world where it is: report it, do not fail the tick.
+    if let Err(error) = shift(world, offset, target, ShiftCause::Threshold) {
+        let reason = error.to_string();
+        if world.resource::<WorldOriginStatus>().blocked.as_ref() != Some(&reason) {
+            note(world, format!("rebase failed: {reason}"));
+        }
+        world.resource_mut::<WorldOriginStatus>().blocked = Some(reason);
+    }
+    Ok(())
 }
 
 /// The first physics object whose state lives in physics-owned world space that the public

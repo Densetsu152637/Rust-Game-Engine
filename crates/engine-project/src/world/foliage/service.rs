@@ -147,6 +147,9 @@ impl State {
 #[derive(Resource, Default)]
 pub struct Foliages {
     states: BTreeMap<Entity, State>,
+    /// Entities that could not be given a state (capacity, missing authored id) and why. The
+    /// rest of the world keeps ticking; see [`failure`].
+    failures: BTreeMap<Entity, String>,
 }
 
 pub(super) fn install(world: &mut World) {
@@ -190,7 +193,27 @@ fn log(world: &mut World, id: &str, message: &str) {
     }
 }
 
+/// Records why `entity` has no usable foliage state, logging each distinct reason once.
+fn fail(world: &mut World, entity: Entity, label: &str, message: String) {
+    let known = world
+        .resource::<Foliages>()
+        .failures
+        .get(&entity)
+        .is_some_and(|m| *m == message);
+    if !known {
+        log(world, label, &message);
+        world
+            .resource_mut::<Foliages>()
+            .failures
+            .insert(entity, message);
+    }
+}
+
 fn remove_stale(world: &mut World, owners: &[Entity]) {
+    world
+        .resource_mut::<Foliages>()
+        .failures
+        .retain(|e, _| owners.contains(e));
     let stale: Vec<Entity> = world
         .resource::<Foliages>()
         .states
@@ -247,6 +270,7 @@ fn generate(
     let mut resolved = component.types.clone();
     resolve_density_maps(&project, &mut resolved)?;
     let bounds = bounds_of(world, entity, component)?;
+    let origin = crate::world::coordinates::origin(world);
     let params = ScatterParams {
         seed: component.seed,
         bounds,
@@ -254,12 +278,14 @@ fn generate(
         zones: &component.exclusion_zones,
         holes: ground.holes(),
         max_instances: component.max_instances as usize,
+        // Candidate cells hash in absolute coordinates: the same forest at any origin offset.
+        origin: [origin[0], origin[2]],
     };
     let result = scatter(&resolved, &*ground.surface, &params).map_err(mapped)?;
     state.types = component.types.clone();
     state.field = Arc::new(result.field);
     state.scatter = result.types;
-    state.frame = crate::world::coordinates::origin(world);
+    state.frame = origin;
     Ok(())
 }
 
@@ -389,11 +415,15 @@ fn sync_one(
             } else {
                 Ok(())
             };
-            loaded.map(|()| {
-                if let Ok(g) = &ground {
-                    reproject(state, g);
-                }
-            })
+            // A freshly loaded asset holds absolute positions: bring them into the current
+            // frame before they are projected onto the (local-frame) ground.
+            loaded
+                .and_then(|()| reexpress(world, state).map(|_| ()))
+                .map(|()| {
+                    if let Ok(g) = &ground {
+                        reproject(state, g);
+                    }
+                })
         }
     };
     match result {
@@ -417,14 +447,21 @@ pub fn sync_foliage(world: &mut World) -> Result<()> {
         let Some(component) = world.get::<FoliageComponent>(entity).cloned() else {
             continue;
         };
-        let id = owner_id(world, entity)?;
+        let id = match owner_id(world, entity) {
+            Ok(id) => id,
+            Err(error) => {
+                let label = format!("entity:{}", entity.to_bits());
+                fail(world, entity, &label, error.to_string());
+                continue;
+            }
+        };
         let known = world.resource::<Foliages>().states.contains_key(&entity);
         if !known && world.resource::<Foliages>().states.len() >= MAX_FOLIAGES {
-            return Err(invalid(
-                "foliage.capacity",
-                format!("At most {MAX_FOLIAGES} foliage entities"),
-            ));
+            let message = format!("At most {MAX_FOLIAGES} foliage entities");
+            fail(world, entity, &id, message);
+            continue;
         }
+        world.resource_mut::<Foliages>().failures.remove(&entity);
         let mut state = world
             .resource_mut::<Foliages>()
             .states
@@ -549,7 +586,9 @@ pub fn update_foliage_render(world: &mut World) -> Result<()> {
         let Some(component) = world.get::<FoliageComponent>(entity).cloned() else {
             continue;
         };
-        let id = owner_id(world, entity)?;
+        let Ok(id) = owner_id(world, entity) else {
+            continue;
+        };
         let mut state = world
             .resource_mut::<Foliages>()
             .states
@@ -661,12 +700,14 @@ pub fn paint(
             )
         })?;
     let types = state.types.clone();
+    let origin = crate::world::coordinates::origin(world);
     let ctx = PaintContext {
         surface: &*ground.surface,
         bounds,
         zones: &component.exclusion_zones,
         holes: ground.holes(),
         max_instances: component.max_instances as usize,
+        origin: [origin[0], origin[2]],
     };
     let result = engine_foliage::paint(
         Arc::make_mut(&mut state.field),
@@ -698,6 +739,16 @@ pub fn field(world: &mut World, entity: Entity) -> Result<Arc<FoliageField>> {
         .get(&entity)
         .map(|s| s.field.clone())
         .ok_or_else(|| invalid("foliage.state.missing", "The entity has no foliage state"))
+}
+
+/// Why `entity` has no foliage state (more than [`MAX_FOLIAGES`] foliage entities, no
+/// registered authored id), if that is the case. Such an entity is skipped; the rest keep running.
+pub fn failure(world: &World, entity: Entity) -> Option<String> {
+    world
+        .get_resource::<Foliages>()?
+        .failures
+        .get(&entity)
+        .cloned()
 }
 
 /// The effective types (generated mode: the component's; asset mode: the asset's with the

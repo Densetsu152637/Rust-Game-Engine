@@ -150,7 +150,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
             Spec {
                 name: "terrain_holes",
                 title: "Paint terrain holes",
-                description: "Apply up to 256 ordered hole edits to an existing terrain asset, all or nothing: every cell whose centre lies within `radius` of `center` (terrain-local [x, z]) becomes a hole (`hole: true`, default) or is filled. Holes are cut from rendering, physics (those collider tiles become triangle meshes) and navigation input. Rewrites the file atomically; the region is in cells.",
+                description: "Apply up to 256 ordered hole edits to an existing terrain asset, all or nothing: every cell whose centre lies within `radius` of `center` (terrain-local [x, z]) becomes a hole (`hole: true`, default) or is filled. Holes are cut from rendering, physics (holed collider tiles remove the hole cells from their heightfield) and navigation input. Rewrites the file atomically; the region is in cells.",
                 input: schema::object(
                     vec![
                         (

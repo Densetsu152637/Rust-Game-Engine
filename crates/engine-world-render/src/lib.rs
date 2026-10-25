@@ -104,17 +104,20 @@ pub fn install(app: &mut EngineApp) {
     water::install(app);
 }
 
-/// [`install`] plus [`register`] into the world's `PipelineFeatures` resource (created when
-/// missing). Use it when the game does not register other features itself.
+/// [`register`] into the world's `PipelineFeatures` resource (created when missing), then
+/// [`install`]. Use it when the game does not register other features itself. The GPU markers
+/// are inserted only after registration succeeded, so a failed registration leaves the CPU
+/// fallbacks drawing instead of silently turning them off.
 pub fn enable(app: &mut EngineApp) -> Result<TerrainRenderStatusHandle> {
-    install(app);
     let world = app.world_mut();
     let mut features = world
         .remove_resource::<PipelineFeatures>()
         .unwrap_or_default();
     let status = register(&mut features);
     world.insert_resource(features);
-    status
+    let status = status?;
+    install(app);
+    Ok(status)
 }
 
 /// Status handles of the modules [`register_missing`] registered (`None`: the module was

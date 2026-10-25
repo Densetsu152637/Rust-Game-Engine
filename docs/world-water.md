@@ -137,9 +137,30 @@ rejected; scene validation also runs every numeric check, so bad edits are refus
 - `post_transforms` (`update_water_render`): render paths, CPU meshes, `WaterRenderSet`,
   and `UnderwaterView` (underwater state of the active `Camera3D`).
 
-At most 64 water bodies; at most 1024 buoyant bodies per tick. Generated surface meshes
-carry `WaterMesh { owner }`, authored id `water:<owner id>/surface` and `Parent` = the water
-entity.
+At most 64 water bodies (the first 64 by authored id; the rest are skipped with a reason in
+`water::failure`, logged once, and the tick continues); a body with a singular transform or an
+invalid wave setup is skipped the same way. At most 1024 buoyant bodies per tick. Generated
+surface meshes carry `WaterMesh { owner }`, authored id `water:<owner id>/surface` and `Parent`
+= the water entity; a body without an authored id registered in the entity lookup gets no CPU
+mesh (a note in `WaterStatus.notes`) because its parent link would dangle.
+
+### Clock precision
+
+`WaterClock.time` is f64 and stays f64 until the waves reduce it to a phase: each Gerstner
+wave's phase is `(phase - omega t) mod 2 pi` computed in f64 (`GerstnerSet::at_time`), and the
+FFT frame reduces `t` modulo `loop_period` when the spectrum loops (`OceanSpectrum::frame_f64`;
+mode phases of a non-looping spectrum are `omega t` mod 2 pi in f64, limited by the f32 `omega`
+of each mode, about `omega t * 6e-8` rad: 4e-3 rad at 10 h). Tested after ten hours: the
+surface equals the surface at `t mod period` within 1e-4 m for a Gerstner wave and for a
+looping FFT ocean.
+
+### Origin shifts
+
+Wave phases are body-local, so the surface needs nothing from `WorldOrigin`: a rebase moves the
+water root and everything standing on it by the same delta and the waves continue unchanged.
+Buoyancy reads body positions and the surface in the same local frame. Tested: with and
+without a rebase of (1024, 0, -512) a floating box ends at the same absolute position (5 mm)
+and the surface height and normal at the same absolute points agree (1e-3).
 
 ### Render path rule (no double draw)
 

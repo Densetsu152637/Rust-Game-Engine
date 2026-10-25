@@ -15,8 +15,8 @@ pub use component::{
 };
 pub use service::{
     LoadedTileset, MAX_COLLIDERS, TileHit, TilemapStatus, Tilemaps, cell_to_world, erase,
-    export_document, fill_rect, flood_fill, paint, regenerate_collision, status, store_inline,
-    sync_tilemaps, tile_at_world, with_tilemap, world_to_cell,
+    export_document, failure, fill_rect, flood_fill, paint, regenerate_collision, status,
+    store_inline, sync_tilemaps, tile_at_world, with_tilemap, world_to_cell,
 };
 
 /// Registers the typed ECS adapter for `engine.Tilemap`.

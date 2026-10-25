@@ -61,16 +61,16 @@ pub fn register_default_render_features(
 /// merges the default features into the world's [`PipelineFeatures`]
 /// resource. Idempotent.
 pub fn install_default_render_features(app: &mut EngineApp) -> Result<DefaultRenderFeatures> {
+    // Register first and install the GPU markers only once registration succeeded: a failed
+    // registration must leave the CPU fallbacks drawing.
+    let installed = app.world().get_resource::<PhysicsRenderConfig>().cloned();
+    let config = installed.clone().unwrap_or_default();
+    let added = merge_into_world(app, &config)?;
     engine_world_render::install_missing(app);
-    let config = match app.world().get_resource::<PhysicsRenderConfig>() {
-        Some(config) => config.clone(),
-        None => {
-            let config = PhysicsRenderConfig::default();
-            engine_physics_render::install_physics_extraction(app, config.clone())?;
-            config
-        }
-    };
-    merge_into_world(app, &config)
+    if installed.is_none() {
+        engine_physics_render::install_physics_extraction(app, config)?;
+    }
+    Ok(added)
 }
 
 /// Headless runs never render: the default features join the world's
