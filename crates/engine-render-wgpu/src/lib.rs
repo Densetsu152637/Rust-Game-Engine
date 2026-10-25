@@ -27,6 +27,7 @@ mod context;
 mod core;
 mod error;
 mod frame;
+pub mod requirements;
 mod shader;
 mod shadow;
 mod surface;
@@ -36,7 +37,10 @@ pub mod uniforms;
 
 pub use backend::{WgpuBackend, WgpuStats};
 pub use backends::{BACKEND_ENV_VAR, WgpuBackends};
-pub use context::{GpuContext, GpuRequirements, WgpuOptions};
+pub use context::{GpuContext, WgpuOptions};
+pub use requirements::{
+    ComposedDevice, DeviceFeatureReport, DeviceFeatureRequest, GpuRequirements, RequestOutcome,
+};
 pub use surface::WindowSource;
 pub use target::{
     OffscreenTarget, RenderTargetInfo, padded_row_bytes, read_texture_rgba, rgba_row_bytes,

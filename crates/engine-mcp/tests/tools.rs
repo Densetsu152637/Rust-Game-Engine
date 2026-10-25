@@ -357,13 +357,31 @@ fn component_schema_lists_all_components_and_rules() {
         .collect();
     let mut expected = engine_mcp::COMPONENT_NAMES.to_vec();
     expected.extend([
+        "engine.AcousticEnvironment",
+        "engine.AcousticGeometry",
+        "engine.AcousticMaterial",
+        "engine.AcousticSource",
+        "engine.AcousticVolume",
         "engine.AnimationPlayer",
+        "engine.AudioEmitter",
+        "engine.AudioListener",
+        "engine.CharacterController2D",
+        "engine.CharacterController3D",
+        "engine.Cloth",
+        "engine.Destructible3D",
+        "engine.FluidVolume",
         "engine.NavigationAgent",
         "engine.NetworkReplica",
         "engine.PhysicsBody2D",
         "engine.PhysicsBody3D",
+        "engine.PhysicsJoint2D",
+        "engine.PhysicsJoint3D",
+        "engine.PhysicsSettings",
+        "engine.Ragdoll",
         "engine.SkinBinding",
+        "engine.SoftBody",
         "engine.UiRoot",
+        "engine.Vehicle3D",
     ]);
     assert_eq!(names, expected);
     assert!(result["scene_rules"].as_array().unwrap().len() >= 4);

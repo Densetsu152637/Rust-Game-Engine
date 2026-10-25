@@ -321,6 +321,13 @@ fn documented_component_names_match_the_scene_schema() {
         "MeshMaterial": {},
         "Collider2D": {"size": [1, 1]},
         "EventBindings": {"bindings": []},
+        "DirectionalLight": {},
+        "PointLight": {},
+        "SpotLight": {},
+        "AreaLight": {},
+        "PostProcess": {},
+        "PostProcessVolume": {},
+        "RayTracing": {},
     });
     let components: Components = serde_json::from_value(full).unwrap();
     let serialized = serde_json::to_value(&components).unwrap();

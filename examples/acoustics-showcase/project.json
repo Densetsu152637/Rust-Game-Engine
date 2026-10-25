@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "name": "Acoustics showcase",
+  "startup_scene": "room.scene.json",
+  "assets": [
+    {
+      "id": "room",
+      "kind": "mesh",
+      "path": "room.json"
+    },
+    {
+      "id": "divider",
+      "kind": "mesh",
+      "path": "divider.json"
+    },
+    {
+      "id": "hum",
+      "kind": "audio",
+      "path": "hum.wav"
+    },
+    {
+      "id": "scene:room",
+      "kind": "scene",
+      "path": "room.scene.json"
+    },
+    {
+      "id": "scene:side",
+      "kind": "scene",
+      "path": "side.scene.json"
+    }
+  ]
+}

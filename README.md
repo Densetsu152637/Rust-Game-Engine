@@ -37,7 +37,9 @@ protocols need an adapter. See [Custom and accessible input](docs/custom-input.m
 | `crates/engine-project` | Authored schemas and typed component catalog, hierarchy, callbacks, simulation/network/UI adapters, runtime snapshots, persistence and transactional scene/prefab editing |
 | `crates/engine-desktop` | Main-thread winit host, 2D sprites and depth-tested 3D scenes, materials/custom WGSL, input, headless runner and native render passes |
 | `crates/engine-dlss` | Optional standalone NVIDIA DLSS Super Resolution (NGX/Vulkan) crate; not part of the renderer's default path |
-| `crates/engine-audio` | PCM clips, deterministic stereo mixer, spatial sources, CPAL device output |
+| `crates/engine-audio` | PCM clips, deterministic stereo mixer, spatial sources, binaural/reverb/Doppler acoustic DSP, CPAL device output |
+| `crates/engine-acoustics` | Acoustic world (BVH, 2D proxy, materials, rooms), CPU ray-traced propagation, reverb fitting and the propagation service |
+| `crates/engine-acoustics-gpu` | Hardware ray-query and compute GPU tiers of the propagation backend, with self-tests and fallback |
 | `crates/engine-editor` | Portable egui/eframe scene editor, real rendered viewport, shared `EditorController` and isolated Cargo-backed play; retained Win32 smoke controls |
 | `crates/engine-mcp` | MCP stdio server for agents: project/scene/asset/file read tools, `--allow-write` scene and file edits, `project://` resources, and a `ToolProvider` for the CLI's `--allow-exec` build/run/screenshot tools |
 | `crates/engine-tooling` | Native Rust compiler/launcher, generation management, asset index, shader import, packaging and the `engine` command-line tool |
@@ -46,6 +48,7 @@ protocols need an adapter. See [Custom and accessible input](docs/custom-input.m
 | `examples/native-extension` | Custom components, systems and a custom wgpu render pass |
 | `examples/programmable-world` | Authored 3D scene, retained HUD, typed callbacks, physics, animation and navigation; GPU-free default and optional window |
 | `examples/pbr-shadows` | Data-only authored project (no Cargo crate) with PBR spheres and a directional shadow, run by `cargo run -p engine-desktop --example pbr_shadows` |
+| `examples/acoustics-showcase` | Data-only authored project (no Cargo crate) with a 3D room and a 2D proxy scene for spatial audio and acoustics, validated in CI |
 | `assets/scripts/moving_entity` | Smallest script crate: one entity advanced along +X |
 | `docs/` | Documentation, starting at [docs/README.md](docs/README.md) |
 | `scripts/ci/` | Helper scripts used by the CI workflow |

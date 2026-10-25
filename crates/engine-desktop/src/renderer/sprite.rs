@@ -33,19 +33,7 @@ pub(crate) fn validate_limits(limits: &RenderLimits) -> Result<()> {
     Ok(())
 }
 
-/// The parts of a temporal frame, submitted to different targets in order.
-#[cfg_attr(not(feature = "dlss"), allow(dead_code))]
-pub(crate) struct TemporalBuild {
-    /// 3D color for the upscaler's HDR input.
-    pub color: RenderCommandBuffer,
-    /// Engine depth/motion pass for the opaque meshes.
-    pub motion: RenderCommandBuffer,
-    /// 2D sprites/UI at output resolution, drawn over the composited scene.
-    pub overlay: BuiltFrame,
-    pub stats: RenderStats,
-}
-
-fn add_stats(stats: &mut RenderStats, overlay: RenderStats) {
+pub(crate) fn add_stats(stats: &mut RenderStats, overlay: RenderStats) {
     stats.draws += overlay.draws;
     stats.batches += overlay.batches;
     stats.mesh_uploads += overlay.mesh_uploads;
@@ -79,7 +67,7 @@ pub struct SpriteRenderer<B: RenderBackend = Box<dyn RenderBackend>> {
     limits: RenderLimits,
     shader: ShaderHandle,
     cache: ResourceCache,
-    scene: super::scene::SceneResources,
+    materials: super::material2d::Materials2d,
     surface_size: (u32, u32),
 }
 
@@ -103,7 +91,7 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             limits,
             shader,
             cache: ResourceCache::default(),
-            scene: super::scene::SceneResources::default(),
+            materials: Default::default(),
             surface_size: (0, 0),
         })
     }
@@ -170,33 +158,46 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         }
     }
 
-    /// Draw 3D geometry, then the existing sprite/UI overlay in one submission.
+    /// Validate a whole scene frame (3D meshes and materials included) and
+    /// draw its sprites/UI with their materials. The 3D scene itself renders
+    /// only through the wgpu render pipeline ([`crate::GpuRenderer`]); on
+    /// other backends it is validated but not drawn.
     pub fn render_scene(
         &mut self,
         frame: &engine_project::rendering3d::SceneRenderFrame,
         target: RenderTarget,
     ) -> Result<Option<RenderStats>> {
         let size = self.target_size(target)?;
-        let camera = self.validate_scene(frame, size)?;
-        let (mut commands, mut stats) = self.scene.build(
-            &mut self.device,
-            frame,
-            (camera.viewport.width, camera.viewport.height),
-            glam::Mat4::IDENTITY,
-        )?;
-        let overlay = self.build_with_materials(&frame.sprites, size, &frame.materials2d)?;
+        self.validate_scene(frame, size)?;
+        let overlay = self.build_overlay(frame, size)?;
         let desc = overlay.desc(target);
-        commands.merge(overlay.commands)?;
-        add_stats(&mut stats, overlay.stats);
-        self.scene.retire_shaders(&mut self.device, frame)?;
-        match self.device.submit(desc, commands)? {
-            FrameOutcome::Rendered(_) => Ok(Some(stats)),
+        match self.device.submit(desc, overlay.commands)? {
+            FrameOutcome::Rendered(_) => Ok(Some(overlay.stats)),
             FrameOutcome::Skipped(_) => Ok(None),
         }
     }
 
+    /// The sprites/UI of `frame` with their materials for a target of `size`.
+    pub(crate) fn build_overlay(
+        &mut self,
+        frame: &engine_project::rendering3d::SceneRenderFrame,
+        size: (u32, u32),
+    ) -> Result<BuiltFrame> {
+        let built = self.build_with_materials(&frame.sprites, size, &frame.materials2d)?;
+        self.materials
+            .retire(&mut self.device, &frame.materials2d)?;
+        Ok(built)
+    }
+
+    /// Handle of a cached sprite texture uploaded from `texture`.
+    pub(crate) fn texture_handle(
+        &self,
+        texture: &std::sync::Arc<engine_project::content::Texture>,
+    ) -> Option<engine_render::TextureHandle> {
+        self.cache.texture_handle(texture)
+    }
+
     /// The 3D viewport of `frame` on a target of `size` (the 2D camera fit).
-    #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
     pub(crate) fn scene_viewport(
         &self,
         frame: &engine_project::rendering3d::SceneRenderFrame,
@@ -205,38 +206,8 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         Ok(CameraView::new(&frame.sprites.camera, size.0, size.1)?.viewport)
     }
 
-    /// Build the temporal frame for an output target of `size`: jittered 3D
-    /// color (projection aspect of the 3D viewport), the engine depth/motion
-    /// pass, and the 2D overlay. Everything is validated and built before the
-    /// caller submits any part.
-    #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
-    pub(crate) fn build_temporal(
-        &mut self,
-        frame: &engine_project::rendering3d::SceneRenderFrame,
-        size: (u32, u32),
-        temporal: &super::temporal::TemporalFrame<'_>,
-    ) -> Result<TemporalBuild> {
-        let camera = self.validate_scene(frame, size)?;
-        let (color, mut stats) = self.scene.build(
-            &mut self.device,
-            frame,
-            (camera.viewport.width, camera.viewport.height),
-            temporal.jitter,
-        )?;
-        let motion = self.scene.build_motion(&mut self.device, frame, temporal)?;
-        let overlay = self.build_with_materials(&frame.sprites, size, &frame.materials2d)?;
-        add_stats(&mut stats, overlay.stats);
-        self.scene.retire_shaders(&mut self.device, frame)?;
-        Ok(TemporalBuild {
-            color,
-            motion,
-            overlay,
-            stats,
-        })
-    }
-
-    /// Submit one part of a temporal frame. `false` when the backend skipped it.
-    #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
+    /// Submit commands built for this device. `false` when the backend
+    /// skipped the frame.
     pub(crate) fn submit(
         &mut self,
         desc: FrameDesc,
@@ -260,9 +231,9 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         Ok(size)
     }
 
-    /// Check a whole scene frame (limits, mesh/texture data, 2D materials)
-    /// before any cache or GPU state changes.
-    fn validate_scene(
+    /// Check a whole scene frame (limits, mesh/texture data, 3D materials and
+    /// shaders, 2D materials) before any cache or GPU state changes.
+    pub(crate) fn validate_scene(
         &self,
         frame: &engine_project::rendering3d::SceneRenderFrame,
         size: (u32, u32),
@@ -301,13 +272,11 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             .cloned()
             .collect();
         self.validate(&proxies, &camera, &extra)?;
+        super::scene3d::validate_meshes(frame)?;
         // Failed authoring edits must not create resources for earlier valid draws.
         for draw in &frame.sprites.draws {
             if let Some(material) = frame.materials2d.get(&draw.id) {
-                super::scene::validate_material(
-                    &super::scene::overlay_material(draw, material),
-                    glam::Mat4::IDENTITY,
-                )?;
+                super::material2d::validate(&draw.id, material)?;
             }
         }
         Ok(camera)
@@ -387,15 +356,15 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 .with_state(state)
                 .with_uniform(uniform);
             if let Some(material) = materials.get(&draw.id) {
-                let snapshot = super::scene::overlay_material(draw, material);
                 let matrix = if camera_index == 0 {
                     camera.world_with_offset(draw.offset)
                 } else {
                     camera.ui
                 };
-                let (shader, uniforms) = self.scene.material(
+                let (shader, uniforms) = self.materials.material(
                     &mut self.device,
-                    &snapshot,
+                    &draw.id,
+                    material,
                     glam::Mat4::from_cols_array(&matrix),
                 )?;
                 command.shader = shader;

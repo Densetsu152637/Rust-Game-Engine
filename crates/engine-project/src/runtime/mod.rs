@@ -17,6 +17,7 @@ use std::{
     sync::Arc,
 };
 
+mod acoustics;
 mod events;
 mod render;
 mod render3d;
@@ -73,6 +74,7 @@ impl Runtime {
         crate::simulation::register_components(&mut app)?;
         crate::ui_tree::register(&mut app)?;
         crate::networking::register(&mut app)?;
+        crate::acoustics::register(&mut app)?;
         crate::world::register_components(&mut app)?;
         crate::simulation::install(app.world_mut(), simulation)?;
         crate::world::install(app.world_mut())?;
@@ -101,6 +103,25 @@ impl Runtime {
             .insert_resource(crate::rendering3d::UpscalerControl::default());
         app.world_mut()
             .insert_resource(crate::rendering3d::FrameGenerationControl::default());
+        app.world_mut()
+            .insert_resource(crate::rendering3d::RenderPipelineControl::default());
+        app.world_mut()
+            .insert_resource(crate::lights::LightingControl::default());
+        app.world_mut()
+            .insert_resource(crate::post::PostControl::default());
+        app.world_mut()
+            .insert_resource(crate::raytracing::RayTracingControl::default());
+        if !app
+            .world()
+            .contains_resource::<crate::rendering3d::TextureStreams>()
+        {
+            app.world_mut()
+                .insert_resource(crate::rendering3d::TextureStreams::default());
+        }
+        app.world_mut()
+            .insert_resource(crate::acoustics::AcousticControl::default());
+        app.world_mut()
+            .insert_resource(crate::acoustics::AcousticHooks::default());
         crate::events::clear(app.world_mut());
         for entity in &scene.entities {
             spawn(app.world_mut(), entity);
@@ -203,6 +224,10 @@ impl Runtime {
         crate::simulation::prepare(self.app.world_mut())?;
         crate::transforms::refresh_world_transforms(self.app.world_mut())?;
         self.sync_collision()?;
+        if let Err(error) = self.start_acoustics() {
+            let _ = self.stop();
+            return Err(error);
+        }
         if let Err(error) = self.app.startup() {
             let error = Error::new("runtime.startup", error.to_string());
             let _ = self.stop();
@@ -288,6 +313,7 @@ impl Runtime {
             .map_err(|e| Error::new("runtime.update", e.to_string()))?;
         self.sync_collision()?;
         crate::audio::synchronize(self.app.world_mut())?;
+        self.tick_acoustics(dt)?;
         let triggers = self
             .app
             .world_mut()
@@ -370,6 +396,7 @@ impl Runtime {
         for entity in remaining {
             self.app.world_mut().despawn(entity);
         }
+        crate::acoustics::shutdown(self.app.world_mut());
         if let Err(e) = crate::audio::shutdown(self.app.world_mut())
             && error.is_none()
         {

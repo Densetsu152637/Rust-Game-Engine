@@ -1,6 +1,6 @@
 //! These tests intentionally fail if no functioning hardware/software GPU is
 //! available. They are ignored in ordinary headless CI; run with --ignored.
-use engine_core::bevy_ecs::world::World;
+use engine_desktop::render_pipeline::{FeatureContext, FeatureDescriptor, PipelineFeature, Stage};
 use engine_desktop::*;
 use engine_project::{
     Camera2D,
@@ -248,8 +248,10 @@ fn an_interpolated_sprite_renders_the_same_pixels_as_one_baked_at_the_blended_po
     Ok(())
 }
 
+/// A game overlay feature (the former native render pass): its own
+/// pipeline drawn into the output target after the engine draws.
 struct CustomTriangle {
-    pipeline: Option<wgpu::RenderPipeline>,
+    pipeline: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
 }
 
 #[test]
@@ -323,17 +325,28 @@ fn depth_and_straight_alpha_are_distinct_draw_states() -> anyhow::Result<()> {
     );
     Ok(())
 }
-impl NativeRenderPass for CustomTriangle {
-    fn prepare(&mut self, gpu: &GpuContext, info: RenderTargetInfo) -> anyhow::Result<()> {
-        let shader=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("external custom pipeline"),source:wgpu::ShaderSource::Wgsl(r#"
-            @vertex fn vs(@builtin(vertex_index) index:u32)->@builtin(position) vec4<f32> {
-                let positions=array<vec2<f32>,3>(vec2<f32>(-0.8,-0.8),vec2<f32>(0.8,-0.8),vec2<f32>(0.0,0.8));
-                return vec4<f32>(positions[index],0.0,1.0);
-            }
-            @fragment fn fs()->@location(0) vec4<f32> {return vec4<f32>(1.0,0.0,1.0,1.0);}
-        "#.into())});
-        self.pipeline = Some(
-            gpu.device
+impl PipelineFeature for CustomTriangle {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new("game.triangle", Stage::Overlay)
+    }
+
+    fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> anyhow::Result<()> {
+        let target = ctx.output()?.clone();
+        if self
+            .pipeline
+            .as_ref()
+            .is_none_or(|(f, _)| *f != target.format)
+        {
+            let shader=ctx.gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("external custom pipeline"),source:wgpu::ShaderSource::Wgsl(r#"
+                @vertex fn vs(@builtin(vertex_index) index:u32)->@builtin(position) vec4<f32> {
+                    let positions=array<vec2<f32>,3>(vec2<f32>(-0.8,-0.8),vec2<f32>(0.8,-0.8),vec2<f32>(0.0,0.8));
+                    return vec4<f32>(positions[index],0.0,1.0);
+                }
+                @fragment fn fs()->@location(0) vec4<f32> {return vec4<f32>(1.0,0.0,1.0,1.0);}
+            "#.into())});
+            let pipeline = ctx
+                .gpu
+                .device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("custom"),
                     layout: None,
@@ -350,26 +363,17 @@ impl NativeRenderPass for CustomTriangle {
                         module: &shader,
                         entry_point: Some("fs"),
                         compilation_options: Default::default(),
-                        targets: &[Some(info.format.into())],
+                        targets: &[Some(target.format.into())],
                     }),
                     multiview_mask: None,
                     cache: None,
-                }),
-        );
-        Ok(())
-    }
-    fn encode(
-        &mut self,
-        _gpu: &GpuContext,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        _info: RenderTargetInfo,
-        _world: Option<&World>,
-    ) -> anyhow::Result<()> {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                });
+            self.pipeline = Some((target.format, pipeline));
+        }
+        let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("external custom pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
+                view: &target.view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -379,7 +383,7 @@ impl NativeRenderPass for CustomTriangle {
             })],
             ..Default::default()
         });
-        pass.set_pipeline(self.pipeline.as_ref().unwrap());
+        pass.set_pipeline(&self.pipeline.as_ref().unwrap().1);
         pass.draw(0..3, 0..1);
         Ok(())
     }
@@ -387,18 +391,19 @@ impl NativeRenderPass for CustomTriangle {
 
 #[test]
 #[ignore = "requires a real native wgpu adapter"]
-fn external_native_pipeline_renders_pixels_and_reports_device_errors() -> anyhow::Result<()> {
+fn external_overlay_feature_renders_pixels_and_reports_device_errors() -> anyhow::Result<()> {
     let gpu = pollster::block_on(GpuContext::headless())?;
     let target = OffscreenTarget::new(&gpu, 64, 64)?;
     let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default())?;
-    let mut passes = NativeRenderPasses::default();
-    passes.register("game triangle", CustomTriangle { pipeline: None })?;
+    let mut features = PipelineFeatures::default();
+    features.register(CustomTriangle { pipeline: None })?;
     assert!(
-        passes
-            .register("game triangle", CustomTriangle { pipeline: None })
-            .is_err()
+        features
+            .register(CustomTriangle { pipeline: None })
+            .is_err(),
+        "duplicate feature names are rejected"
     );
-    renderer.set_passes(passes)?;
+    renderer.set_features(features)?;
     renderer.render(
         &RenderFrame {
             camera: camera(),
@@ -410,7 +415,7 @@ fn external_native_pipeline_renders_pixels_and_reports_device_errors() -> anyhow
     let pixels = target.read_rgba(&renderer.gpu)?;
     assert_eq!(pixel(&pixels, 64, 32, 32), [255, 0, 255, 255]);
     assert_eq!(pixel(&pixels, 64, 0, 0), [0, 0, 0, 255]);
-    save_evidence("native-custom-pass.png", &pixels, 64, 64)?;
+    save_evidence("overlay-feature.png", &pixels, 64, 64)?;
     // Uncaptured errors are reported, sticky, and prevent successful future
     // submission. This deliberately creates an invalid zero-sized texture.
     let _invalid = renderer

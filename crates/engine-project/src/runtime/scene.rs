@@ -15,6 +15,26 @@ pub struct RuntimeSnapshot {
     /// Renderer-reported frame generation state; absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_generation: Option<crate::rendering3d::FrameGenerationStatus>,
+    /// Registered render features and their state in the active camera view;
+    /// absent without a 3D camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render_pipeline: Option<crate::rendering3d::RenderPipelineStatus>,
+    /// Renderer-reported light culling, clustering and shadow allocation of
+    /// the active camera view; absent without a 3D camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<crate::lights::LightingStatus>,
+    /// Renderer-reported post-processing state of the active camera view:
+    /// the influencing volumes and the effective settings summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post: Option<crate::post::PostStatus>,
+    /// Renderer-reported ray-traced lighting of the active camera view: the
+    /// tier and, per effect, `ray_traced` / `fallback` / `disabled` with the
+    /// reason; absent without a 3D camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ray_tracing: Option<crate::raytracing::RayTracingReport>,
+    /// Acoustic propagation state; absent without an `engine.AcousticEnvironment`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acoustics: Option<engine_acoustics::AcousticStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -130,7 +150,9 @@ impl Runtime {
             .world_mut()
             .resource_mut::<crate::ui_tree::GameUi>()
             .clear();
+        self.start_acoustics()?;
         crate::audio::synchronize(self.app.world_mut())?;
+        self.tick_acoustics(0.0)?;
         self.attach_scripts()?;
         Ok(())
     }
@@ -166,6 +188,11 @@ impl Runtime {
                 .map(crate::input::InputDevices::snapshot),
             upscaler: self.upscaler_status(),
             frame_generation: self.frame_generation_status(),
+            render_pipeline: self.render_pipeline_status(),
+            lighting: self.lighting_status(),
+            post: self.post_status(),
+            ray_tracing: self.ray_tracing_status(),
+            acoustics: self.acoustics_status(),
             ticks: self.ticks,
             scene,
             live_entities: self
@@ -222,6 +249,41 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
         e.insert(value.clone());
     } else {
         e.remove::<crate::rendering3d::MeshMaterial>();
+    }
+    if let Some(value) = &c.directional_light {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::lights::DirectionalLight>();
+    }
+    if let Some(value) = &c.point_light {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::lights::PointLight>();
+    }
+    if let Some(value) = &c.spot_light {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::lights::SpotLight>();
+    }
+    if let Some(value) = &c.area_light {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::lights::AreaLight>();
+    }
+    if let Some(value) = &c.post_process {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::post::PostProcess>();
+    }
+    if let Some(value) = &c.post_process_volume {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::post::PostProcessVolume>();
+    }
+    if let Some(value) = &c.ray_tracing {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::raytracing::RayTracing>();
     }
     if let Some(parent) = &authored.parent {
         e.insert(crate::Parent(parent.clone()));

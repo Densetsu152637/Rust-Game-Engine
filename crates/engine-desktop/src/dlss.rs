@@ -217,7 +217,7 @@ pub async fn request_upscaler_gpu(
         return Ok((gpu, UpscalerDevice::default()));
     }
     let reason = match try_dlss_device(&instance, surface, options, config, request).await {
-        Ok(ready) => return Ok(ready_gpu(instance, ready)),
+        Ok(ready) => return ready_gpu(instance, ready, options),
         Err(reason) => reason,
     };
     let gpu = GpuContext::request_with_options(instance, surface, options).await?;
@@ -230,14 +230,24 @@ type Ready = std::convert::Infallible;
 type Ready = (wgpu::Adapter, wgpu::Device, wgpu::Queue, DlssPaths);
 
 #[cfg(not(feature = "dlss"))]
-fn ready_gpu(_: wgpu::Instance, ready: Ready) -> (GpuContext, UpscalerDevice) {
+fn ready_gpu(
+    _: wgpu::Instance,
+    ready: Ready,
+    _: &WgpuOptions,
+) -> Result<(GpuContext, UpscalerDevice)> {
     match ready {}
 }
 #[cfg(feature = "dlss")]
-fn ready_gpu(instance: wgpu::Instance, ready: Ready) -> (GpuContext, UpscalerDevice) {
+fn ready_gpu(
+    instance: wgpu::Instance,
+    ready: Ready,
+    options: &WgpuOptions,
+) -> Result<(GpuContext, UpscalerDevice)> {
     let (adapter, device, queue, paths) = ready;
-    let gpu = GpuContext::from_device(instance, adapter, device, queue);
-    (gpu, UpscalerDevice(DeviceSupport::Ready(paths)))
+    // The NGX device carries the composed engine request plus NGX's Vulkan
+    // extensions; adopting it reports which requested features it enabled.
+    let gpu = GpuContext::adopt(instance, adapter, device, queue, &options.requirements)?;
+    Ok((gpu, UpscalerDevice(DeviceSupport::Ready(paths))))
 }
 
 #[cfg(not(feature = "dlss"))]
@@ -295,7 +305,8 @@ async fn try_dlss_device(
             )
         })
         .ok_or("no Vulkan adapter is available for DLSS")?;
-    let descriptor = GpuContext::device_descriptor(options);
+    let composed = GpuContext::compose_device(options, &adapter).map_err(|e| format!("{e:#}"))?;
+    let descriptor = composed.descriptor("engine desktop device");
     let session = engine_dlss::SessionOptions {
         project_id: paths.project_id.clone(),
         runtime_dir: paths.runtime_dir.clone(),

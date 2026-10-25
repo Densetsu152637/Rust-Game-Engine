@@ -1,0 +1,135 @@
+{
+  "schema": 1,
+  "scene_id": "room",
+  "entities": [
+    {
+      "id": "camera",
+      "name": "Camera",
+      "components": {
+        "Transform": {
+          "position": [
+            0,
+            2.2,
+            5.5
+          ]
+        },
+        "Camera3D": {}
+      }
+    },
+    {
+      "id": "acoustics",
+      "name": "Acoustic environment",
+      "components": {
+        "custom": {
+          "engine.AcousticEnvironment": {
+            "version": 1,
+            "data": {
+              "backend": "auto",
+              "renderer": "binaural",
+              "reverb": "parametric",
+              "reverb_source": "traced",
+              "geometry": {
+                "default_material": "plaster"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "room",
+      "name": "Room shell",
+      "components": {
+        "Transform": {
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
+        "MeshRenderer": {
+          "mesh": "room"
+        },
+        "custom": {
+          "engine.AcousticMaterial": {
+            "version": 1,
+            "data": {
+              "preset": "plaster"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "divider",
+      "name": "Divider wall",
+      "components": {
+        "Transform": {
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
+        "MeshRenderer": {
+          "mesh": "divider"
+        },
+        "custom": {
+          "engine.AcousticMaterial": {
+            "version": 1,
+            "data": {
+              "preset": "concrete"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "listener",
+      "name": "Listener",
+      "components": {
+        "Transform": {
+          "position": [
+            -3,
+            1.6,
+            0
+          ]
+        },
+        "custom": {
+          "engine.AudioListener": {
+            "version": 1,
+            "data": {}
+          }
+        }
+      }
+    },
+    {
+      "id": "speaker",
+      "name": "Speaker",
+      "components": {
+        "Transform": {
+          "position": [
+            3,
+            1.2,
+            0
+          ]
+        },
+        "custom": {
+          "engine.AudioEmitter": {
+            "version": 1,
+            "data": {
+              "clip": "hum",
+              "looped": true
+            }
+          },
+          "engine.AcousticSource": {
+            "version": 1,
+            "data": {
+              "radius_m": 0.3
+            }
+          }
+        }
+      }
+    }
+  ]
+}

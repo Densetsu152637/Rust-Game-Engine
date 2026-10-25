@@ -29,23 +29,61 @@
 - [Programmable world](../examples/programmable-world/README.md): a 3D scene and
   retained HUD connected through typed callbacks, physics, animation and navigation;
   GPU-free default execution and an optional desktop window.
-- [PBR and shadows](../examples/pbr-shadows/README.md): three PBR spheres and a
-  directional shadow map, rendered to PNG or a window by an `engine-desktop` example.
+- [Acoustics showcase](../examples/acoustics-showcase/README.md): a 3D room and a
+  2D side-view scene for spatial audio and ray-traced acoustics, as a data project.
+- [PBR and shadows](../examples/pbr-shadows/README.md): three PBR spheres lit by a
+  cascaded-shadow sun, a PCSS spot light and a point light, rendered to PNG or a
+  window by an `engine-desktop` example.
 - [Moving entity](../assets/scripts/moving_entity/src/lib.rs): the smallest script
   crate.
 
 ## Engine interfaces
 
 - [Desktop rendering](desktop-2d-rendering.md): CPU content, the render contract,
-  wgpu host and native render-pass extensions.
+  wgpu host and native render-feature extensions.
 - [3D scene rendering](rendering3d.md): cameras, depth, metallic-roughness PBR
-  materials, directional shadow maps, transparent draws and custom WGSL.
+  materials, transparent draws and custom WGSL.
+- [Mesh LOD, HLOD and culling](rendering-lod.md): the CPU engine-mesh-lod crate:
+  quadric mesh simplification, LOD chains and selection, HLOD clusters, frustum culling.
+- [Render architecture](rendering-architecture.md): the render extension API
+  (features, stages, per-view data, HDR targets, light list, screen-lighting inputs,
+  instancing), WGSL
+  composition and the material shader contract, device feature composition,
+  XR eye targets and texture streams.
+- [Lights and shadows](rendering-lights.md): directional, point, spot and area
+  light components in photometric units, clustered forward shading, cascaded,
+  spot and cube shadows in a shadow atlas with PCF/PCSS, and lighting status.
+- [HDR post-processing](rendering-post.md): tonemapping (ACES, AgX, Khronos Neutral),
+  manual and histogram auto-exposure, bloom, HDR colour grading with a `.cube` 3D LUT,
+  vignette and film grain; the `PostProcess` and `PostProcessVolume` components,
+  volume blending and post status.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
+- [Hardware ray tracing core](rendering-raytracing.md): `engine-render-rt` tiers and
+  status, the audited experimental token, BLAS/TLAS scenes, the WGSL ray-query library,
+  RT shadow (hard/soft), ambient occlusion, reflection and diffuse-GI kernels, the
+  spatio-temporal denoiser, effect settings/status, the reference path tracer, and the
+  frame integration (`engine.rt.*` features, the `RayTracing` component, raster
+  fallbacks and per-effect status).
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
   fingerprints, ownership and reload behavior.
 - [Authored simulation](simulation.md): 2D/3D rigid bodies, animation and navigation
   adapters, transform authority and callback events.
+- [Physics core](physics.md): shapes, material combine rules, named collision layers,
+  `engine.PhysicsSettings`, the native physics API and extension seams.
+- [Physics queries and determinism](physics-queries.md): ray, shape and overlap queries with filters,
+  fixed-step stepping and interpolation, the `deterministic` feature, debug-view data, MCP `physics_query`/`physics_debug`.
+- [Physics joints](physics-joints.md): fixed, hinge, slider, ball, spring, distance, rope and 6-DoF joints with limits, motors and breakable constraints.
+- [Character controllers](physics-character.md): kinematic 2D/3D characters with slopes, steps, ground snapping, platform riding, pushing, gravity, jumps and ground/wall events.
+- [Raycast vehicles](physics-vehicles.md): `engine.Vehicle3D` with raycast suspension, a slip-based Pacejka tyre model, engine/gearbox/differential drivetrain, input mapping, wheel visuals and events.
+- [Skeleton ragdolls](physics-ragdoll.md): `engine.Ragdoll` bone bodies and joints, animated/ragdoll/powered modes, animation blend, get-up fade, hit reactions and settle events.
+- [Physics destruction](physics-destruction.md): Voronoi pre-fracture of convex and concave meshes, `engine.Destructible3D` thresholds and damage, debris pooling, sleeping and expiry.
+- [Physics rendering](physics-rendering.md): render features for the debug view, cloth, soft bodies,
+  fluid particles and destruction fragments, with the render-world extraction and status reporting.
+- [Cloth (XPBD)](physics-cloth.md): engine-xpbd world, collider proxies with two-way impulses, cloth stretch/bending/tethers, wind and pins.
+- [Soft bodies (XPBD)](physics-softbody.md): tetrahedral edge/volume soft bodies, box tet generator and surface triangles.
+- [Particle fluids](physics-fluids.md): CPU Position Based Fluids, emitters, sinks,
+  rigid-body proxy coupling and renderer outputs.
 - [Navigation meshes](navigation.md): layered polygon NavMesh baking, bounded path
   queries, authored `NavigationAgent` data and MCP navigation tools.
 - [Physics library](../crates/engine-physics/README.md),
@@ -67,6 +105,12 @@
   delivery and bounded execution traces.
 - [Audio and persistence](desktop-services.md): the mixer, spatial sources, CPAL
   playback, durable saves and separate settings.
+- [Spatial audio and acoustics](acoustics.md): authored acoustic components,
+  ray-traced propagation with GPU tiers and CPU fallback, the 2D proxy world, MCP
+  tools and the `--acoustics-backend` option; the decision record and verification
+  plan are in [spatial-audio-design.md](spatial-audio-design.md), and the crates in
+  [engine-acoustics](../crates/engine-acoustics/README.md) and
+  [engine-acoustics-gpu](../crates/engine-acoustics-gpu/README.md).
 - [Desktop packages](desktop-packaging.md): relocatable packages and dependency
   notices.
 - [Editor](editor.md) and [portable viewport](portable-editor.md): the native
