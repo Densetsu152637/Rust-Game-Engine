@@ -6,7 +6,8 @@
 //! - `MeshRenderer` (or `engine.AcousticGeometry.mesh`) meshes with their world
 //!   transform become instances. World units are acoustic metres.
 //! - With a `proxy2d` environment, non-trigger `Collider2D`, non-sensor
-//!   `engine.PhysicsBody2D` and `space: "proxy2d"` volumes become 2D footprints
+//!   `engine.PhysicsBody2D` (hull, trimesh and compound shapes contribute polygons or parts;
+//!   cylinder and heightfield add a named warning) and `space: "proxy2d"` volumes become 2D footprints
 //!   for the proxy synthesizer, and 3D meshes are not used.
 //! - `engine.AcousticVolume` solids and rooms with `space: "world"`.
 use super::components::*;
@@ -61,6 +62,10 @@ pub enum FootprintShape {
         half_height: f32,
         radius: f32,
         rotation: f32,
+    },
+    /// Convex polygon in world XY; the proxy synthesizer fixes its winding.
+    Polygon {
+        points: Vec<[f32; 2]>,
     },
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -176,59 +181,233 @@ fn planar(matrix: &Mat4) -> (f32, f32, f32) {
     let y = matrix.y_axis.truncate();
     (x.y.atan2(x.x), x.truncate().length(), y.truncate().length())
 }
+/// Convex hull of planar points (monotone chain), counter-clockwise, without collinear points.
+fn convex_hull_2d(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut pts: Vec<[f32; 2]> = points
+        .iter()
+        .copied()
+        .filter(|p| p[0].is_finite() && p[1].is_finite())
+        .collect();
+    pts.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    pts.dedup();
+    if pts.len() < 3 {
+        return pts;
+    }
+    let cross = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut hull: Vec<[f32; 2]> = Vec::with_capacity(pts.len() * 2);
+    for pass in 0..2 {
+        let start = hull.len();
+        for &p in &pts {
+            while hull.len() >= start + 2
+                && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop();
+        if pass == 0 {
+            pts.reverse();
+        }
+    }
+    hull
+}
+/// Limits the proxy builder enforces on footprints.
+fn footprint_limits() -> (usize, usize) {
+    let limits = ac::WorldLimits::default();
+    (
+        limits.max_footprint_vertices as usize,
+        limits.max_proxy_footprints as usize,
+    )
+}
+/// Reduces a convex counter-clockwise polygon to at most `max` vertices by repeatedly dropping
+/// the vertex whose triangle with its neighbours has the least area. The result stays convex
+/// (it only ever cuts corners) and the choice is deterministic.
+fn simplify_convex(mut hull: Vec<[f32; 2]>, max: usize) -> Vec<[f32; 2]> {
+    let corner = |p: [f32; 2], v: [f32; 2], n: [f32; 2]| {
+        ((v[0] - p[0]) * (n[1] - p[1]) - (v[1] - p[1]) * (n[0] - p[0])).abs()
+    };
+    while hull.len() > max.max(3) {
+        let count = hull.len();
+        let mut best = (f32::INFINITY, 0);
+        for i in 0..count {
+            let area = corner(
+                hull[(i + count - 1) % count],
+                hull[i],
+                hull[(i + 1) % count],
+            );
+            if area < best.0 {
+                best = (area, i);
+            }
+        }
+        hull.remove(best.1);
+    }
+    hull
+}
+/// World-space convex polygon of local planar `points` under `m`, or `None` without area. A
+/// hull with more vertices than the builder accepts is simplified; the second value is the
+/// vertex count before simplification when that happened.
+fn world_polygon(m: &Mat4, points: &[[f32; 2]]) -> Option<(FootprintShape, Option<usize>)> {
+    let world: Vec<[f32; 2]> = points
+        .iter()
+        .map(|p| {
+            let w = m.transform_point3(Vec3::new(p[0], p[1], 0.0));
+            [w.x, w.y]
+        })
+        .collect();
+    let hull = convex_hull_2d(&world);
+    let area: f32 = (0..hull.len())
+        .map(|i| {
+            let (a, b) = (hull[i], hull[(i + 1) % hull.len()]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    if hull.len() < 3 || area.abs() <= 1e-12 {
+        return None;
+    }
+    let (max_vertices, _) = footprint_limits();
+    let original = hull.len();
+    let simplified = original > max_vertices;
+    let points = if simplified {
+        simplify_convex(hull, max_vertices)
+    } else {
+        hull
+    };
+    Some((
+        FootprintShape::Polygon { points },
+        simplified.then_some(original),
+    ))
+}
+/// Footprints of one 2D physics shape (or compound part) posed by `m`. A shape with no planar
+/// footprint adds a named warning instead of vanishing silently.
+fn push_body_footprints(
+    key: &str,
+    shape: crate::simulation::Shape,
+    body: &crate::simulation::PhysicsBody2D,
+    part: Option<&crate::simulation::CompoundPart2D>,
+    m: &Mat4,
+    out: &mut Vec<FootprintShape>,
+    warnings: &mut Vec<String>,
+) {
+    use crate::simulation::Shape;
+    let (rotation, sx, sy) = planar(m);
+    let center = [m.w_axis.x, m.w_axis.y];
+    let radius_scale = sx.max(sy);
+    let (half_extents, radius, half_height, points) = part.map_or(
+        (
+            body.half_extents,
+            body.radius,
+            body.half_height,
+            &body.points,
+        ),
+        |p| (p.half_extents, p.radius, p.half_height, &p.points),
+    );
+    let unsupported = |warnings: &mut Vec<String>, what: &str| {
+        warnings.push(format!(
+            "{key}: {what} has no acoustic proxy footprint and is ignored"
+        ));
+    };
+    match shape {
+        Shape::Box => out.push(FootprintShape::Rect {
+            center,
+            half_extents: [half_extents[0] * sx, half_extents[1] * sy],
+            rotation,
+        }),
+        Shape::Ball => out.push(FootprintShape::Circle {
+            center,
+            radius: radius * radius_scale,
+        }),
+        Shape::Capsule => out.push(FootprintShape::Capsule {
+            center,
+            half_height: half_height * sy,
+            radius: radius * radius_scale,
+            rotation,
+        }),
+        Shape::ConvexHull => match world_polygon(m, points) {
+            Some((polygon, simplified)) => {
+                if let Some(original) = simplified {
+                    warnings.push(format!(
+                        "{key}: convex_hull footprint simplified from {original} to {} vertices (the proxy builder accepts at most {})",
+                        footprint_limits().0,
+                        footprint_limits().0
+                    ));
+                }
+                out.push(polygon);
+            }
+            None => unsupported(
+                warnings,
+                "convex_hull shape (fewer than 3 distinct points or no area)",
+            ),
+        },
+        Shape::TriMesh if part.is_none() => {
+            let before = out.len();
+            for tri in &body.indices {
+                let corners: Option<Vec<[f32; 2]>> = tri
+                    .iter()
+                    .map(|&i| body.vertices.get(i as usize).copied())
+                    .collect();
+                if let Some((polygon, _)) = corners.and_then(|c| world_polygon(m, &c)) {
+                    out.push(polygon);
+                }
+            }
+            if out.len() == before {
+                unsupported(warnings, "trimesh shape (no triangle with area)");
+            }
+        }
+        Shape::Compound if part.is_none() => {
+            for p in &body.parts {
+                let local = *m
+                    * Mat4::from_translation(Vec3::new(p.position[0], p.position[1], 0.0))
+                    * Mat4::from_rotation_z(p.rotation);
+                push_body_footprints(key, p.shape, body, Some(p), &local, out, warnings);
+            }
+        }
+        Shape::Cylinder => unsupported(warnings, "cylinder shape (3D only)"),
+        Shape::HeightField => unsupported(warnings, "heightfield shape"),
+        Shape::TriMesh | Shape::Compound => {
+            unsupported(warnings, &format!("nested {shape:?} part"))
+        }
+    }
+}
 fn footprint_of(
+    key: &str,
     entity: &EntityRef,
     matrix: &WorldTransform,
     proxy: &Proxy2D,
-) -> Option<(FootprintShape, Mobility)> {
+    warnings: &mut Vec<String>,
+) -> Vec<(FootprintShape, Mobility)> {
     let m = Mat4::from_cols_array_2d(&matrix.matrix);
     let (rotation, sx, sy) = planar(&m);
     if proxy.colliders
         && let Some(b) = entity.get::<crate::Collider2D>().filter(|b| !b.trigger)
     {
         let center = m.transform_point3(Vec3::new(b.offset[0], b.offset[1], 0.0));
-        return Some((
+        return vec![(
             FootprintShape::Rect {
                 center: [center.x, center.y],
                 half_extents: [b.size[0] * 0.5 * sx, b.size[1] * 0.5 * sy],
                 rotation,
             },
             Mobility::Static,
-        ));
+        )];
     }
     if proxy.physics_bodies
         && let Some(b) = entity
             .get::<crate::simulation::PhysicsBody2D>()
             .filter(|b| !b.material.sensor)
     {
-        let p = m.w_axis;
-        let center = [p.x, p.y];
         let mobility = if b.motion == crate::simulation::Motion::Fixed {
             Mobility::Static
         } else {
             Mobility::Dynamic
         };
-        let radius_scale = sx.max(sy);
-        let shape = match b.shape {
-            crate::simulation::Shape::Box => FootprintShape::Rect {
-                center,
-                half_extents: [b.half_extents[0] * sx, b.half_extents[1] * sy],
-                rotation,
-            },
-            crate::simulation::Shape::Ball => FootprintShape::Circle {
-                center,
-                radius: b.radius * radius_scale,
-            },
-            crate::simulation::Shape::Capsule => FootprintShape::Capsule {
-                center,
-                half_height: b.half_height * sy,
-                radius: b.radius * radius_scale,
-                rotation,
-            },
-        };
-        return Some((shape, mobility));
+        let mut shapes = vec![];
+        push_body_footprints(key, b.shape, b, None, &m, &mut shapes, warnings);
+        return shapes.into_iter().map(|s| (s, mobility)).collect();
     }
-    None
+    vec![]
 }
 
 /// Collect the acoustic scene description, or `None` without an enabled
@@ -333,7 +512,7 @@ pub fn collect(world: &World, lookup: &MeshLookup) -> Result<Option<Collected>> 
             continue;
         }
         if let Some(proxy) = &environment.proxy2d {
-            if let Some((shape, mobility)) = footprint_of(entity, &matrix, proxy) {
+            for (shape, mobility) in footprint_of(key, entity, &matrix, proxy, &mut out.warnings) {
                 out.footprints.push(FootprintSpec {
                     key: key.clone(),
                     shape,
@@ -375,6 +554,14 @@ pub fn collect(world: &World, lookup: &MeshLookup) -> Result<Option<Collected>> 
     if proxy_active && skipped_meshes > 0 {
         out.warnings.push(format!(
             "{skipped_meshes} MeshRenderer entities ignored because the environment uses proxy2d"
+        ));
+    }
+    let cap = footprint_limits().1;
+    if out.footprints.len() > cap {
+        let ignored = out.footprints.len() - cap;
+        out.footprints.truncate(cap);
+        out.warnings.push(format!(
+            "{ignored} proxy2d footprints beyond the limit of {cap} were ignored"
         ));
     }
     out.materials = materials.0;
@@ -490,6 +677,9 @@ fn footprint(
                 half_height,
                 radius,
                 rotation,
+            },
+            FootprintShape::Polygon { ref points } => ac::Footprint2D::Polygon {
+                points: points.clone(),
             },
         },
         material,

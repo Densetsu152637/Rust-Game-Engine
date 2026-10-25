@@ -836,6 +836,176 @@ fn proxy_footprints_come_from_colliders_bodies_and_proxy_volumes() {
 }
 
 #[test]
+fn rich_physics_shapes_contribute_polygons_or_a_named_warning() {
+    let body = |id: &str, body: Value| {
+        entity(
+            id,
+            [10., 0., 0.],
+            json!({}),
+            json!({"engine.PhysicsBody2D":data(body)}),
+        )
+    };
+    let dir = write_project(
+        vec![
+            env_entity(json!({"proxy2d":{"units_per_meter":1,"material":"brick"}})),
+            body(
+                "hull",
+                json!({"shape":"convex_hull","motion":"fixed",
+                    "points":[[0.,0.],[2.,0.],[2.,1.],[0.,1.],[1.,0.5]]}),
+            ),
+            body(
+                "mesh",
+                json!({"shape":"trimesh","motion":"fixed",
+                    "vertices":[[0.,0.],[1.,0.],[1.,1.],[0.,1.]],
+                    "indices":[[0,1,2],[0,2,3]]}),
+            ),
+            body(
+                "pair",
+                json!({"shape":"compound","motion":"fixed","parts":[
+                    {"shape":"box","position":[-2.,0.],"half_extents":[0.5,0.5]},
+                    {"shape":"ball","position":[2.,0.],"radius":0.5}]}),
+            ),
+            body(
+                "ridge",
+                json!({"shape":"heightfield","motion":"fixed","heights":[0.,1.,0.],"heightfield_scale":[1.,1.]}),
+            ),
+        ],
+        vec![],
+    );
+    let mut rt = runtime(&dir);
+    rt.start().unwrap();
+    let world = collect_world(&rt, &dir);
+    let of = |key: &str| -> Vec<_> { world.footprints.iter().filter(|f| f.key == key).collect() };
+    // The hull's interior point is dropped; its footprint is the translated rectangle.
+    let hull = of("hull");
+    assert_eq!(hull.len(), 1);
+    match &hull[0].shape {
+        acoustics::FootprintShape::Polygon { points } => {
+            assert_eq!(points.len(), 4, "{points:?}");
+            for p in points {
+                assert!((10.0..=12.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]));
+            }
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(hull[0].mobility, acoustics::Mobility::Static);
+    // Each trimesh triangle is a polygon footprint.
+    assert_eq!(of("mesh").len(), 2);
+    assert!(of("mesh").iter().all(
+        |f| matches!(&f.shape, acoustics::FootprintShape::Polygon { points } if points.len() == 3)
+    ));
+    // Compound parts contribute their own footprints at their local offsets.
+    let pair = of("pair");
+    assert_eq!(pair.len(), 2, "box and ball parts");
+    assert_eq!(
+        pair[1].shape,
+        acoustics::FootprintShape::Circle {
+            center: [12., 0.],
+            radius: 0.5
+        }
+    );
+    // Shapes with no planar footprint are named, never dropped silently.
+    assert!(of("ridge").is_empty());
+    assert!(
+        world
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("ridge:") && w.contains("heightfield")),
+        "{:?}",
+        world.warnings
+    );
+}
+
+#[test]
+fn oversized_2d_hulls_and_trimeshes_are_simplified_or_capped_with_warnings() {
+    let circle: Vec<[f32; 2]> = (0..64)
+        .map(|i| {
+            let a = i as f32 / 64. * std::f32::consts::TAU;
+            [a.cos(), a.sin()]
+        })
+        .collect();
+    // An authored component holds at most 64 KiB, so one trimesh stays well under the 8192
+    // footprint limit; several of them (here 4 x 2100 triangles) exceed it together.
+    let (columns, rows) = (51usize, 22usize);
+    let vertices: Vec<[f32; 2]> = (0..rows)
+        .flat_map(|y| (0..columns).map(move |x| [x as f32, y as f32]))
+        .collect();
+    let mut indices = vec![];
+    for y in 0..rows - 1 {
+        for x in 0..columns - 1 {
+            let a = (y * columns + x) as u32;
+            let (b, c, d) = (a + 1, a + columns as u32, a + columns as u32 + 1);
+            indices.push([a, b, d]);
+            indices.push([a, d, c]);
+        }
+    }
+    assert_eq!(indices.len(), 2100);
+    let terrain = |name: &str, x: f32| {
+        entity(
+            name,
+            [x, 0., 0.],
+            json!({}),
+            json!({"engine.PhysicsBody2D":data(json!({
+                "shape":"trimesh","motion":"fixed",
+                "vertices":vertices,"indices":indices}))}),
+        )
+    };
+    let dir = write_project(
+        vec![
+            env_entity(json!({"proxy2d":{"units_per_meter":1,"material":"brick"}})),
+            entity(
+                "round",
+                [0., 0., 0.],
+                json!({}),
+                json!({"engine.PhysicsBody2D":data(json!({
+                    "shape":"convex_hull","motion":"fixed","points":circle}))}),
+            ),
+            terrain("t0", 100.),
+            terrain("t1", 200.),
+            terrain("t2", 300.),
+            terrain("t3", 400.),
+        ],
+        vec![],
+    );
+    let mut rt = runtime(&dir);
+    rt.start().unwrap();
+    let world = collect_world(&rt, &dir);
+    let round: Vec<_> = world
+        .footprints
+        .iter()
+        .filter(|f| f.key == "round")
+        .collect();
+    assert_eq!(round.len(), 1);
+    match &round[0].shape {
+        acoustics::FootprintShape::Polygon { points } => assert_eq!(points.len(), 32),
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        world
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("round:") && w.contains("simplified from 64")),
+        "{:?}",
+        world.warnings
+    );
+    assert_eq!(
+        world.footprints.len(),
+        8192,
+        "8401 footprints cut to the limit"
+    );
+    assert!(
+        world
+            .warnings
+            .iter()
+            .any(|w| w.contains("209 proxy2d footprints beyond the limit of 8192")),
+        "{:?}",
+        world.warnings
+    );
+    // The proxy world builds instead of failing the whole acoustic build.
+    acoustics::build_world(&world).expect("oversized footprints no longer fail the build");
+}
+
+#[test]
 fn signature_tracks_static_changes_but_not_dynamic_motion() {
     let dir = write_project(
         vec![

@@ -143,6 +143,7 @@ fn contributors(c: &Collected) -> (Vec<Value>, bool) {
                 collect::FootprintShape::Rect { .. } => "rect",
                 collect::FootprintShape::Circle { .. } => "circle",
                 collect::FootprintShape::Capsule { .. } => "capsule",
+                collect::FootprintShape::Polygon { .. } => "polygon",
             },
         }));
     }

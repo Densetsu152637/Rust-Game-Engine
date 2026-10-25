@@ -1473,6 +1473,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-destruction"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+]
+
+[[package]]
 name = "engine-dlss"
 version = "0.1.0"
 dependencies = [
@@ -1502,6 +1509,13 @@ dependencies = [
  "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "engine-fluids"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
 ]
 
 [[package]]
@@ -1573,6 +1587,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-physics-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "bytemuck",
+ "engine-core",
+ "engine-project",
+ "engine-render-pipeline",
+ "engine-render-wgpu",
+ "glam 0.34.1",
+ "serde_json",
+ "tempfile",
+ "wgpu",
+]
+
+[[package]]
 name = "engine-platform"
 version = "0.1.0"
 dependencies = [
@@ -1590,11 +1621,14 @@ dependencies = [
  "engine-assets",
  "engine-audio",
  "engine-core",
+ "engine-destruction",
+ "engine-fluids",
  "engine-locale",
  "engine-navigation",
  "engine-network",
  "engine-physics",
  "engine-text",
+ "engine-xpbd",
  "epaint_default_fonts",
  "fs2",
  "glam 0.34.1",
@@ -1713,6 +1747,13 @@ dependencies = [
  "serde_json",
  "tempfile",
  "wgpu",
+]
+
+[[package]]
+name = "engine-xpbd"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
 ]
 
 [[package]]
@@ -3552,6 +3593,7 @@ dependencies = [
  "foldhash 0.2.0",
  "glamx",
  "hashbrown 0.17.1",
+ "indexmap",
  "log",
  "num-derive 0.5.1",
  "num-traits",
@@ -3578,6 +3620,7 @@ dependencies = [
  "foldhash 0.2.0",
  "glamx",
  "hashbrown 0.17.1",
+ "indexmap",
  "log",
  "num-derive 0.5.1",
  "num-traits",
@@ -4333,6 +4376,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1a7200d82ff1c7b4235efd12f11e2537a402c91cf83a5cb97ce80eef787fde7"
 dependencies = [
  "approx",
+ "libm",
  "num-complex",
  "num-traits",
  "wide",

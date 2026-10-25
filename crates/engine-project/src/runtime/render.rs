@@ -218,6 +218,8 @@ impl Runtime {
         let world = self.app.world();
         let camera = self.extract_camera();
         let mut draws = Vec::new();
+        let fragments_drawn =
+            world.contains_resource::<crate::simulation::physics::FragmentRenderer>();
         for entity in world.iter_entities() {
             let Some(_) = entity.get::<Transform>() else {
                 continue;
@@ -281,7 +283,9 @@ impl Runtime {
                     offset: [0.0; 3],
                 });
             }
-            if let Some(renderer) = entity.get::<MeshRenderer>() {
+            if let Some(renderer) = entity.get::<MeshRenderer>().filter(|_| {
+                !(fragments_drawn && entity.contains::<crate::simulation::physics::Fractured>())
+            }) {
                 let original = entity
                     .get::<crate::GeometryOverride>()
                     .map(|geometry| &geometry.0)

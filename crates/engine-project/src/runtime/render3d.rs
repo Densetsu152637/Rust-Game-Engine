@@ -54,10 +54,19 @@ impl Runtime {
             world: crate::world_transform(world, entity)?.matrix,
         });
         let mut mesh_ids = BTreeSet::new();
+        let fragments_drawn =
+            world.contains_resource::<crate::simulation::physics::FragmentRenderer>();
         for entity in world.iter_entities() {
             let Some(renderer) = entity.get::<MeshRenderer>() else {
                 continue;
             };
+            // With a fragment renderer installed a fractured destructible draws only through
+            // its fragments; hide the intact mesh of this entity (children carry their own
+            // `MeshRenderer` and still draw). Without one nothing draws the fragments, so the
+            // intact mesh stays visible rather than the object vanishing.
+            if fragments_drawn && entity.contains::<crate::simulation::physics::Fractured>() {
+                continue;
+            }
             if entity.get::<Transform>().is_none() {
                 continue;
             }

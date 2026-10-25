@@ -88,14 +88,14 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 34);
+    assert_eq!(names.len(), 36);
     // Registration order: the 12 original read tools, the 8 original write
     // tools, the navigation pair (bake writes, query only reads), the
-    // acoustics tools (inspect and query read, bake writes), then the locale
-    // tools (three reads, three writes), then the UI authoring tools (inspect
-    // and preview read, edit writes).
+    // acoustics tools (inspect and query read, bake writes), the physics pair
+    // (both read), then the locale tools (three reads, three writes), then the
+    // UI authoring tools (inspect and preview read, edit writes).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 20);
+    assert_eq!(read_only_names.len(), 22);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -103,16 +103,20 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(names[22], "acoustics_inspect");
     assert_eq!(names[23], "acoustics_query");
     assert_eq!(names[24], "acoustics_bake");
-    assert_eq!(names[25..28], read_only_names[15..18]);
-    assert_eq!(names[28..31], WRITE_TOOLS[10..13]);
-    assert_eq!(names[31..33], read_only_names[18..]);
-    assert_eq!(names[33], "ui_edit");
-    assert_eq!(read_only_names[18], "ui_inspect");
-    assert_eq!(read_only_names[19], "ui_preview");
+    assert_eq!(names[25], "physics_query");
+    assert_eq!(names[26], "physics_debug");
+    assert_eq!(names[27..30], read_only_names[17..20]);
+    assert_eq!(names[30..33], WRITE_TOOLS[10..13]);
+    assert_eq!(names[33..35], read_only_names[20..]);
+    assert_eq!(names[35], "ui_edit");
+    assert_eq!(read_only_names[20], "ui_inspect");
+    assert_eq!(read_only_names[21], "ui_preview");
     assert_eq!(WRITE_TOOLS[13], "ui_edit");
     assert_eq!(read_only_names[12], "navigation_query");
     assert_eq!(read_only_names[13], "acoustics_inspect");
     assert_eq!(read_only_names[14], "acoustics_query");
+    assert_eq!(read_only_names[15], "physics_query");
+    assert_eq!(read_only_names[16], "physics_debug");
     assert_eq!(WRITE_TOOLS[8], "navigation_bake");
     assert_eq!(WRITE_TOOLS[9], "acoustics_bake");
 }

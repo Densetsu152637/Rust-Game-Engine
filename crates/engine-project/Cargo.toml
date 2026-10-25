@@ -7,6 +7,8 @@ edition = "2024"
 engine-assets = { path = "../engine-assets" }
 engine-network = { path = "../engine-network" }
 engine-core = { path = "../engine-core" }
+engine-destruction = { path = "../engine-destruction" }
+engine-fluids = { path = "../engine-fluids" }
 engine-audio = { path = "../engine-audio" }
 engine-acoustics = { path = "../engine-acoustics" }
 engine-physics = { path = "../engine-physics" }
@@ -15,6 +17,7 @@ engine-navigation = { path = "../engine-navigation" }
 engine-locale = { path = "../engine-locale" }
 engine-text = { path = "../engine-text" }
 unicode-linebreak = "=0.1.5"
+engine-xpbd = { path = "../engine-xpbd" }
 bevy_ecs = "=0.20.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
