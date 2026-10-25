@@ -162,12 +162,16 @@ frame without a `Camera3D` has no PostProcess stage, so the filter does nothing 
 *registered but not prepared by a wgpu renderer*, *disabled for the camera
 (`render_features`)*, *no active `Camera3D`* and, for the filter, *requested but no 3D
 frame has run it*. `EngineTextBackend::render_status()` (`TextRenderStatus`) reports
-SDF text: `state` `sdf` when both SDF paths (`screen`: `ui.sdf_text`, `world`:
-`ui.world`) are on the GPU, `sdf_fallback` otherwise with the reasons joined in
-`fallback_reason`, plus `sdf_gpu_layouts`. The headless run report
-(`project_run_headless`, `render_screenshot`) builds its telemetry from explicit
-fields; `ui_render` is in `RuntimeSnapshot` and is not yet a field of those tool
-outputs.
+SDF text per path: `screen` (`ui.sdf_text`, used by screen text of SDF families) and
+`world` (`ui.world`, used by `engine.WorldText` that asked for SDF). `state` is `sdf` when
+every path in use is on the GPU and `sdf_fallback` otherwise, with the reasons of the
+failing paths in use joined in `fallback_reason`; a path nothing asked for is still listed
+in `screen` / `world` but does not make the state a fallback (a game with only screen SDF
+text and no `Camera3D` reports `sdf`, with `world.state` `fallback` and its reason). The
+report also carries `sdf_gpu_layouts`. The headless run report
+(`project_run_headless`, `render_screenshot`) carries `ui_render` as an object with the
+`features` array above (`name`, `state`, `reason`, `frames`, `last_draws`, `last_items`),
+or `null` when no status was published; it does not carry `TextRenderStatus`.
 
 ## Verification
 

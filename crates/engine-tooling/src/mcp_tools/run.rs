@@ -99,7 +99,7 @@ impl Tool for RunTool {
                 ("localization", json!({"type":["object","null"], "description":
                     "Active locale, loaded locales, string-resolution and missing-message counters; null without localization."})),
                 ("ui_render", json!({"type":["object","null"], "description":
-                    "Engine UI GPU features (ui.sdf_text, ui.world, ui.color_filter): per feature registered/ready/active state, fallback reason and last-frame draw counts; null when no UI feature status was published."})),
+                    "Engine UI GPU features as {features:[{name, state, reason?, frames, last_draws, last_items}]} for ui.sdf_text, ui.world and ui.color_filter: state is gpu or fallback, reason says why a feature is in fallback (omitted when gpu), frames is the number of frames it encoded, last_draws and last_items describe the last encoded frame; null when no UI feature status was published."})),
                 ("render_pipeline", json!({"type":["object","null"], "description":
                     "Registered render features in execution order with their state in the active camera view (enabled, source, activity), the camera's render_features overrides and unknown override names (state not_rendered in headless runs)."})),
                 ("ray_tracing", json!({"type":["object","null"], "description":

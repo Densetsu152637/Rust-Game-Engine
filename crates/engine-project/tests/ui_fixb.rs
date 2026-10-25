@@ -222,3 +222,144 @@ fn an_authored_theme_over_budget_is_rejected_by_validation() {
     let error = UiThemeSet::default().insert(theme).unwrap_err();
     assert_eq!(error.diagnostics[0].code, "ui.style.cascade_budget");
 }
+
+// ---- L4: text render status per path -----------------------------------------
+
+#[test]
+fn screen_only_sdf_text_is_not_reported_as_a_fallback_for_a_missing_3d_camera() {
+    const FONT: &[u8] = epaint_default_fonts::UBUNTU_LIGHT;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("ui.ttf"), FONT).unwrap();
+    std::fs::write(
+        dir.path().join("fonts.json"),
+        json!({"schema":1,"defaultFamily":"ui","families":{"ui":{"size":18,"atlas":"sdf"}}})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("project.json"),
+        json!({"schema":1,"name":"status","startup_scene":"scene.json","assets":[
+            {"id":"ui","kind":"font_face","path":"ui.ttf"},
+            {"id":"fonts","kind":"font_config","path":"fonts.json"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let hud = json!({"version":1,"tree":{"nodes":[
+        {"id":"label","widget":{"kind":"label","text":"Score 120"},
+         "style":{"font":"ui","width":{"unit":"pixels","value":200},"height":{"unit":"pixels","value":30}}}]}});
+    std::fs::write(
+        dir.path().join("scene.json"),
+        json!({"schema":1,"scene_id":"main","entities":[
+            {"id":"hud","name":"HUD","components":{"custom":{"engine.UiRoot":{"version":1,"data":hud}}}}]})
+        .to_string(),
+    )
+    .unwrap();
+    let mut runtime =
+        Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    runtime.start().unwrap();
+    let queue = world(&runtime).resource::<UiGpuQueue>().clone();
+    for feature in UiGpuFeature::ALL {
+        queue.mark_registered(feature);
+        queue.set_ready(feature, true);
+    }
+    runtime.extract_frame().unwrap();
+    let status = runtime.text_engine().unwrap().render_status();
+    // No Camera3D: the world path cannot draw, but nothing asks it to.
+    assert_eq!(status.world.state, UiFeatureState::Fallback);
+    assert_eq!(status.screen.state, UiFeatureState::Gpu);
+    assert_eq!(status.state, TextRenderState::Sdf, "{status:?}");
+    assert!(status.fallback_reason.is_none(), "{status:?}");
+}
+
+// ---- L6: shaped-text cache eviction --------------------------------------------
+
+#[test]
+fn the_shaped_text_cache_keeps_recent_layouts_past_its_capacity() {
+    use engine_project::content::{FontAtlasMode, FontFamilySettings};
+    let mut engine = EngineTextBackend::new(engine_text::AtlasConfig::default()).unwrap();
+    engine
+        .register_font(
+            epaint_default_fonts::UBUNTU_LIGHT.to_vec(),
+            "ui",
+            FontFamilySettings {
+                size: Some(16.0),
+                atlas: FontAtlasMode::Coverage,
+            },
+        )
+        .unwrap();
+    let texts: Vec<String> = (0..700).map(|n| format!("line {n}")).collect();
+    for text in &texts {
+        engine
+            .measure(&UiTextRequest {
+                text,
+                kind: UiTextKind::Plain,
+                font: "ui",
+                scale: 1.0,
+                color: [1.0; 4],
+                max_width: None,
+            })
+            .unwrap();
+    }
+    // Wholesale clearing left ~190 entries after the 513th miss; eviction by recency keeps
+    // the most recent ~three quarters of a full cache.
+    let cached = engine.stats().cached_layouts;
+    assert!((384..=512).contains(&cached), "cached {cached}");
+}
+
+// ---- L7: caption import ------------------------------------------------------
+
+fn cue_text(source: &str) -> String {
+    let srt = format!("1\n00:00:01,000 --> 00:00:02,000\n{source}\n");
+    engine_project::captions::import::import_captions(&srt)
+        .unwrap_or_else(|e| panic!("{source:?}: {e}"))
+        .cues[0]
+        .text
+        .clone()
+}
+
+#[test]
+fn caption_import_repairs_unbalanced_style_tags() {
+    // A single unclosed `<i>` used to fail the whole import.
+    assert_eq!(cue_text("<i>whispers"), "[i]whispers[/i]");
+    assert_eq!(cue_text("stray</i> close"), "stray close");
+    assert_eq!(cue_text("<b><i>x</b>y</i>"), "[b][i]x[/i][/b]y");
+    assert_eq!(cue_text("<b>a</b></b>"), "[b]a[/b]");
+    assert_eq!(cue_text("<b>a</u> b"), "[b]a b[/b]");
+    // Well-formed input is unchanged, escapes still apply.
+    assert_eq!(cue_text("<b>[x]</b>"), "[b]\\[x\\][/b]");
+    // Pathological nesting is bounded rather than rejected.
+    let deep = "<b>".repeat(100) + "x";
+    let text = cue_text(&deep);
+    assert!(text.starts_with("[b]") && text.contains('x'));
+    assert_eq!(text.matches("[b]").count(), text.matches("[/b]").count());
+}
+
+#[test]
+fn caption_import_reads_voice_annotations_past_class_names() {
+    let cue = |start: u32, text: &str| {
+        format!(
+            "00:00:{start:02}.000 --> 00:00:{:02}.000
+{text}
+
+",
+            start + 1
+        )
+    };
+    let vtt = [
+        "WEBVTT
+
+"
+        .to_owned(),
+        cue(1, "<v.loud Bob>Hey</v>"),
+        cue(3, "<v.a.b Mary Ann>Hi</v>"),
+        cue(5, "<v Bob>Again</v>"),
+        cue(7, "<v.loud>no speaker</v>"),
+    ]
+    .concat();
+    let track = engine_project::captions::import::import_captions(&vtt).unwrap();
+    let names: Vec<&str> = track.speakers.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["Bob", "Mary Ann"], "{names:?}");
+    assert_eq!(track.cues[0].speaker, track.cues[2].speaker);
+    assert_eq!(track.cues[3].speaker, None);
+    assert_eq!(track.cues[3].text, "no speaker");
+}

@@ -31,7 +31,8 @@ use std::{
     },
 };
 
-/// Cached shaped or laid-out requests; the caches are cleared when full.
+/// Cached shaped or laid-out requests per cache; a full cache drops its least recently
+/// used quarter, so a working set below this size is never evicted.
 const MAX_CACHED_REQUESTS: usize = 512;
 /// Longest text one request may carry (matches the bitmap backend).
 const MAX_REQUEST_BYTES: usize = 65_536;
@@ -44,7 +45,7 @@ pub enum TextRenderState {
     Coverage,
     /// SDF was requested and every SDF path draws it on the GPU from an SDF atlas.
     Sdf,
-    /// SDF was requested and at least one path (see [`TextRenderStatus::screen`]
+    /// SDF was requested and at least one path in use (see [`TextRenderStatus::screen`]
     /// and [`TextRenderStatus::world`]) is served by a coverage atlas.
     SdfFallback,
 }
@@ -76,7 +77,9 @@ pub struct TextRenderStatus {
     /// `engine.WorldText` with `atlas: "sdf"` (`ui.world`, Transparent stage).
     pub world: SdfPathStatus,
     /// Why SDF requests are served by a coverage atlas (the reasons of the
-    /// paths in fallback), when `state` is `sdf_fallback`.
+    /// paths in use that are in fallback), when `state` is `sdf_fallback`. A path
+    /// nothing requested SDF on is still reported in `screen` / `world`, but does
+    /// not make the state a fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
 }
@@ -207,6 +210,50 @@ impl Pages {
     }
 }
 
+/// Request cache with least-recently-used eviction in batches: when full, the oldest
+/// quarter is dropped at once, so one scan is paid per `MAX_CACHED_REQUESTS / 4` misses.
+struct RequestCache<V> {
+    entries: HashMap<Key, (V, u64)>,
+    clock: u64,
+}
+
+impl<V: Clone> RequestCache<V> {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            clock: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// The cached value, marked as used now.
+    fn get(&mut self, key: &Key) -> Option<V> {
+        self.clock += 1;
+        let clock = self.clock;
+        let (value, used) = self.entries.get_mut(key)?;
+        *used = clock;
+        Some(value.clone())
+    }
+
+    fn insert(&mut self, key: Key, value: V) {
+        if self.entries.len() >= MAX_CACHED_REQUESTS && !self.entries.contains_key(&key) {
+            let mut stamps: Vec<u64> = self.entries.values().map(|(_, used)| *used).collect();
+            let cut = stamps.len() / 4;
+            let (_, &mut oldest_kept, _) = stamps.select_nth_unstable(cut);
+            self.entries.retain(|_, (_, used)| *used >= oldest_kept);
+        }
+        self.clock += 1;
+        self.entries.insert(key, (value, self.clock));
+    }
+}
+
 struct Inner {
     library: FontLibrary,
     /// Exact-size coverage pages (crisp screen text).
@@ -214,8 +261,8 @@ struct Inner {
     /// Signed-distance pages, created when SDF text is first laid out.
     sdf: Option<Pages>,
     language: Option<String>,
-    shaped: HashMap<Key, Arc<Shaped>>,
-    laid: HashMap<Key, Arc<Laid>>,
+    shaped: RequestCache<Arc<Shaped>>,
+    laid: RequestCache<Arc<Laid>>,
     uploads: u64,
 }
 
@@ -291,8 +338,8 @@ impl EngineTextBackend {
                 coverage: Pages::new(atlas)?,
                 sdf: None,
                 language: None,
-                shaped: HashMap::new(),
-                laid: HashMap::new(),
+                shaped: RequestCache::new(),
+                laid: RequestCache::new(),
                 uploads: 0,
             }),
         })
@@ -428,7 +475,7 @@ impl EngineTextBackend {
     }
 
     /// Whether SDF is requested and what actually draws it: `Sdf` when every
-    /// path draws from an SDF atlas on the GPU, otherwise `SdfFallback` with
+    /// path in use draws from an SDF atlas on the GPU, otherwise `SdfFallback` with
     /// the precise reason per path (feature not registered, not prepared by a
     /// wgpu renderer, disabled for the camera, or no 3D camera for world text).
     pub fn render_status(&self) -> TextRenderStatus {
@@ -451,11 +498,16 @@ impl EngineTextBackend {
             SdfPathStatus { state, reason }
         };
         let (screen, world) = (path(UiGpuFeature::SdfText), path(UiGpuFeature::World));
-        let active = screen.state == UiFeatureState::Gpu && world.state == UiFeatureState::Gpu;
-        let reasons: Vec<&str> = [&screen, &world]
-            .into_iter()
-            .filter_map(|p| p.reason.as_deref())
-            .collect();
+        // A path only counts when something asks it for SDF: screen text of an SDF family
+        // uses `screen`, world text that asked for SDF uses `world`. A missing 3D camera
+        // must not make screen-only SDF text look like a fallback.
+        let used = [(!sdf.is_empty(), &screen), (sdf_requests > 0, &world)];
+        let failing = || {
+            used.iter()
+                .filter(|(used, path)| *used && path.state != UiFeatureState::Gpu)
+        };
+        let active = failing().next().is_none();
+        let reasons: Vec<&str> = failing().filter_map(|(_, p)| p.reason.as_deref()).collect();
         TextRenderStatus {
             requested: if requested {
                 FontAtlasMode::Sdf
@@ -524,7 +576,7 @@ impl EngineTextBackend {
             align: align as u8,
         };
         if let Some(hit) = inner.shaped.get(&key) {
-            return Ok((key, hit.clone()));
+            return Ok((key, hit));
         }
         let rich = parse(request.text, markup)?;
         let base = Color::rgba(
@@ -604,9 +656,6 @@ impl EngineTextBackend {
             base,
             base_color: request.color,
         });
-        if inner.shaped.len() >= MAX_CACHED_REQUESTS {
-            inner.shaped.clear();
-        }
         inner.shaped.insert(key.clone(), shaped.clone());
         Ok((key, shaped))
     }
@@ -728,11 +777,8 @@ impl EngineTextBackend {
     ) -> Result<(Arc<Shaped>, Arc<Laid>)> {
         let (shaped_key, shaped) = self.shape(inner, request, align)?;
         let key = Key { sdf, ..shaped_key };
-        if let Some(laid) = inner
-            .laid
-            .get(&key)
-            .filter(|l| inner.pages(sdf).is_current(l))
-            .cloned()
+        if let Some(laid) = inner.laid.get(&key)
+            && inner.pages(sdf).is_current(&laid)
         {
             return Ok((shaped, laid));
         }
@@ -767,9 +813,6 @@ impl EngineTextBackend {
             }
         }
         let laid = Arc::new(Laid { quads, pages });
-        if inner.laid.len() >= MAX_CACHED_REQUESTS {
-            inner.laid.clear();
-        }
         inner.laid.insert(key, laid.clone());
         Ok((shaped, laid))
     }
@@ -846,5 +889,51 @@ impl UiTextBackend for EngineTextBackend {
 
     fn set_sdf_output(&self, enabled: bool) {
         self.sdf_output.store(enabled, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(n: usize) -> Key {
+        Key {
+            sdf: false,
+            text: n.to_string(),
+            markup: false,
+            family: "ui".into(),
+            px: 0,
+            color: [0; 4],
+            width: None,
+            align: 0,
+        }
+    }
+
+    #[test]
+    fn a_full_request_cache_drops_only_its_least_recently_used_quarter() {
+        let mut cache = RequestCache::<usize>::new();
+        for n in 0..MAX_CACHED_REQUESTS {
+            cache.insert(key(n), n);
+        }
+        assert_eq!(cache.len(), MAX_CACHED_REQUESTS);
+        // A hot entry used after the others were inserted outlives the eviction.
+        assert_eq!(cache.get(&key(0)), Some(0));
+        cache.insert(key(MAX_CACHED_REQUESTS), MAX_CACHED_REQUESTS);
+        let dropped = MAX_CACHED_REQUESTS / 4;
+        assert_eq!(cache.len(), MAX_CACHED_REQUESTS - dropped + 1);
+        assert_eq!(cache.get(&key(0)), Some(0), "recently used entry kept");
+        assert_eq!(cache.get(&key(1)), None, "oldest entries dropped");
+        assert_eq!(cache.get(&key(dropped + 1)), Some(dropped + 1));
+        assert_eq!(
+            cache.get(&key(MAX_CACHED_REQUESTS)),
+            Some(MAX_CACHED_REQUESTS)
+        );
+        // Replacing a key in a full cache evicts nothing.
+        while cache.len() < MAX_CACHED_REQUESTS {
+            cache.insert(key(10_000 + cache.len()), 0);
+        }
+        cache.insert(key(0), 7);
+        assert_eq!(cache.len(), MAX_CACHED_REQUESTS);
+        assert_eq!(cache.get(&key(0)), Some(7));
     }
 }
