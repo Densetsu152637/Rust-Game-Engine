@@ -15,8 +15,11 @@ engine-acoustics = { path = "../engine-acoustics" }
 engine-physics = { path = "../engine-physics" }
 engine-animation = { path = "../engine-animation" }
 engine-navigation = { path = "../engine-navigation" }
+engine-locale = { path = "../engine-locale" }
 engine-pcg = { path = "../engine-pcg" }
 engine-streaming = { path = "../engine-streaming" }
+engine-text = { path = "../engine-text" }
+unicode-linebreak = "=0.1.5"
 engine-xpbd = { path = "../engine-xpbd" }
 engine-tilemap = { path = "../engine-tilemap" }
 engine-terrain = { path = "../engine-terrain" }
@@ -29,7 +32,11 @@ blake3 = "1"
 tempfile = "3"
 fs2 = "0.4"
 glam.workspace = true
+# Flexbox, CSS grid and absolute layout for retained game UI (MIT).
+taffy = { version = "=0.15.0", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
 
 [dev-dependencies]
 tempfile = "3"
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "crypto"] }
+# Test fonts (already used by engine-text tests).
+epaint_default_fonts = { version = "=0.37.0", features = ["monochrome_emoji_fonts"] }

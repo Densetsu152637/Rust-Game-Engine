@@ -34,6 +34,11 @@ impl Project {
                 "mesh",
                 "texture",
                 "font",
+                "font_face",
+                "font_config",
+                "string_table",
+                "caption_track",
+                "locale_config",
                 "audio",
                 "scene",
                 "shader",
@@ -265,12 +270,31 @@ impl Project {
                         crate::content::load_texture(&self.resolve_asset(&font.texture)?)?;
                     font.validate(texture.width, texture.height)?;
                 }
+                "font_face" => {
+                    crate::content::load_font_face(&file)?;
+                }
+                "font_config" => {
+                    let config = crate::content::load_font_config(&file)?;
+                    let faces = self
+                        .assets
+                        .values()
+                        .filter(|a| a.kind == "font_face")
+                        .map(|a| a.id.clone())
+                        .collect();
+                    config.validate_against(&faces)?;
+                }
+                "string_table" => {
+                    crate::localization::load_string_table(&file)?;
+                }
+                "caption_track" => {
+                    crate::captions::load_caption_track(&file)?;
+                }
                 "script" => {
                     read_bounded(&file, 1024 * 1024)?;
                 }
                 _ => {}
             }
         }
-        Ok(())
+        crate::localization::validate_project(self)
     }
 }

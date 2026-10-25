@@ -1,7 +1,9 @@
 //! Authored projects, deterministic desktop gameplay, and CPU render extraction.
 //! Native game systems register directly on [`engine_core::EngineApp`].
+pub mod accessibility;
 pub mod acoustics;
 pub mod audio;
+pub mod captions;
 pub mod catalog;
 pub mod content;
 pub mod document;
@@ -9,11 +11,13 @@ pub mod events;
 pub mod gameplay2d;
 pub mod input;
 pub mod lights;
+pub mod localization;
 pub mod model_import;
 pub mod networking;
 pub mod persistence;
 pub mod post;
 pub mod raytracing;
+pub mod remap_ui;
 pub mod rendering3d;
 pub mod runtime;
 pub mod scheduled_events;
@@ -24,6 +28,7 @@ pub mod transforms;
 pub mod ui;
 pub mod ui_tree;
 pub mod world;
+pub mod world_text;
 
 pub use catalog::{ComponentCatalog, ComponentDescriptor, CustomValue, register_component};
 pub use content::GeometryOverride;

@@ -19,6 +19,7 @@ use std::{
 
 mod acoustics;
 mod events;
+mod locale;
 mod render;
 mod render3d;
 mod resources;
@@ -51,6 +52,9 @@ pub struct Runtime {
     elapsed: f64,
     scene_revision: u64,
     geometry: RefCell<BTreeMap<String, (blake3::Hash, Arc<Mesh>)>>,
+    /// Localization generation last applied to the text engine, and its locale.
+    localized_generation: u64,
+    localized_locale: String,
 }
 impl Runtime {
     /// Prepare authored entities. Register native systems/scripts before start or first tick.
@@ -66,13 +70,23 @@ impl Runtime {
         simulation: Option<crate::simulation::SimulationConfig>,
     ) -> Result<Self> {
         project.validate_scene(&project.scene)?;
-        let content = Content::load(&project)?;
+        let mut content = Content::load(&project)?;
         let scene = project.scene.clone();
         let mut app = EngineApp::new();
         app.world_mut()
             .insert_resource(ProjectResource(Arc::new(project.clone())));
         crate::simulation::register_components(&mut app)?;
         crate::ui_tree::register(&mut app)?;
+        if let Some(text) = &content.text {
+            text.attach_gpu(app.world().resource::<crate::ui_tree::UiGpuQueue>().clone());
+        }
+        crate::accessibility::register(&mut app)?;
+        crate::captions::register(&mut app)?;
+        app.world_mut()
+            .resource_mut::<crate::captions::Captions>()
+            .style
+            .rich_text = content.text.is_some();
+        crate::world_text::register(&mut app)?;
         crate::networking::register(&mut app)?;
         crate::acoustics::register(&mut app)?;
         crate::world::register_components(&mut app)?;
@@ -92,6 +106,12 @@ impl Runtime {
             ui.set_font_metrics(id.clone(), Arc::new(move |c| font.glyph(c).advance));
         }
         app.world_mut().insert_resource(ui);
+        let localization = content.localization.take().unwrap_or_default();
+        let localized_locale = localization.locale();
+        app.world_mut()
+            .resource_mut::<crate::ui_tree::UiBindingState>()
+            .set_resolver(localization.resolver());
+        app.world_mut().insert_resource(localization);
         app.world_mut()
             .insert_resource(gameplay2d::World::default());
         app.world_mut().insert_resource(TriggerEvents::default());
@@ -140,7 +160,10 @@ impl Runtime {
             elapsed: 0.0,
             scene_revision: 0,
             geometry: RefCell::new(BTreeMap::new()),
+            localized_generation: u64::MAX,
+            localized_locale,
         };
+        runtime.sync_localization()?;
         let id = crate::persistence::project_id(&runtime.project.name);
         if let Ok(root) = PersistenceStore::default_user_data_root(&id) {
             runtime.set_user_data_root(root)?;
@@ -258,6 +281,7 @@ impl Runtime {
         result
     }
     fn tick_inner(&mut self, dt: f32, input: InputSnapshot) -> Result<()> {
+        self.sync_localization()?;
         let input = crate::input::poll_devices(self.app.world_mut(), input);
         {
             let world = self.app.world_mut();
@@ -277,7 +301,14 @@ impl Runtime {
         self.dispatch_events()?;
         let viewport = self.extract_camera().logical_size;
         let ui_input = self.app.world().resource::<UiModel>().gameplay_frame();
-        crate::ui_tree::tick_world(self.app.world_mut(), viewport, &ui_input)?;
+        let ui_text = self.content.ui_text();
+        let ui_context = crate::ui_tree::UiTickContext {
+            viewport,
+            dt,
+            text: &ui_text,
+        };
+        crate::captions::tick(self.app.world_mut(), dt)?;
+        crate::ui_tree::tick_world(self.app.world_mut(), &ui_context, &ui_input)?;
         let mut scripts = std::mem::take(&mut self.scripts);
         let mut failure = None;
         for script in &mut scripts {
@@ -380,6 +411,7 @@ impl Runtime {
             .world_mut()
             .resource_mut::<crate::ui_tree::GameUi>()
             .clear();
+        crate::ui_tree::reset_world(self.app.world_mut());
         self.app
             .world_mut()
             .resource_mut::<ControlLocks>()

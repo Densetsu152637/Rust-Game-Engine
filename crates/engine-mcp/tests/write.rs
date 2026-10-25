@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 26] = [
+const WRITE_TOOLS: [&str; 30] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -31,6 +31,10 @@ const WRITE_TOOLS: [&str; 26] = [
     "asset_import_model",
     "navigation_bake",
     "acoustics_bake",
+    "locale_set_message",
+    "locale_remove_message",
+    "locale_add_locale",
+    "ui_edit",
     "tilemap_create_tileset",
     "tilemap_create",
     "tilemap_define_rules",
@@ -100,12 +104,14 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 51);
+    assert_eq!(names.len(), 60);
     // Registration order: the 12 original read tools, the 8 original write
-    // tools, then the navigation pair (bake writes, query only reads), then the
-    // acoustics tools (inspect and query read, bake writes), then the physics pair (both read).
+    // tools, the navigation pair (bake writes, query only reads), the
+    // acoustics tools (inspect and query read, bake writes), the physics pair
+    // (both read), then the locale tools (three reads, three writes), then the
+    // UI authoring tools (inspect and preview read, edit writes).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 25);
+    assert_eq!(read_only_names.len(), 30);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -115,46 +121,55 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(names[24], "acoustics_bake");
     assert_eq!(names[25], "physics_query");
     assert_eq!(names[26], "physics_debug");
+    assert_eq!(names[27..30], read_only_names[17..20]);
+    assert_eq!(names[30..33], WRITE_TOOLS[10..13]);
+    assert_eq!(names[33..35], read_only_names[20..22]);
+    assert_eq!(names[35], "ui_edit");
+    assert_eq!(read_only_names[20], "ui_inspect");
+    assert_eq!(read_only_names[21], "ui_preview");
+    assert_eq!(WRITE_TOOLS[13], "ui_edit");
     assert_eq!(read_only_names[12], "navigation_query");
     assert_eq!(read_only_names[13], "acoustics_inspect");
     assert_eq!(read_only_names[14], "acoustics_query");
     assert_eq!(read_only_names[15], "physics_query");
     assert_eq!(read_only_names[16], "physics_debug");
-    // The tilemap family follows: four writers, then its two read-only tools.
-    assert_eq!(names[27..31], WRITE_TOOLS[10..14]);
-    assert_eq!(names[31..33], ["tilemap_info", "tilemap_query"]);
-    assert_eq!(read_only_names[17..19], ["tilemap_info", "tilemap_query"]);
+    // The world-building families follow the UI tools (write-mode names from 36,
+    // read-only names from 22, world write tools from WRITE_TOOLS[14]).
+    // Tilemap: four writers, then its two read-only tools.
+    assert_eq!(names[36..40], WRITE_TOOLS[14..18]);
+    assert_eq!(names[40..42], ["tilemap_info", "tilemap_query"]);
+    assert_eq!(read_only_names[22..24], ["tilemap_info", "tilemap_query"]);
     // Then the pcg family.
     assert_eq!(
-        names[33..37],
+        names[42..46],
         ["pcg_create", "pcg_edit", "pcg_validate", "pcg_run"]
     );
-    assert_eq!(read_only_names[19], "pcg_validate");
+    assert_eq!(read_only_names[24], "pcg_validate");
     // Then the streaming family: two writers, then its read-only tool.
     assert_eq!(
-        names[37..40],
+        names[46..49],
         ["streaming_partition", "streaming_hlod", "streaming_info"]
     );
-    assert_eq!(read_only_names[20], "streaming_info");
+    assert_eq!(read_only_names[25], "streaming_info");
     // Then the terrain family: five writers, then its read-only info tool.
-    assert_eq!(names[40..45], WRITE_TOOLS[19..24]);
-    assert_eq!(names[45], "terrain_info");
-    assert_eq!(read_only_names[21], "terrain_info");
+    assert_eq!(names[49..54], WRITE_TOOLS[23..28]);
+    assert_eq!(names[54], "terrain_info");
+    assert_eq!(read_only_names[26], "terrain_info");
     // Then the foliage family: two writers, then its read-only info tool.
     assert_eq!(
-        names[46..49],
+        names[55..58],
         ["foliage_scatter", "foliage_paint", "foliage_info"]
     );
-    assert_eq!(names[46..48], WRITE_TOOLS[24..]);
-    assert_eq!(read_only_names[22], "foliage_info");
+    assert_eq!(names[55..57], WRITE_TOOLS[28..]);
+    assert_eq!(read_only_names[27], "foliage_info");
     // Then the water family: two read-only tools (bodies are authored with component_set).
-    assert_eq!(names[49..51], ["water_sample", "water_spectrum"]);
-    assert_eq!(read_only_names[23..25], ["water_sample", "water_spectrum"]);
+    assert_eq!(names[58..60], ["water_sample", "water_spectrum"]);
+    assert_eq!(read_only_names[28..30], ["water_sample", "water_spectrum"]);
     assert_eq!(WRITE_TOOLS[8], "navigation_bake");
     assert_eq!(WRITE_TOOLS[9], "acoustics_bake");
-    assert_eq!(WRITE_TOOLS[14..17], ["pcg_create", "pcg_edit", "pcg_run"]);
+    assert_eq!(WRITE_TOOLS[18..21], ["pcg_create", "pcg_edit", "pcg_run"]);
     assert_eq!(
-        WRITE_TOOLS[17..19],
+        WRITE_TOOLS[21..23],
         ["streaming_partition", "streaming_hlod"]
     );
 }
@@ -191,6 +206,7 @@ fn write_tool_annotations_are_accurate() {
     expect("terrain_navmesh", false, false);
     expect("foliage_scatter", false, false);
     expect("foliage_paint", true, false);
+    expect("ui_edit", true, false);
     for tool in tools
         .iter()
         .filter(|t| t["annotations"]["readOnlyHint"] == true)

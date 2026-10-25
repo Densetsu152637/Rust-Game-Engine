@@ -358,6 +358,7 @@ fn component_schema_lists_all_components_and_rules() {
     let mut expected = engine_mcp::COMPONENT_NAMES.to_vec();
     expected.extend([
         "engine.AbsolutePosition",
+        "engine.AccessibilitySettings",
         "engine.AcousticEnvironment",
         "engine.AcousticGeometry",
         "engine.AcousticMaterial",
@@ -367,6 +368,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.AudioEmitter",
         "engine.AudioListener",
         "engine.Buoyancy",
+        "engine.CaptionPlayer",
         "engine.CharacterController2D",
         "engine.CharacterController3D",
         "engine.Cloth",
@@ -389,10 +391,14 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.StreamingSource",
         "engine.Terrain",
         "engine.Tilemap",
+        "engine.UiData",
         "engine.UiRoot",
+        "engine.UiTheme",
+        "engine.UiWorldPanel",
         "engine.Vehicle3D",
         "engine.WaterBody",
         "engine.WorldPartition",
+        "engine.WorldText",
     ]);
     assert_eq!(names, expected);
     assert!(result["scene_rules"].as_array().unwrap().len() >= 4);

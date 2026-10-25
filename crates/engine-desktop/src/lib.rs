@@ -27,6 +27,7 @@
 //! [`PipelineFeatures`] resource before launching the runner, or construct
 //! [`GpuRenderer`] directly for another host.
 
+pub mod accessibility;
 mod backend;
 mod camera;
 mod dlss;
@@ -52,7 +53,13 @@ pub use engine_render_wgpu::{
     BACKEND_ENV_VAR, DeviceFeatureReport, DeviceFeatureRequest, GpuContext, GpuRequirements,
     OffscreenTarget, RenderTargetInfo, WgpuBackend, WgpuBackends, WgpuOptions,
 };
+#[cfg(feature = "system-clipboard")]
+pub use input::clipboard;
 pub use input::key_token;
+pub use input::{
+    ImeCursorArea, KeyPress, TextInputState, TextModifiers, ime_cursor_area, translate_ime,
+    translate_key, translate_window_event,
+};
 pub use interpolation::*;
 pub use pacing::*;
 pub use renderer::*;

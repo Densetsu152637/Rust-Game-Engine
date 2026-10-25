@@ -136,6 +136,8 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
             "evaluated_frames":0,"history_resets":0},
         "frame_generation":{"requested":{"mode":"dlss_fg","multiplier":2},"state":"not_rendered",
             "generated_frames":0,"presented_frames":0,"history_resets":0},
+        "localization":{"locale":"fr","default_locale":"en","generation":3,"pseudo":false,
+            "locales":["en","fr"],"resolutions":12,"missing_messages":1},
         "render_pipeline":{"state":"not_rendered","overrides":{"engine.opaque":false},
             "features":[{"name":"engine.opaque","stage":"opaque","enabled":false,
                 "source":"view_override","activity":"disabled"}],
@@ -156,6 +158,8 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     assert_eq!(summary["upscaler"]["requested"]["mode"], "dlss_sr");
     assert_eq!(summary["frame_generation"]["state"], "not_rendered");
     assert_eq!(summary["frame_generation"]["requested"]["multiplier"], 2);
+    assert_eq!(summary["localization"]["locale"], "fr");
+    assert_eq!(summary["localization"]["missing_messages"], 1);
     assert_eq!(
         summary["render_pipeline"]["features"][0]["name"],
         "engine.opaque"
@@ -217,6 +221,7 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         json!(["frame_generation"])
     );
     assert!(absent["profile"].is_null());
+    assert!(absent["localization"].is_null());
     assert!(absent["input_devices"].is_null());
     assert_eq!(absent["telemetry_omitted"], json!([]));
 }

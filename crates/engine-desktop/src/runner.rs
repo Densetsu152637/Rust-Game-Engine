@@ -1,7 +1,8 @@
+use crate::accessibility::AccessBridge;
 use crate::{
     BACKEND_ENV_VAR, CameraView, DlssConfig, DlssRequest, FrameHistory, FramePacer,
     GpuRequirements, PipelineFeatures, RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
-    input::{Gamepads, PressLatch, sample_tick, window_input},
+    input::{Gamepads, PressLatch, TextBridge, sample_tick, window_input},
 };
 use anyhow::{Context, Result, ensure};
 pub use engine_acoustics::BackendPreference;
@@ -12,8 +13,10 @@ use engine_project::{
     EventSchedule, EventTrace, Runtime,
     acoustics::{AcousticControl, AcousticHost},
     input::{ActionMapper, RawInput, merge_input},
+    remap_ui::RawInputTokens,
     rendering3d::{FrameGenerationControl, RenderPipelineControl, UpscalerControl},
     runtime::{InputSettings, RuntimeSnapshot},
+    ui_tree::GameUi,
 };
 use serde::Serialize;
 use std::{
@@ -235,6 +238,8 @@ pub fn run_with_wgpu_backends(
         present_skipped: false,
         previous: BTreeSet::new(),
         latch: PressLatch::default(),
+        text: TextBridge::default(),
+        access: None,
         pacer: FramePacer::new(FIXED_DELTA),
         history: FrameHistory::default(),
         last_frame: Instant::now(),
@@ -403,6 +408,10 @@ struct DesktopRunner {
     present_skipped: bool,
     previous: BTreeSet<String>,
     latch: PressLatch,
+    /// Typed text and IME forwarding into the game UI.
+    text: TextBridge,
+    /// Screen-reader bridge, created with the window.
+    access: Option<AccessBridge>,
     pacer: FramePacer,
     /// The last two simulation frames, for presenting between them.
     history: FrameHistory,
@@ -539,7 +548,22 @@ impl DesktopRunner {
         );
         self.runtime
             .enqueue_scheduled_events(&self.options.events, self.ticks)?;
+        // Raw key and button tokens, for the remap screen's "press a key" capture.
+        self.runtime
+            .app_mut()
+            .world_mut()
+            .insert_resource(RawInputTokens {
+                down: self.raw.down.clone(),
+            });
         self.runtime.tick(FIXED_DELTA as f32, input)?;
+        if let Some(host) = &self.surface {
+            let ui = self.runtime.app().world().resource::<GameUi>();
+            self.text.sync(&host.window, ui, &camera);
+            if let Some(access) = &mut self.access {
+                let title = self.runtime.project().name.clone();
+                access.sync(self.runtime.app_mut().world_mut(), &camera, &title);
+            }
+        }
         self.event_trace.capture(&self.runtime, self.ticks);
         self.ticks += 1;
         Ok(())
@@ -578,6 +602,8 @@ impl ApplicationHandler for DesktopRunner {
                     )
                     .context("creating desktop window")?,
             );
+            // The AccessKit adapter must exist before the window is first shown.
+            self.access = Some(AccessBridge::new(event_loop, &window));
             let requirements = self
                 .runtime
                 .app_mut()
@@ -614,6 +640,14 @@ impl ApplicationHandler for DesktopRunner {
             // Failure to initialize the controller service is propagated. A
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);
+            #[cfg(feature = "system-clipboard")]
+            if let Some(clipboard) = crate::input::clipboard::system_clipboard() {
+                self.runtime
+                    .app_mut()
+                    .world_mut()
+                    .resource_mut::<GameUi>()
+                    .set_clipboard(clipboard);
+            }
             host.present_scene(&frame, Some(self.runtime.app().render_world()))?;
             publish_upscaler_status(&mut self.runtime, &host.renderer);
             self.scene_revision = self.runtime.scene_revision();
@@ -662,7 +696,14 @@ impl ApplicationHandler for DesktopRunner {
             }
         )
         .then(|| self.raw.down.clone());
+        if let (Some(access), Some(host)) = (&mut self.access, &self.surface) {
+            access.handle(&host.window, &event);
+        }
         window_input(&mut self.raw, &event, &mut self.pointer);
+        self.text.handle(
+            &event,
+            &mut self.runtime.app_mut().world_mut().resource_mut::<GameUi>(),
+        );
         if let Some(before) = before {
             self.latch.note_presses(&before, &self.raw.down);
         }

@@ -4,7 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Screen-reader bridge: the accessibility tree types and the winit adapter for
+# UI Automation (Windows), NSAccessibility (macOS) and AT-SPI over zbus (Linux).
+# Both Apache-2.0 / pure Rust; accesskit matches the version already in the lock.
+accesskit = "=0.25.1"
+accesskit_winit = "=0.34.1"
 anyhow = "1"
+# System clipboard for text input copy/cut/paste (MIT OR Apache-2.0); optional.
+arboard = { version = "=3.7.0", optional = true, default-features = false }
 bevy_ecs.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 engine-acoustics = { path = "../engine-acoustics" }
@@ -26,12 +33,17 @@ winit = "=0.30.13"
 
 [features]
 default = []
+# Copy, cut and paste in game text inputs use the operating system clipboard instead
+# of the process-local in-memory clipboard.
+system-clipboard = ["dep:arboard"]
 # DLSS Super Resolution through NGX on Vulkan. Needs NGX_SDK_DIR and
 # VULKAN_HEADERS_DIR at build time; without them the build still succeeds and
 # DLSS requests report the missing SDK.
 dlss = ["dep:engine-dlss", "engine-dlss/ngx-vulkan"]
 
 [dev-dependencies]
+# Test fonts for the TrueType text GPU test (already used by other crates).
+epaint_default_fonts = "=0.37.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 naga = { version = "=30.0.1", features = ["wgsl-in"] }
 serde_json = "1"

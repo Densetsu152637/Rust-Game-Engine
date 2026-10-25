@@ -45,9 +45,12 @@ impl ComponentCatalog {
         for d in crate::simulation::component_descriptors()
             .into_iter()
             .chain(crate::world::component_descriptors())
+            .chain(crate::ui_tree::descriptors())
             .chain([
-                crate::ui_tree::descriptor(),
+                crate::accessibility::descriptor(),
+                crate::captions::descriptor(),
                 crate::networking::descriptor(),
+                crate::world_text::descriptor(),
             ])
             .chain(crate::acoustics::descriptors())
             .chain(descriptors)
@@ -88,8 +91,12 @@ impl ComponentCatalog {
             return Err(invalid("Component exceeds 64KiB"));
         }
         validate_value(&descriptor.schema, &value.data, 0)?;
-        if name == "engine.UiRoot" {
-            serde_json::from_value::<crate::ui_tree::UiRoot>(value.data.clone())?.validate()?;
+        crate::ui_tree::validate_component(name, &value.data)?;
+        crate::accessibility::validate_component(name, &value.data)?;
+        crate::captions::validate_component(name, &value.data)?;
+        if name == crate::world_text::WORLD_TEXT_COMPONENT {
+            serde_json::from_value::<crate::world_text::WorldText>(value.data.clone())?
+                .validate()?;
         }
         crate::acoustics::validate_component(name, &value.data)?;
         Ok(())

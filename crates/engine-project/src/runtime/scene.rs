@@ -15,6 +15,9 @@ pub struct RuntimeSnapshot {
     /// Renderer-reported frame generation state; absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_generation: Option<crate::rendering3d::FrameGenerationStatus>,
+    /// Active locale and string statistics; absent without any loaded strings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub localization: Option<crate::localization::LocalizationStatus>,
     /// Registered render features and their state in the active camera view;
     /// absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -32,6 +35,11 @@ pub struct RuntimeSnapshot {
     /// reason; absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ray_tracing: Option<crate::raytracing::RayTracingReport>,
+    /// State of the UI render features (`ui.sdf_text`, `ui.world`,
+    /// `ui.color_filter`): on the GPU, or the precise reason a feature's content
+    /// stays on the 2D path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_render: Option<crate::ui_tree::UiRenderStatus>,
     /// Acoustic propagation state; absent without an `engine.AcousticEnvironment`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustics: Option<engine_acoustics::AcousticStatus>,
@@ -158,6 +166,7 @@ impl Runtime {
             .world_mut()
             .resource_mut::<crate::ui_tree::GameUi>()
             .clear();
+        crate::ui_tree::reset_world(self.app.world_mut());
         self.start_acoustics()?;
         crate::audio::synchronize(self.app.world_mut())?;
         self.tick_acoustics(0.0)?;
@@ -196,10 +205,16 @@ impl Runtime {
                 .map(crate::input::InputDevices::snapshot),
             upscaler: self.upscaler_status(),
             frame_generation: self.frame_generation_status(),
+            localization: self
+                .app
+                .world()
+                .get_resource::<crate::localization::Localization>()
+                .and_then(crate::localization::Localization::status),
             render_pipeline: self.render_pipeline_status(),
             lighting: self.lighting_status(),
             post: self.post_status(),
             ray_tracing: self.ray_tracing_status(),
+            ui_render: self.ui_render_status(),
             acoustics: self.acoustics_status(),
             streaming: crate::world::streaming::snapshot(self.app.world()),
             world_origin: crate::world::coordinates::snapshot(self.app.world()),
