@@ -131,6 +131,10 @@
   crate: generation-checked entity IDs, a typed/quantized component and RPC registry, delta
   compression against acknowledged baselines under loss and reordering, interest management,
   priority and bandwidth budgets, validated RPCs, the bounded wire format and telemetry.
+- [Prediction, rollback and lag compensation](networking-prediction.md): the sans-IO
+  `engine-net-predict` crate (client prediction and reconciliation, redundant input
+  transport, prediction keys for abilities, GGPO-style rollback, rewound hitbox queries),
+  its limits and trust model.
 - [Meta-programming and authoring](meta-programming.md): component descriptors,
   typed adapters, hierarchy, events, batches and prefabs shared with MCP.
 - [Scheduled events](scheduled-events.md): CLI/MCP event injection, callback

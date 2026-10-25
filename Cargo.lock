@@ -1579,6 +1579,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-net-predict"
+version = "0.1.0"
+dependencies = [
+ "engine-network",
+ "glam 0.34.1",
+ "serde",
+]
+
+[[package]]
 name = "engine-net-quic"
 version = "0.1.0"
 dependencies = [
