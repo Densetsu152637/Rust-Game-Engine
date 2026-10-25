@@ -118,12 +118,23 @@ pub fn descriptor() -> ComponentDescriptor {
         "tabIndex":{"type":"integer","minimum":-1024,"maximum":1024},
         "focusable":{"type":"boolean"}
     }});
+    let accessibility = json!({"type":"object","additionalProperties":false,"properties":{
+        "label":label,
+        "description":{"type":"string","maxLength":MAX_ACCESS_DESCRIPTION},
+        "role":{"type":"string","enum":[
+            "group","label","heading","image","button","link","check_box","switch","slider",
+            "progress_bar","text_input","multiline_text_input","password_input","combo_box",
+            "list_box","list_box_option","list","list_item","scroll_view","tab_list","tab",
+            "tab_panel","dialog","alert","status","region"]},
+        "hidden":{"type":"boolean"},
+        "live":{"type":"string","enum":["off","polite","assertive"]}
+    }});
     // parent is omitted for roots in authoring JSON; native serializers omit None.
     let node = json!({"type":"object","additionalProperties":false,"required":["id"],"properties":{
         "id":id,"parent":id,
         "widget":widget,"style":style,"visible":{"type":"boolean"},"enabled":{"type":"boolean"},
         "classes":{"type":"array","maxItems":16,"items":{"type":"string","minLength":1,"maxLength":64}},
-        "tooltip":tooltip,"nav":nav
+        "tooltip":tooltip,"nav":nav,"accessibility":accessibility
     }});
     ComponentDescriptor {
         name: "engine.UiRoot".into(),

@@ -46,6 +46,7 @@ impl ComponentCatalog {
             .into_iter()
             .chain(crate::ui_tree::descriptors())
             .chain([
+                crate::accessibility::descriptor(),
                 crate::networking::descriptor(),
                 crate::world_text::descriptor(),
             ])
@@ -88,6 +89,7 @@ impl ComponentCatalog {
         }
         validate_value(&descriptor.schema, &value.data, 0)?;
         crate::ui_tree::validate_component(name, &value.data)?;
+        crate::accessibility::validate_component(name, &value.data)?;
         if name == crate::world_text::WORLD_TEXT_COMPONENT {
             serde_json::from_value::<crate::world_text::WorldText>(value.data.clone())?
                 .validate()?;

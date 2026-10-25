@@ -23,6 +23,7 @@
 //! Register [`NativeRenderPass`] implementations in [`NativeRenderPasses`] before
 //! launching the runner, or construct [`GpuRenderer`] directly for another host.
 
+pub mod accessibility;
 mod backend;
 mod camera;
 mod dlss;

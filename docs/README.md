@@ -60,6 +60,10 @@
 - [Retained game UI](game-ui.md): taffy flexbox/grid layout, widget set (text input,
   dropdown, scroll/virtual lists, tabs, modal dialogs, tooltips), spatial navigation,
   text backend and text-edit event contracts, limits.
+- [Accessibility](accessibility.md): the neutral accessibility tree, assistive-technology
+  action requests, the AccessKit screen-reader bridge (Windows UI Automation observed),
+  UI/text scale, reduced motion, high-contrast theme, focus ring and the input-remapping
+  screen.
 - [UI styling](ui-styling.md): themes with tokens and selector rules (kind, class, id, state
   pseudo-classes), cascade and specificity, transitions and keyframe animation with
   reduced motion, data binding with a string-resolver seam, world-space UI panels.

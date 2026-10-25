@@ -15,6 +15,7 @@ use crate::{Error, Result, ui::Rect};
 use bevy_ecs::prelude::Component;
 use serde::{Deserialize, Serialize};
 
+mod accessibility;
 mod animation;
 mod binding;
 mod builder;
@@ -38,6 +39,12 @@ mod widget;
 mod world;
 mod world_panel;
 
+pub use accessibility::{
+    AccessAction, AccessId, AccessLive, AccessNode, AccessPart, AccessRole, AccessScroll,
+    AccessStates, AccessTree, AccessUpdate, AccessValue, MAX_ACCESS_DESCRIPTION, MAX_ACCESS_NAME,
+    MAX_ACCESS_OUTCOMES, MAX_ACCESS_REQUESTS, UiAccessAction, UiAccessOutcome, UiAccessRequest,
+    UiAccessStatus, UiAccessibility,
+};
 pub use animation::{
     Easing, InfiniteTag, MAX_ANIMATION_ITERATIONS, MAX_KEYFRAMES, MAX_MOTION_SECONDS,
     MAX_RULE_TRANSITIONS, UiAnimProperty, UiAnimation, UiAnimationDirection, UiAnimationPhase,
@@ -84,7 +91,9 @@ pub use widget::{
     MAX_UI_ROOT_TEXT, MAX_UI_TEXT, MAX_VIRTUAL_ITEMS, MAX_VIRTUAL_VISIBLE, UiImageFit,
     UiNavigation, UiScrollAxes, UiTooltip, UiWidget, virtual_range,
 };
-pub use world::{extract_world, extract_world_with, register, reset_world, tick_world};
+pub use world::{
+    UiTickEvents, extract_world, extract_world_with, register, reset_world, tick_world,
+};
 pub use world_panel::{
     MAX_PANEL_PIXELS, PANEL_Z_STEP, UiBillboard, UiWorldPanel, UiWorldPanels, UiWorldPointer,
     camera2d_ray, camera3d_ray, clip_quads, world_mesh,
@@ -160,6 +169,9 @@ pub struct UiNode {
     pub tooltip: Option<UiTooltip>,
     #[serde(skip_serializing_if = "is_default_nav")]
     pub nav: UiNavigation,
+    /// Accessible name, description, role, live region and hiding overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accessibility: Option<UiAccessibility>,
 }
 
 fn is_default_nav(nav: &UiNavigation) -> bool {
@@ -187,6 +199,7 @@ impl Default for UiNode {
             classes: vec![],
             tooltip: None,
             nav: UiNavigation::default(),
+            accessibility: None,
         }
     }
 }

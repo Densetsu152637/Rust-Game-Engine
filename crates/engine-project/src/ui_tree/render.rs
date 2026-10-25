@@ -34,6 +34,10 @@ pub struct UiRenderState {
     pub themed: bool,
     /// Per-item text of virtual-list template nodes (`itemText` bindings).
     pub item_texts: UiItemTexts,
+    /// Focus ring thickness in logical pixels; `0` draws the default 2.
+    pub focus_thickness: f32,
+    /// Draw the focus ring as a light ring inside a dark one.
+    pub focus_contrast: bool,
 }
 
 impl UiRoot {
@@ -504,7 +508,7 @@ impl Painter<'_> {
                     fill[3] *= 0.6;
                     quad(&mut chrome, cell, fill);
                     if choice == Some(i) {
-                        outline(&mut top, cell, style.foreground);
+                        outline(&mut top, cell, style.foreground, 2.0);
                     }
                     if !buttons[i].is_empty() && cell.width > 8.0 {
                         let layout = self.layout_text(
@@ -535,6 +539,7 @@ impl Painter<'_> {
                     &mut top,
                     bounds.rect,
                     self.root.tree.nodes[parent].style.accent,
+                    2.0,
                 );
             }
         }
@@ -584,7 +589,23 @@ impl Painter<'_> {
             }
         }
         if focused {
-            outline(&mut chrome, bounds.rect, style.accent);
+            let thickness = if self.state.focus_thickness > 0.0 {
+                self.state.focus_thickness
+            } else {
+                2.0
+            };
+            if self.state.focus_contrast {
+                outline(&mut chrome, bounds.rect, [1.0, 1.0, 1.0, 1.0], thickness);
+                let inset = Rect {
+                    x: bounds.rect.x + thickness,
+                    y: bounds.rect.y + thickness,
+                    width: (bounds.rect.width - 2.0 * thickness).max(0.0),
+                    height: (bounds.rect.height - 2.0 * thickness).max(0.0),
+                };
+                outline(&mut chrome, inset, [0.0, 0.0, 0.0, 1.0], thickness);
+            } else {
+                outline(&mut chrome, bounds.rect, style.accent, thickness);
+            }
         }
         for mesh in [&mut chrome, &mut top] {
             for v in &mut mesh.vertices {
@@ -665,7 +686,7 @@ impl Painter<'_> {
                 batch.add(&layout, [row.x + 4.0, row.y + 4.0], 1.0);
             }
         }
-        outline(&mut chrome, popup.rect, node.style.accent);
+        outline(&mut chrome, popup.rect, node.style.accent, 2.0);
         let clip = intersection(popup.rect, viewport_rect(self.viewport));
         self.push(format!("{key}0"), chrome, None, UI_POPUP_LAYER, clip);
         self.push_text(&format!("{key}1"), batch, UI_POPUP_LAYER, clip);
@@ -845,8 +866,8 @@ fn quad(mesh: &mut Mesh, r: Rect, color: [f32; 4]) {
     mesh.indices.extend([0, 1, 2, 0, 2, 3].map(|i| i + base));
 }
 
-fn outline(mesh: &mut Mesh, r: Rect, color: [f32; 4]) {
-    let thickness = 2.0_f32.min(r.width / 2.0).min(r.height / 2.0);
+fn outline(mesh: &mut Mesh, r: Rect, color: [f32; 4], thickness: f32) {
+    let thickness = thickness.min(r.width / 2.0).min(r.height / 2.0);
     quad(
         mesh,
         Rect {

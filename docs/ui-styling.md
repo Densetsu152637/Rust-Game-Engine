@@ -212,7 +212,8 @@ styles.
 ### Reduced motion
 
 `UiStyleSettings::set_reduced_motion(bool)` / `reduced_motion()` is the global
-setting (a resource; the accessibility settings write it). `UiRoot.reducedMotion`
+setting (a resource; the [accessibility settings](accessibility.md#settings)
+write it). `UiRoot.reducedMotion`
 overrides it per root (`UiStyleSettings::reduced_motion_for(root)`). When on:
 every transition is instant (the target is shown on the step that sees the
 change) and animations with `essential: false` do not play. `essential: true`

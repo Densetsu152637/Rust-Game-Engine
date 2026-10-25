@@ -6,13 +6,14 @@ use super::{
 };
 use crate::{
     EngineEvent,
+    accessibility::UiScaling,
     content::{FontAtlas, Texture},
     emit_event,
     localization::Localization,
     runtime::{AuthoredId, Draw},
 };
 use bevy_ecs::{
-    prelude::{Entity, World},
+    prelude::{Entity, Resource, World},
     world::EntityRef,
 };
 use std::{
@@ -27,6 +28,7 @@ pub fn register(app: &mut engine_core::EngineApp) -> Result<()> {
     crate::register_component::<UiWorldPanel>(app, "engine.UiWorldPanel", 1)?;
     let world = app.world_mut();
     world.insert_resource(GameUi::default());
+    world.insert_resource(UiTickEvents::default());
     world.insert_resource(UiStyleSettings::default());
     world.insert_resource(UiStyleRuntime::default());
     world.insert_resource(UiDataContext::default());
@@ -34,6 +36,12 @@ pub fn register(app: &mut engine_core::EngineApp) -> Result<()> {
     world.insert_resource(UiWorldPanels::default());
     Ok(())
 }
+
+/// The widget events produced by the last UI tick (screen-space roots and
+/// world panels), for native code that reacts to them without an event handler.
+/// Replaced every tick; the same events are also delivered as engine events.
+#[derive(Clone, Debug, Default, Resource)]
+pub struct UiTickEvents(pub Vec<UiWidgetEvent>);
 
 /// Forget motion, binding and world-panel interaction state (scene change,
 /// shutdown). The `UiDataContext` and the settings are application state and
@@ -83,6 +91,10 @@ pub(super) struct TickParts {
     pub data: UiDataContext,
     pub settings: UiStyleSettings,
     pub panels: UiWorldPanels,
+    /// Accessibility scaling of this tick.
+    pub scaling: UiScaling,
+    /// Widget events of this tick.
+    pub events: Vec<UiWidgetEvent>,
 }
 
 impl TickParts {
@@ -94,6 +106,8 @@ impl TickParts {
             data: world.remove_resource().unwrap_or_default(),
             settings: world.remove_resource().unwrap_or_default(),
             panels: world.remove_resource().unwrap_or_default(),
+            scaling: UiScaling::default(),
+            events: vec![],
         }
     }
 
@@ -122,9 +136,13 @@ pub fn tick_world(
     input: &crate::ActionFrame,
 ) -> Result<()> {
     ctx.text.begin_frame();
+    let scaling = crate::accessibility::sync(world);
     let mut parts = TickParts::take(world);
+    parts.scaling = scaling;
     let result = tick_all(world, &mut parts, ctx, input);
+    let events = std::mem::take(&mut parts.events);
     parts.put(world);
+    world.insert_resource(UiTickEvents(events));
     result
 }
 
@@ -145,7 +163,20 @@ fn tick_all(
     let sources = roots(world);
     let mut live: BTreeSet<String> = sources.iter().map(|(id, _, _)| id.clone()).collect();
     let mut ui = std::mem::take(&mut parts.ui);
-    let result = process(world, parts, &mut ui, sources, ctx, input);
+    // UI scale: lay out and hit-test in a smaller viewport; drawing scales back up.
+    let scaling = parts.scaling;
+    let scaled_ctx = UiTickContext {
+        viewport: scaling.layout_viewport(ctx.viewport),
+        ..*ctx
+    };
+    let mut scaled_input = input.clone();
+    scaled_input.pointer = input.pointer.map(|v| v / scaling.ui_scale);
+    ui.set_scale(scaling.ui_scale);
+    let result = if scaling.ui_scale == 1.0 {
+        process(world, parts, &mut ui, sources, ctx, input)
+    } else {
+        process(world, parts, &mut ui, sources, &scaled_ctx, &scaled_input)
+    };
     parts.ui = ui;
     result?;
     world_panel::tick(world, parts, ctx, input, &mut live)?;
@@ -203,6 +234,9 @@ pub(super) fn process(
         effective.push((id.clone(), resolved));
         themes.push(theme);
     }
+    for (_, root) in &mut effective {
+        parts.scaling.apply_text(root, ctx.text);
+    }
     let events = ui.tick_with(&mut effective, input, ctx)?;
     // Interaction edits widget values on the effective roots; carry them over.
     for ((_, authored), (_, effective)) in authored.iter_mut().zip(&effective) {
@@ -241,6 +275,7 @@ pub(super) fn process(
             world.entity_mut(*entity).insert(root);
         }
     }
+    parts.events.extend(events.iter().cloned());
     for event in events {
         let source = sources
             .iter()
@@ -296,6 +331,9 @@ pub fn extract_world_with(
     let data = world.get_resource::<UiDataContext>();
     let bindings = world.get_resource::<UiBindingState>();
     let localization = world.get_resource::<Localization>();
+    let settings = world.get_resource::<crate::accessibility::AccessibilityControl>();
+    let scaling = UiScaling::of(world);
+    let layout_viewport = scaling.layout_viewport(viewport);
     let mut draws = vec![];
     let mut ids = BTreeSet::new();
     for (id, _, root) in roots {
@@ -305,14 +343,42 @@ pub fn extract_world_with(
         let mut state = ui.map(|ui| ui.render_state(&id)).unwrap_or_default();
         let effective = effective_for_render(world, &id, &root, &by_root)?;
         state.themed = effective.is_some();
+        if let Some(control) = settings {
+            state.focus_thickness = control.settings.focus_thickness;
+            state.focus_contrast = control.settings.focus_high_contrast;
+        }
         let drawn = effective.as_ref().unwrap_or(&root);
         let localized = localization.and_then(|l| localize::localize_root(drawn, l));
         let drawn = localized.as_ref().unwrap_or(drawn);
+        let scaled_text = scaling.text_scaled(drawn, text);
+        let drawn = scaled_text.as_ref().unwrap_or(drawn);
         if let (Some(data), Some(bindings)) = (data, bindings) {
             state.item_texts = bindings.item_texts(drawn, data);
         }
-        draws.extend(drawn.extract_draws_with(&id, viewport, &state, text, textures)?);
+        let mut root_draws =
+            drawn.extract_draws_with(&id, layout_viewport, &state, text, textures)?;
+        if scaling.ui_scale != 1.0 {
+            root_draws = scale_draws(root_draws, scaling.ui_scale);
+        }
+        draws.extend(root_draws);
     }
     draws.extend(world_panel::extract(world, text, textures)?);
     Ok(draws)
+}
+
+/// Scale screen-space draws from layout units to window logical pixels.
+fn scale_draws(draws: Vec<Draw>, scale: f32) -> Vec<Draw> {
+    draws
+        .into_iter()
+        .map(|mut draw| {
+            let mut mesh = (*draw.mesh).clone();
+            for vertex in &mut mesh.vertices {
+                vertex.position[0] *= scale;
+                vertex.position[1] *= scale;
+            }
+            draw.mesh = Arc::new(mesh);
+            draw.clip = draw.clip.map(|c| c.map(|v| v * scale));
+            draw
+        })
+        .collect()
 }

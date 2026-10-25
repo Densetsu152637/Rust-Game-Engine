@@ -213,6 +213,8 @@ Each node can also carry:
   `focusable: false` for pointer-only widgets.
 - `classes`: up to 16 identifiers, reserved for the styling layer; validated but
   not interpreted yet.
+- `accessibility`: optional accessible `label`, `description`, `role`, `hidden`
+  and `live` overrides (see [Accessibility](accessibility.md#authored-accessibility-field)).
 
 ### Localized text
 
@@ -273,7 +275,9 @@ controls whose centre lies beyond the current centre in that direction. Each is
 scored as its centre distance along the direction plus twice its edge gap on
 the perpendicular axis, and the lowest score wins, so aligned neighbours beat
 closer diagonal ones. Disabled, hidden, fully clipped and `focusable: false`
-controls are skipped. An open modal restricts both tab and directional
+controls are skipped; a focusable control scrolled out of a scroll view is still
+a candidate and is scrolled into view when focus reaches it (it has no visible
+area, so pointer hits cannot land on it). An open modal restricts both tab and directional
 candidates to its subtree.
 
 Per-node flags are recomputed every tick for styling and accessibility layers;

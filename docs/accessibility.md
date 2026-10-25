@@ -1,0 +1,463 @@
+# Accessibility
+
+Accessibility for the retained game UI ([Retained game UI](game-ui.md)) has five
+parts:
+
+- a platform-neutral **accessibility tree** built from the laid-out UI;
+- **action requests** that let an assistive technology (AT) drive widgets through
+  the same code as keyboard and pointer input;
+- a **screen-reader bridge** in `engine-desktop` that converts the tree to
+  [AccessKit](https://github.com/AccessKit/accesskit) and serves it through the
+  platform accessibility API;
+- **accessibility settings** (`engine.AccessibilitySettings`): UI scale, text scale,
+  minimum text size, reduced motion, high-contrast theme, focus ring;
+- an **input-remapping screen** generated from the project's action bindings.
+
+Captions and subtitles with speakers and timing, and colour-blind filters, are not
+part of this page; see [Deferred](#deferred).
+
+## Status
+
+| Feature | State | Evidence |
+| --- | --- | --- |
+| Neutral tree: roles, names, values, states, bounds, actions, ordered children, live regions | implemented | `cargo test -p engine-project --test accessibility` |
+| Modal dialogs hide the content beneath; hidden tabs and hidden subtrees are excluded | implemented | same |
+| Incremental diff (only changed nodes) | implemented | same, and `engine-desktop` conversion tests |
+| Action requests: focus, click, increment, decrement, set value (numeric and text), expand, collapse, scroll into view | implemented | same |
+| AccessKit conversion and `accesskit_winit` adapter | implemented | `cargo test -p engine-desktop --lib accessibility` |
+| Windows UI Automation | **observed** with a UI Automation client (PowerShell `System.Windows.Automation`), see [Platform status](#platform-status) | ignored window test |
+| NVDA, Narrator, JAWS | **not verified** (no screen reader was run) | none |
+| macOS (NSAccessibility), Linux (AT-SPI) | **not built and not run** in this work (only Windows was available) | none |
+| Settings: UI scale, text scale, minimum text size, reduced motion, high-contrast theme, focus ring | implemented | `accessibility` tests |
+| Remapping screen with capture, conflicts, reset, events | implemented | `accessibility` tests |
+| Text selection and caret exposed to AT | not implemented | see [Limits](#limits) |
+
+## Tree model
+
+`GameUi::accessibility_tree()` returns the `AccessTree` of the last tick. It is
+plain data (`Serialize`, `Deserialize`); nothing in it depends on AccessKit.
+
+The tree is **off by default** and costs nothing then. It is built every tick
+once either of these is true:
+
+- the desktop bridge reports a connected AT (`GameUi::set_accessibility(true)`);
+- `AccessibilitySettings.screenReader` is set (a hint authors or a settings
+  screen can use, for example in tests or when another bridge is used).
+
+Structure: the root is a `window` node. Each visible `UiRoot` is an unnamed
+`group` child of it, in paint order (layer, then root ID). Every visible widget
+node becomes one `AccessNode` below its root group, in vector order of siblings.
+Open modal dialogs are appended to their root group (they are laid out above
+the base tree). Extra synthetic nodes exist where a widget has parts that
+assistive technology needs to address:
+
+| Parent | Synthetic child | `AccessPart` |
+| --- | --- | --- |
+| `tabs` | one `tab` per label, before the selected panel | `Tab(n)` |
+| `modal_dialog` | one `button` per footer button, after the content | `Button(n)` |
+| open `dropdown` | a `list_box` holding one `list_box_option` per option | `Popup`, `Option(n)` |
+
+### Node IDs
+
+`AccessId` is the root ID, the node ID, the virtual-list item index (for
+replicas of a template) and the synthetic part. It is stable across ticks and
+needs no registration. `AccessId::numeric()` is a 64-bit FNV-1a hash of the four
+parts for platform APIs that want a number (the window is `1`; no other ID is
+`0` or `1`). If two IDs ever collided the later node would be dropped and counted
+in `AccessTree::dropped`; that cannot be hit by accident (2^-64 per pair).
+
+### Visibility rules
+
+A node is **excluded** (with its subtree) when:
+
+- it or an ancestor has `visible: false` (no layout box);
+- it is a panel of a `tabs` widget that is not selected;
+- its `accessibility.hidden` is set;
+- a modal dialog is open and the node is not inside the topmost open dialog.
+  Everything beneath the modal is removed, **including other roots**. The
+  tree's `modal` field names the dialog and the focus is inside it, matching
+  `GameUi`'s focus trap.
+
+Disabled nodes stay in the tree with `disabled: true` and no input actions.
+Nodes scrolled out of a scroll view stay in the tree; their parents have
+`clips_children: true` so a platform can tell they are not visible.
+
+### Node data
+
+| Field | Meaning |
+| --- | --- |
+| `role` | See [Roles](#roles-names-and-states). |
+| `name` | `accessibility.label`, else the widget text, else the tooltip text. |
+| `description` | `accessibility.description`, else the tooltip text when the name came from elsewhere. |
+| `placeholder` | Placeholder of an empty input or dropdown. |
+| `value` | `Text` (text input, dropdown choice) or `Number {value, min, max, step}` (slider, progress; step `0` is read-only). A password is **never** exposed. |
+| `states` | `checked`, `expanded`, `selected` (tri-state: `None` means not applicable), `disabled`, `focused`, `focusable`, `password`, `read_only` (disabled text input), `modal`. |
+| `bounds` | Border box in **window logical pixels** (after UI scale). |
+| `clips_children`, `scroll` | Scroll views, virtual lists and clipped nodes; scroll offset and maximum. |
+| `actions` | Subset of `focus`, `click`, `increment`, `decrement`, `set_value`, `scroll_into_view`, `expand`, `collapse`. |
+| `children` | Reading order. |
+| `live` | `off`, `polite` or `assertive` (`accessibility.live`). |
+| `position` | 1-based position and set size of list items, tabs and options. Virtual lists report the full item count. |
+
+`AccessTree` also carries `focus` (the focused node, else the window) and `modal`.
+
+### Incremental updates
+
+`tree.diff(previous)` returns an `AccessUpdate`: the nodes that are new or whose
+data changed, the IDs removed, and the focus. With no previous tree it returns
+the whole tree (`full`). One slider value change emits exactly one node; a node
+that appears or disappears also emits its parent (its `children` changed). The
+window node's focus is not a node state, so moving focus changes only the nodes
+that gained or lost `focused`.
+
+## Roles, names and states
+
+| Widget | Role | Name | Value / states | Actions |
+| --- | --- | --- | --- | --- |
+| `container` | `group` | label only | | |
+| `label`, `rich_label` | `label` | text (markup stripped) | | `click` when the markup has a `[link=` tag |
+| `image`, `nine_slice` | `image` | label, else tooltip | | |
+| `button` | `button` | text | | `focus`, `click` |
+| `toggle` | `check_box` | text | `checked` | `focus`, `click` |
+| `slider` | `slider` | label, else tooltip | number with step | `focus`, `increment`, `decrement`, `set_value` |
+| `progress` | `progress_bar` | label, else tooltip | number, step 0 | |
+| `text_input` | `text_input`, `multiline_text_input` or `password_input` | label, else tooltip | text (not for passwords), `placeholder`, `password`, `read_only` when disabled | `focus`, `click`, `set_value` |
+| `dropdown` | `combo_box` | label, else tooltip | chosen option text, `expanded` | `focus`, `click`, `expand` or `collapse` |
+| `scroll_view` | `scroll_view` | label only | scroll offsets | |
+| `list` | `list` | label only | | children below |
+| list child (container, label or image) | `list_item` | own text, else descendant text | `selected`, position | `click` selects |
+| `virtual_list` | `list` | label only | size of set | replicas as `list_item` with `item` IDs |
+| `tabs` | `tab_list` | label only | | synthetic `tab` children; selected panel as `tab_panel` named by its tab |
+| `modal_dialog` | `dialog` | title | `modal` | synthetic `button` children |
+
+Every node also supports `scroll_into_view`. A list item, tab panel or button
+without text takes its name from descendant text (at most 1024 bytes). The
+authored `accessibility.role` replaces any role in the table.
+
+## Authored `accessibility` field
+
+`UiNode.accessibility` is optional and omitted when unset, so existing version-1
+scenes load unchanged:
+
+```json
+{ "id": "volume", "widget": {"kind": "slider", "value": 0.5, "min": 0, "max": 1, "step": 0.1},
+  "accessibility": { "label": "Music volume", "description": "Arrow keys change it in tenths" } }
+```
+
+| Field | Rule |
+| --- | --- |
+| `label` | Accessible name, at most 256 bytes, no control characters. |
+| `description` | At most 1024 bytes. |
+| `role` | Any role except `window`: `group`, `label`, `heading`, `image`, `button`, `link`, `check_box`, `switch`, `slider`, `progress_bar`, `text_input`, `multiline_text_input`, `password_input`, `combo_box`, `list_box`, `list_box_option`, `list`, `list_item`, `scroll_view`, `tab_list`, `tab`, `tab_panel`, `dialog`, `alert`, `status`, `region`. |
+| `hidden` | Exclude the node and its subtree. |
+| `live` | `off`, `polite`, `assertive`. |
+
+Both strings count toward the 64 KiB per-root text budget. It appears in the
+`engine.UiRoot` descriptor and is editable with `component_set`. Native
+builders: `with_access_label`, `with_access_description`, `with_access_role`,
+`with_access_live`, `access_hidden`.
+
+## Action requests
+
+```rust,ignore
+ui.request_access(UiAccessRequest {
+    target: AccessId::node("hud", "volume"),
+    action: UiAccessAction::SetNumeric(0.6),
+})?;
+// next tick applies it; the widget event fires as for the pointer
+let outcomes = ui.take_access_outcomes(); // Applied / NotFound / Blocked / Unsupported / Rejected
+```
+
+`request_access` validates the request and queues it (at most 64 per tick; more
+fail with `ui.access.overflow`, an over-long ID or non-finite number with
+`ui.access.invalid`). The next `tick` applies the queue before pointer and
+keyboard input, whether or not the window is focused, using the same functions
+as input, so the events are **identical** to the input events. Tests compare a
+request's event with the pointer's and the keyboard's.
+
+| Target | Action | Effect and event |
+| --- | --- | --- |
+| button | `click` | `ui.clicked` |
+| toggle | `click` | `ui.value_changed` (new bool) |
+| slider | `increment`, `decrement` | one step, `ui.value_changed` |
+| slider | `set_numeric(v)` | snapped to the step grid; outside the range is `Rejected`; `ui.value_changed` |
+| text input | `set_text(s)` | replaces the text, caret to the end, `ui.text_changed`; over `maxLength`, control characters, or a newline in a single-line input are `Rejected` |
+| text input | `click`, `focus` | focus (and IME) |
+| dropdown | `click`, `expand` / `collapse` | opens or closes the popup |
+| dropdown option part | `click` | `ui.selection_changed`, popup closes |
+| tab part | `click` | `ui.tab_changed` |
+| dialog button part | `click` | `ui.dialog_result` with the button index |
+| list item, virtual-list replica | `click` | `ui.selection_changed` with the index |
+| rich label | `click` | `ui.link_activated` for its first link |
+| any node | `scroll_into_view` | scrolls every scroll view and virtual list above it; `ui.scrolled` |
+| focusable | `focus` | focus; `Unsupported` otherwise |
+
+A request for a disabled node, or for a node outside the open modal, is
+`Blocked`; a missing node is `NotFound`; an action the widget lacks is
+`Unsupported`. Focusable targets also take focus, as a pointer press does.
+
+Keyboard navigation uses the same scrolling: when `ui_next`, `ui_previous` or a
+direction key moves focus, the new focus is scrolled into view. To make that
+possible, a focusable widget scrolled out of a scroll view is now a focus
+candidate (it has no visible area, so a pointer cannot hit it).
+
+## AccessKit integration
+
+`engine-desktop::accessibility` holds the conversion and the bridge.
+
+**Conversion** (pure, unit-tested): `access_role`, `access_node`,
+`access_tree_update`, `access_action_request`.
+
+- Unnamed `group` nodes become `GenericContainer`; `label` nodes carry their text
+  as the AccessKit value; other names are labels.
+- `bounds` map to AccessKit rectangles in UI logical pixels. The **window node
+  carries the transform** (uniform scale and letterbox offset of the camera fit,
+  `AccessWindow::from_camera`), so the platform sees window pixels.
+- `position` becomes `position_in_set` (0-based in AccessKit) on the item and
+  `size_of_set` on its container.
+- An update contains only changed nodes, the focus, and `TreeInfo` once. The
+  window node is re-sent when the title or transform changes (resize).
+
+**Bridge** (`AccessBridge`, created by the desktop runner):
+
+1. The adapter is created right after the window, **before it is shown**
+   (the runner already creates the window invisible and shows it after the
+   surface exists). This is a requirement of `accesskit_winit`, which panics for
+   a visible window.
+2. It uses `Adapter::with_direct_handlers`, so no custom winit user event is
+   needed. The handlers run on platform threads (UI Automation calls from its own
+   thread); they only set an atomic flag or push into a bounded mutex queue.
+3. **Lazy initial tree.** The adapter calls `request_initial_tree` when an AT
+   first connects. The bridge sets the connected flag and returns `None`; from
+   that moment the tick builds the tree (`set_accessibility(true)`) and
+   `Adapter::update_if_active` sends the full tree on the same tick. Nothing is
+   built before an AT connects, and deactivation turns the tree off.
+4. Each tick (after the UI tick, next to the IME sync) the bridge forwards queued
+   platform actions as `UiAccessRequest`s, diffs the tree against the last one
+   sent, and sends the update. `WindowEvent`s are passed to
+   `Adapter::process_event` before the application handles them.
+5. `AccessibilityControl.bridge` publishes `AccessBridgeStatus`:
+   `Unavailable(reason)` (the default; headless runs and hosts without the
+   bridge), `Idle` (installed, nothing connected) or `Connected`.
+
+Mapped platform actions: `Click`, `Focus`, `Increment`, `Decrement`, `Expand`,
+`Collapse`, `ScrollIntoView`, `SetValue` with text or a number. Others (context
+menus, scroll by unit, text selection, `ReplaceSelectedText`) are dropped.
+
+### Platform status
+
+Observed on this machine (Windows 11):
+
+- the adapter is created without panicking and the window shows;
+- a **UI Automation client** (PowerShell `System.Windows.Automation`, started
+  while the ignored test `window_probe_creates_the_adapter_and_serves_the_tree`
+  ran) found the window, listed its children (text `Settings`, button `Play`,
+  check box `Mute`, slider `Volume`, an image) with their names, roles and window
+  rectangles, invoked `Play` (the UI received `ui.clicked`), set the slider
+  through `RangeValuePattern.SetValue(1.0)` (`ui.value_changed 1.0`; the value
+  read back as 1) and toggled the check box through `TogglePattern`
+  (`ui.value_changed false`). The bridge reported `Connected`.
+
+Not verified: NVDA, Narrator, JAWS and VoiceOver were not run, and macOS and
+Linux were not built. `cargo build --workspace` pulls
+`accesskit_macos` and `accesskit_unix` (zbus, atspi, all pure Rust, no system
+libraries) on those targets by dependency metadata only. UI Automation client
+success demonstrates the provider and the tree; it does not prove how a given
+screen reader announces the content.
+
+Run the window probe yourself with:
+
+```text
+cargo test -p engine-desktop --lib window_probe -- --ignored --nocapture
+```
+
+It keeps a 640x360 window open for `ENGINE_A11Y_PROBE_SECS` seconds (default 5)
+and prints the events the platform caused.
+
+## Settings
+
+`engine.AccessibilitySettings` (version 1) is an entity component and the
+native resource `AccessibilityControl { settings, bridge }`. Attach the
+component to any entity (the lowest entity wins) or use the resource from code.
+Each UI tick, `accessibility::sync`:
+
+1. copies a *changed* component into `AccessibilityControl::settings` (native
+   code can still write the resource between component edits);
+2. applies changes of `reducedMotion` and `highContrastTheme` to
+   `UiStyleSettings`, only when the setting changed, so default settings never
+   overwrite values native code set on `UiStyleSettings`;
+3. tells `GameUi` the `screenReader` hint;
+4. returns the `UiScaling` for the tick.
+
+| Field | Range, default | Effect |
+| --- | --- | --- |
+| `uiScale` | 0.5 to 4, 1 | Scales layout, drawing and hit testing together, see below. |
+| `textScale` | 0.5 to 4, 1 | Multiplies every node's `fontScale` (result clamped to 16). Authored data is not modified. Applies to screen UI and world panels. |
+| `minTextSize` | 0 to 96 px, 0 (off) | Smallest line height text may have **on screen**, measured per font with the active text backend (so UI scale is accounted for). Raises `fontScale` when needed. |
+| `reducedMotion` | false | `UiStyleSettings::set_reduced_motion`; a root's `reducedMotion` still overrides it. |
+| `screenReader` | false | Build the accessibility tree every tick. |
+| `focusThickness` | 1 to 16 px, 2 | Focus ring thickness. |
+| `focusHighContrast` | false | Draw the ring as a white ring inside a black one so it shows on any background. |
+| `highContrastTheme` | none | Name of a `UiTheme` made the active theme while set; clearing restores the previous active theme. Roots that name their own `theme` keep it. A name no theme has fails the tick with `ui.theme.unknown`, like `set_active_theme`. |
+
+Native API (all validated, `accessibility.invalid` on a bad value):
+
+```rust,ignore
+let mut control = world.resource_mut::<AccessibilityControl>();
+control.set_ui_scale(1.5)?;
+control.set_text_scale(1.25)?;
+control.set_reduced_motion(true);
+control.settings.high_contrast_theme = Some("high-contrast".into());
+```
+
+The component is in the catalog (`component_schema`) and validated on
+`component_set` like other components: wrong ranges, unknown fields and bad
+theme names are rejected. Invalid values written directly to the resource are
+ignored (the last applied settings stay).
+
+### UI scale
+
+`uiScale = s` lays the UI out in a viewport of `ceil(window / s)` logical pixels
+and scales the drawn geometry and clip rectangles by `s`. The pointer is divided
+by `s` before hit testing, so layout, drawing and hit testing agree exactly; with
+`s = 1.5` a button authored at (100, 50, 100x40) covers (150, 75) to (300, 135)
+for drawing, hit testing and `AccessNode::bounds`. `GameUi::ime_area()`,
+`GameUi::tooltip()` and the accessibility bounds are reported in window pixels;
+`GameUi::scale()` returns the scale. The viewport is rounded up so the scaled UI
+always covers the window (up to `s - 1` pixels of the UI fall off the right and
+bottom edges). Text is scaled as geometry, like the camera fit: bitmap and
+coverage-atlas glyphs are not re-rasterised, so large scales look softer than
+`textScale`, which re-lays out the text at the larger size. World panels are not
+affected by `uiScale`.
+
+### Focus ring
+
+The ring drawn on the focused widget follows `focusThickness` and
+`focusHighContrast` (`UiRenderState::focus_thickness`, `focus_contrast`).
+
+## Input-remapping screen
+
+`engine_project::remap_ui` builds a `UiRoot` from the action bindings and drives
+the "press to rebind" flow with the existing input API: `validate_bindings`,
+`binding_registry` and `InputSettings::rebind` (which bumps `revision`; the
+physical `ActionMapper` rebinds on the next tick). No input code was changed.
+
+```rust,ignore
+let entity = world.spawn_empty().id();
+let mut controller = RemapController::new(world, entity, RemapOptions {
+    font: "asset:ui-font".into(),
+    labels: [("jump".into(), "Jump".into())].into(),
+    ..Default::default()
+})?;
+// every tick, after Runtime::tick:
+for event in controller.tick(world)? { /* RemapEvent */ }
+```
+
+- `RemapScreen` is the pure model (`new(defaults, current, options)` or
+  `from_world`): `root()` generates the `UiRoot`; `press(node)`,
+  `capture_token(token)`, `reset(action)`, `reset_all()`, `cancel()` change it
+  and return `RemapEvent`s. Defaults come from the project manifest, current
+  bindings from `InputSettings`.
+- Layout: a title, a vertical scroll view with one row per action (action name,
+  one button per binding showing the key as people read it, a `+` button to add a
+  binding, a `Reset` button and a conflict line), then a footer with `Reset all`
+  and a live status line. Node IDs are `remap.<action>.slot.<n>`,
+  `remap.<action>.add`, `remap.<action>.reset`, `remap.<action>.conflict`,
+  `remap.reset_all`, `remap.status`.
+- Flow: activating a binding button (click, `ui_confirm`, an AT `click`) starts a
+  capture and the button reads `Press a key...`. The next new key, mouse button
+  or gamepad button replaces that binding (or appends for `+`). The cancel token
+  (default `Key:Escape`) cancels, so it cannot be bound from the screen. Tokens
+  not in `binding_registry()` are refused.
+- **Conflicts.** The screen lists tokens used by two actions on both rows
+  (`Conflict: E also used by use`) and in the status line. `RemapConflicts::Warn`
+  (default) applies the binding and shows the conflict; `Reject` refuses it and
+  names the owner. Binding a token the action already has is refused.
+- **Events.** `RemapEvent` values are returned and also emitted as engine
+  events `input.rebound` (action, previous, token, bindings), `input.rebind_conflict`,
+  `input.rebind_reset` and `input.rebind_rejected`, with the controller's entity as
+  source and target, so `EventBindings` handlers and scripts can persist the
+  result.
+- **Raw tokens.** Capture needs the key and button tokens, not mapped actions.
+  A host publishes `RawInputTokens { down }` each tick; the desktop runner does
+  (one line in `DesktopRunner::tick`). The press that opened the capture is
+  swallowed, and a tap shorter than one simulation tick can be missed.
+- **Accessibility.** Every token button has the name `<Action>, binding <n>: <key>.
+  Activate to change` (or `waiting for a key or button` while capturing), the root
+  is a `region`, the title a `heading`, the status line a polite live `status`.
+  All controls are ordinary buttons, so `ui_next`/`ui_previous`, directions and
+  `ui_confirm` (keyboard or gamepad) reach them, and the scroll view follows focus.
+- Limits: 48 actions, 16 bindings per action, action names of 48 bytes; a larger
+  screen is refused with `remap.invalid` rather than overflowing the 1024-node root.
+  Axis (stick) capture is not supported, and there is no per-binding remove
+  button (reset restores the defaults).
+
+## Limits
+
+- `AccessTree` size is bounded by the UI: at most 1024 nodes per root, 64 roots and
+  16384 laid-out boxes, plus synthetic nodes (at most 32 tabs, 4 dialog buttons,
+  64 options per widget).
+- Names composed from descendants are at most 1024 bytes.
+- At most 64 AT requests per tick and 64 retained outcomes; 128 platform requests
+  are held between ticks.
+- The tree for the focused text input exposes its value but **not the caret or
+  selection**, and no text runs, so a screen reader reads the field value as one
+  string and does not announce per-character caret movement. Setting the value
+  works. This needs text-run nodes with character metrics from the text backend.
+- Changes made by a request show in the tree one tick later (the tree is built
+  from the layout the tick started with).
+- Only whole-window UI is exposed: world-space panels and world text have no
+  tree.
+- `SetValue` on a numeric value must be inside the range; out-of-range values are
+  refused, not clamped.
+- `uiScale` text sharpness: see [UI scale](#ui-scale).
+
+## Deferred
+
+- **Captions and subtitles** with speakers and timing, and **colour-blind
+  filters**, come in the next UI leaf; they use `AccessibilitySettings` for
+  their own options.
+- Reading operating-system preferences (reduced motion, high contrast, text
+  size, "screen reader running") and applying them to the settings.
+- Caret, selection and text-run exposure (above), and tree support for world-space
+  UI panels.
+- Heading levels, form relationships (labelled-by), and relations between a
+  slider and an adjacent label: author them with `accessibility.label` for now.
+- Verification with NVDA, Narrator, JAWS, VoiceOver and Orca; macOS and Linux
+  builds.
+
+## Decision record
+
+- **Neutral tree first, AccessKit second.** The tree is built from the UI
+  layout in `engine-project` and has no platform dependency, so it is testable
+  without a window and reusable by hosts other than the desktop runner (the
+  editor, a test harness). The alternative, building AccessKit nodes inside
+  `GameUi`, would have made `engine-project` depend on a platform crate and the
+  conversion untestable without it.
+- **`accesskit_winit` 0.34.1 with `accesskit` 0.25.1.** This adapter version
+  depends on `accesskit ^0.25.1`, which is exactly the version already in
+  `Cargo.lock` (via egui), and on `winit ^0.30.5`, which matches the pinned
+  `winit 0.30.13`; no second `accesskit` is built. Older adapters (0.29 to 0.33)
+  would have added a second `accesskit`. Both are exact-pinned in
+  `crates/engine-desktop/Cargo.toml`. Licences: `accesskit` Apache-2.0 OR MIT,
+  `accesskit_winit` Apache-2.0; their platform crates are permissive. It is
+  always on and pure Rust: Windows uses UI Automation through the `windows` crate,
+  macOS `objc2`, Linux AT-SPI over `zbus` (async-io, no system libraries or C
+  compiler). The lockfile gained 44 crates, none of which replaced an existing
+  version. Making it optional would have left the default desktop build without
+  accessibility; the cost when no AT is connected is one atomic load per tick.
+- **Direct handlers, not an event-loop proxy.** `with_event_loop_proxy` requires
+  the runner's event loop to carry a user event type. Direct handlers touch the
+  runner in two small places and keep the initial tree lazy.
+- **Scale as a smaller layout viewport plus geometric scaling.** Scaling
+  every authored length would have needed to convert scroll offsets and
+  item extents and would have made authored data depend on the setting. The
+  viewport approach reuses layout, hit testing and drawing unchanged and keeps
+  `UiRoot` values independent of the user's scale.
+- **Component plus a separate resource.** `bevy_ecs` 0.20 stores resources as
+  components, so one type cannot be both a `Component` and a `Resource` without
+  the resource entity matching component queries. The resource wraps the settings.
+- **Scrolled-out focus candidates.** Reaching items in a scroll view by
+  keyboard is a WCAG 2.1 requirement (2.1.1, 2.4.7) and the remap screen is a long
+  list, so focusable widgets scrolled out of a scroll view now take focus and are
+  revealed, instead of being skipped.

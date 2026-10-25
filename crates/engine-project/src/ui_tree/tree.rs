@@ -44,6 +44,9 @@ impl UiNode {
         if let Some(tooltip) = &self.tooltip {
             tooltip.validate(&self.id)?;
         }
+        if let Some(accessibility) = &self.accessibility {
+            accessibility.validate(&self.id)?;
+        }
         if self.classes.len() > 16 || !self.classes.iter().all(|c| valid_class(c)) {
             return Err(invalid(format!("Invalid classes on UI node {}", self.id)));
         }
@@ -59,7 +62,11 @@ impl UiTree {
         let text: usize = self
             .nodes
             .iter()
-            .map(|n| n.widget.text_bytes() + n.tooltip.as_ref().map_or(0, |t| t.text.len()))
+            .map(|n| {
+                n.widget.text_bytes()
+                    + n.tooltip.as_ref().map_or(0, |t| t.text.len())
+                    + n.accessibility.as_ref().map_or(0, |a| a.text_bytes())
+            })
             .sum();
         if text > MAX_UI_ROOT_TEXT {
             return Err(invalid("UI root text exceeds 64KiB"));
