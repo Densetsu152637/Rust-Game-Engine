@@ -372,6 +372,13 @@ impl AccessBridge {
         };
         ui.set_accessibility(active);
         let Some(tree) = ui.accessibility_tree().cloned() else {
+            // The tree is built from the next tick; keep the requests for it.
+            if !pending.is_empty()
+                && let Ok(mut queue) = self.shared.requests.lock()
+            {
+                queue.splice(0..0, pending);
+                queue.truncate(MAX_PENDING_REQUESTS);
+            }
             return;
         };
         for request in &pending {
@@ -734,5 +741,124 @@ mod tests {
             (beta.role(), beta.position_in_set()),
             (Role::ListItem, Some(1))
         );
+    }
+
+    /// Opens a real window with the AccessKit adapter and serves a small UI for
+    /// a few seconds so a UI Automation client can inspect it. Run with
+    /// `cargo test -p engine-desktop --lib window_probe -- --ignored --nocapture`;
+    /// `ENGINE_A11Y_PROBE_SECS` sets how long the window stays (default 5).
+    /// The test prints the events it received from the platform.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "opens a window and needs a desktop session"]
+    fn window_probe_creates_the_adapter_and_serves_the_tree() {
+        use bevy_ecs::world::World;
+        use engine_project::Camera2D;
+        use std::time::{Duration, Instant};
+        use winit::{
+            application::ApplicationHandler,
+            dpi::PhysicalSize,
+            event_loop::{ControlFlow, EventLoop},
+            platform::windows::EventLoopBuilderExtWindows,
+            window::WindowId,
+        };
+
+        struct Probe {
+            window: Option<Window>,
+            bridge: Option<AccessBridge>,
+            world: World,
+            roots: Vec<(String, UiRoot)>,
+            started: Instant,
+            duration: Duration,
+            connected: bool,
+            log: Vec<String>,
+        }
+        impl ApplicationHandler for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                let window = event_loop
+                    .create_window(
+                        Window::default_attributes()
+                            .with_title("engine-a11y-probe")
+                            .with_inner_size(PhysicalSize::new(640, 360))
+                            .with_visible(false),
+                    )
+                    .unwrap();
+                self.bridge = Some(AccessBridge::new(event_loop, &window));
+                window.set_visible(true);
+                self.window = Some(window);
+                self.started = Instant::now();
+            }
+            fn window_event(
+                &mut self,
+                event_loop: &ActiveEventLoop,
+                _: WindowId,
+                event: WindowEvent,
+            ) {
+                if let (Some(bridge), Some(window)) = (&mut self.bridge, &self.window) {
+                    bridge.handle(window, &event);
+                }
+                if matches!(event, WindowEvent::CloseRequested) {
+                    event_loop.exit();
+                }
+            }
+            fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+                let Some(window) = &self.window else { return };
+                let size = window.inner_size();
+                let camera =
+                    CameraView::new(&Camera2D::default(), size.width, size.height).unwrap();
+                let events = self
+                    .world
+                    .resource_mut::<GameUi>()
+                    .tick(&mut self.roots, [320, 180], &ActionFrame::default())
+                    .unwrap();
+                for event in events {
+                    self.log
+                        .push(format!("{} {} {}", event.name, event.node, event.value));
+                }
+                if let Some(bridge) = &mut self.bridge {
+                    bridge.sync(&mut self.world, &camera, "engine-a11y-probe");
+                    self.connected |= bridge.connected;
+                }
+                if self.started.elapsed() > self.duration {
+                    event_loop.exit();
+                } else {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(30),
+                    ));
+                }
+            }
+        }
+
+        let seconds: u64 = std::env::var("ENGINE_A11Y_PROBE_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5);
+        let mut world = World::new();
+        world.insert_resource(GameUi::default());
+        world.insert_resource(AccessibilityControl::default());
+        let mut probe = Probe {
+            window: None,
+            bridge: None,
+            world,
+            roots: vec![("hud".to_string(), root())],
+            started: Instant::now(),
+            duration: Duration::from_secs(seconds),
+            connected: false,
+            log: vec![],
+        };
+        let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
+        event_loop.run_app(&mut probe).unwrap();
+        let status = probe
+            .world
+            .resource::<AccessibilityControl>()
+            .bridge
+            .clone();
+        println!(
+            "PROBE bridge status: {status:?}; assistive technology seen: {}",
+            probe.connected
+        );
+        for line in &probe.log {
+            println!("PROBE event: {line}");
+        }
     }
 }

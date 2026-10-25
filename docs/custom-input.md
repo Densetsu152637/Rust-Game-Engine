@@ -59,6 +59,9 @@ reconnection. `unregister(id)` permanently removes the source and its mappings.
 
 ## Edges, focus and accessibility
 
+For an in-game remapping screen built on this API, see
+[Accessibility](accessibility.md#input-remapping-screen).
+
 The runtime combines held actions from physical input and every custom device.
 It computes press/release transitions from that union, so releasing or unplugging
 one device cannot release an action that another source still holds. Latched

@@ -20,8 +20,8 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Actions listed on one screen. Each row costs `4 + bindings` UI nodes and a
-/// root holds 1024 nodes.
+/// Actions listed on one screen. Each row costs `6 + bindings` UI nodes and a
+/// root holds 1024 nodes; a screen that does not fit is refused.
 pub const MAX_REMAP_ACTIONS: usize = 48;
 /// Longest action name the screen accepts (it becomes part of node IDs).
 pub const MAX_REMAP_ACTION_NAME: usize = 48;
