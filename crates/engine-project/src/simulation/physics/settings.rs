@@ -1,6 +1,7 @@
 //! Scene-level `engine.PhysicsSettings`: gravity overrides, solver iterations, named layers
 //! with a symmetric collision matrix, and named materials.
 use super::super::{SimulationConfig, invalid, mapped};
+use super::stepping::Interpolation;
 use super::types::{BodyMaterial, CombineRule};
 use crate::Result;
 use bevy_ecs::prelude::*;
@@ -50,7 +51,26 @@ pub struct PhysicsSettings {
     pub layers: Vec<String>,
     pub disabled_pairs: Vec<[String; 2]>,
     pub materials: Vec<NamedMaterial>,
+    /// Fixed simulation step in seconds. When set, frame time accumulates and whole steps
+    /// of exactly this length run (see [`StepStatus`](super::StepStatus)); unset keeps the
+    /// variable substepping of the frame delta.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed_timestep: Option<f32>,
+    /// Most fixed steps per frame; further accumulated time is dropped and reported.
+    pub max_substeps: u32,
+    /// How dynamic body `Transform`s are written between fixed steps.
+    pub interpolation: Interpolation,
+    /// Enables [`debug_view`](super::debug_view); the view is data only.
+    pub debug: bool,
+    /// Include collider AABBs in the debug view.
+    pub debug_aabbs: bool,
+    /// Cap on colliders, contacts and anchors listed by the debug view.
+    pub debug_max_items: u32,
 }
+/// Most fixed steps per frame accepted by `max_substeps`.
+pub const MAX_FIXED_SUBSTEPS: u32 = 64;
+/// Fixed step bounds in seconds.
+pub const FIXED_TIMESTEP_RANGE: std::ops::RangeInclusive<f32> = 0.001..=0.1;
 impl Default for PhysicsSettings {
     fn default() -> Self {
         Self {
@@ -60,6 +80,12 @@ impl Default for PhysicsSettings {
             layers: vec![],
             disabled_pairs: vec![],
             materials: vec![],
+            fixed_timestep: None,
+            max_substeps: 8,
+            interpolation: Interpolation::None,
+            debug: false,
+            debug_aabbs: false,
+            debug_max_items: 4096,
         }
     }
 }
@@ -72,8 +98,23 @@ pub(crate) struct Resolved {
     pub(crate) solver_iterations: usize,
     pub(crate) layers: CollisionLayers,
     pub(crate) materials: BTreeMap<String, engine_physics::Material>,
+    pub(crate) fixed_timestep: Option<f32>,
+    pub(crate) max_substeps: usize,
+    pub(crate) interpolation: Interpolation,
+    pub(crate) debug: bool,
+    pub(crate) debug_aabbs: bool,
+    pub(crate) debug_max_items: usize,
 }
 impl Resolved {
+    /// True when `other` changes how the simulation runs (everything but the debug toggles
+    /// and stepping policy), which wakes bodies and may rebuild them.
+    pub(crate) fn simulation_differs(&self, other: &Self) -> bool {
+        self.gravity_2d != other.gravity_2d
+            || self.gravity_3d != other.gravity_3d
+            || self.solver_iterations != other.solver_iterations
+            || self.layers != other.layers
+            || self.materials != other.materials
+    }
     pub(crate) fn new(
         config: &SimulationConfig,
         settings: Option<&PhysicsSettings>,
@@ -127,7 +168,31 @@ impl Resolved {
                 )));
             }
         }
+        if let Some(step) = settings.fixed_timestep
+            && !(step.is_finite() && FIXED_TIMESTEP_RANGE.contains(&step))
+        {
+            return Err(invalid(
+                "PhysicsSettings fixed_timestep must be 0.001..=0.1 seconds",
+            ));
+        }
+        if !(1..=MAX_FIXED_SUBSTEPS).contains(&settings.max_substeps) {
+            return Err(invalid("PhysicsSettings max_substeps must be 1..=64"));
+        }
+        if settings.interpolation != Interpolation::None && settings.fixed_timestep.is_none() {
+            return Err(invalid(
+                "PhysicsSettings interpolation requires fixed_timestep",
+            ));
+        }
+        if !(1..=engine_physics::dim3::MAX_DEBUG_ITEMS as u32).contains(&settings.debug_max_items) {
+            return Err(invalid("PhysicsSettings debug_max_items must be 1..=65536"));
+        }
         Ok(Self {
+            fixed_timestep: settings.fixed_timestep,
+            max_substeps: settings.max_substeps as usize,
+            interpolation: settings.interpolation,
+            debug: settings.debug,
+            debug_aabbs: settings.debug_aabbs,
+            debug_max_items: settings.debug_max_items as usize,
             gravity_2d: settings.gravity_2d.unwrap_or(config.gravity_2d),
             gravity_3d: settings.gravity_3d.unwrap_or(config.gravity_3d),
             solver_iterations: settings.solver_iterations as usize,

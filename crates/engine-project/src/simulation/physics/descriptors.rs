@@ -96,7 +96,16 @@ pub(super) fn component_descriptors() -> Vec<crate::ComponentDescriptor> {
         "solver_iterations":{"type":"integer","minimum":1,"maximum":engine_physics::MAX_SOLVER_ITERATIONS},
         "layers":list(engine_physics::MAX_LAYERS, name()),
         "disabled_pairs":list(super::MAX_DISABLED_PAIRS, json!({"type":"array","minItems":2,"maxItems":2,"items":name()})),
-        "materials":list(super::MAX_MATERIALS, material)
+        "materials":list(super::MAX_MATERIALS, material),
+        "fixed_timestep":{"type":"number","minimum":0.001,"maximum":0.1,
+            "description":"Fixed step in seconds. Frame time accumulates and only whole steps run; unset keeps variable substepping."},
+        "max_substeps":{"type":"integer","minimum":1,"maximum":super::MAX_FIXED_SUBSTEPS,
+            "description":"Most fixed steps per frame; excess time is dropped and reported (physics.step.clamped)."},
+        "interpolation":{"type":"string","enum":["none","interpolate"],
+            "description":"interpolate writes dynamic Transforms blended between the last two fixed steps; requires fixed_timestep."},
+        "debug":{"type":"boolean","description":"Enables the physics debug view data (native debug_view)."},
+        "debug_aabbs":{"type":"boolean"},
+        "debug_max_items":{"type":"integer","minimum":1,"maximum":engine_physics::dim3::MAX_DEBUG_ITEMS}
     });
     vec![
         descriptor(

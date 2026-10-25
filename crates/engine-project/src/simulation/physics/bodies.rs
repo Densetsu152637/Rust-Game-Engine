@@ -358,7 +358,7 @@ impl Bodies {
         Ok(())
     }
 }
-fn depth(world: &World, mut entity: Entity) -> usize {
+pub(super) fn depth(world: &World, mut entity: Entity) -> usize {
     let mut count = 0;
     while let Some(parent) = world.get::<crate::Parent>(entity) {
         count += 1;

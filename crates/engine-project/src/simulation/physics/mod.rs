@@ -22,13 +22,26 @@ use engine_physics::{World2D, World3D};
 mod api;
 mod bodies;
 mod contacts;
+mod debug_view;
 mod descriptors;
+mod queries;
+mod request;
 mod settings;
+mod stepping;
 mod types;
 pub use api::*;
 pub(crate) use bodies::Bodies;
+pub use debug_view::*;
+pub use queries::*;
+pub use request::{
+    MAX_QUERY_LIMIT, MAX_QUERY_TICKS, QueryRequest, debug_scene, query_scene, run_query,
+};
 pub(crate) use settings::Resolved;
-pub use settings::{MAX_DISABLED_PAIRS, MAX_MATERIALS, NamedMaterial, PhysicsSettings};
+pub use settings::{
+    FIXED_TIMESTEP_RANGE, MAX_DISABLED_PAIRS, MAX_FIXED_SUBSTEPS, MAX_MATERIALS, NamedMaterial,
+    PhysicsSettings,
+};
+pub use stepping::{Interpolation, StepStatus, interpolation_alpha, step_status};
 pub use types::*;
 
 /// Physics features in execution order. Add one entry per feature.
@@ -142,6 +155,7 @@ pub(super) struct Physics {
     bodies: Bodies,
     settings: Resolved,
     features: Vec<Box<dyn Feature>>,
+    stepper: stepping::Stepper,
 }
 /// Reborrows the service parts as a hook [`Context`].
 macro_rules! context {
@@ -163,12 +177,14 @@ impl Physics {
             bodies: Bodies::default(),
             settings: Resolved::new(&config, None)?,
             features: features(),
+            stepper: stepping::Stepper::default(),
             config,
         })
     }
     pub fn sync(&mut self, world: &World) -> Result<()> {
         let resolved = Resolved::new(&self.config, settings::find(world)?)?;
-        if resolved != self.settings {
+        // Debug and stepping policy changes must not wake bodies or rebuild them.
+        if resolved.simulation_differs(&self.settings) {
             let worlds = &mut self.worlds;
             worlds
                 .two
@@ -192,8 +208,8 @@ impl Physics {
                 // Bodies are rebuilt from their authored data with the new groups/materials.
                 self.bodies.clear(worlds);
             }
-            self.settings = resolved;
         }
+        self.settings = resolved;
         self.bodies.sync(&mut self.worlds, &self.settings, world)?;
         let Self {
             worlds,
@@ -211,6 +227,9 @@ impl Physics {
         if self.bodies.is_empty() {
             return Ok(());
         }
+        if let Some(step) = self.settings.fixed_timestep {
+            return self.step_fixed(world, dt, step);
+        }
         // Bounded subdivision keeps Rapier within its documented dt range.
         if !dt.is_finite() || dt <= 0. || dt > 1. {
             return Err(invalid("Physics frame delta must be in (0,1] seconds"));
@@ -222,24 +241,88 @@ impl Physics {
             bodies,
             settings,
             features,
+            stepper,
             ..
         } = self;
         for _ in 0..substeps {
-            for feature in features.iter_mut() {
-                feature.before_substep(context!(worlds, bodies, settings), h)?;
-            }
-            worlds.two.step(h).map_err(mapped)?;
-            worlds.three.step(h).map_err(mapped)?;
-            for feature in features.iter_mut() {
-                feature.after_substep(context!(worlds, bodies, settings), world, h)?;
-            }
+            substep(worlds, bodies, settings, features, world, h)?;
         }
+        stepper.variable(substeps);
         bodies.write_back(worlds, world)?;
         for feature in features.iter_mut() {
             feature.after_step(context!(worlds, bodies, settings), world)?;
         }
         Ok(())
     }
+    /// Accumulates `dt` and runs whole `step`-second steps, at most `max_substeps`.
+    fn step_fixed(&mut self, world: &mut World, dt: f32, step: f32) -> Result<()> {
+        if !dt.is_finite() || dt <= 0. || dt > stepping::MAX_FIXED_FRAME {
+            return Err(invalid("Physics frame delta must be in (0,10] seconds"));
+        }
+        let Self {
+            worlds,
+            bodies,
+            settings,
+            features,
+            stepper,
+            ..
+        } = self;
+        let interpolate = settings.interpolation == Interpolation::Interpolate;
+        let plan = stepper.plan(dt, step, settings.max_substeps);
+        for _ in 0..plan.steps {
+            if interpolate {
+                stepper.capture(bodies, worlds);
+            }
+            substep(worlds, bodies, settings, features, world, step)?;
+        }
+        if interpolate {
+            stepper.write_interpolated(bodies, worlds, world)?;
+        } else if plan.steps > 0 {
+            bodies.write_back(worlds, world)?;
+        }
+        if plan.steps > 0 {
+            for feature in features.iter_mut() {
+                feature.after_step(context!(worlds, bodies, settings), world)?;
+            }
+        }
+        stepper.report(world, &plan, settings.max_substeps)
+    }
+}
+/// One engine-physics step of `h` seconds with the feature hooks around it.
+fn substep(
+    worlds: &mut Worlds,
+    bodies: &Bodies,
+    settings: &Resolved,
+    features: &mut [Box<dyn Feature>],
+    world: &mut World,
+    h: f32,
+) -> Result<()> {
+    for feature in features.iter_mut() {
+        feature.before_substep(context!(worlds, bodies, settings), h)?;
+    }
+    worlds.two.step(h).map_err(mapped)?;
+    worlds.three.step(h).map_err(mapped)?;
+    for feature in features.iter_mut() {
+        feature.after_substep(context!(worlds, bodies, settings), world, h)?;
+    }
+    Ok(())
+}
+/// Delivers `physics.step.clamped` to the settings entity, if the scene has one.
+fn emit_step_clamped(world: &mut World, status: &StepStatus, max_substeps: usize) -> Result<()> {
+    let Some(target) = world
+        .iter_entities()
+        .find(|entity| entity.contains::<PhysicsSettings>())
+        .map(|entity| entity.id())
+    else {
+        return Ok(());
+    };
+    let payload = serde_json::json!({
+        "dropped_seconds": status.dropped_time,
+        "max_substeps": max_substeps,
+        "fixed_timestep": status.fixed_timestep,
+        "clamped_frames": status.clamped_frames,
+    });
+    super::emit(world, target, None, "physics.step.clamped", payload)
 }
 /// The installed physics service, for native API functions.
 fn service(world: &World) -> Result<&Physics> {

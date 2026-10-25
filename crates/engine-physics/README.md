@@ -85,3 +85,13 @@ tests measure resting heights on heightfields, meshes, hulls, cylinders and
 compounds plus hull/cylinder/compound masses; material tests measure sliding
 distance and bounce height per combine rule; layer tests prove matrix-disabled
 pairs never touch while enabled pairs do.
+
+Spatial queries (`raycast_hit`, `raycast_all`, `cast_shape`, `cast_shape_all`, `overlap_shape`,
+`project_point`, `contains_point`) take a `QueryFilter` (layer mask, excluded ids, sensor
+and body-kind filters), scan the collider set so results are exact right after `insert`
+and `remove`, and sort by `(distance, id)` before truncating to the caller's limit.
+`debug_view(&DebugOptions)` returns a bounded `DebugView` (colliders with state colour keys,
+contacts, joint anchors, optional AABBs, `wireframe(max_lines)` segments) and
+`add_debug_contributor` lets other features add anchors and lines. The optional
+`deterministic` cargo feature enables Rapier's `enhanced-determinism`. See
+[Physics queries](../../docs/physics-queries.md).
