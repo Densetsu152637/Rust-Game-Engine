@@ -255,10 +255,11 @@ fn builtin_docs() -> Vec<ComponentDoc> {
     ]
 }
 
-pub const SCENE_RULES: [&str; 5] = [
+pub const SCENE_RULES: [&str; 6] = [
     "Entity `id` is the stable authored identifier: unique within the scene, 1-256 characters, no control characters. It cannot be changed after creation.",
     "A scene may contain at most one Camera2D.",
     "SpriteRenderer, Collider2D, Camera3D, PointLight, SpotLight and AreaLight require a Transform on the same entity.",
     "Camera2D.follow must name an entity that has a Transform.",
     "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture/normal_texture/metallic_roughness_texture) must be catalog asset IDs of the right kind.",
+    "A scene may contain at most one `engine.AcousticEnvironment`; `engine.AudioEmitter.clip` must be an `audio` asset, `engine.AcousticGeometry.mesh` and `engine.AcousticVolume.mesh` `mesh` assets, and `engine.AcousticEnvironment.geometry.asset` an `acoustics` asset.",
 ];

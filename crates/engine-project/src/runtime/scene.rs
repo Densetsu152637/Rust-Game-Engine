@@ -32,6 +32,9 @@ pub struct RuntimeSnapshot {
     /// reason; absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ray_tracing: Option<crate::raytracing::RayTracingReport>,
+    /// Acoustic propagation state; absent without an `engine.AcousticEnvironment`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acoustics: Option<engine_acoustics::AcousticStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -147,7 +150,9 @@ impl Runtime {
             .world_mut()
             .resource_mut::<crate::ui_tree::GameUi>()
             .clear();
+        self.start_acoustics()?;
         crate::audio::synchronize(self.app.world_mut())?;
+        self.tick_acoustics(0.0)?;
         self.attach_scripts()?;
         Ok(())
     }
@@ -187,6 +192,7 @@ impl Runtime {
             lighting: self.lighting_status(),
             post: self.post_status(),
             ray_tracing: self.ray_tracing_status(),
+            acoustics: self.acoustics_status(),
             ticks: self.ticks,
             scene,
             live_entities: self

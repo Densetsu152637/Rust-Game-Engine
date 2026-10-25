@@ -7,6 +7,8 @@ edition = "2024"
 anyhow = "1"
 bevy_ecs.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
+engine-acoustics = { path = "../engine-acoustics" }
+engine-acoustics-gpu = { path = "../engine-acoustics-gpu" }
 engine-core = { path = "../engine-core" }
 engine-audio = { path = "../engine-audio" }
 engine-dlss = { path = "../engine-dlss", optional = true }

@@ -98,6 +98,16 @@ impl Tool for ScreenshotTool {
                         "Ray-traced lighting for this image: tier and, per effect, mode ray_traced / fallback / disabled with the reason."}),
                 ),
                 (
+                    "acoustics",
+                    json!({"type": ["object", "null"], "description":
+                        "Acoustic propagation status of the rendered scene (backend, state,                          fallback reason, world statistics, counters); null without an                          engine.AcousticEnvironment."}),
+                ),
+                (
+                    "telemetry_omitted",
+                    json!({"type": "array", "items": {"type": "string"}, "description":
+                        "Telemetry objects dropped for exceeding 64 KiB."}),
+                ),
+                (
                     "generated_frames",
                     json!({"type": "integer", "description":
                         "NGX-generated frames produced before the returned real frame."}),
@@ -167,6 +177,13 @@ impl Tool for ScreenshotTool {
             .with_hint("Request a smaller width and height (for example 320x180)."));
         }
         let shot = &report["screenshot"];
+        let mut telemetry_omitted = Vec::new();
+        let acoustics = if report["scene"]["acoustics"].to_string().len() > 64 * 1024 {
+            telemetry_omitted.push("acoustics");
+            Value::Null
+        } else {
+            report["scene"]["acoustics"].clone()
+        };
         let result = json!({
             "width": width, "height": height, "ticks": report["ticks"],
             "png_bytes": png.len(), "adapter": shot["adapter"],
@@ -175,6 +192,7 @@ impl Tool for ScreenshotTool {
             "frame_generation": report["scene"]["frame_generation"],
             "render_pipeline": report["scene"]["render_pipeline"],
             "ray_tracing": report["scene"]["ray_tracing"],
+            "acoustics": acoustics, "telemetry_omitted": telemetry_omitted,
             "generated_frames": shot["generated_frames"].as_array().map_or(0, Vec::len),
             "build": build, "run_millis": started.elapsed().as_millis(),
         });

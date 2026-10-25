@@ -146,6 +146,8 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `asset_list` | `kind` (enum), `offset`, `limit` | Catalog entries: ID, kind, path, size. |
 | `asset_info` | `asset` (ID) | Kind, path, size, kind-specific details (texture size and format, mesh vertex/triangle count and bounds, font glyphs, script line count, scene entity count) and where the asset is used (scene, entity, component, field), including `MeshMaterial` `shader`, `texture`, `normal_texture` and `metallic_roughness_texture` references. |
 | `navigation_query` | `path`, `start`, `goal`, `query` | A bounded path through a saved navigation document: `status` (`reached`, `unreachable` or `budget_exceeded`), `points` and `polygons`. Uses the same query API as native agents; see [Navigation meshes](navigation.md). |
+| `acoustics_inspect` | `scene` (default: startup scene), `include_entities` | The scene's acoustic world without running game code: `environment` summary (null without an enabled `engine.AcousticEnvironment`), `world` statistics and bounds, resolved `materials`, box `rooms` with Sabine and Eyring RT60 per band, the 2D `proxy` (metres per unit, enclosed air volume and areas), up to 256 `contributors` and `warnings` (ignored components, a closed room that leaks traced energy). See [Spatial audio and acoustics](acoustics.md). |
+| `acoustics_query` | `scene`, `listener` (`position`, `forward`, `up`), `sources` (1-16 `{position, radius_m}`), `quality` | CPU-tier propagation from each source to the listener: `visible_fraction`, `direct_gain_db` per band (125, 500, 2000, 8000 Hz; occlusion only, without the distance law), `distance_m`, up to 16 early `reflections` (order, delay, length, gain, direction), the `reverb` (`rt60_s`, `level_db`, `predelay_ms`, `mean_free_path_m`, `escaped_fraction`) and a `room_estimate` when the listener is inside a `room` volume. Positions are in scene units and a 2D proxy maps them. Deterministic: identical calls return identical JSON. |
 | `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |
 | `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
 | `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob` (at most 512 bytes), `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
@@ -169,6 +171,7 @@ nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
 | `component_remove` | `entity`, `component` | yes / yes | Removes one component; removing an absent one is a no-op. |
 | `file_write` | `path`, `content`, `expected_hash` | yes / yes | Creates or overwrites a UTF-8 text file. |
 | `navigation_bake` | `meshes` (1-128 mesh assets), `output`, `settings`, `obstacles` | no / no | Bakes world-space floor meshes and box obstacles into a new navigation JSON file (never overwrites) and returns the asset entry to add to `project.json`. |
+| `acoustics_bake` | `scene`, `output`, `include` (`meshes`, `proxy2d`, `volumes`) | no / no | Writes the scene's acoustic source geometry (meshes, instances, volumes, proxy footprints and resolved materials) as a sealed `AcousticWorldDocument` JSON file after replaying it through the world builder; never overwrites. Returns `path`, `triangles`, `hash` (of the file), `content_hash` (the document's own) and the `acoustics` asset entry to add to `project.json`. |
 
 All write tools carry `readOnlyHint: false` and `openWorldHint: false`.
 
@@ -404,6 +407,10 @@ retained frames (`profile_frames_truncated` indicates trimming), optional
 `network` status, `input_devices` descriptors, bindings and diagnostics, and
 `render_pipeline` (registered render features and their state in the active
 camera view, the camera's `render_features` overrides; `not_rendered` headless).
+`acoustics` carries `RuntimeSnapshot.acoustics` (requested and active backend,
+state, fallback reason, adapter, world statistics, update counters and timings,
+mixer counters and at most 32 per-source entries; null without an
+`engine.AcousticEnvironment`); `render_screenshot` returns the same object.
 Each telemetry field is capped at 64 KiB. Oversized fields become null and are
 named in `telemetry_omitted`; absent optional services are simply null.
 

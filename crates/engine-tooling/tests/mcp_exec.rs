@@ -182,12 +182,16 @@ fn default_server_is_read_only_and_lists_no_write_or_exec_tools() {
     );
     assert_eq!(session.code, 0, "{}", session.stderr);
     let names = tool_names(&session);
-    assert_eq!(names.len(), 13);
+    assert_eq!(names.len(), 15);
     assert!(names.contains(&"navigation_query".to_owned()));
-    for hidden in EXEC_TOOLS
-        .iter()
-        .chain(&["file_write", "entity_create", "navigation_bake"])
-    {
+    assert!(names.contains(&"acoustics_inspect".to_owned()));
+    assert!(names.contains(&"acoustics_query".to_owned()));
+    for hidden in EXEC_TOOLS.iter().chain(&[
+        "file_write",
+        "entity_create",
+        "navigation_bake",
+        "acoustics_bake",
+    ]) {
         assert!(!names.contains(&(*hidden).to_owned()), "{hidden}");
     }
 }
@@ -226,8 +230,11 @@ fn allow_write_adds_only_the_write_tools() {
         &[request(1, "tools/list", json!({}))],
     );
     let names = tool_names(&session);
-    assert_eq!(names.len(), 22);
+    assert_eq!(names.len(), 25);
     assert!(names.contains(&"navigation_bake".to_owned()));
+    assert!(names.contains(&"acoustics_bake".to_owned()));
+    assert!(names.contains(&"acoustics_inspect".to_owned()));
+    assert!(names.contains(&"acoustics_query".to_owned()));
     assert!(names.contains(&"navigation_query".to_owned()));
     assert!(names.contains(&"entity_create".to_owned()));
     assert!(names.contains(&"scene_edit".to_owned()));
@@ -244,22 +251,23 @@ fn allow_exec_adds_the_execution_tools_with_accurate_metadata() {
         &[request(1, "tools/list", json!({}))],
     );
     let names = tool_names(&session);
-    assert_eq!(names.len(), 16, "no write tools without --allow-write");
-    assert_eq!(names[13..], EXEC_TOOLS);
+    assert_eq!(names.len(), 18, "no write tools without --allow-write");
+    assert_eq!(names[15..], EXEC_TOOLS);
     assert!(!names.contains(&"file_write".to_owned()));
     assert!(!names.contains(&"navigation_bake".to_owned()));
+    assert!(!names.contains(&"acoustics_bake".to_owned()));
     let tools = session.responses[0]["result"]["tools"].as_array().unwrap();
-    for tool in &tools[13..] {
+    for tool in &tools[15..] {
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
         assert_eq!(tool["annotations"]["openWorldHint"], true);
         assert!(tool["description"].as_str().unwrap().len() > 100);
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert!(tool["outputSchema"].is_object());
     }
-    assert_eq!(tools[13]["annotations"]["destructiveHint"], false);
-    assert_eq!(tools[13]["annotations"]["idempotentHint"], true);
+    assert_eq!(tools[15]["annotations"]["destructiveHint"], false);
+    assert_eq!(tools[15]["annotations"]["idempotentHint"], true);
     assert_eq!(
-        tools[14]["annotations"]["destructiveHint"], true,
+        tools[16]["annotations"]["destructiveHint"], true,
         "runs arbitrary native code"
     );
 }
@@ -272,7 +280,7 @@ fn both_flags_list_everything() {
         &[],
         &[request(1, "tools/list", json!({}))],
     );
-    assert_eq!(tool_names(&session).len(), 25);
+    assert_eq!(tool_names(&session).len(), 28);
 }
 
 #[test]
