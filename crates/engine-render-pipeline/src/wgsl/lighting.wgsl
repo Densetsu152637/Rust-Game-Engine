@@ -302,13 +302,23 @@ fn engine_light_visibility(light: EngineLight, world: vec3<f32>, n: vec3<f32>) -
 
 // Outgoing radiance from one light (BRDF x irradiance x shadow).
 fn engine_light_contribution(light: EngineLight, surface: EngineSurface, world: vec3<f32>, v: vec3<f32>, receive_shadows: bool) -> vec3<f32> {
+    return engine_light_contribution_screen(light, surface, world, v, receive_shadows, vec2<f32>(1.0, 0.0));
+}
+
+// engine_light_contribution with a screen-space visibility `screen`
+// (x visibility, y 1 = replace the shadow-map visibility, 0 = multiply it).
+fn engine_light_contribution_screen(light: EngineLight, surface: EngineSurface, world: vec3<f32>, v: vec3<f32>, receive_shadows: bool, screen: vec2<f32>) -> vec3<f32> {
     let incident = engine_light_incident(light, world, surface.normal, v);
     if all(incident.irradiance <= vec3<f32>(0.0)) {
         return vec3<f32>(0.0);
     }
     var visibility = 1.0;
     if receive_shadows {
-        visibility = engine_light_visibility(light, world, surface.normal);
+        if screen.y > 0.5 {
+            visibility = screen.x;
+        } else {
+            visibility = engine_light_visibility(light, world, surface.normal) * screen.x;
+        }
     }
     let brdf = engine_brdf(surface, v, incident.l);
     var specular = brdf.specular;
@@ -343,7 +353,12 @@ fn engine_cluster_index(frag: vec2<f32>, depth: f32) -> u32 {
 fn engine_direct_lighting(surface: EngineSurface, world: vec3<f32>, v: vec3<f32>, frag: vec2<f32>, receive_shadows: bool) -> vec3<f32> {
     var sum = vec3<f32>(0.0);
     let directional = engine_lights.counts.y;
-    for (var i = 0u; i < directional; i++) {
+    if directional > 0u {
+        // The first directional light (the sun) takes the screen visibility.
+        let screen = engine_screen_shadow_at(frag).xy;
+        sum += engine_light_contribution_screen(engine_lights.lights[0], surface, world, v, receive_shadows, screen);
+    }
+    for (var i = 1u; i < directional; i++) {
         sum += engine_light_contribution(engine_lights.lights[i], surface, world, v, receive_shadows);
     }
     if engine_clusters.params.x == 1u {
@@ -360,4 +375,33 @@ fn engine_direct_lighting(surface: EngineSurface, world: vec3<f32>, v: vec3<f32>
         sum += engine_light_contribution(light, surface, world, v, receive_shadows);
     }
     return sum;
+}
+
+// Ambient / indirect lighting of a surface at render pixel `frag`: the
+// diffuse term (constant ambient, or the screen indirect radiance where
+// present) times the screen ambient occlusion, plus screen reflections for
+// surfaces at or below the reflection roughness cutoff (Schlick Fresnel with
+// roughness, faded towards the cutoff). With the neutral screen-lighting
+// placeholders this is albedo x (1 - metallic) x ambient.
+fn engine_indirect_lighting(surface: EngineSurface, v: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
+    let ao = engine_screen_ao_at(frag).x;
+    let gi = engine_screen_indirect_at(frag);
+    var incident = engine_ambient();
+    if gi.a >= 0.5 {
+        incident = gi.rgb;
+    }
+    var result = surface.albedo * (1.0 - surface.metallic) * incident * ao;
+    let reflection = engine_screen_reflection_at(frag);
+    if reflection.a >= 0.0 && surface.roughness <= reflection.a {
+        let n_dot_v = clamp(dot(surface.normal, v), 0.0, 1.0);
+        let f0 = mix(vec3<f32>(0.04), surface.albedo, surface.metallic);
+        let grazing = max(vec3<f32>(1.0 - surface.roughness), f0);
+        let fresnel = f0 + (grazing - f0) * pow(1.0 - n_dot_v, 5.0);
+        var fade = 1.0;
+        if reflection.a > 0.0 {
+            fade = 1.0 - surface.roughness / reflection.a;
+        }
+        result += reflection.rgb * fresnel * fade;
+    }
+    return result;
 }

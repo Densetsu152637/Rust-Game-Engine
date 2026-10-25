@@ -133,6 +133,7 @@ fn scene(x: f32, camera_x: f32, generation: FrameGenerationSettings) -> SceneRen
         materials2d: Default::default(),
         lights: vec![],
         post: Default::default(),
+        ray_tracing: None,
         streams: vec![],
     }
 }

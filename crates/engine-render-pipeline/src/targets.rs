@@ -9,6 +9,53 @@ pub const NORMALS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float
 /// Current-to-previous motion in render pixels, x right / y down.
 pub const MOTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
+/// Format of the four screen-lighting inputs ([`ScreenLighting`]).
+pub const SCREEN_LIGHTING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Values the screen-lighting inputs hold before any feature writes them
+/// (and the 1x1 placeholders bound when no feature needs them): shadow
+/// `(1, 0, 0, 0)`, ambient occlusion `(1, 0, 0, 0)`, indirect `(0, 0, 0, 0)`,
+/// reflection `(0, 0, 0, -1)`. With these the lit result is unchanged.
+pub const SCREEN_LIGHTING_DEFAULTS: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, -1.0],
+];
+
+/// Screen-space lighting inputs of one view (render size,
+/// [`SCREEN_LIGHTING_FORMAT`]): written by Prepass features (storage writes
+/// or copies) and read by `engine::lighting` in the Opaque and Transparent
+/// stages through `engine::view` bindings 7..=10. Allocated when a running
+/// feature declares [`crate::FeatureNeeds::screen_lighting`]; cleared to
+/// [`SCREEN_LIGHTING_DEFAULTS`] every frame.
+///
+/// | texture | binding | contents |
+/// | --- | --- | --- |
+/// | `shadow` | 7 | x: visibility of the first directional light; y: 1 when x replaces its shadow-map visibility, 0 when it multiplies it |
+/// | `ambient_occlusion` | 8 | x: multiplier of the diffuse ambient / indirect term |
+/// | `indirect` | 9 | rgb: incident diffuse radiance (irradiance / pi) replacing the constant ambient where a >= 0.5 |
+/// | `reflection` | 10 | rgb: specular radiance along the mirror direction where a >= 0; a: the roughness cutoff (surfaces rougher than it ignore the texel) |
+#[derive(Clone, Debug)]
+pub struct ScreenLighting {
+    pub shadow: Target,
+    pub ambient_occlusion: Target,
+    pub indirect: Target,
+    pub reflection: Target,
+}
+
+impl ScreenLighting {
+    /// The four targets in binding order (7..=10).
+    pub fn targets(&self) -> [&Target; 4] {
+        [
+            &self.shadow,
+            &self.ambient_occlusion,
+            &self.indirect,
+            &self.reflection,
+        ]
+    }
+}
+
 /// A texture and its default view.
 #[derive(Clone, Debug)]
 pub struct Target {
@@ -63,6 +110,7 @@ const COLOR_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
 /// | `depth` | `Depth32Float` | attachment, sampled, copy src | always |
 /// | `normals` | `Rgba16Float` | attachment, sampled, copy src | after the Prepass stage when a running feature needs normals |
 /// | `motion` | `Rg16Float` | attachment, sampled, copy src | after the Prepass stage when a feature or the host needs motion |
+/// | `screen_lighting` | `Rgba16Float` x 4 | attachment, sampled, storage, copy | when a running feature needs screen lighting ([`ScreenLighting`]) |
 pub struct FrameTargets {
     pub render_size: [u32; 2],
     pub output_size: [u32; 2],
@@ -70,6 +118,8 @@ pub struct FrameTargets {
     pub depth: Target,
     pub normals: Option<Target>,
     pub motion: Option<Target>,
+    /// Screen-lighting inputs, when a running feature needs them.
+    pub screen_lighting: Option<ScreenLighting>,
     /// Depth of the motion prepass (kept apart from scene depth).
     pub(crate) motion_depth: Option<Target>,
     pub(crate) upscaled: Option<Target>,
@@ -99,6 +149,7 @@ impl FrameTargets {
             ),
             normals: None,
             motion: None,
+            screen_lighting: None,
             motion_depth: None,
             upscaled: None,
             post: [None, None],
@@ -118,6 +169,20 @@ impl FrameTargets {
                     | wgpu::TextureUsages::COPY_SRC,
             )
         })
+    }
+
+    pub(crate) fn ensure_screen_lighting(&mut self, device: &wgpu::Device) {
+        let size = self.render_size;
+        if self.screen_lighting.is_none() {
+            let target =
+                |label| Target::new(device, label, size, SCREEN_LIGHTING_FORMAT, COLOR_USAGE);
+            self.screen_lighting = Some(ScreenLighting {
+                shadow: target("engine screen shadow"),
+                ambient_occlusion: target("engine screen ambient occlusion"),
+                indirect: target("engine screen indirect"),
+                reflection: target("engine screen reflection"),
+            });
+        }
     }
 
     pub(crate) fn ensure_motion(&mut self, device: &wgpu::Device) {

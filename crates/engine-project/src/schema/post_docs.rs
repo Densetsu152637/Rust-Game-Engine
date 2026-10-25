@@ -204,3 +204,98 @@ pub(super) fn post_docs() -> Vec<ComponentDoc> {
         },
     ]
 }
+
+/// `RayTracing` (`crate::raytracing`): the per-camera ray-traced lighting.
+pub(super) fn ray_tracing_doc() -> ComponentDoc {
+    let int = |min: u32, max: u32, default: u32, description: &str| {
+        json!({"type": "integer", "minimum": min, "maximum": max, "default": default,
+            "description": description})
+    };
+    let bias = || num(0.0, 1.0, 0.001, "Ray origin offset along the normal (m).");
+    let distance = |default: f64| {
+        json!({"type": "number", "exclusiveMinimum": 0, "maximum": 1e6, "default": default,
+            "description": "Longest ray (m)."})
+    };
+    let enabled = |fallback: &str| {
+        flag(
+            false,
+            &format!(
+                "Run the effect: ray traced on a hardware ray-query device, otherwise the \
+                 raster fallback ({fallback}). Also enables its engine.rt.* render feature."
+            ),
+        )
+    };
+    let denoise = || {
+        flag(
+            true,
+            "Denoise the signal (SVGF with the C1 motion vectors).",
+        )
+    };
+    ComponentDoc {
+        name: "RayTracing",
+        description: "Hardware ray-traced lighting of a camera, on the Camera3D entity: RT sun \
+            shadows (fallback: shadow maps), ambient occlusion (fallback: screen-space SSAO), \
+            reflections (fallback: none) and diffuse GI (fallback: constant ambient), each \
+            denoised. The status (RuntimeSnapshot.ray_tracing) reports per effect whether it \
+            ran ray_traced, fallback (with the reason) or disabled. The device requests ray \
+            query when the first frame's camera enables any effect.",
+        requires: &[],
+        schema: closed(json!({
+            "version": version(),
+            "shadows": group(closed_map(json!({
+                "enabled": enabled("the shadow maps"),
+                "sun_angular_radius": num(0.0, 0.2, 0.0,
+                    "Sun angular radius (rad); 0 traces hard shadows."),
+                "samples_per_pixel": int(1, 64, 1, "Shadow rays per pixel (soft shadows)."),
+                "normal_bias": bias(),
+                "max_distance": distance(10000.0),
+                "denoise": denoise()})), "Ray-traced shadows of the first directional light."),
+            "ambient_occlusion": group(closed_map(json!({
+                "enabled": enabled("screen-space SSAO"),
+                "radius": json!({"type": "number", "exclusiveMinimum": 0, "maximum": 100,
+                    "default": 1.0, "description": "Occlusion radius (m)."}),
+                "rays_per_pixel": int(1, 64, 1, "Rays per pixel."),
+                "normal_bias": bias(),
+                "denoise": denoise()})), "Ambient occlusion of the ambient / indirect term."),
+            "reflections": group(closed_map(json!({
+                "enabled": enabled("no reflections"),
+                "roughness_cutoff": num(0.0, 1.0, 0.5,
+                    "Surfaces rougher than this get no reflection; below it the reflection \
+                     fades with roughness."),
+                "max_distance": distance(1000.0),
+                "normal_bias": bias(),
+                "denoise": denoise()})), "Mirror reflections blended by Fresnel and roughness."),
+            "diffuse_gi": group(closed_map(json!({
+                "enabled": enabled("the constant ambient"),
+                "bounces": int(1, 8, 1, "Path segments."),
+                "rays_per_pixel": int(1, 64, 1, "Paths per pixel."),
+                "max_distance": distance(1000.0),
+                "normal_bias": bias(),
+                "denoise": denoise()})), "Diffuse indirect light times the surface albedo."),
+            "denoiser": group(closed_map(json!({
+                "atrous_iterations": int(0, 8, 5, "A-trous wavelet iterations."),
+                "max_history_length": int(1, 256, 32, "Temporal history cap (frames)."),
+                "reprojection_depth_tolerance": json!({"type": "number",
+                    "exclusiveMinimum": 0, "maximum": 1, "default": 0.1,
+                    "description": "Relative view-distance tolerance of reprojection."}),
+                "reprojection_normal_threshold": num(-1.0, 1.0, 0.9,
+                    "Smallest normal cosine accepted by reprojection."),
+                "phi_depth": json!({"type": "number", "exclusiveMinimum": 0, "maximum": 10,
+                    "default": 0.05, "description": "Plane-distance edge stop."}),
+                "phi_normal": num(1.0, 1024.0, 128.0, "Normal edge-stop exponent."),
+                "phi_luminance": json!({"type": "number", "exclusiveMinimum": 0,
+                    "maximum": 1000, "default": 4.0, "description": "Luminance edge stop."}),
+                "min_history_for_temporal_variance": int(1, 32, 4,
+                    "History length below which the variance is estimated spatially.")})),
+                "Denoiser shared by the effects.")
+        })),
+        example: json!({"shadows": {"enabled": true}, "ambient_occlusion": {"enabled": true}}),
+    }
+}
+
+fn closed_map(properties: Value) -> Map<String, Value> {
+    let Value::Object(map) = properties else {
+        unreachable!("object literal")
+    };
+    map
+}

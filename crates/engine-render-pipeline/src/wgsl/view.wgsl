@@ -94,6 +94,18 @@ struct EngineClusterGrid {
 @group(0) @binding(5) var<storage, read> engine_cluster_lights: array<u32>;
 // Linear-filtered less-equal comparison sampler of the shadow atlas.
 @group(0) @binding(6) var engine_shadow_sampler: sampler_comparison;
+// Screen-lighting inputs (render size; 1x1 neutral placeholders unless a
+// running feature needs them). Written in the Prepass stage, for example by
+// the engine.rt.* features; see docs/rendering-architecture.md.
+// x: visibility of the first directional light; y: 1 = x replaces its
+// shadow-map visibility, 0 = x multiplies it.
+@group(0) @binding(7) var engine_screen_shadow: texture_2d<f32>;
+// x: multiplier of the diffuse ambient / indirect term.
+@group(0) @binding(8) var engine_screen_ao: texture_2d<f32>;
+// rgb: incident diffuse radiance replacing the constant ambient where a >= 0.5.
+@group(0) @binding(9) var engine_screen_indirect: texture_2d<f32>;
+// rgb: specular radiance along the mirror direction where a >= 0; a: roughness cutoff.
+@group(0) @binding(10) var engine_screen_reflection: texture_2d<f32>;
 
 fn engine_light_count() -> u32 {
     return engine_lights.counts.x;
@@ -113,4 +125,26 @@ fn engine_ambient() -> vec3<f32> {
 
 fn engine_clip_from_world() -> mat4x4<f32> {
     return engine_view.clip_from_world;
+}
+
+// Texel of `size` covering fragment position `frag` (clamped, so the 1x1
+// placeholders answer every fragment).
+fn engine_screen_texel(frag: vec2<f32>, size: vec2<u32>) -> vec2<i32> {
+    return clamp(vec2<i32>(floor(frag)), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1));
+}
+
+fn engine_screen_shadow_at(frag: vec2<f32>) -> vec4<f32> {
+    return textureLoad(engine_screen_shadow, engine_screen_texel(frag, textureDimensions(engine_screen_shadow)), 0);
+}
+
+fn engine_screen_ao_at(frag: vec2<f32>) -> vec4<f32> {
+    return textureLoad(engine_screen_ao, engine_screen_texel(frag, textureDimensions(engine_screen_ao)), 0);
+}
+
+fn engine_screen_indirect_at(frag: vec2<f32>) -> vec4<f32> {
+    return textureLoad(engine_screen_indirect, engine_screen_texel(frag, textureDimensions(engine_screen_indirect)), 0);
+}
+
+fn engine_screen_reflection_at(frag: vec2<f32>) -> vec4<f32> {
+    return textureLoad(engine_screen_reflection, engine_screen_texel(frag, textureDimensions(engine_screen_reflection)), 0);
 }

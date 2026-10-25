@@ -132,6 +132,15 @@ impl<'a> FeatureContext<'a> {
         self.io.targets.as_ref()?.normals.as_ref()
     }
 
+    /// The screen-lighting inputs ([`crate::ScreenLighting`]); `None`
+    /// unless a running feature declared `needs.screen_lighting`. Write them
+    /// in the Prepass stage (storage writes or copies, without binding the
+    /// view group in the same pass); `engine::lighting` reads them in the
+    /// Opaque and Transparent stages.
+    pub fn screen_lighting(&self) -> Option<&crate::ScreenLighting> {
+        self.io.targets.as_ref()?.screen_lighting.as_ref()
+    }
+
     /// Motion vectors (`Rg16Float`, render pixels); `None` unless a feature
     /// or the host needs motion. Written by `engine.prepass.motion`.
     pub fn motion(&self) -> Option<&Target> {

@@ -631,6 +631,8 @@ pub struct SceneRenderFrame {
     /// The active camera's `PostProcess`, enabled `PostProcessVolume`s and
     /// referenced LUT files; see [`crate::post::resolve_post`].
     pub post: crate::post::PostFrame,
+    /// The active camera's `RayTracing` component.
+    pub ray_tracing: Option<crate::raytracing::RayTracing>,
     pub materials2d: BTreeMap<String, MaterialSnapshot>,
     /// Texture streams sampled by the draws of this frame.
     pub streams: Vec<StreamFrame>,
@@ -648,6 +650,7 @@ impl From<RenderFrame> for SceneRenderFrame {
             meshes: vec![],
             lights: vec![],
             post: Default::default(),
+            ray_tracing: None,
             materials2d: BTreeMap::new(),
             streams: Vec::new(),
         }

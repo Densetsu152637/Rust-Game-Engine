@@ -233,4 +233,10 @@ pub struct Components {
         skip_serializing_if = "Option::is_none"
     )]
     pub post_process_volume: Option<crate::post::PostProcessVolume>,
+    #[serde(
+        rename = "RayTracing",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ray_tracing: Option<crate::raytracing::RayTracing>,
 }

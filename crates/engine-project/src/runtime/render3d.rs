@@ -119,6 +119,14 @@ impl Runtime {
         frame.materials2d.retain(|id, _| !mesh_ids.contains(id));
         frame.lights = extract_lights(world)?;
         frame.post = self.extract_post(entity, true)?;
+        frame.ray_tracing = self
+            .app
+            .world()
+            .get::<crate::raytracing::RayTracing>(entity)
+            .cloned();
+        if let Some(rt) = &frame.ray_tracing {
+            rt.validate()?;
+        }
         Ok(frame)
     }
     /// The active camera's `PostProcess`, the enabled volumes and the LUT
@@ -252,6 +260,44 @@ impl Runtime {
             .unwrap_or_default();
         status.overrides = camera.render_features.clone();
         Some(status)
+    }
+    /// The renderer-reported ray-traced lighting of the active camera view.
+    /// Before any 3D frame the state is `not_rendered` and every effect the
+    /// camera's `RayTracing` enables reads `fallback` ("not rendered yet");
+    /// `None` without an active 3D camera.
+    pub fn ray_tracing_status(&self) -> Option<crate::raytracing::RayTracingReport> {
+        let world = self.app.world();
+        let (entity, _) = active_camera3d(world)?;
+        if let Some(status) = world
+            .get_resource::<crate::raytracing::RayTracingControl>()
+            .and_then(|control| control.status.clone())
+        {
+            return Some(status);
+        }
+        let authored = world.get::<crate::raytracing::RayTracing>(entity);
+        let effect = |name: &str, enabled: bool| crate::raytracing::RtEffectReport {
+            effect: name.into(),
+            mode: if enabled { "fallback" } else { "disabled" }.into(),
+            denoised: false,
+            fallback: None,
+            reason: Some(if enabled {
+                "no frame has been rendered".into()
+            } else {
+                "disabled in settings".into()
+            }),
+        };
+        let rt = authored.cloned().unwrap_or_default();
+        Some(crate::raytracing::RayTracingReport {
+            tier: "unavailable".into(),
+            reason: Some("no frame has been rendered".into()),
+            effects: vec![
+                effect("shadows", rt.shadows.enabled),
+                effect("ambient_occlusion", rt.ambient_occlusion.enabled),
+                effect("reflections", rt.reflections.enabled),
+                effect("diffuse_gi", rt.diffuse_gi.enabled),
+            ],
+            ..Default::default()
+        })
     }
     /// The renderer-reported lighting state of the active camera view.
     /// Before any 3D frame the state is `not_rendered` with the number of

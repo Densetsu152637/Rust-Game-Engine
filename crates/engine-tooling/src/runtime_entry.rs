@@ -185,17 +185,20 @@ fn screenshot_on(
             .remove_resource::<DlssConfig>()
             .unwrap_or_default();
         let request = DlssRequest::for_frame(&frame, &dlss);
-        let options = WgpuOptions {
+        let mut options = WgpuOptions {
             backends,
             requirements,
             ..Default::default()
         };
-        let (gpu, upscaler) = pollster::block_on(engine_desktop::request_upscaler_gpu(
-            GpuContext::instance_with(backends),
+        let instance = GpuContext::instance_with(backends);
+        let ray_tracing = pollster::block_on(engine_desktop::prepare_ray_tracing(
+            &instance,
             None,
-            &options,
-            &dlss,
-            request,
+            &mut options,
+            &frame,
+        ));
+        let (gpu, upscaler) = pollster::block_on(engine_desktop::request_upscaler_gpu(
+            instance, None, &options, &dlss, request,
         ))
         .map_err(|error| {
             engine_project::Error::new(
@@ -213,6 +216,7 @@ fn screenshot_on(
         let mut renderer =
             GpuRenderer::with_upscaler_device(gpu, target.info, RenderLimits::default(), upscaler)?;
         renderer.set_features(features)?;
+        renderer.note_ray_tracing_request(ray_tracing);
         if let Some(previous) = &previous_frame {
             renderer.render_scene(previous, &target.view, Some(runtime.app().render_world()))?;
         }
@@ -234,6 +238,11 @@ fn screenshot_on(
         }
         if let Some(mut control) = world.get_resource_mut::<engine_project::post::PostControl>() {
             control.status = renderer.post_status().clone();
+        }
+        if let Some(mut control) =
+            world.get_resource_mut::<engine_project::raytracing::RayTracingControl>()
+        {
+            control.status = renderer.ray_tracing_status().cloned();
         }
         // Generated frames before the final real frame, as sibling PNGs.
         let mut generated = Vec::new();

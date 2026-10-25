@@ -98,6 +98,8 @@ impl Tool for RunTool {
                     "Frame generation request and what the renderer did (state not_rendered in headless runs)."})),
                 ("render_pipeline", json!({"type":["object","null"], "description":
                     "Registered render features in execution order with their state in the active camera view (enabled, source, activity), the camera's render_features overrides and unknown override names (state not_rendered in headless runs)."})),
+                ("ray_tracing", json!({"type":["object","null"], "description":
+                    "Ray-traced lighting of the active camera: tier and, per effect (shadows, ambient_occlusion, reflections, diffuse_gi), mode ray_traced / fallback / disabled with the fallback and reason (state not_rendered in headless runs)."})),
                 ("telemetry_omitted", json!({"type":"array","items":{"type":"string"}})),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
@@ -219,9 +221,10 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
     let upscaler = telemetry("upscaler", &snapshot["upscaler"]);
     let frame_generation = telemetry("frame_generation", &snapshot["frame_generation"]);
     let render_pipeline = telemetry("render_pipeline", &snapshot["render_pipeline"]);
+    let ray_tracing = telemetry("ray_tracing", &snapshot["ray_tracing"]);
     json!({
         "upscaler": upscaler, "frame_generation": frame_generation,
-        "render_pipeline": render_pipeline,
+        "render_pipeline": render_pipeline, "ray_tracing": ray_tracing,
         "profile": profile, "profile_frames_truncated": profile_frames_truncated,
         "network": network, "input_devices": input_devices, "telemetry_omitted": telemetry_omitted,
         "event_trace":event_trace, "event_count":report["event_trace"]["count"].as_u64().unwrap_or(0),
