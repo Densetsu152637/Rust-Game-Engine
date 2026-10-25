@@ -366,6 +366,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.AnimationPlayer",
         "engine.AudioEmitter",
         "engine.AudioListener",
+        "engine.BehaviorTreeAgent",
         "engine.CaptionPlayer",
         "engine.CharacterController2D",
         "engine.CharacterController3D",

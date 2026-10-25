@@ -43,6 +43,10 @@ pub struct RuntimeSnapshot {
     /// Acoustic propagation state; absent without an `engine.AcousticEnvironment`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustics: Option<engine_acoustics::AcousticStatus>,
+    /// Behavior tree agents: active path and blackboard summary per agent; absent
+    /// without an `engine.BehaviorTreeAgent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub behavior_trees: Option<crate::ai::BehaviorTreeStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -145,6 +149,7 @@ impl Runtime {
         )?;
         crate::networking::validate(self.app.world())?;
         crate::simulation::reset(self.app.world_mut())?;
+        crate::ai::prepare(self.app.world_mut())?;
         crate::refresh_world_transforms(self.app.world_mut())?;
         self.validate_event_bindings()?;
         crate::events::clear(self.app.world_mut());
@@ -208,6 +213,7 @@ impl Runtime {
             ray_tracing: self.ray_tracing_status(),
             ui_render: self.ui_render_status(),
             acoustics: self.acoustics_status(),
+            behavior_trees: crate::ai::status(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self

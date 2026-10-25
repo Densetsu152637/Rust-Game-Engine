@@ -243,6 +243,10 @@ impl TreeInstance {
     pub fn ticks(&self) -> u64 {
         self.state.ticks
     }
+    /// Outcome of the most recent complete run of the root.
+    pub fn last_finished(&self) -> Option<Status> {
+        self.state.last_finished
+    }
 
     /// Advances the tree by `dt` seconds.
     ///
@@ -293,6 +297,27 @@ impl TreeInstance {
         exec.aborts
     }
 
+    /// Node ids from the root down to the deepest running node; the first running
+    /// child is followed where a parallel node has several. Cheap enough to call
+    /// every frame.
+    pub fn active_path(&self) -> Vec<String> {
+        let tree = &*self.tree;
+        let mut path = Vec::new();
+        let mut current = 0usize;
+        while self.state.nodes[current].active && path.len() <= super::kind::MAX_DEPTH {
+            path.push(tree.nodes[current].id.clone());
+            match tree.nodes[current]
+                .children
+                .iter()
+                .find(|c| self.state.nodes[**c].active)
+            {
+                Some(next) => current = *next,
+                None => break,
+            }
+        }
+        path
+    }
+
     /// Bounded debug view: per-node last status, the active path, counters and the
     /// recent transition and abort log.
     pub fn debug(&self) -> TreeDebug {
@@ -308,24 +333,11 @@ impl TreeInstance {
                 last: state.last,
             })
             .collect();
-        let mut active_path = Vec::new();
-        let mut current = 0usize;
-        while self.state.nodes[current].active && active_path.len() <= super::kind::MAX_DEPTH {
-            active_path.push(tree.nodes[current].id.clone());
-            match tree.nodes[current]
-                .children
-                .iter()
-                .find(|c| self.state.nodes[**c].active)
-            {
-                Some(next) => current = *next,
-                None => break,
-            }
-        }
         TreeDebug {
             ticks: self.state.ticks,
             time: self.state.time,
             last_finished: self.state.last_finished,
-            active_path,
+            active_path: self.active_path(),
             nodes,
             log: self
                 .state
