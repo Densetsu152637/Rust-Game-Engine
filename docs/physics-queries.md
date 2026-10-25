@@ -153,7 +153,8 @@ cutting. `DebugView::wireframe(max_lines)` flattens the view to world-space segm
 colours (`physics::PhysicsDebugView::lines` merges both dimensions; 2D geometry lies on Z = 0).
 Rendering is a separate step: a render feature can draw these segments as `Overlay`-stage
 lines through `PipelineFeature` ([rendering architecture](rendering-architecture.md)), and the
-editor can draw them directly.
+editor can draw them directly. `physics.debug_lines` in [Physics rendering](physics-rendering.md)
+does this with depth testing and a bounded buffer.
 
 Settings: `debug` (default false) gates the native `debug_view`; `debug_aabbs` adds AABBs;
 `debug_max_items` sets the cap. `debug_view_with` ignores the toggle (tools use it).

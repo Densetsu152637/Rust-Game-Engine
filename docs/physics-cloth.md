@@ -270,4 +270,5 @@ contributor hook takes a stateless function pointer, so these segments are not m
 - **Engine integration**: authored components, schema, MCP editing, `physics.cloth.*`
   events, Rapier proxy filling and rendering through the rendering domain's
   `PipelineFeature` API ([render architecture](rendering-architecture.md)) are a
-  follow-up step outside this crate.
+  follow-up step outside this crate. Cloth and soft-body surfaces are drawn by
+  `engine-physics-render` ([Physics rendering](physics-rendering.md)).

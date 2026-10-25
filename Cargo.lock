@@ -1317,6 +1317,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-physics-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "bytemuck",
+ "engine-core",
+ "engine-project",
+ "engine-render-pipeline",
+ "engine-render-wgpu",
+ "glam 0.34.1",
+ "serde_json",
+ "tempfile",
+ "wgpu",
+]
+
+[[package]]
 name = "engine-platform"
 version = "0.1.0"
 dependencies = [
