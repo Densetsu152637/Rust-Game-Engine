@@ -1,18 +1,33 @@
-//! Offscreen sprite rendering on any [`RenderBackend`], with readback.
+//! Offscreen rendering into an RGBA target, with readback.
 
-use crate::{RenderLimits, RenderStats, SpriteRenderer};
+use crate::{GpuRenderer, RenderLimits, RenderStats, SpriteRenderer};
 use anyhow::{Result, anyhow};
 use engine_project::runtime::RenderFrame;
 use engine_render::{RenderBackend, RenderTarget, TargetHandle, headless::RecordingBackend};
-use engine_render_wgpu::{WgpuBackend, WgpuBackends, WgpuOptions};
+use engine_render_wgpu::{GpuContext, OffscreenTarget, WgpuBackends, WgpuOptions};
 
-/// Sprite rendering into an offscreen RGBA target, the same path a window uses,
-/// for tests and tools. Build it on a real GPU with [`Self::wgpu`], or on the
-/// deterministic recording backend with [`Self::headless`] (no GPU; inspect the
-/// command stream through the log of the backend passed to [`Self::new`]).
+enum Engine {
+    /// Any `engine-render` backend (the recording backend in tests): sprites
+    /// are drawn, 3D meshes are validated but not drawn.
+    Neutral {
+        renderer: Box<SpriteRenderer<Box<dyn RenderBackend>>>,
+        target: TargetHandle,
+    },
+    /// The native renderer: the full 3D pipeline plus sprites.
+    Gpu {
+        renderer: Box<GpuRenderer>,
+        target: OffscreenTarget,
+    },
+}
+
+/// Rendering into an offscreen RGBA target, the same path a window uses,
+/// for tests and tools. Build it on a real GPU with [`Self::wgpu`] (a
+/// [`GpuRenderer`]: 3D render pipeline and sprites), or on the deterministic
+/// recording backend with [`Self::headless`] (no GPU; sprite commands are
+/// recorded and 3D scenes are validated, not drawn; inspect the command
+/// stream through the log of the backend passed to [`Self::new`]).
 pub struct OffscreenSprites {
-    renderer: SpriteRenderer<Box<dyn RenderBackend>>,
-    target: TargetHandle,
+    engine: Engine,
     size: (u32, u32),
 }
 
@@ -27,25 +42,35 @@ impl OffscreenSprites {
         let mut renderer = SpriteRenderer::new(backend, limits)?;
         let target = renderer.device_mut().create_target(width, height)?;
         Ok(Self {
-            renderer,
-            target,
+            engine: Engine::Neutral {
+                renderer: Box::new(renderer),
+                target,
+            },
             size: (width, height),
         })
     }
 
-    /// Offscreen sprites on the wgpu backend, restricted to the `backends` APIs.
+    /// The native renderer on a headless device of the `backends` APIs.
     pub fn wgpu(
         backends: WgpuBackends,
         width: u32,
         height: u32,
         limits: RenderLimits,
     ) -> Result<Self> {
-        let backend = WgpuBackend::offscreen(WgpuOptions {
+        let gpu = GpuContext::headless_with_options(&WgpuOptions {
             backends,
             frames_in_flight: limits.max_frames_in_flight as u32,
             ..Default::default()
-        });
-        Self::new(Box::new(backend), width, height, limits)
+        })?;
+        let target = OffscreenTarget::new(&gpu, width, height)?;
+        let renderer = GpuRenderer::new(gpu, target.info, limits)?;
+        Ok(Self {
+            engine: Engine::Gpu {
+                renderer: Box::new(renderer),
+                target,
+            },
+            size: (width, height),
+        })
     }
 
     /// Offscreen sprites on the deterministic recording backend.
@@ -59,40 +84,72 @@ impl OffscreenSprites {
 
     /// Description of the backend in use, for example `wgpu/vulkan on <adapter>`.
     pub fn backend_description(&self) -> String {
-        let caps = self.renderer.device().capabilities();
-        match &caps.device_name {
-            Some(device) => format!("{} on {device}", caps.backend_name),
-            None => caps.backend_name.clone(),
+        match &self.engine {
+            Engine::Neutral { renderer, .. } => {
+                let caps = renderer.device().capabilities();
+                match &caps.device_name {
+                    Some(device) => format!("{} on {device}", caps.backend_name),
+                    None => caps.backend_name.clone(),
+                }
+            }
+            Engine::Gpu { renderer, .. } => {
+                let info = renderer.gpu.adapter.get_info();
+                format!(
+                    "{} on {}",
+                    engine_render_wgpu::translate::backend_label(info.backend),
+                    info.name
+                )
+            }
         }
     }
 
-    pub fn renderer(&self) -> &SpriteRenderer<Box<dyn RenderBackend>> {
-        &self.renderer
+    /// The native renderer of a [`Self::wgpu`] target (register render
+    /// features, read pipeline status); `None` on neutral backends.
+    pub fn gpu_renderer(&mut self) -> Option<&mut GpuRenderer> {
+        match &mut self.engine {
+            Engine::Gpu { renderer, .. } => Some(renderer),
+            Engine::Neutral { .. } => None,
+        }
     }
 
-    pub fn renderer_mut(&mut self) -> &mut SpriteRenderer<Box<dyn RenderBackend>> {
-        &mut self.renderer
+    /// Live resource counters of the sprite device.
+    pub fn sprite_resource_counts(&self) -> engine_render::ResourceCounts {
+        match &self.engine {
+            Engine::Neutral { renderer, .. } => renderer.device().counts(),
+            Engine::Gpu { renderer, .. } => renderer.sprite_resource_counts(),
+        }
     }
 
     /// Render `frame` into the target.
     pub fn render(&mut self, frame: &RenderFrame) -> Result<RenderStats> {
-        self.renderer
-            .render(frame, RenderTarget::Offscreen(self.target))?
-            .ok_or_else(|| anyhow!("the backend skipped an offscreen frame"))
+        match &mut self.engine {
+            Engine::Neutral { renderer, target } => renderer
+                .render(frame, RenderTarget::Offscreen(*target))?
+                .ok_or_else(|| anyhow!("the backend skipped an offscreen frame")),
+            Engine::Gpu { renderer, target } => renderer.render(frame, &target.view, None),
+        }
     }
 
     pub fn render_scene(
         &mut self,
         frame: &engine_project::rendering3d::SceneRenderFrame,
     ) -> Result<RenderStats> {
-        self.renderer
-            .render_scene(frame, RenderTarget::Offscreen(self.target))?
-            .ok_or_else(|| anyhow!("the backend skipped an offscreen frame"))
+        match &mut self.engine {
+            Engine::Neutral { renderer, target } => renderer
+                .render_scene(frame, RenderTarget::Offscreen(*target))?
+                .ok_or_else(|| anyhow!("the backend skipped an offscreen frame")),
+            Engine::Gpu { renderer, target } => renderer.render_scene(frame, &target.view, None),
+        }
     }
 
     /// Wait for the GPU, then return tightly packed RGBA8 rows (top row first).
     pub fn read_rgba(&mut self) -> Result<Vec<u8>> {
-        Ok(self.renderer.device_mut().read_target(self.target)?.rgba8)
+        match &mut self.engine {
+            Engine::Neutral { renderer, target } => {
+                Ok(renderer.device_mut().read_target(*target)?.rgba8)
+            }
+            Engine::Gpu { renderer, target } => target.read_rgba(&renderer.gpu),
+        }
     }
 }
 
@@ -105,6 +162,7 @@ mod tests {
         let mut sprites = OffscreenSprites::headless(64, 64, RenderLimits::default()).unwrap();
         assert_eq!(sprites.size(), (64, 64));
         assert!(!sprites.backend_description().is_empty());
+        assert!(sprites.gpu_renderer().is_none());
         let frame = RenderFrame {
             camera: engine_project::Camera2D {
                 logical_size: [64, 64],

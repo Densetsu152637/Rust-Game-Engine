@@ -44,6 +44,14 @@ pub struct Camera3D {
     pub upscaler: UpscalerSettings,
     /// Frame generation request; [`FrameGenerationStatus`] reports what ran.
     pub frame_generation: FrameGenerationSettings,
+    /// Per-camera render feature overrides by stable feature name
+    /// (`engine.opaque`, `world.terrain`, ...): `false` disables a feature in
+    /// this camera's view, `true` enables one that is off by default. Names of
+    /// features the renderer does not have are reported, not rejected
+    /// (features register natively at runtime). [`RenderPipelineStatus`]
+    /// reports the resolved state.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub render_features: BTreeMap<String, bool>,
 }
 impl Default for Camera3D {
     fn default() -> Self {
@@ -54,7 +62,223 @@ impl Default for Camera3D {
             lighting: SceneLighting::default(),
             upscaler: UpscalerSettings::default(),
             frame_generation: FrameGenerationSettings::default(),
+            render_features: BTreeMap::new(),
         }
+    }
+}
+
+/// Most render feature overrides one camera may author.
+pub const MAX_RENDER_FEATURE_OVERRIDES: usize = 64;
+/// Longest render feature name, in bytes.
+pub const MAX_RENDER_FEATURE_NAME_BYTES: usize = 64;
+
+/// Whether `name` is a valid render feature name (1..=64 bytes of `[a-z0-9._-]`).
+pub fn valid_render_feature_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_RENDER_FEATURE_NAME_BYTES
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+}
+
+/// Whether the renderer has drawn a frame with the reported feature state.
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderPipelineState {
+    /// No 3D frame rendered (for example a headless run); `features` lists
+    /// what the renderer would resolve for the active camera.
+    #[default]
+    NotRendered,
+    Rendered,
+}
+
+/// One render feature in the active camera's view.
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+pub struct RenderFeatureView {
+    pub name: String,
+    /// Stage name (`opaque`, `post_process`, `overlay`, ...).
+    pub stage: String,
+    pub enabled: bool,
+    /// `default`, `view_override`, `required` or `required_override_ignored`.
+    pub source: String,
+    /// `ran`, `idle`, `disabled`, `superseded`, `replaced_by_host`, `pending`.
+    pub activity: String,
+}
+
+/// Most features one status lists.
+pub const MAX_REPORTED_RENDER_FEATURES: usize = 256;
+
+/// Renderer-reported render feature list and per-view state.
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+pub struct RenderPipelineStatus {
+    pub state: RenderPipelineState,
+    /// The authored overrides of the active camera.
+    pub overrides: BTreeMap<String, bool>,
+    /// Registered features in execution order with their state in the view.
+    pub features: Vec<RenderFeatureView>,
+    /// Override names that match no registered feature.
+    pub unknown_overrides: Vec<String>,
+    /// Built-in mesh draws, instanced draw calls and instances of the frame.
+    pub draws: u64,
+    pub draw_calls: u64,
+    pub instances: u64,
+}
+
+/// Host-written render pipeline status (sibling of [`UpscalerControl`]).
+#[derive(bevy_ecs::prelude::Resource, Clone, Debug, Default)]
+pub struct RenderPipelineControl {
+    pub status: RenderPipelineStatus,
+}
+
+/// Texture IDs with this prefix name a [`TextureStreams`] stream instead of a
+/// catalog texture (`MeshMaterial.texture = "stream:intro_video"`).
+pub const STREAM_TEXTURE_PREFIX: &str = "stream:";
+/// Most texture streams a runtime keeps.
+pub const MAX_TEXTURE_STREAMS: usize = 64;
+/// Largest stream edge, in pixels.
+pub const MAX_STREAM_DIMENSION: u32 = 8192;
+
+/// Whether `name` is a valid stream name (1..=64 bytes of `[A-Za-z0-9_.-]`).
+pub fn valid_stream_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+}
+
+/// How the texels of a stream reach the GPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextureStreamMode {
+    /// [`TextureStreams::upload_rgba`] frames; the renderer uploads each new
+    /// revision into one persistent texture.
+    CpuUpload,
+    /// The host renderer owns the GPU texture and the caller writes into it
+    /// (`GpuRenderer::stream_texture` on desktop).
+    External,
+}
+
+/// The latest frame of one stream, as extracted for rendering.
+#[derive(Clone, Debug)]
+pub struct StreamFrame {
+    pub name: String,
+    pub mode: TextureStreamMode,
+    pub size: [u32; 2],
+    pub revision: u64,
+    /// CPU pixels of the current revision (CPU mode), or a stable
+    /// transparent placeholder of the stream size (external mode). Draws
+    /// sampling the stream reference this exact `Arc`, which identifies it.
+    pub texture: Arc<Texture>,
+}
+
+/// Dynamic textures (video frames, camera feeds, render-to-texture) that
+/// materials and sprites sample by `stream:<name>`.
+#[derive(bevy_ecs::prelude::Resource, Default, Debug)]
+pub struct TextureStreams {
+    streams: BTreeMap<String, StreamFrame>,
+}
+
+impl TextureStreams {
+    fn create(&mut self, name: &str, mode: TextureStreamMode, size: [u32; 2]) -> Result<()> {
+        if !valid_stream_name(name) {
+            return Err(Error::new(
+                "texture_stream.name",
+                "Stream names are 1..=64 bytes of [A-Za-z0-9_.-]",
+            ));
+        }
+        if size.iter().any(|&n| n == 0 || n > MAX_STREAM_DIMENSION) {
+            return Err(Error::new(
+                "texture_stream.size",
+                "Stream sizes are 1..=8192 pixels per edge",
+            ));
+        }
+        if !self.streams.contains_key(name) && self.streams.len() >= MAX_TEXTURE_STREAMS {
+            return Err(Error::new(
+                "texture_stream.limit",
+                "At most 64 texture streams",
+            ));
+        }
+        let pixels = vec![0; size[0] as usize * size[1] as usize * 4];
+        self.streams.insert(
+            name.to_owned(),
+            StreamFrame {
+                name: name.to_owned(),
+                mode,
+                size,
+                revision: 0,
+                texture: Arc::new(Texture {
+                    width: size[0],
+                    height: size[1],
+                    pixels,
+                }),
+            },
+        );
+        Ok(())
+    }
+
+    /// A CPU-upload stream starting as transparent black.
+    pub fn create_cpu(&mut self, name: &str, width: u32, height: u32) -> Result<()> {
+        self.create(name, TextureStreamMode::CpuUpload, [width, height])
+    }
+
+    /// A stream whose GPU texture the caller writes into.
+    pub fn create_external(&mut self, name: &str, width: u32, height: u32) -> Result<()> {
+        self.create(name, TextureStreamMode::External, [width, height])
+    }
+
+    /// Replace the frame of a CPU stream (tightly packed sRGB RGBA8 rows, top
+    /// row first, of the stream size). Returns the new revision.
+    pub fn upload_rgba(&mut self, name: &str, pixels: Vec<u8>) -> Result<u64> {
+        let stream = self
+            .streams
+            .get_mut(name)
+            .ok_or_else(|| Error::new("texture_stream.unknown", name))?;
+        if stream.mode != TextureStreamMode::CpuUpload {
+            return Err(Error::new(
+                "texture_stream.mode",
+                "Only CPU-upload streams accept uploads",
+            ));
+        }
+        if pixels.len() != stream.size[0] as usize * stream.size[1] as usize * 4 {
+            return Err(Error::new(
+                "texture_stream.size",
+                "Uploads are tightly packed RGBA8 of the stream size",
+            ));
+        }
+        stream.revision += 1;
+        stream.texture = Arc::new(Texture {
+            width: stream.size[0],
+            height: stream.size[1],
+            pixels,
+        });
+        Ok(stream.revision)
+    }
+
+    /// Note that the caller wrote new content into an external stream.
+    pub fn mark_written(&mut self, name: &str) -> Result<u64> {
+        let stream = self
+            .streams
+            .get_mut(name)
+            .ok_or_else(|| Error::new("texture_stream.unknown", name))?;
+        stream.revision += 1;
+        Ok(stream.revision)
+    }
+
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.streams.remove(name).is_some()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&StreamFrame> {
+        self.streams.get(name)
+    }
+
+    pub fn len(&self) -> usize {
+        self.streams.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.streams.is_empty()
     }
 }
 
@@ -243,6 +467,17 @@ impl Camera3D {
     pub fn validate(&self) -> Result<()> {
         self.lighting.validate()?;
         self.frame_generation.validate()?;
+        if self.render_features.len() > MAX_RENDER_FEATURE_OVERRIDES
+            || !self
+                .render_features
+                .keys()
+                .all(|name| valid_render_feature_name(name))
+        {
+            return Err(Error::new(
+                "camera3d.render_features.invalid",
+                "render_features maps at most 64 feature names (1..=64 bytes of [a-z0-9._-]) to booleans",
+            ));
+        }
         let (size, near, far, perspective) = match self.projection {
             Projection3D::Perspective {
                 fov_y_radians,
@@ -439,6 +674,8 @@ pub struct SceneRenderFrame {
     pub camera3d: Option<CameraInstance3D>,
     pub meshes: Vec<MeshDraw3D>,
     pub materials2d: BTreeMap<String, MaterialSnapshot>,
+    /// Texture streams sampled by the draws of this frame.
+    pub streams: Vec<StreamFrame>,
 }
 #[derive(Clone, Debug)]
 pub struct MaterialSnapshot {
@@ -452,6 +689,7 @@ impl From<RenderFrame> for SceneRenderFrame {
             camera3d: None,
             meshes: vec![],
             materials2d: BTreeMap::new(),
+            streams: Vec::new(),
         }
     }
 }

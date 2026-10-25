@@ -186,7 +186,9 @@ by stable `(producer, draw)` keys. `RecordingBackend` is the deterministic headl
 backend used by tests. `engine-render-wgpu` is the only GPU backend: wgpu already
 abstracts Vulkan, DX12, Metal and GL, selected with `WgpuBackends` or
 `ENGINE_RENDER_BACKEND`, so there is no separate native-API backend.
-`NativeRenderPass` remains wgpu-specific by design. See
+The 3D scene renders through `engine-render-pipeline` (wgpu-specific by
+design); native render features plug into its stages. See
+[Render architecture](rendering-architecture.md) and
 [Desktop rendering](desktop-2d-rendering.md).
 
 The desktop scene path combines a depth-tested 3D pass with the 2D/UI overlay in

@@ -147,6 +147,7 @@ fn scene(upscaler: UpscalerSettings) -> SceneRenderFrame {
             ),
         ],
         materials2d: Default::default(),
+        streams: vec![],
     }
 }
 

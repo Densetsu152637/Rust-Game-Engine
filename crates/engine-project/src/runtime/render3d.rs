@@ -1,5 +1,7 @@
 use super::*;
+use crate::content::Texture;
 use crate::rendering3d::*;
+use std::sync::Arc;
 
 impl Runtime {
     /// Extract immutable scene snapshots. A 3D camera redirects mesh renderers to
@@ -26,13 +28,7 @@ impl Runtime {
                     .find(|draw| draw.id == draw_id)
                 {
                     if let Some(texture) = &material.texture {
-                        draw.texture = Some(
-                            self.content
-                                .textures
-                                .get(texture)
-                                .ok_or_else(|| Error::new("render.texture.unknown", texture))?
-                                .clone(),
-                        );
+                        draw.texture = Some(self.resolve_texture(texture, &mut frame.streams)?);
                     }
                     let mut material = material.clone();
                     material.unlit = true;
@@ -81,13 +77,7 @@ impl Runtime {
                 .texture
                 .as_ref()
                 .or(renderer.texture.as_ref())
-                .map(|id| {
-                    self.content
-                        .textures
-                        .get(id)
-                        .cloned()
-                        .ok_or_else(|| Error::new("render.texture.unknown", id))
-                })
+                .map(|id| self.resolve_texture(id, &mut frame.streams))
                 .transpose()?;
             let shader = self.material_shader(&material)?;
             frame.meshes.push(MeshDraw3D {
@@ -128,6 +118,41 @@ impl Runtime {
             .retain(|draw| !mesh_ids.contains(&draw.id));
         frame.materials2d.retain(|id, _| !mesh_ids.contains(id));
         Ok(frame)
+    }
+    /// A catalog texture, or the current frame of a `stream:<name>` texture
+    /// stream (recorded once in `streams`).
+    fn resolve_texture(&self, id: &str, streams: &mut Vec<StreamFrame>) -> Result<Arc<Texture>> {
+        if let Some(name) = id.strip_prefix(STREAM_TEXTURE_PREFIX) {
+            let stream = self
+                .app
+                .world()
+                .get_resource::<TextureStreams>()
+                .and_then(|streams| streams.get(name))
+                .ok_or_else(|| Error::new("render.texture_stream.unknown", name))?;
+            if !streams.iter().any(|s| s.name == stream.name) {
+                streams.push(stream.clone());
+            }
+            return Ok(stream.texture.clone());
+        }
+        self.content
+            .textures
+            .get(id)
+            .cloned()
+            .ok_or_else(|| Error::new("render.texture.unknown", id))
+    }
+    /// The renderer-reported render feature state of the active camera.
+    /// Before any 3D frame (for example headless runs) the authored
+    /// overrides are reported with state `not_rendered` and whatever feature
+    /// list the host published; `None` without an active 3D camera.
+    pub fn render_pipeline_status(&self) -> Option<RenderPipelineStatus> {
+        let world = self.app.world();
+        let (_, camera) = active_camera3d(world)?;
+        let mut status = world
+            .get_resource::<RenderPipelineControl>()
+            .map(|control| control.status.clone())
+            .unwrap_or_default();
+        status.overrides = camera.render_features.clone();
+        Some(status)
     }
     /// The renderer-reported upscaler state. Before any 3D frame was presented
     /// (for example in headless runs) the request of the active camera is

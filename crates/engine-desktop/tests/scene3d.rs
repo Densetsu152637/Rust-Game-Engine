@@ -23,6 +23,7 @@ fn scene() -> SceneRenderFrame {
         }),
         meshes: vec![],
         materials2d: Default::default(),
+        streams: vec![],
     }
 }
 fn triangle(id: &str, z: f32, tint: [f32; 4]) -> MeshDraw3D {
@@ -54,7 +55,9 @@ fn triangle(id: &str, z: f32, tint: [f32; 4]) -> MeshDraw3D {
 }
 #[test]
 fn camera_depth_and_shader_contract_are_valid() {
-    engine_desktop::validate_wgsl(LIT_WGSL).unwrap();
+    use engine_desktop::render_pipeline::{MaterialTarget, compose_material};
+    compose_material(LIT_WGSL, MaterialTarget::Mesh).unwrap();
+    compose_material(LIT_WGSL, MaterialTarget::Sprite).unwrap();
     let s = scene();
     let camera = camera_matrix(s.camera3d.as_ref().unwrap(), 1.0).unwrap();
     let depth = |z| {
@@ -75,23 +78,33 @@ fn small_shadow_volumes_at_large_world_coordinates_remain_finite() {
     light.shadows.enabled = true;
     light.shadows.center = [1_000_000.0; 3];
     light.shadows.depth = 0.1;
-    assert_eq!(renderer.render_scene(&s).unwrap().draws, 1);
+    // The neutral backend validates 3D scenes without drawing them.
+    renderer.render_scene(&s).unwrap();
+    let shadow = engine_desktop::render_pipeline::ShadowView::directional(
+        Vec3::ONE,
+        Vec3::splat(1_000_000.0),
+        20.0,
+        0.1,
+        1024,
+        0.001,
+    );
+    assert!(shadow.clip_from_world.is_finite());
+    let projected = shadow.clip_from_world * Vec3::splat(1_000_000.0).extend(1.0);
+    assert!(projected.is_finite() && projected.w != 0.0, "{projected}");
 }
 #[test]
-fn neutral_scene_path_rejects_invalid_custom_uniforms() {
+fn scene_validation_rejects_shaders_breaking_the_material_contract() {
     let mut renderer = OffscreenSprites::headless(64, 64, RenderLimits::default()).unwrap();
     let mut s = scene();
     s.meshes.push(triangle("mesh", -2.0, [1.0; 4]));
-    assert_eq!(renderer.render_scene(&s).unwrap().draws, 1);
-    s.meshes[0].shader = Some(Arc::from(
-        LIT_WGSL.replace("@group(2) @binding(0)", "@group(3) @binding(1)"),
-    ));
+    renderer.render_scene(&s).unwrap();
+    s.meshes[0].shader = Some(Arc::from(format!(
+        "{LIT_WGSL}\n@group(3) @binding(1) var<uniform> extra: vec4<f32>;"
+    )));
+    let error = format!("{:#}", renderer.render_scene(&s).unwrap_err());
     assert!(
-        renderer
-            .render_scene(&s)
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported material uniform")
+        error.contains("unsupported material binding (group 3, binding 1)"),
+        "{error}"
     );
 }
 #[test]

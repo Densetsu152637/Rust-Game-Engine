@@ -142,8 +142,22 @@ impl Project {
                 if let Some(shader) = &material.shader {
                     self.require_asset(shader, "shader")?;
                 }
+                if let Some(texture) = &material.texture {
+                    match texture.strip_prefix(crate::rendering3d::STREAM_TEXTURE_PREFIX) {
+                        // Streams are registered natively at runtime.
+                        Some(name) if crate::rendering3d::valid_stream_name(name) => {}
+                        Some(_) => {
+                            return Err(Error::new(
+                                "project.asset.stream",
+                                format!("Invalid texture stream reference {texture}"),
+                            ));
+                        }
+                        None => {
+                            self.require_asset(texture, "texture")?;
+                        }
+                    }
+                }
                 for texture in [
-                    &material.texture,
                     &material.metallic_roughness_texture,
                     &material.normal_texture,
                 ]

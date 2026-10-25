@@ -1193,6 +1193,7 @@ dependencies = [
  "engine-dlss",
  "engine-project",
  "engine-render",
+ "engine-render-pipeline",
  "engine-render-wgpu",
  "gilrs",
  "glam 0.34.1",
@@ -1200,6 +1201,8 @@ dependencies = [
  "naga",
  "pollster 0.4.0",
  "serde",
+ "serde_json",
+ "tempfile",
  "wgpu",
  "winit",
 ]
@@ -1327,6 +1330,20 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "naga",
+]
+
+[[package]]
+name = "engine-render-pipeline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "bytemuck",
+ "engine-render-wgpu",
+ "glam 0.34.1",
+ "naga",
+ "pollster 0.4.0",
+ "wgpu",
 ]
 
 [[package]]

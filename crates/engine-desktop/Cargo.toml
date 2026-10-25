@@ -12,6 +12,7 @@ engine-audio = { path = "../engine-audio" }
 engine-dlss = { path = "../engine-dlss", optional = true }
 engine-project = { path = "../engine-project" }
 engine-render = { path = "../engine-render" }
+engine-render-pipeline = { path = "../engine-render-pipeline" }
 engine-render-wgpu = { path = "../engine-render-wgpu" }
 gilrs = "=0.11.2"
 glam.workspace = true
@@ -30,3 +31,5 @@ dlss = ["dep:engine-dlss", "engine-dlss/ngx-vulkan"]
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 naga = { version = "=30.0.1", features = ["wgsl-in"] }
+serde_json = "1"
+tempfile = "3"

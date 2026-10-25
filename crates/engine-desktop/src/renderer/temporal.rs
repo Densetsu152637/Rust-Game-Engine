@@ -3,12 +3,8 @@
 
 #![cfg_attr(not(feature = "dlss"), allow(dead_code))]
 
-use engine_project::rendering3d::{CameraInstance3D, MeshDraw3D, Projection3D};
+use engine_project::rendering3d::{CameraInstance3D, Projection3D};
 use glam::{Mat4, Vec3, Vec4};
-use std::collections::HashMap;
-
-/// The engine depth/motion shader (`vs_main`/`fs_main`, one uniform at 0/0).
-pub const MOTION_WGSL: &str = include_str!("motion.wgsl");
 
 /// Radical inverse of `index` (>= 1) in `base`: the Halton sequence in (0, 1).
 pub fn halton(mut index: u32, base: u32) -> f32 {
@@ -48,7 +44,7 @@ pub fn jitter_matrix(jitter: [f32; 2], render: [u32; 2]) -> Mat4 {
 }
 
 /// Current-to-previous motion in render pixels (y down) of one point, the CPU
-/// reference of `motion.wgsl`. Points behind either camera have no motion.
+/// reference of the render pipeline's motion prepass. Points behind either camera have no motion.
 pub fn pixel_motion(current: Vec4, previous: Vec4, render: [u32; 2]) -> [f32; 2] {
     if current.w <= 1e-6 || previous.w <= 1e-6 {
         return [0.0; 2];
@@ -61,50 +57,12 @@ pub fn pixel_motion(current: Vec4, previous: Vec4, render: [u32; 2]) -> [f32; 2]
     ]
 }
 
-/// Uniform block of `motion.wgsl` for one draw.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct MotionUniform {
-    pub jittered: [[f32; 4]; 4],
-    pub current: [[f32; 4]; 4],
-    pub previous: [[f32; 4]; 4],
-    pub size: [f32; 4],
-}
-
-/// Matrices one temporal frame needs for every draw.
-pub(crate) struct TemporalFrame<'a> {
-    pub jitter: Mat4,
-    pub current_vp: Mat4,
-    pub previous_vp: Mat4,
-    pub previous_models: &'a HashMap<String, Mat4>,
-    pub render_size: [u32; 2],
-}
-impl TemporalFrame<'_> {
-    /// Motion uniform of `draw`. A draw without history (new this frame, or
-    /// after a reset) uses its current model, so only camera motion remains.
-    pub fn uniform(&self, draw: &MeshDraw3D) -> MotionUniform {
-        let model = Mat4::from_cols_array_2d(&draw.model);
-        let previous_model = self.previous_models.get(&draw.id).copied().unwrap_or(model);
-        MotionUniform {
-            jittered: (self.jitter * self.current_vp * model).to_cols_array_2d(),
-            current: (self.current_vp * model).to_cols_array_2d(),
-            previous: (self.previous_vp * previous_model).to_cols_array_2d(),
-            size: [
-                self.render_size[0] as f32,
-                self.render_size[1] as f32,
-                0.0,
-                0.0,
-            ],
-        }
-    }
-}
-
-/// Previous-frame camera and object matrices plus the jitter phase.
+/// Temporal reset rules and the jitter phase of one temporal consumer
+/// (upscaler or frame generator). Previous-frame matrices live in the render
+/// pipeline (`ViewHistory`, `EngineInstance.previous_world_from_local`).
 #[derive(Default)]
 pub(crate) struct TemporalHistory {
-    previous_vp: Option<Mat4>,
     projection: Option<Projection3D>,
-    models: HashMap<String, Mat4>,
     frame: u64,
     reset_requested: bool,
 }
@@ -117,22 +75,7 @@ impl TemporalHistory {
     /// Whether the next frame must reset: an explicit request, no previous
     /// frame, or a changed projection (FOV/near/far/kind) are history breaks.
     pub fn needs_reset(&self, camera: &CameraInstance3D) -> bool {
-        self.reset_requested
-            || self.previous_vp.is_none()
-            || self.projection.as_ref() != Some(&camera.camera.projection)
-    }
-
-    /// Previous view-projection, or `current` when history is reset.
-    pub fn previous_vp(&self, current: Mat4, reset: bool) -> Mat4 {
-        if reset {
-            current
-        } else {
-            self.previous_vp.unwrap_or(current)
-        }
-    }
-
-    pub fn previous_models(&self) -> &HashMap<String, Mat4> {
-        &self.models
+        self.reset_requested || self.projection.as_ref() != Some(&camera.camera.projection)
     }
 
     pub fn frame(&self) -> u64 {
@@ -140,15 +83,8 @@ impl TemporalHistory {
     }
 
     /// Record the frame just evaluated as the next frame's history.
-    pub fn commit(&mut self, camera: &CameraInstance3D, current_vp: Mat4, meshes: &[MeshDraw3D]) {
-        self.previous_vp = Some(current_vp);
+    pub fn commit(&mut self, camera: &CameraInstance3D) {
         self.projection = Some(camera.camera.projection.clone());
-        self.models.clear();
-        self.models.extend(
-            meshes
-                .iter()
-                .map(|draw| (draw.id.clone(), Mat4::from_cols_array_2d(&draw.model))),
-        );
         self.frame = self.frame.wrapping_add(1);
         self.reset_requested = false;
     }
@@ -233,68 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn motion_combines_camera_and_object_motion_and_excludes_jitter() {
-        let camera = CameraInstance3D {
-            camera: Camera3D::default(),
-            world: Mat4::IDENTITY.to_cols_array_2d(),
-        };
-        let projection = crate::camera_matrix(&camera, 1.0).unwrap();
-        let mut moved = camera.clone();
-        moved.world = Mat4::from_translation(Vec3::new(0.5, 0.0, 0.0)).to_cols_array_2d();
-        let current_vp = crate::camera_matrix(&moved, 1.0).unwrap();
-        let draw = MeshDraw3D {
-            id: "box".into(),
-            mesh: Default::default(),
-            texture: None,
-            metallic_roughness_texture: None,
-            normal_texture: None,
-            model: Mat4::from_translation(Vec3::new(0.0, 0.0, -5.0)).to_cols_array_2d(),
-            material: Default::default(),
-            shader: None,
-        };
-        let previous_models: HashMap<_, _> = [(
-            "box".to_owned(),
-            Mat4::from_translation(Vec3::new(-0.25, 0.0, -5.0)),
-        )]
-        .into();
-        let render = [64, 64];
-        let frame = TemporalFrame {
-            jitter: jitter_matrix([0.4, -0.3], render),
-            current_vp,
-            previous_vp: projection,
-            previous_models: &previous_models,
-            render_size: render,
-        };
-        let uniform = frame.uniform(&draw);
-        let origin = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let current = Mat4::from_cols_array_2d(&uniform.current) * origin;
-        let previous = Mat4::from_cols_array_2d(&uniform.previous) * origin;
-        let motion = pixel_motion(current, previous, render);
-        // The object sits 0.5 left of the camera now and was 0.25 left of the
-        // previous camera: on screen it appeared further right before.
-        let expected = {
-            let now = projection * Vec4::new(-0.5, 0.0, -5.0, 1.0);
-            let before = projection * Vec4::new(-0.25, 0.0, -5.0, 1.0);
-            pixel_motion(now, before, render)
-        };
-        assert!(
-            motion[0] > 0.0 && (motion[0] - expected[0]).abs() < 1e-3,
-            "{motion:?}"
-        );
-        assert!(motion[1].abs() < 1e-4);
-        let jittered = Mat4::from_cols_array_2d(&uniform.jittered) * origin;
-        let unjittered = pixel_motion(current, jittered, render);
-        assert!((unjittered[0] - 0.4).abs() < 1e-3 && (unjittered[1] + 0.3).abs() < 1e-3);
-        let without_history = TemporalFrame {
-            previous_models: &HashMap::new(),
-            previous_vp: current_vp,
-            ..frame
-        }
-        .uniform(&draw);
-        assert_eq!(without_history.previous, without_history.current);
-    }
-
-    #[test]
     fn history_resets_on_first_frame_request_and_projection_change() {
         let camera = CameraInstance3D {
             camera: Camera3D::default(),
@@ -302,7 +176,7 @@ mod tests {
         };
         let mut history = TemporalHistory::default();
         assert!(history.needs_reset(&camera), "no previous frame");
-        history.commit(&camera, Mat4::IDENTITY, &[]);
+        history.commit(&camera);
         assert!(!history.needs_reset(&camera));
         assert_eq!(history.frame(), 1);
         let mut zoomed = camera.clone();
@@ -314,8 +188,7 @@ mod tests {
         assert!(history.needs_reset(&zoomed), "projection change is a cut");
         history.request_reset();
         assert!(history.needs_reset(&camera));
-        assert_eq!(history.previous_vp(Mat4::ZERO, true), Mat4::ZERO);
-        history.commit(&camera, Mat4::IDENTITY, &[]);
+        history.commit(&camera);
         assert!(!history.needs_reset(&camera));
         history.clear();
         assert!(history.needs_reset(&camera));

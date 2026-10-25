@@ -88,6 +88,11 @@ impl Tool for ScreenshotTool {
                          rendered first so NGX can generate the frames before this image."}),
                 ),
                 (
+                    "render_pipeline",
+                    json!({"type": ["object", "null"], "description":
+                        "Render features of the active camera view for this image: execution order, enabled state, source and what each did, plus unknown overrides."}),
+                ),
+                (
                     "generated_frames",
                     json!({"type": "integer", "description":
                         "NGX-generated frames produced before the returned real frame."}),
@@ -163,6 +168,7 @@ impl Tool for ScreenshotTool {
             "scene_id": report["scene"]["scene"]["scene_id"],
             "upscaler": report["scene"]["upscaler"],
             "frame_generation": report["scene"]["frame_generation"],
+            "render_pipeline": report["scene"]["render_pipeline"],
             "generated_frames": shot["generated_frames"].as_array().map_or(0, Vec::len),
             "build": build, "run_millis": started.elapsed().as_millis(),
         });
