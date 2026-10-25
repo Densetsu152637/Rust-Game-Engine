@@ -1336,3 +1336,53 @@ fn oversized_translations_cannot_invalidate_a_root() {
         "tab labels are short"
     );
 }
+
+#[test]
+fn authored_pseudo_mode_applies_from_the_first_frame() {
+    let mut setup = Setup::new(label_roots());
+    setup.config = Some(config(
+        &["en", "fr", "ru"],
+        json!({"pseudo": {"enabled": true, "expansion_percent": 50, "prefix": "<<", "suffix": ">>"}}),
+    ));
+    let (_dir, mut runtime) = setup.runtime();
+    tick(&mut runtime);
+    let texts = drawn(&runtime);
+    let hello = texts
+        .iter()
+        .find(|t| t.starts_with("<<") && t.ends_with(">>"))
+        .unwrap_or_else(|| panic!("{texts:?}"));
+    assert!(hello.contains("Ĥéļļó"), "accented Hello: {hello}");
+    assert!(runtime.snapshot().localization.unwrap().pseudo);
+    runtime.set_pseudo_localization(false).unwrap();
+    tick(&mut runtime);
+    assert!(drawn(&runtime).contains(&"Hello".to_string()));
+}
+
+#[test]
+fn many_references_to_few_keys_format_once_per_generation() {
+    let nodes: Vec<UiNode> = (0..300)
+        .map(|i| {
+            let key = ["@greeting", "@farewell", "@button-ok"][i % 3];
+            sized(
+                UiNode::label(format!("l{i}"), key),
+                0.0,
+                (i * 2) as f32,
+                100.0,
+                2.0,
+            )
+        })
+        .collect();
+    let (_dir, mut runtime) = Setup::new(vec![("hud", root(nodes))]).runtime();
+    tick(&mut runtime);
+    let started = std::time::Instant::now();
+    let texts = drawn(&runtime);
+    let first = started.elapsed();
+    assert_eq!(texts.iter().filter(|t| t.as_str() == "Hello").count(), 100);
+    let localization = runtime.localization();
+    assert_eq!(localization.stats().resolutions, 3, "300 labels, 3 keys");
+    runtime.set_locale("fr").unwrap();
+    tick(&mut runtime);
+    drawn(&runtime);
+    assert_eq!(localization.stats().resolutions, 6);
+    println!("300 localized labels drawn in {first:?} (debug build, includes layout)");
+}

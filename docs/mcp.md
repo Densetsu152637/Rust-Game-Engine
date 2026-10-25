@@ -146,6 +146,9 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `asset_list` | `kind` (enum), `offset`, `limit` | Catalog entries: ID, kind, path, size. |
 | `asset_info` | `asset` (ID) | Kind, path, size, kind-specific details (texture size and format, mesh vertex/triangle count and bounds, font glyphs, script line count, scene entity count) and where the asset is used (scene, entity, component, field), including `MeshMaterial` `shader`, `texture`, `normal_texture` and `metallic_roughness_texture` references. |
 | `navigation_query` | `path`, `start`, `goal`, `query` | A bounded path through a saved navigation document: `status` (`reached`, `unreachable` or `budget_exceeded`), `points` and `polygons`. Uses the same query API as native agents; see [Navigation meshes](navigation.md). |
+| `locale_list` | `max_missing` | The `locale_config`, default locale and per locale: string_table files (with hashes), key count, translation coverage, missing and extra keys. See [Localization tools](#localization-tools). |
+| `locale_messages` | `locale` (required), `key`, `prefix`, `args`, `offset`, `limit` | A locale's messages with exact Fluent source, file and line; `key` adds a formatted preview (plural `args`, fallback). |
+| `locale_pseudo_preview` | `text` or `key` (+ `locale`, `args`), `options` | Pseudo-localized text (accents, expansion, markers, RTL mirror) with placeables and markup preserved. |
 | `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |
 | `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
 | `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob` (at most 512 bytes), `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
@@ -169,6 +172,10 @@ nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
 | `component_remove` | `entity`, `component` | yes / yes | Removes one component; removing an absent one is a no-op. |
 | `file_write` | `path`, `content`, `expected_hash` | yes / yes | Creates or overwrites a UTF-8 text file. |
 | `navigation_bake` | `meshes` (1-128 mesh assets), `output`, `settings`, `obstacles` | no / no | Bakes world-space floor meshes and box obstacles into a new navigation JSON file (never overwrites) and returns the asset entry to add to `project.json`. |
+
+| `locale_set_message` | `locale`, `ftl` (required), `file`, `expected_hash` | yes / yes | Adds or replaces one Fluent message or term in a locale's `.ftl` file; validated with the Fluent parser first. |
+| `locale_remove_message` | `locale`, `id` (required), `file`, `expected_hash` | yes / no | Removes one message or term and its attached comment from a locale's `.ftl` file. |
+| `locale_add_locale` | `locale`, `path` (required), `asset_id`, `copy_from` | no / no | Creates a new `.ftl` file (never overwrites), registers it as a `string_table` asset and in the `locale_config` (creating `localization.json` if the project has none). |
 
 All write tools carry `readOnlyHint: false` and `openWorldHint: false`.
 
@@ -210,6 +217,32 @@ if that breaks a project that was valid, the previous bytes are restored and the
 fails with the project's diagnostics and `details.rolled_back: true`. An overwritten
 file keeps its permissions (on Unix the temporary file would otherwise reset them to
 0600); a newly created file gets the temporary file's default mode (0600 on Unix).
+
+### Localization tools
+
+The `locale_*` tools manage the project's [string tables](localization.md#project-integration).
+`locale_list`, `locale_messages` and `locale_pseudo_preview` are read tools; the other three need
+`--allow-write` and are hidden (and rejected) without it. Keys are Fluent ids (`message`) or
+`message.attribute`; terms are `-name`. Locales are canonicalised (`fr_ca` is `fr-CA`).
+
+- `locale_messages` returns each entry's exact `source`, so an edit is read, changed and sent
+  back to `locale_set_message` as `ftl`: one complete entry such as
+  `items = { $count ->
+    [one] { $count } item
+   *[other] { $count } items
+ }`.
+- Writes replace an entry in place (its `#` comment is kept unless the new text has one) or
+  append a new one, leaving the rest of the file byte for byte. The whole locale is parsed with
+  the Fluent parser before anything is written: `locale.parse`, `locale.duplicate_message`
+  (also across the locale's files), `locale.too_deep`, `locale.ftl.shape` (not exactly one
+  entry) or `content_too_large` leave the file unchanged. `expected_hash` (a file `hash` from
+  `locale_list`) turns a concurrent change into `revision_conflict`.
+- Other codes: `locale_not_configured`, `locale_unknown`, `locale_table_missing` (the `file`
+  is not one of the locale's tables), `locale_message_not_found`, `locale_exists`,
+  `path_exists`, `asset_exists`, `manifest_unsupported`. Paths follow the usual confinement
+  rules (`path_invalid`, `path_protected`).
+- After a write the project is reloaded; if it no longer validates, every touched file is
+  restored and the failure carries `details.rolled_back: true`.
 
 ### Execution tools (`--allow-exec`)
 

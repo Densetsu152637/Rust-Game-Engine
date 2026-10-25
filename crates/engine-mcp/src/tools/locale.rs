@@ -359,7 +359,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
 }
 
 fn pseudo_schema() -> Value {
-    schema::object(
+    let mut object = schema::object(
         vec![
             (
                 "accents",
@@ -391,9 +391,12 @@ fn pseudo_schema() -> Value {
             ),
         ],
         &[],
-    )
+    );
+    object["description"] = json!(
+        "Overrides of the pseudo-localization options; omitted fields use the locale_config's."
+    );
+    object
 }
-
 // ---- helpers ---------------------------------------------------------------
 
 fn locale_failure(error: LocaleError) -> ToolFailure {

@@ -198,7 +198,7 @@ pub(super) fn process(
         // Resolved text lives only in the effective root, never in the component.
         let resolved = localization
             .as_ref()
-            .and_then(|l| localize::localize(&resolved, l))
+            .and_then(|l| localize::localize_root(&resolved, l))
             .unwrap_or(resolved);
         effective.push((id.clone(), resolved));
         themes.push(theme);
@@ -306,7 +306,7 @@ pub fn extract_world_with(
         let effective = effective_for_render(world, &id, &root, &by_root)?;
         state.themed = effective.is_some();
         let drawn = effective.as_ref().unwrap_or(&root);
-        let localized = localization.and_then(|l| localize::localize(drawn, l));
+        let localized = localization.and_then(|l| localize::localize_root(drawn, l));
         let drawn = localized.as_ref().unwrap_or(drawn);
         if let (Some(data), Some(bindings)) = (data, bindings) {
             state.item_texts = bindings.item_texts(drawn, data);

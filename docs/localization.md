@@ -1,4 +1,4 @@
-# Localization (`engine-locale`)
+# Localization (`engine-locale` and project integration)
 
 `engine-locale` is a standalone, pure-Rust localization library: Project Fluent string tables
 with plural and gender selection, locale parsing, fallback and negotiation, a runtime language
@@ -6,8 +6,10 @@ switch, missing-translation reports, per-locale font/asset mapping, pseudo-local
 serde descriptor for authored settings. It depends on no engine crate, no GPU or windowing
 library and does no file I/O (callers pass `.ftl` text or bytes).
 
-Status: standalone library (UI parity phase A'). It is **not yet wired** into `ui_tree`,
-`engine-project` content, MCP or the desktop runner; see [Not yet integrated](#not-yet-integrated).
+`engine-project` wires it into the game: `string_table` and `locale_config` assets, `@key` text
+references in the game UI and `engine.WorldText`, message keys in data bindings, per-locale
+fonts and asset overrides, a runtime language switch and MCP string-table tools. The library is
+described first; see [Project integration](#project-integration) for the engine side.
 
 ## Quick start
 
@@ -192,6 +194,198 @@ drive-qualified, `..` or a path listed twice), `locale.invalid_pseudo`, `locale.
 validates, reads each path through the caller's `loader` (`locale.load_failed` on error), loads it,
 applies pseudo options and the asset map and leaves the current locale at the default.
 
+## Project integration
+
+### Assets
+
+| Kind | File | Limits | Purpose |
+| --- | --- | --- | --- |
+| `string_table` | Project Fluent `.ftl`, UTF-8 | 1 MiB per file | One file of strings. A locale may use several tables; message ids are unique per locale across them. |
+| `locale_config` | JSON, `schema: 1` | 256 KiB, at most one per project | Default locale, available locales, which tables belong to which locale, pseudo-localization, per-locale fonts and asset overrides. |
+
+```json
+{
+  "assets": [
+    {"id": "l10n", "kind": "locale_config", "path": "localization.json"},
+    {"id": "strings-en", "kind": "string_table", "path": "strings/en/ui.ftl"},
+    {"id": "strings-fr", "kind": "string_table", "path": "strings/fr/ui.ftl"},
+    {"id": "strings-ja", "kind": "string_table", "path": "strings/ja/ui.ftl"}
+  ]
+}
+```
+
+`localization.json` is the [settings shape](#settings-shape) plus an optional `"schema": 1`
+(other schema numbers and unknown fields are rejected, unlike a bare `LocalizationSettings`):
+
+```json
+{
+  "schema": 1,
+  "default_locale": "en",
+  "available_locales": ["en", "fr", "ja"],
+  "resources": [
+    {"locale": "en", "paths": ["strings/en/ui.ftl"]},
+    {"locale": "fr", "paths": ["strings/fr/ui.ftl"]},
+    {"locale": "ja", "paths": ["strings/ja/ui.ftl"]}
+  ],
+  "pseudo": {"enabled": false, "expansion_percent": 35},
+  "assets": [
+    {"locale": "ja", "fonts": ["jp-sans"], "asset_overrides": {"logo": "logo-ja"}}
+  ]
+}
+```
+
+`Project::load` and `Project::validate` check, in addition to `LocalizationSettings::validate`:
+
+| Code | Meaning |
+| --- | --- |
+| `asset.string_table.extension` | A `string_table` that is not a `.ftl` file. |
+| `locale.parse`, `locale.invalid_utf8`, `locale.resource_too_large`, `locale.too_deep`, `locale.too_many_messages`, `locale.duplicate_message` | The table (or, for duplicates, a locale's tables together) does not load; the diagnostic names the file. |
+| `asset.string_table.no_config` | `string_table` assets exist but the project has no `locale_config`. |
+| `asset.string_table.unlisted` | A `string_table` that no `resources` entry lists. |
+| `asset.locale_config.invalid` | Not JSON, unknown field, or `schema` other than 1. |
+| `asset.locale_config.duplicate` | More than one `locale_config`. |
+| `asset.locale_config.unknown_table` | A `resources` path that is not a `string_table` asset. |
+| `asset.locale_config.no_strings` | An available locale with no table. |
+| `asset.locale_config.unknown_font` | A locale font that is not a `font_face` asset ID or `font_config` family. |
+| `asset.locale_config.unknown_asset` | An override whose key or replacement is neither an asset ID nor a font family. |
+
+`asset_list` and `asset_info` know both kinds (`asset_info` shows entry counts and the locales
+a table belongs to, or the config's locales).
+
+### Text references
+
+Authored UI text may name a message instead of holding text. **A text that is exactly
+`@message` or `@message.attribute` is a message reference**; the whole string must be the key
+(`message` is a Fluent identifier: an ASCII letter, then letters, digits, `-` or `_`).
+
+| Authored text | Shown |
+| --- | --- |
+| `@greeting` | the current locale's `greeting` (`{greeting}` if no locale defines it) |
+| `@welcome.tooltip` | the `tooltip` attribute of `welcome` |
+| `@@greeting` | the literal text `@greeting` (a leading `@@` loses one `@`) |
+| `@ greeting`, `Hello @name`, `@bob!`, `@1x`, `@a.b.c` | unchanged: not a key |
+
+Everything else needs no escaping, so existing projects keep their text. Resolution only runs
+once localization is *active* (a locale catalog is loaded); in a project without a
+`locale_config`, `@x` and `@@x` stay as authored.
+
+Slots that accept references (`engine.UiRoot`): `label.text`, `button.text`, `toggle.text`,
+`rich_label.markup`, `text_input.placeholder`, `dropdown.options[]` and `.placeholder`,
+`tabs.labels[]`, `modal_dialog.title` and `.buttons[]`, and every node's `tooltip.text`.
+`engine.WorldText.text` accepts one too. Text values (a text input's `text`) are never
+references. Translations may contain rich-text markup: `[b]Bold[/b]` survives translation and
+pseudo-localization; a translation whose markup the text engine rejects is drawn literally
+(brackets escaped) instead of failing the frame.
+
+**Resolution happens on the effective root, not in the component.** Layout, interaction and
+drawing read a per-tick copy of the `UiRoot` in which references are replaced; the stored
+component, snapshots and `component_set` keep the key, and widget state edited by the player
+(checked, selection, typed text, scroll) is written back without the translation. A root with
+no references and no asset overrides costs no copy. Limits cannot be broken by a translation:
+each expansion is cut to its slot (4096 bytes for text, 256 for short labels, 1024 for
+tooltips) and to the remaining part of the root's 64 KiB text budget.
+
+Nodes whose text a `text` or `itemText` data binding drives are left to the binding, so data
+such as a player named `@greeting` stays literal.
+
+`ui_tree::localize_root(&root, &localization)` returns that localized view (`None` when nothing
+changes); layers that mirror the visible UI, such as an accessibility tree, should read their
+text from it.
+
+**Decision record.** A reference is the *whole string* with a leading `@` because that needs no
+new field on any widget (so authored JSON, the descriptor schema and `component_set` stay
+unchanged), cannot appear by accident in ordinary prose, and has a one-character escape.
+Alternatives rejected: a separate `textKey` on every widget and on tooltips (a new field in
+every variant, in the schema and in builders, and a second source of truth next to `text`);
+`$key` (already the theme-token sigil in [UI styling](ui-styling.md)); inline `{key}` templates
+inside longer strings (translators would lose control of word order, and markup and pseudo
+localization would have to see through them).
+
+### Data bindings with message keys
+
+`UiBinding.message` (see [UI styling](ui-styling.md)) resolves through the runtime's
+`UiStringResolver`, which formats the key with the binding's `args` read from the data
+context: numbers become numeric variables (they drive plural selectors), strings text
+variables, booleans the text `true`/`false`; null and structured values are omitted.
+
+```json
+{"node": "count", "property": "text", "path": "inventory.count",
+ "message": "items", "args": {"count": "inventory.count"}}
+```
+
+With `items = { $count -> [one] { $count } item *[other] { $count } items }` this shows
+`1 item` and `5 items` in English and, with Russian's `one/few/many/other` variants,
+`1 предмет`, `2 предмета` and `5 предметов`. A message key that is not defined shows the
+marker (`{key}`) and is counted; while localization is inactive the resolver returns `None`
+and the binding falls back to its `format` or value as before.
+
+### Runtime language switch
+
+```rust
+let mut runtime = Runtime::new(project)?;
+runtime.set_locale("fr")?;                 // no reload; `locale.invalid_id` on a bad identifier
+runtime.set_pseudo_localization(true)?;    // toggle pseudo-localization
+let l10n = runtime.localization();         // shared `Localization` handle (also an ECS resource)
+l10n.load_ftl("de", "hi = Hallo\n")?;      // natives may add strings without a locale_config
+l10n.stats();                              // resolutions, cache hits, generation, missing messages
+l10n.diagnostics();                        // engine_locale diagnostics (missing, fell back, ...)
+```
+
+Only a *generation* change re-resolves anything. `Localization` caches each static `@key` text
+for the current generation (so N labels using one key cost one Fluent `format` per switch), and
+the UI re-renders message bindings once when it sees a new generation. In a tick without a
+change the runtime does one integer comparison and each reference is a cache lookup.
+
+A switch (also one made through the resource, from a script or system) is applied on the next
+tick:
+
+- **Text** re-resolves everywhere (UI, tooltips, world text).
+- **Fonts.** The current locale's `fonts` (resolved along its fallback chain, `fr-CA` then `fr`)
+  are put in front of the project's `font_config` `fallback.byLanguage` entry for that locale on
+  the shaping text engine (`EngineTextBackend::set_fallback`), and `set_language` receives the
+  locale, so glyphs the primary family lacks (Japanese, Arabic, ...) come from the locale's
+  families. They are `font_face` asset IDs or `font_config` families.
+- **Assets.** `asset_overrides` map an asset key to another for the locale (fallback chain
+  applied): `image.texture`, `nine_slice.texture`, a node's `style.font` and
+  `engine.WorldText.font`. The replacement must exist (`asset.locale_config.unknown_asset`). The
+  stored key stays authored.
+- **Event.** `locale.changed` is queued with `{"locale", "previous", "generation"}` whenever the
+  locale itself changes (not for pseudo toggles, reloads or re-selecting the same locale).
+- **Telemetry.** `RuntimeSnapshot.localization` and the `localization` member of
+  `project_run_headless` reports carry the locale, loaded locales, generation, resolution count
+  and missing-message count (absent while inactive).
+
+A locale with no catalog of its own is accepted when its fallback chain reaches one (`xx-YY`
+resolves through the default locale); only identifiers that do not parse, and projects with no
+catalog at all, fail.
+
+### MCP tools
+
+| Tool | Access | Purpose |
+| --- | --- | --- |
+| `locale_list` | read | The config, default locale and per locale: string_table files (with `hash` for `expected_hash`), key count, coverage, missing and extra keys (`max_missing` bounds the lists; counts are exact). |
+| `locale_messages` | read | A locale's entries with exact Fluent source, file and line, paged; `prefix` filters, `key` adds a formatted `preview` using `args` (with fallback information). |
+| `locale_pseudo_preview` | read | Pseudo-localize raw `text` or a formatted `key`; `options` override the configured accents, expansion, markers and RTL mirror. |
+| `locale_set_message` | write | Add or replace one message or term from one complete Fluent entry (`ftl`), in the defining file or `file`. |
+| `locale_remove_message` | write | Remove one message or term and its attached `#` comment. |
+| `locale_add_locale` | write | Create a new `.ftl` file (optionally seeded from another locale), register the `string_table` asset and add the locale to the config; creates `localization.json` when the project has none. |
+
+The writes edit `.ftl` text line by line: everything outside the replaced or removed entry stays
+byte for byte, including comments and line endings. Before touching disk the whole locale is
+parsed with the real Fluent parser, so invalid syntax (`locale.parse`), duplicate ids across the
+locale's files (`locale.duplicate_message`), nesting limits and the 1 MiB size cap are rejected
+with the file unchanged. Files are confined to the project and written atomically; the project
+is reloaded afterwards and the previous bytes restored if it no longer validates.
+`locale_add_locale` also appends the asset to the `assets` array of `project.json` without
+reformatting it, rewrites the config in canonical order and restores all three files on
+failure. See [MCP](mcp.md#localization-tools).
+
+### Not covered
+
+Number, date and currency formatting beyond Fluent's `NUMBER()`, locale-aware sorting, and
+per-locale replacement of the *primary* font family (use an `asset_overrides` entry on
+`style.font`).
+
 ## Limits and errors
 
 | Limit (`LocaleLimits`) | Default | Error |
@@ -206,7 +400,9 @@ applies pseudo options and the asset map and leaves the current locale at the de
 | `max_diagnostics` | 256 | none (`diagnostics_dropped`) |
 
 Other codes: `locale.invalid_utf8`, `locale.parse`, `locale.duplicate_message`,
-`locale.unknown_locale`, `locale.unavailable`, `locale.missing_message`, `locale.format_failed`.
+`locale.unknown_locale`, `locale.unavailable`, `locale.missing_message`, `locale.format_failed`;
+the project integration adds `locale.ftl.shape` (an MCP edit that is not exactly one message or
+term) and the `asset.string_table.*` / `asset.locale_config.*` codes listed above.
 Settings limits: 64 locales, 64 paths per locale, 32 fonts per locale, 1024 overrides per locale,
 512 bytes per path/font/key. Nothing panics on hostile input: the nesting scan runs before the
 recursive Fluent parser, Fluent caps placeables per message (cycles are reported as errors), and
@@ -244,17 +440,3 @@ Dependencies (crates.io, exact pins):
 
 Transitively added to `Cargo.lock`: `fluent-langneg`, `intl-memoizer`, `intl_pluralrules`,
 `tinystr`, `unic-langid-impl`, `zerofrom`, `zerovec` (all permissive).
-
-## Not yet integrated
-
-This crate is a library only. Still to do in later phases:
-
-- **UI resolution**: `ui_tree` labels referencing message keys (`$key`), re-resolving on a
-  `generation()` change, passing arguments from data binding.
-- **MCP tools**: string-table management (list keys/locales, set/replace a locale's `.ftl`,
-  missing-translation reports, switching language) built on the introspection API above.
-- **Per-locale fonts in the UI**: feeding `Localizer::fonts()` into `engine-text`'s
-  `FallbackConfig::with_language`, and applying `resolve_asset` to image/font asset keys.
-- **Project content**: reading `.ftl` files from project assets, the authored
-  `LocalizationSettings` as a component or project setting and its schema descriptor.
-- Number/date/currency formatting beyond Fluent's `NUMBER()` and locale-aware sorting.

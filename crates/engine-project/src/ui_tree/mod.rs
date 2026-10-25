@@ -51,6 +51,7 @@ pub use binding::{
 };
 pub use interaction::{GameUi, UiInteraction, UiStateFlags, UiTickContext, UiWidgetEvent};
 pub use layout::{MAX_UI_BOXES, UiBox};
+pub use localize::localize_root;
 pub use navigation::UiDirection;
 pub use render::{UI_DIALOG_LAYER, UI_POPUP_LAYER, UiRenderState};
 pub use resolve::{UiStyleRuntime, UiStyleSettings};

@@ -107,7 +107,11 @@ fn text_total(root: &UiRoot) -> usize {
 
 /// `root` with message references resolved and locale asset overrides applied,
 /// or `None` when nothing in it changes (the common case, which costs no clone).
-pub(super) fn localize(root: &UiRoot, loc: &Localization) -> Option<UiRoot> {
+///
+/// This is the one definition of the localized view of a root: layout,
+/// interaction and drawing use it, and layers that mirror the visible UI (for
+/// example an accessibility tree) should read their text from it too.
+pub fn localize_root(root: &UiRoot, loc: &Localization) -> Option<UiRoot> {
     if !loc.active() {
         return None;
     }

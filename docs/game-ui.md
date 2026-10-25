@@ -214,6 +214,29 @@ Each node can also carry:
 - `classes`: up to 16 identifiers, reserved for the styling layer; validated but
   not interpreted yet.
 
+### Localized text
+
+Any text slot may hold a message reference instead of text: `label.text`, `button.text`,
+`toggle.text`, `rich_label.markup`, `text_input.placeholder`, `dropdown.options` and
+`placeholder`, `tabs.labels`, `modal_dialog.title` and `buttons`, and `tooltip.text`. A text
+that is exactly `@message` (or `@message.attribute`) shows that message of the current locale
+(`{message}` while no locale defines it); `@@...` is a literal text starting with `@`; anything
+else, including `Hello @name`, is ordinary text. Plurals and other variants are expressed in the
+Fluent message and driven by `message` bindings whose `args` read numbers from the data
+context (see [UI styling](ui-styling.md)).
+
+```json
+{"id": "start", "widget": {"kind": "button", "text": "@menu-start", "action": "start"},
+ "tooltip": {"text": "@menu-start.tooltip"}}
+```
+
+References resolve on the per-tick effective root, so the stored component keeps the key,
+`set_locale` re-resolves everything on the next tick without reloading and widget state
+edited by the player is unaffected. Per-locale `asset_overrides` also replace `image` and
+`nine_slice` textures and `style.font` keys. Nodes with a text binding are left to the
+binding. Syntax, limits, pseudo-localization, per-locale fonts and the MCP string-table tools
+are in [Localization](localization.md#project-integration).
+
 Native builders mirror the widgets: `UiNode::label`, `button`, `toggle`,
 `slider`, `text_input`, `dropdown`, `scroll_view`, `list`, `virtual_list`,
 `tabs`, `dialog`, `grid`, and others. Chain them with `child_of`, `with_size`,
