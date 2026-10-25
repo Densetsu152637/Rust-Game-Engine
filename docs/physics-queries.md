@@ -95,9 +95,28 @@ With `fixed_timestep` unset the service keeps the original behaviour (the frame 
 - Each frame delta (at most 10 s) is added to an `f64` accumulator; `floor(acc / h + 1e-3)` whole
   steps of `h` run and the remainder (possibly a tiny negative value from `f32` frame deltas)
   carries over. The tolerance makes `30 x 1/30 s` and `60 x 1/60 s` agree on the step count.
-  Poses are therefore bitwise identical for any split of the same total time into frames, and
-  two identical runs are bitwise identical (tested in `tests/physics_queries.rs`: splits of
-  1 s into 60, 30, 20, 120, 3 and 6 uneven frames all give the same bits).
+  The sequence of physics states is therefore bitwise identical for any split of the same
+  total time into frames, **as long as nothing else feeds the simulation per frame**, and two
+  identical runs are bitwise identical (tested in `tests/physics_queries.rs`: splits of 1 s into
+  60, 30, 20, 120, 3 and 6 uneven frames all give the same bits for dynamic bodies that start at
+  rest or with an initial velocity). What is exactly the same: the number of steps, the step
+  length, the order of every step, and the Rapier state after each step. What is sampled **once
+  per frame** and so can differ between splits (each such input sees the frame boundaries):
+  `Transform` writes that drive kinematic bodies (a platform), characters' `desired_velocity` and
+  jump requests, vehicle controls and input actions, and animation sampling with the velocities
+  derived from it (`engine.Ragdoll` inherited velocity). A scene driven by those inputs is
+  deterministic for a given frame sequence, not for any split of the time; a scene whose
+  per-frame inputs are constant (a constant `desired_velocity`) stays independent of the split,
+  which `tests/physics_character.rs` checks.
+- A kinematic body driven through its `Transform` moves in equal parts over the steps of a frame:
+  after step k of n it has covered k/n of the way from where it stood at the start of the frame
+  to the `Transform` target (lerp for positions, slerp for rotations; 2D angles take the short
+  way), and the last step lands exactly on the target. A platform moved 0.1 m per 1/30 s frame
+  by a 60 Hz fixed step therefore has 3.0000 m/s in both steps of every frame (before: it jumped
+  0.1 m in the first step and stood still in the second, so the last step of every frame read
+  0 m/s and a character riding it was carried 0.1 m in one step and 0 in the other). Frames without a step keep the
+  pending target and the next frame continues from the pose the body actually has. Ragdoll
+  kinematic bones follow the same rule.
 - At most `max_substeps` steps run per frame. Any further whole steps are dropped, never
   carried, so a long hitch cannot snowball. The frame is reported through
   `physics::step_status(&World) -> StepStatus { fixed_timestep, steps, total_steps, alpha,

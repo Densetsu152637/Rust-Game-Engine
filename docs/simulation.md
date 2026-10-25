@@ -44,9 +44,14 @@ Dynamic bodies can be driven as raycast vehicles with `engine.Vehicle3D` ([Rayca
 Cloth, soft bodies and particle fluids (`engine.Cloth`, `engine.SoftBody`, `engine.FluidVolume`) collide with and push rigid bodies; see [Cloth](physics-cloth.md#authored-component-enginecloth), [Soft bodies](physics-softbody.md#authored-component-enginesoftbody) and [Particle fluids](physics-fluids.md#authored-component-enginefluidvolume).
 
 Dynamic bodies own world translation/rotation. Direct Transform writes do not
-teleport dynamic bodies. Changing body configuration rebuilds the body with the
-current pose and configured initial velocity. Fixed bodies follow authored pose
-changes; kinematic bodies follow native/navigation pose writes. Scale changes
+teleport dynamic bodies. Changing body configuration rebuilds the body at the pose and
+with the velocity it has in the simulation now (not the `Transform`, which may hold an
+interpolated pose, and not the authored `velocity`): a falling ball whose friction is edited
+keeps falling. The authored `velocity`/`angular_velocity` are starting values: they apply when
+the body is created, and again whenever those fields themselves are edited (an explicit
+request). Fixed bodies follow authored pose changes; kinematic bodies follow native/navigation
+pose writes, reaching each frame's target in equal parts over the frame's fixed steps
+([Physics queries](physics-queries.md#fixed-step-and-determinism)). Scale changes
 rebuild colliders. Parent transforms convert simulated world poses back to local
 TRS, parents first. Positive nonsingular scales and no shear are required;
 balls, capsules, cylinders and compounds require uniform world scale. 2D rotation must be about world Z.

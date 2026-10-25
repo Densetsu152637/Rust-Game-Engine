@@ -393,8 +393,9 @@ fn braking_distance_matches_the_friction_limit() {
         "braking distance {distance:.3} vs {expected:.3}: error {:+.2}%",
         100. * (distance - expected) / expected
     );
-    // Measured +17.25%: the tyre model is not constant-mu (it has load sensitivity), so the
-    // stop is longer than the estimate, but it is never shorter than the friction limit.
+    // Measured +17.25%: locked wheels slide on the tail of the tyre curve (see
+    // docs/physics-vehicles.md), so the stop is longer than the constant-mu estimate, but it is
+    // never shorter than the friction limit.
     assert!(
         distance > 0.97 * expected && distance < 1.2 * expected,
         "stopped in {distance} m, mu*g estimate {expected} m"

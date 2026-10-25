@@ -22,9 +22,14 @@ radians; forces are N and N*m. General physics concepts are in [Physics core](ph
 2D has one rotation axis, so a 2D `spherical` joint is rejected with "spherical joints are 3D
 only; use revolute in 2D" (the 2D schema does not list the kind). A `rope` is a `distance` with
 minimum 0. Rapier's coupled distance limit natively supports only a maximum, so a positive
-`min_distance` is enforced by an engine-physics hard stop that arms a velocity-level motor when
-the next step would reach the minimum; the `lin_x` motor of such a joint is therefore reserved
-(motors are rejected on it).
+`min_distance` is enforced by an engine-physics hard stop: a velocity-level motor that arms when
+the bodies are closing in and the next step would reach the minimum, and stays armed while it
+pushes the bodies apart (a load presses them together). The stop is **one-sided**: when gravity
+or another force pulls the bodies apart at rest at the minimum, the stop (which would only hold
+them together) is released and they separate. Measured: a vertical joint (min 0.8 m, max 1.2 m)
+released at its minimum under separating gravity reaches 1.2000 m in 2 s (before: stuck at
+0.8000 m); the same joint holds a pressing load at 0.8000 m with a closest approach of 0.7996 m
+over 3 s. The `lin_x` motor of such a joint is reserved (motors are rejected on it).
 
 Anchors (`anchor_a`, `anchor_b`) are positions in each body's local space; they are not scaled
 by `Transform` scale. `generic` joints use the anchors and `rotation_a`/`rotation_b` (radians in
@@ -76,7 +81,12 @@ For a body of mass m hanging from a fixed joint the force is m*g (measured withi
 both bodies are dynamic the torque is evaluated about the second body's center of mass. When
 either threshold is exceeded the joint is removed and a `JointBroken { id, first, second,
 force, torque }` record is queued. The record stays queryable (`broken_joint`) until the joint
-is removed or re-created.
+is removed or re-created. engine-physics keeps the last 1024 records and evicts the **oldest**
+break first (not the lowest id; measured: after 1200 breaks in three waves the 1024 newest
+remain). An authored joint stays broken even after its record was evicted: the project
+remembers the break, so the next sync does not re-create the joint (before, evicted joints came
+back and broke again every tick). Once evicted, `joint_status` reads `Inactive` instead of
+`Broken`.
 
 ## Authored component
 
@@ -104,7 +114,11 @@ references. Both bodies must carry `engine.PhysicsBody2D` (for a 2D joint) or
 `engine.PhysicsBody3D` (3D); a dimension mismatch, a missing `body_b`, a joint to itself,
 non-finite or unordered values, oversized `axes`/`motors`, and motors on locked axes all fail
 scene validation with a precise message. An id that no longer resolves at runtime (the entity
-was despawned) leaves the joint inactive instead of failing the tick. If a body is rebuilt
+was despawned) leaves the joint inactive instead of failing the tick. A joint to a body that
+**fractured** (`engine.Destructible3D` removed its `PhysicsBody3D` and added `Fractured`, on
+either endpoint, or on the joint's own entity) is inactive the same way: the sync removes the
+constraint, `joint_status` reads `Inactive`, it is not reported as broken, no event is emitted
+and the scene stays valid (before, validation failed on every tick from then on). If a body is rebuilt
 (its component changed, or a fixed body moved) the joint is re-created from the authored data;
 a joint that broke stays broken until its component is edited.
 
@@ -155,3 +169,5 @@ From `crates/engine-physics/tests/joints_extended.rs` and
 - A joint reports the load of the last step only; breaking is evaluated per physics substep.
 - Sleeping bodies keep their joints; editing a motor or limit wakes both bodies.
 - Joint anchors ignore `Transform` scale.
+- A joint that does not fit in the joint table (four per body slot) is skipped and counted with
+  the starved bodies in `pressure_status`; see [Physics core](physics.md#pressure-and-capacity).

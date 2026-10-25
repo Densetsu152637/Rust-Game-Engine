@@ -22,8 +22,10 @@ described in [Physics joints](physics-joints.md). Units are meters, seconds, kil
   multiplier. Zero strength releases the motors, so the skeleton collapses like `ragdoll`.
 - Switching from `animated` to a dynamic mode builds the bodies on the current animation pose and
   gives them the animation velocity (`inherit_velocity`, default true): the linear and angular
-  velocity of each bone is the pose change between the previous and the current tick divided by
-  the elapsed physics time. Switching between `ragdoll` and `powered` keeps the bodies.
+  velocity of each bone is the animation pose change between the previous and the current frame
+  divided by that frame's delta, so it does not depend on how many physics steps the frame ran
+  (with a 60 Hz `fixed_timestep` and 144 Hz frames it is the same 1 m/s on every frame, within
+  0.08). Switching between `ragdoll` and `powered` keeps the bodies.
 - Get-up: setting `mode` to `animated` while the bodies are dynamic fades the physics pose out
   over `blend_out_seconds` (0 = immediate) with the simulation running, then makes the bodies
   kinematic. `ragdoll_blend_out(seconds)` starts the same fade from code and sets the component
@@ -36,7 +38,14 @@ described in [Physics joints](physics-joints.md). Units are meters, seconds, kil
 ## Animation ownership
 
 The animation service keeps writing the bone `Transform`s first each tick; the ragdoll feature
-then reads them as the animation pose and writes the blended result after the physics step. A
+then reads them as the animation pose and writes the blended result after the physics step. The
+blended pose is written on **every** frame, including frames that ran no physics step (with a
+`fixed_timestep` below the frame time most frames), through the per-frame `after_frame` feature
+hook; otherwise the animation pose would show through on those frames and the skeleton would
+flicker between animation and physics. With `engine.PhysicsSettings.interpolation` set to
+`interpolate` the written physics pose is blended between the previous and the latest step by
+`step_status().alpha` (measured: within 1.2e-7 m of the lerp of the two step poses); otherwise it
+is the latest step. `ragdoll_status` and `ragdoll_bone_state` always report the latest step. A
 `Transform` that differs from what the ragdoll wrote last is treated as a new animation pose
 (an `AnimationPlayer`, or a script writing the transform); an unchanged one keeps the previous
 pose. So the rule in [Authored simulation](simulation.md#navigation-and-ownership) that an
@@ -56,8 +65,8 @@ unknown ids.
 | Field | Meaning |
 | --- | --- |
 | `mode`, `blend`, `strength`, `blend_out_seconds` | See above. |
-| `pin_root`, `self_collision`, `inherit_velocity` | Root pinning; whether non-adjacent bones collide (default false: bones use collision group bit 31 and mask it out, unless `layer_name` is set); velocity hand-over. |
-| `density` (kg/m^3, default 1000), `friction`, `restitution`, `layer_name` | Bone collider material; `layer_name` references an `engine.PhysicsSettings` layer. |
+| `pin_root`, `self_collision`, `inherit_velocity` | Root pinning; whether the bones of this ragdoll collide with each other (default false: the bones share a contact exclusion group, so no pair of them touches and none reports contact events; joint neighbours never touch either way); velocity hand-over. |
+| `density` (kg/m^3, default 1000), `friction`, `restitution`, `layer_name` | Bone collider material; `layer_name` references an `engine.PhysicsSettings` layer. The bones always keep the authored groups (the named layer, or the default membership 1 with an all-ones mask), so they collide with floors on named layers exactly as the layer matrix says. |
 | `motor_stiffness`, `motor_damping` | Joint gains per kg m^2 of the bone subtree (defaults 1000 and 80 per second squared and second). |
 | `settle_speed`, `settle_seconds` | Rest detection (below). |
 | `bones` | Up to 64 bone definitions. |
@@ -115,6 +124,18 @@ Delivered to the entity carrying `engine.Ragdoll`:
 
 Changes are applied at the next simulation sync (the next tick); read-outs reflect the last step.
 
+## Settings changes, capacity and kinematic bones
+
+- Changing `engine.PhysicsSettings` layers or materials rebuilds the bone bodies in place at the
+  next sync with the new groups and materials, keeping each bone's pose and velocity.
+- Kinematic bone bodies (every bone in `animated` mode, the pinned root otherwise) reach their
+  animation pose in equal parts over the physics steps of a frame, not in the first step.
+- All bones need room in the body table at once (`SimulationConfig::body_capacity`, shared with
+  every other body and with debris). A ragdoll that does not fit is not built: `ragdoll_status`
+  reports `active: false` with the reason "physics body capacity exceeded", the owner counts in
+  `pressure_status().starved_bodies`, `physics.capacity.exceeded` is delivered once, and the
+  build is retried at every sync.
+
 ## Measured behaviour
 
 From `crates/engine-project/tests/physics_ragdoll.rs` (all pass) on a 11-bone humanoid:
@@ -135,6 +156,11 @@ From `crates/engine-project/tests/physics_ragdoll.rs` (all pass) on a 11-bone hu
 - Hit: impulse gives the bone velocity; `hit_scale` drops to the reaction value and recovers to 1.
 - With an `AnimationPlayer` on the same bones the powered ragdoll tracks the clip.
 - Two runs with `fixed_timestep` are bitwise identical (transforms and body positions).
+- 60 Hz steps at 144 Hz frames (`the_ragdoll_pose_is_rewritten_on_frames_without_a_physics_step`):
+  64 of the 110 checked frames run no step; before the per-frame write the animated arm differed
+  from the ragdoll pose by 2.4 rad on those frames, now by 2.4e-7 rad on every frame.
+- A named-layer floor holds a default ragdoll (before: bones fell 43.6 m through it); no contact
+  event is ever reported between two bones.
 
 ## Limitations
 

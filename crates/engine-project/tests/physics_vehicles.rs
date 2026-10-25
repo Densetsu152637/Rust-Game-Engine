@@ -541,7 +541,7 @@ fn wheel_visuals_stay_with_an_interpolated_chassis_on_frames_without_a_step() {
     let speed = physics::vehicle_state(runtime.app().world(), car)
         .unwrap()
         .speed;
-    println!("{idle} idle frames at {speed:.1} m/s; worst wheel visual offset {worst:.4} m");
+    println!("{idle} idle frames at {speed:.1} m/s; worst wheel visual offset {worst:.2e} m");
     assert!(idle > 40 && speed > 3., "{idle} idle frames at {speed} m/s");
-    assert!(worst < 2e-3, "wheel visuals lag the chassis by {worst} m");
+    assert!(worst < 1e-4, "wheel visuals lag the chassis by {worst} m");
 }

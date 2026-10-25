@@ -647,8 +647,11 @@ impl Rig {
         )
     }
 }
+/// Angle between two rotations; `atan2` keeps full `f32` precision near zero (`acos` of a dot
+/// product near 1 only resolves about 1e-3 rad).
 fn angle(a: Quat, b: Quat) -> f32 {
-    2. * a.dot(b).abs().min(1.).acos()
+    let relative = a.inverse() * b;
+    2. * relative.xyz().length().atan2(relative.w.abs())
 }
 /// A limp ragdoll whose left arm is also driven by a looping animation clip.
 fn animated_ragdoll(physics_settings: Value) -> Rig {
@@ -691,7 +694,7 @@ fn the_ragdoll_pose_is_rewritten_on_frames_without_a_physics_step() {
     }
     println!("{idle_frames} frames without a step; worst pose difference {worst:.2e}");
     assert!(idle_frames > 40, "{idle_frames}");
-    assert!(worst < 1e-3, "worst pose difference {worst}");
+    assert!(worst < 1e-5, "worst pose difference {worst}");
 }
 
 /// H2/D1: with interpolation the ragdoll pose is blended between the previous and the latest
@@ -715,7 +718,7 @@ fn the_ragdoll_pose_is_interpolated_between_physics_steps() {
         }
     }
     println!("worst distance to the blended pose {worst:.2e}");
-    assert!(worst < 1e-3, "{worst}");
+    assert!(worst < 1e-5, "{worst}");
     // The head keeps falling smoothly until it lands: no frame holds still.
     assert!(
         heights[..24].windows(2).all(|w| w[1] < w[0] - 1e-5),

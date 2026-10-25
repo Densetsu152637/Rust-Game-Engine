@@ -61,7 +61,20 @@ would fight the controller; feed its direction into `desired_velocity` from a sc
 All fields are editable through MCP `component_set`. The controller applies `desired_velocity`
 in every physics step, so with `fixed_timestep` movement is bitwise reproducible and
 independent of how frames are split. The simulated position is written back to `Transform`
-after each frame's steps; fixed-step interpolation does not smooth characters.
+on **every** frame (the per-frame `after_frame` hook). With
+`engine.PhysicsSettings.interpolation` set to `interpolate` it is blended between the position
+before the latest fixed step and the position after it by `step_status().alpha`, like dynamic
+bodies: 3 m/s at 144 Hz frames and a 60 Hz step moves the `Transform` by 0.0208 m on every frame
+(without interpolation 69 of 120 frames hold still and the others move 0.05 m). `character_state`
+and the engine-physics pose always report the latest step.
+
+**Teleporting.** Writing the `Transform` of a character moves it there: the controller notices a
+world position that differs from the one it last wrote by more than 0.5 mm, moves the body at
+once (`World::set_character_position`) and forgets the old ground, platform, wall contact and
+vertical speed; `desired_velocity` is kept and no events are emitted for the reset. Before, the
+controller overwrote the write with its own position (a hero written to (20, 3, 0) ended the
+next tick at (2.03, 0.81, 0)). After the write the character falls from the new place and
+lands again (`tests/physics_character.rs`, `writing_the_transform_teleports_a_character...`).
 
 Pushing: Rapier transfers the character's velocity into dynamic bodies it presses against,
 scaled by `m_body * m / (m_body + m)` with `m = push_mass`, so a heavier character pushes more.
@@ -97,12 +110,14 @@ flicker. A character is grounded when it touches walkable ground and is not movi
 - `set_character_velocity(world, entity, Vec3)` writes `desired_velocity`;
 - `character_jump(world, entity)` increments `jump`; `character_impulse(world, entity, speed)`
   sets the vertical speed (m/s along `up`) on the next step even in the air;
+- writing the entity `Transform` teleports the character (see above);
 - `character_state(world, entity) -> CharacterReadout` (`grounded`, `on_slope`, `sliding`,
   `ground_normal`, `ground_entity`, `wall_contact`, `wall_normal`, `translation`, `velocity`,
   `ground_velocity`, `vertical_speed`).
 
 `engine-physics`: `insert_character(id, CharacterDesc)`, `remove_character`,
-`set_character_desc`, `set_character_velocity`, `move_character(id, translation, dt)` (a
+`set_character_desc`, `set_character_velocity`, `set_character_position(id, position)` (teleport
+without sweeping; resets ground state and vertical speed), `move_character(id, translation, dt)` (a
 velocity of `translation / dt`), `character_jump`, `character_state`,
 `drain_character_events` (bounded by `MAX_CHARACTER_EVENTS`; overflow is counted by
 `dropped_character_events`), `is_character`, `character_ids`. `CharacterDesc::validate`
@@ -116,6 +131,9 @@ for kinematic platforms (the displacement of the ground point, so rotation is in
 translation is covered by tests) and
 `velocity * dt` for dynamic ones. The character's own movement is computed relative to the
 platform, so `state.velocity` is the world velocity and `ground_velocity` the inherited part.
+A kinematic platform driven once per frame through its `Transform` moves at the driven speed
+in every fixed step of the frame (see [Physics queries](physics-queries.md#fixed-step-and-determinism)),
+so the platform velocity the character inherits has no spikes on frames with several steps.
 The character's yaw does not follow a rotating platform. Platform motion is not checked
 against obstacles, so a platform can carry a character into a wall.
 

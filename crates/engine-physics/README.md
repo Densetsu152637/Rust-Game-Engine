@@ -63,7 +63,8 @@ angular impulses also work immediately after insertion, before the first step.
 A kinematic body becomes a character controller with `insert_character(id, CharacterDesc)`:
 Rapier's `KinematicCharacterController` (slopes, sliding, snap to ground, push impulses) plus
 gravity, `character_jump`, platform riding, an own autostep, `character_state(id)` and
-`drain_character_events`. Drive it with `set_character_velocity`. See
+`drain_character_events`. Drive it with `set_character_velocity`; teleport it with
+`set_character_position` (resets its ground state and vertical speed). See
 [docs/physics-character.md](../../docs/physics-character.md).
 
 3D only: a dynamic body becomes a raycast vehicle with `insert_vehicle(id, VehicleDesc)`:

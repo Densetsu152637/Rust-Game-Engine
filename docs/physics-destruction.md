@@ -112,7 +112,12 @@ body shape. MCP editable through `component_set` like every catalog component.
    body-local space; `prefracture` uses the authored `impact_point` instead.
 3. The intact body's `PhysicsBody3D` is removed (the simulation drops the body at the next
    sync) and a runtime `Fractured { fragments, impulse, point }` marker is added to the entity.
-   Renderers should stop drawing the intact mesh for entities with `Fractured`.
+   Renderers should stop drawing the intact mesh for entities with `Fractured`. Everything that
+   needed the body treats a `Fractured` entity as inactive, not as an error: a joint with the
+   body as an endpoint is removed (`joint_status` reads `Inactive`), a `Vehicle3D` chassis stops
+   being a vehicle (`vehicle_state` returns an error until the component is removed) and a
+   `CharacterController3D` body stops being a character. Scene validation stays valid and no
+   event is emitted per tick.
 4. One dynamic `convex_hull` body is spawned per fragment as an owned entity (`OwnedBy`
    the destructible, so it is despawned with it), registered in the entity lookup with the
    stable derived id `<destructible id>#f<fragment index>` (`...#f<index>.<n>` if that id is
@@ -122,10 +127,26 @@ body shape. MCP editable through `component_set` like every catalog component.
 5. Mass: each fragment's density is chosen so its mass is the body's mass times its share of
    the total fragment volume (so mass is conserved even when a fragment's hull is larger than
    the piece). Fragments below 1e-9 m^3 cannot be physics bodies and fail the fracture with an
-   explicit error. Material (friction, restitution, layers, combine rules) is copied from the
+   explicit error, as does a fragment density outside 0.000001..=10000 kg/m^3. Every fragment is
+   validated **before** the first one spawns, so a failed fracture leaves the intact body and no
+   partial debris (with a 1e4 kg/m^3 body, 12 of 24 seeds are refused; before the fix seed 4
+   left 12 of its 16 fragments next to the intact body). Material (friction, restitution, layers, combine rules) is copied from the
    body's resolved material.
 6. The pool cap is enforced immediately; a pool smaller than a fracture recycles pieces of
    that fracture too.
+
+### Contacts between fragments
+
+Fragments of one fracture touch from the moment they spawn. Contacts between two fragments with
+the same owner are **not** reported as `physics.contact.start`/`stop` (they still collide
+physically). A 256-fragment fracture used to queue thousands of such events in its first step and
+abort the tick with "Event queue capacity exceeded"; now none are queued
+(`a_large_fracture_neither_aborts_the_step_nor_floods_sibling_contact_events`). Contacts with
+anything else, including fragments of another fracture, are reported as usual.
+
+Fragments are bodies like any other: when the body table is full (`SimulationConfig::body_capacity`)
+the fragments that do not fit stay entities without a body (the pool and lifetime rules still
+apply) and are retried every sync; see [Physics core](physics.md#pressure-and-capacity).
 
 ### Fragment lifetime
 
