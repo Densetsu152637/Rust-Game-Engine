@@ -5,7 +5,7 @@
 //! clipped on the CPU and re-emitted as `DrawSpace::World` meshes. See
 //! `docs/ui-styling.md` for the 3D-composition limitation.
 use super::{
-    resolve::{effective_for_render, states_by_root},
+    resolve::{any_themed, effective_for_render, states_by_root},
     world::{self, TickParts},
     *,
 };
@@ -459,7 +459,11 @@ pub(super) fn extract(
     for panel in panels(world)? {
         panel.panel.validate()?;
         let ui = states.and_then(|s| s.states.get(&panel.id));
-        let by_root = ui.map(states_by_root).unwrap_or_default();
+        let by_root = if any_themed(world, std::iter::once(&panel.root)) {
+            ui.map(states_by_root).unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
         let effective = effective_for_render(world, &panel.id, &panel.root, &by_root)?;
         let root = effective.as_ref().unwrap_or(&panel.root);
         let mut state = ui.map(|u| u.render_state(&panel.id)).unwrap_or_default();

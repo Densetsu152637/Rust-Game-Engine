@@ -1328,6 +1328,43 @@ fn world_panel_renders_as_world_draws_and_receives_pointer_through_the_camera() 
 }
 
 #[test]
+fn world_panels_use_themes_and_their_own_interaction_state() {
+    let mut scene = panel_scene(json!({}));
+    scene.as_array_mut().unwrap().push(theme_entity(
+        "theme",
+        json!({"version":1,"name":"main","rules":[
+            {"selector":"toggle","style":{"background":[0.5,0.5,0.5,1]}},
+            {"selector":"toggle:hover","style":{"background":[0,1,0,1]}}
+        ]}),
+    ));
+    let (_dir, mut runtime) = runtime(scene);
+    runtime
+        .app_mut()
+        .world_mut()
+        .resource_mut::<UiStyleSettings>()
+        .set_active_theme("main");
+    let chrome = |runtime: &Runtime| {
+        let frame = runtime.extract_frame().unwrap();
+        let draw = frame
+            .draws
+            .iter()
+            .find(|d| d.id.starts_with("world:game-ui:") && d.id.ends_with(":0"))
+            .expect("a panel chrome draw");
+        draw.mesh.vertices[0].color
+    };
+    runtime.tick(0.016, at([10.0, 10.0])).unwrap();
+    close(chrome(&runtime), [0.5, 0.5, 0.5, 1.0]);
+    runtime.tick(0.016, at([160.0, 90.0])).unwrap();
+    close(chrome(&runtime), [0.0, 1.0, 0.0, 1.0]);
+    let panels = world(&runtime).resource::<UiWorldPanels>();
+    assert!(panels.get("panel").is_some_and(|ui| ui.hovered().is_some()));
+    assert!(
+        world(&runtime).resource::<GameUi>().hovered().is_none(),
+        "the screen UI is not hovered"
+    );
+}
+
+#[test]
 fn non_interactive_world_panels_ignore_the_pointer() {
     let (_dir, mut runtime) = runtime(panel_scene(json!({"pointer":"none"})));
     runtime

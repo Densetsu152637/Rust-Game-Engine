@@ -116,8 +116,10 @@ State flags come from `GameUi` (`HOVERED`, `PRESSED`, `FOCUSED`, `DISABLED`,
 `CHECKED`, `OPEN`, `SELECTED`): hover/press/focus come from pointer and
 keyboard interaction, `:disabled` from the node's or an ancestor's `enabled`
 flag or the root's, `:checked` from toggles, `:open` from open dialogs and
-dropdown popups, `:selected` from the selected child of a `list`. Virtual-list
-template replicas share their template node's flags (they carry none).
+dropdown popups, `:selected` from the selected child of a `list`. Template
+nodes of a `virtual_list` exist only as per-item replicas and carry no state
+flags, so state pseudo-classes never match inside a virtual list (class and
+kind rules still apply).
 
 ### Specificity and cascade order
 
@@ -260,8 +262,8 @@ value of another type, or past the end of an array, is `ui.bind.path`.
 A binding applies only once its `path` exists (a missing value never blanks a
 widget). `mode: "two_way"` is allowed for text_input `text`, slider `value`,
 toggle `checked` and `selected`; it cannot carry `format`/`message`. Each
-(node, property) pair may be bound once. `itemText` needs `item_path`-relative
-formats and is resolved when drawing, so it does not influence layout
+(node, property) pair may be bound once. `itemText` is resolved when drawing
+(formats use `{.field}`, `{.}` and `{#}`), so it does not influence layout
 measuring (a virtual list has a fixed item extent).
 
 ### Format and messages

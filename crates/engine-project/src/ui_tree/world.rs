@@ -1,5 +1,5 @@
 use super::{
-    resolve::{NodeStates, effective_for_render, states_by_root},
+    resolve::{NodeStates, any_themed, effective_for_render, states_by_root},
     stylesheet::SharedTheme,
     *,
 };
@@ -163,7 +163,14 @@ pub(super) fn process(
             .apply(id, entity.to_bits(), root, &parts.data);
     }
     let none = NodeStates::new();
-    let states = states_by_root(ui);
+    let themed = authored
+        .iter()
+        .any(|(_, root)| parts.settings.theme_name_for(root).is_some());
+    let states = if themed {
+        states_by_root(ui)
+    } else {
+        BTreeMap::new()
+    };
     let mut themes: Vec<Option<SharedTheme>> = Vec::with_capacity(authored.len());
     let mut effective: Vec<(String, UiRoot)> = Vec::with_capacity(authored.len());
     for (id, root) in &authored {
@@ -192,7 +199,11 @@ pub(super) fn process(
     for (id, root) in &authored {
         parts.bindings.write_back(id, root, &mut parts.data)?;
     }
-    let states = states_by_root(ui);
+    let states = if themed {
+        states_by_root(ui)
+    } else {
+        BTreeMap::new()
+    };
     for ((id, root), theme) in authored.iter().zip(&themes) {
         if let Some(theme) = theme {
             parts.style.advance_only(
@@ -239,7 +250,11 @@ pub fn extract_world(
         return Err(invalid("UI exceeds 64 roots"));
     }
     let ui = world.get_resource::<GameUi>();
-    let by_root = ui.map(states_by_root).unwrap_or_default();
+    let by_root = if any_themed(world, roots.iter().map(|(_, _, root)| root)) {
+        ui.map(states_by_root).unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
     let data = world.get_resource::<UiDataContext>();
     let bindings = world.get_resource::<UiBindingState>();
     let text = BitmapTextBackend::new(fonts, textures);

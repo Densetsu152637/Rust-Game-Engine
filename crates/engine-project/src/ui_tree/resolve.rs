@@ -303,6 +303,13 @@ impl UiStyleRuntime {
     }
 }
 
+/// Whether any of `roots` is drawn from a theme.
+pub(super) fn any_themed<'a>(world: &World, mut roots: impl Iterator<Item = &'a UiRoot>) -> bool {
+    world
+        .get_resource::<UiStyleSettings>()
+        .is_some_and(|s| roots.any(|r| s.theme_name_for(r).is_some()))
+}
+
 /// Effective root for drawing: the cascade of the root's theme with current
 /// interaction flags and motion; `None` when the root uses no theme.
 pub(super) fn effective_for_render(
