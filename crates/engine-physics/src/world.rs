@@ -104,6 +104,25 @@ pub struct World {
     events: Vec<CollisionEvent>,
     contacts: BTreeSet<(u64, u64)>,
 }
+/// Contact filter for the exclusion groups of [`World::set_contact_exclusion`]. The group is
+/// stored in the upper 64 bits of the collider `user_data`; the lower 64 bits are the body ID.
+struct ExclusionHooks;
+impl PhysicsHooks for ExclusionHooks {
+    fn filter_contact_pair(&self, context: &PairFilterContext) -> Option<SolverFlags> {
+        let group = |handle| {
+            context
+                .colliders
+                .get(handle)
+                .map_or(0, |collider| (collider.user_data >> 64) as u64)
+        };
+        let (a, b) = (group(context.collider1), group(context.collider2));
+        if a != 0 && a == b {
+            None
+        } else {
+            Some(SolverFlags::default())
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodyVelocity {
     pub linear: Position,
@@ -245,6 +264,10 @@ impl World {
     pub fn len(&self) -> usize {
         self.core.bodies.len()
     }
+    /// Most bodies the world holds; joints are capped at four per body slot.
+    pub fn capacity(&self) -> usize {
+        self.core.capacity
+    }
     pub fn is_empty(&self) -> bool {
         self.core.bodies.is_empty()
     }
@@ -260,6 +283,33 @@ impl World {
             linear: body.linvel().to_array(),
             angular: angular_velocity(body),
         })
+    }
+    /// Puts body `id` in contact exclusion `group`: two bodies in the same nonzero group never
+    /// touch (no contact forces and no contact events), whatever their
+    /// collision layers say. Group `0` removes the body from its group. Joint-connected
+    /// neighbours already ignore each other; groups also cover non-adjacent pairs, such as the
+    /// bones of one ragdoll. Set the group before stepping.
+    pub fn set_contact_exclusion(&mut self, id: u64, group: u64) -> Result<()> {
+        let handle = self.core.entry(id)?.collider;
+        let collider = self
+            .core
+            .rapier
+            .colliders
+            .get_mut(handle)
+            .ok_or(Error("unknown body"))?;
+        collider.user_data = u128::from(id) | (u128::from(group) << 64);
+        collider.set_active_hooks(if group == 0 {
+            ActiveHooks::empty()
+        } else {
+            ActiveHooks::FILTER_CONTACT_PAIRS
+        });
+        Ok(())
+    }
+    /// Contact exclusion group of body `id` (`0`: none).
+    pub fn contact_exclusion(&self, id: u64) -> Option<u64> {
+        let handle = self.core.entry(id).ok()?.collider;
+        let collider = self.core.rapier.colliders.get(handle)?;
+        Some((collider.user_data >> 64) as u64)
     }
     /// Total mass in kilograms (zero for fixed and kinematic bodies).
     pub fn mass(&self, id: u64) -> Option<f32> {
@@ -343,7 +393,7 @@ impl World {
         for slot in &mut self.extensions {
             slot.value.pre_step(&mut self.core, dt)?;
         }
-        self.core.rapier.step();
+        self.core.rapier.step_with_events(&ExclusionHooks, &());
         self.collect_contact_events();
         for slot in &mut self.extensions {
             slot.value.post_step(&mut self.core, dt)?;

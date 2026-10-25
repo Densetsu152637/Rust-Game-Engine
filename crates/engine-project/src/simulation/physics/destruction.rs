@@ -644,6 +644,22 @@ fn execute(
     for s in &mut scatter {
         *s -= mean;
     }
+    // Everything that can fail is checked before the first entity spawns: an error part-way
+    // through would leave fragments next to the intact body.
+    let densities: Vec<f32> = fracture
+        .fragments
+        .iter()
+        .zip(&masses)
+        .map(|(fragment, mass)| mass / fragment.hull_volume)
+        .collect();
+    if densities
+        .iter()
+        .any(|density| !(0.000001..=10_000.).contains(density))
+    {
+        return Err(invalid(
+            "engine.Destructible3D fragment density is outside 0.000001..=10000 kg/m^3",
+        ));
+    }
     let owner_id = world
         .get::<AuthoredId>(entity)
         .map(|a| a.id.clone())
@@ -653,12 +669,7 @@ fn execute(
     let mut spawned = Vec::with_capacity(fracture.fragments.len());
     for (index, fragment) in fracture.fragments.iter().enumerate() {
         let local = fragment.local_hull_points();
-        let density = masses[index] / fragment.hull_volume;
-        if !(0.000001..=10_000.).contains(&density) {
-            return Err(invalid(
-                "engine.Destructible3D fragment density is outside 0.000001..=10000 kg/m^3",
-            ));
-        }
+        let density = densities[index];
         let material = BodyMaterial {
             density,
             friction: base.friction,
@@ -913,6 +924,7 @@ impl Feature for Destruction {
             worlds,
             bodies,
             settings,
+            ..
         } = cx;
         let events = world.resource_scope(|world, mut state: Mut<DestructionState>| {
             let mut events = Vec::new();

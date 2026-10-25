@@ -464,3 +464,88 @@ fn a_character_rides_a_kinematic_platform_entity() {
     assert!(state.grounded);
     assert_eq!(state.ground_entity, Some(lift));
 }
+
+// ---- Critic fixes: teleporting and per-frame visuals ----------------------------------------
+
+const FRAME: f32 = 1. / 144.;
+
+/// M1: writing the `Transform` of a character moves it there; the controller used to overwrite
+/// the kinematic target with its own position and discard the write.
+#[test]
+fn writing_the_transform_teleports_a_character_and_resets_its_ground_state() {
+    let (_dir, mut runtime) = started(vec![
+        floor3(),
+        hero3([0., 0.85, 0.], json!({"desired_velocity":[2.,0.,0.]})),
+    ]);
+    ticks(&mut runtime, 60);
+    let before = position(&runtime, "hero");
+    assert!((before.x - 2.).abs() < 0.1 && before.y < 1., "{before}");
+    assert!(
+        physics::character_state(runtime.app().world(), hero(&runtime))
+            .unwrap()
+            .grounded
+    );
+    let hero_entity = hero(&runtime);
+    runtime
+        .app_mut()
+        .world_mut()
+        .get_mut::<Transform>(hero_entity)
+        .unwrap()
+        .position = [20., 3., 0.];
+    ticks(&mut runtime, 1);
+    let after = position(&runtime, "hero");
+    println!("teleported to {after} one tick after writing (20, 3, 0)");
+    assert!((after.x - (20. + 2. * H)).abs() < 0.05, "{after}");
+    assert!(after.y > 2.9 && after.y < 3.05, "{after}");
+    let state = physics::character_state(runtime.app().world(), hero_entity).unwrap();
+    assert!(!state.grounded && state.ground_entity.is_none());
+    // It falls from the new place, lands on the floor, and keeps walking.
+    ticks(&mut runtime, 120);
+    let end = position(&runtime, "hero");
+    assert!((end.x - (20. + 2. * 121. * H)).abs() < 0.1, "{end}");
+    assert!((end.y - 0.85).abs() < 0.06, "{end}");
+    assert!(
+        physics::character_state(runtime.app().world(), hero_entity)
+            .unwrap()
+            .grounded
+    );
+}
+
+fn walking_with(settings_data: Value) -> (tempfile::TempDir, Runtime) {
+    started(vec![
+        settings(settings_data),
+        floor3(),
+        hero3([0., 0.85, 0.], json!({"desired_velocity":[3.,0.,0.]})),
+    ])
+}
+fn frame_steps(runtime: &mut Runtime, frames: usize) -> Vec<f32> {
+    let mut xs = vec![];
+    for _ in 0..frames {
+        runtime.tick(FRAME, InputSnapshot::default()).unwrap();
+        xs.push(position(runtime, "hero").x);
+    }
+    xs.windows(2).map(|w| w[1] - w[0]).collect()
+}
+
+/// H2/D1: with interpolation on, a character's `Transform` moves smoothly between the fixed
+/// steps (144 Hz frames, 60 Hz steps); without it, it holds the latest step's pose.
+#[test]
+fn characters_interpolate_their_transform_when_interpolation_is_on() {
+    let (_dir, mut smooth) =
+        walking_with(json!({"fixed_timestep":H,"interpolation":"interpolate"}));
+    ticks(&mut smooth, 20);
+    let deltas = frame_steps(&mut smooth, 120);
+    let expected = 3. * FRAME;
+    let (lo, hi) = deltas
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), d| (lo.min(*d), hi.max(*d)));
+    println!("interpolated: per-frame step {lo:.4}..{hi:.4} m, expected {expected:.4} m");
+    assert!(lo > 0.8 * expected && hi < 1.2 * expected, "{lo}..{hi}");
+
+    let (_dir, mut held) = walking_with(json!({"fixed_timestep":H}));
+    ticks(&mut held, 20);
+    let deltas = frame_steps(&mut held, 120);
+    let idle = deltas.iter().filter(|d| d.abs() < 1e-6).count();
+    println!("not interpolated: {idle} of 120 frames hold still");
+    assert!(idle > 40, "{idle}");
+}

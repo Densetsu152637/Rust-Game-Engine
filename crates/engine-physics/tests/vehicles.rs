@@ -345,8 +345,13 @@ fn full_throttle_accelerates_monotonically_shifts_and_reaches_the_drag_limit() {
         }
     }
     let measured = *samples.last().unwrap();
+    println!(
+        "top speed {measured:.3} vs analytic {lo:.3}: error {:+.2}%",
+        100. * (measured - lo) / lo
+    );
     assert!(
-        (measured - lo).abs() < 0.1 * lo,
+        // Measured -2.50%.
+        (measured - lo).abs() < 0.05 * lo,
         "top speed {measured} vs analytic {lo}"
     );
     assert_eq!(w.vehicle_state(CAR).unwrap().gear, 3);
@@ -384,8 +389,14 @@ fn braking_distance_matches_the_friction_limit() {
     let stop = w.pose(CAR).unwrap().position[2];
     let distance = stop - start;
     let expected = v0 * v0 / (2. * mu * G);
+    println!(
+        "braking distance {distance:.3} vs {expected:.3}: error {:+.2}%",
+        100. * (distance - expected) / expected
+    );
+    // Measured +17.25%: the tyre model is not constant-mu (it has load sensitivity), so the
+    // stop is longer than the estimate, but it is never shorter than the friction limit.
     assert!(
-        (distance - expected).abs() < 0.2 * expected,
+        distance > 0.97 * expected && distance < 1.2 * expected,
         "stopped in {distance} m, mu*g estimate {expected} m"
     );
     assert!(w.vehicle_state(CAR).unwrap().speed.abs() < 0.2);
@@ -428,8 +439,13 @@ fn constant_steer_follows_the_wheelbase_circle() {
     let wheelbase = 2.6;
     let rear_axle = wheelbase / angle.tan();
     let expected = (rear_axle * rear_axle + (wheelbase / 2.).powi(2)).sqrt();
+    println!(
+        "turn radius {radius:.3} vs {expected:.3}: error {:+.2}%",
+        100. * (radius - expected) / expected
+    );
     assert!(
-        (radius - expected).abs() < 0.15 * expected,
+        // Measured +0.60%.
+        (radius - expected).abs() < 0.02 * expected,
         "turn radius {radius} vs {expected}"
     );
 }

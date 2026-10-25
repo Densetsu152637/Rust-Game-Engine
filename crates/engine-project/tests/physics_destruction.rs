@@ -662,3 +662,292 @@ fn the_catalog_declares_the_component_with_its_defaults() {
         json!(["uniform", "impact"])
     );
 }
+
+// ---- Critic fixes: fractured owners, partial spawns, event pressure ------------------------
+
+fn joint_status(runtime: &Runtime, entity: Entity) -> physics::JointStatus {
+    physics::joint_status(runtime.app().world(), entity, physics::Dimension::Three).unwrap()
+}
+fn wall_at(x: f32, extra: Vec<(&str, Value)>) -> Value {
+    let mut components = vec![(
+        "engine.PhysicsBody3D",
+        json!({"motion":"fixed","half_extents":[0.5,0.5,0.5]}),
+    )];
+    components.extend(extra);
+    entity("wall", [x, 0., 0.], parts(components))
+}
+fn door(extra: Vec<(&str, Value)>) -> Value {
+    let mut components = vec![
+        (
+            "engine.PhysicsBody3D",
+            json!({"half_extents":[0.5,0.5,0.5]}),
+        ),
+        (
+            "engine.PhysicsJoint3D",
+            json!({"kind":"spherical","body_b":"wall",
+                "anchor_a":[1.5,0.,0.],"anchor_b":[-1.5,0.,0.]}),
+        ),
+    ];
+    components.extend(extra);
+    entity("door", [0.; 3], parts(components))
+}
+fn destructible() -> (&'static str, Value) {
+    (
+        "engine.Destructible3D",
+        json!({"fragment_count":6,"threshold":1e9}),
+    )
+}
+
+/// H1: a joint to a fractured body (either endpoint) is inactive, not a scene error: the
+/// simulation keeps running.
+#[test]
+fn a_joint_to_a_fractured_body_is_removed_without_stopping_the_simulation() {
+    for fractured_side in ["door", "wall"] {
+        let (door, wall) = if fractured_side == "door" {
+            (door(vec![destructible()]), wall_at(3., vec![]))
+        } else {
+            (door(vec![]), wall_at(3., vec![destructible()]))
+        };
+        let (_d, mut runtime) = started(vec![zero_gravity(), wall, door]);
+        let (door, wall) = (entity_of(&runtime, "door"), entity_of(&runtime, "wall"));
+        ticks(&mut runtime, 3);
+        assert_eq!(joint_status(&runtime, door), physics::JointStatus::Active);
+        let target = if fractured_side == "door" { door } else { wall };
+        physics::fracture_now(runtime.app_mut().world_mut(), target, Vec3::ZERO, 1.).unwrap();
+        // Used to fail validation on every tick from here on.
+        ticks(&mut runtime, 5);
+        assert_eq!(
+            joint_status(&runtime, door),
+            physics::JointStatus::Inactive,
+            "{fractured_side} fractured"
+        );
+        assert!(
+            physics::broken_joints(runtime.app().world())
+                .unwrap()
+                .is_empty(),
+            "removed, not broken"
+        );
+    }
+}
+
+/// H1: a destructible chassis and a destructible character body deactivate their vehicle and
+/// controller when they fracture.
+#[test]
+fn a_fractured_vehicle_or_character_body_deactivates_its_controller() {
+    let (_d, mut runtime) = started(vec![
+        settings(json!({"gravity_3d":[0.,-9.81,0.]})),
+        entity(
+            "floor",
+            [0., -0.5, 0.],
+            parts(vec![(
+                "engine.PhysicsBody3D",
+                json!({"motion":"fixed","half_extents":[50.,0.5,50.]}),
+            )]),
+        ),
+        entity(
+            "car",
+            [0., 0.6, 0.],
+            parts(vec![
+                (
+                    "engine.PhysicsBody3D",
+                    json!({"half_extents":[0.9,0.3,2.0],"material":{"density":350.}}),
+                ),
+                ("engine.Vehicle3D", json!({})),
+                destructible(),
+            ]),
+        ),
+        entity(
+            "hero",
+            [10., 2., 0.],
+            parts(vec![
+                (
+                    "engine.PhysicsBody3D",
+                    json!({"motion":"kinematic","shape":"box","half_extents":[0.3,0.9,0.3]}),
+                ),
+                ("engine.CharacterController3D", json!({})),
+                destructible(),
+            ]),
+        ),
+    ]);
+    let (car, hero) = (entity_of(&runtime, "car"), entity_of(&runtime, "hero"));
+    ticks(&mut runtime, 5);
+    assert!(physics::vehicle_state(runtime.app().world(), car).is_ok());
+    assert!(physics::character_state(runtime.app().world(), hero).is_ok());
+    for target in [car, hero] {
+        physics::fracture_now(runtime.app_mut().world_mut(), target, Vec3::ZERO, 1.).unwrap();
+    }
+    ticks(&mut runtime, 5);
+    assert!(physics::vehicle_state(runtime.app().world(), car).is_err());
+    assert!(physics::character_state(runtime.app().world(), hero).is_err());
+}
+
+/// M3: a fracture whose fragment densities fall outside the accepted range fails before
+/// anything spawns: the intact body stays and no partial debris is left next to it.
+#[test]
+fn a_fracture_that_cannot_complete_spawns_nothing() {
+    // The body is as dense as a body can be (1e4 kg/m^3), so any fragment whose hull volume
+    // is a hair smaller than its volume share exceeds the accepted density.
+    let mut refused = 0;
+    for seed in 1..=24u64 {
+        let (_d, mut runtime) = started(vec![
+            zero_gravity(),
+            entity(
+                "box",
+                [0.; 3],
+                parts(vec![
+                    (
+                        "engine.PhysicsBody3D",
+                        json!({"half_extents":[0.5,0.5,0.5],"material":{"density":10000.0}}),
+                    ),
+                    (
+                        "engine.Destructible3D",
+                        json!({"fragment_count":16,"threshold":1e9,"seed":seed}),
+                    ),
+                ]),
+            ),
+        ]);
+        let owner = entity_of(&runtime, "box");
+        ticks(&mut runtime, 2);
+        let before = runtime.app().world().iter_entities().count();
+        let result = physics::fracture_now(runtime.app_mut().world_mut(), owner, Vec3::ZERO, 1.);
+        let world = runtime.app().world();
+        if let Err(error) = result {
+            refused += 1;
+            assert!(error.to_string().contains("density"), "{error}");
+            assert_eq!(world.iter_entities().count(), before, "seed {seed}");
+            assert_eq!(physics::debris_count(world, None), 0, "seed {seed}");
+            assert!(world.get::<physics::Fractured>(owner).is_none());
+            assert!(world.get::<physics::PhysicsBody3D>(owner).is_some());
+            ticks(&mut runtime, 3);
+        }
+    }
+    println!("{refused}/24 seeds were refused for density");
+    assert!(refused > 0, "no seed reached the density error");
+}
+
+/// S1/L4: a 256-fragment fracture whose cells touch at spawn must not abort the step through
+/// event overflow, and its fragments emit no contact events between themselves.
+#[test]
+fn a_large_fracture_neither_aborts_the_step_nor_floods_sibling_contact_events() {
+    let (_d, mut runtime) = started(vec![
+        zero_gravity(),
+        entity(
+            "box",
+            [0.; 3],
+            parts(vec![
+                (
+                    "engine.PhysicsBody3D",
+                    json!({"half_extents":[0.5,0.5,0.5]}),
+                ),
+                (
+                    "engine.Destructible3D",
+                    json!({"fragment_count":256,"threshold":1e9,"debris":{"max_active":256,
+                        "scatter_speed":0.0,"lifetime":0.0}}),
+                ),
+            ]),
+        ),
+    ]);
+    let owner = entity_of(&runtime, "box");
+    ticks(&mut runtime, 2);
+    physics::fracture_now(runtime.app_mut().world_mut(), owner, Vec3::ZERO, 1.).unwrap();
+    let mut sibling_contacts = 0;
+    let mut other_events = 0;
+    for _ in 0..4 {
+        // Used to fail with "Event queue capacity exceeded" on the first tick.
+        tick(&mut runtime);
+        for event in runtime.snapshot().events {
+            if event.name == "physics.contact.start" || event.name == "physics.contact.stop" {
+                sibling_contacts += 1;
+            } else {
+                other_events += 1;
+            }
+        }
+    }
+    assert_eq!(physics::debris_count(runtime.app().world(), None), 256);
+    println!("sibling contact events {sibling_contacts}, other events {other_events}");
+    assert_eq!(sibling_contacts, 0);
+    let pressure = physics::pressure_status(runtime.app().world()).unwrap();
+    assert_eq!(pressure.events_dropped, 0, "{pressure:?}");
+}
+
+/// L4: running out of body capacity at runtime (here a fracture whose fragments do not fit)
+/// leaves the extra fragments without a body, reports it once, and never fails a tick.
+#[test]
+fn running_out_of_body_capacity_degrades_gracefully() {
+    let mut entities = vec![
+        settings(json!({"gravity_3d":[0.,0.,0.]})),
+        entity(
+            "box",
+            [0.; 3],
+            parts(vec![
+                (
+                    "engine.PhysicsBody3D",
+                    json!({"half_extents":[0.5,0.5,0.5]}),
+                ),
+                (
+                    "engine.Destructible3D",
+                    json!({"fragment_count":24,"threshold":1e9,
+                        "debris":{"max_active":24,"lifetime":0.0,"scatter_speed":0.0}}),
+                ),
+            ]),
+        ),
+    ];
+    entities[0]["components"]["EventBindings"] =
+        json!({"bindings":[{"event":"physics.capacity.exceeded","handler":"record"}]});
+    for i in 0..10 {
+        entities.push(entity(
+            &format!("rock{i}"),
+            [5. + 3. * i as f32, 0., 0.],
+            parts(vec![(
+                "engine.PhysicsBody3D",
+                json!({"shape":"ball","radius":0.5}),
+            )]),
+        ));
+    }
+    let dir = fixture(entities);
+    let mut runtime = Runtime::new_with_simulation(
+        Project::load(dir.path().join("project.json")).unwrap(),
+        Some(engine_project::simulation::SimulationConfig {
+            body_capacity: 20,
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .insert_resource(Log::default());
+    register_event_handler(runtime.app_mut(), "record", record).unwrap();
+    runtime.start().unwrap();
+    let owner = entity_of(&runtime, "box");
+    ticks(&mut runtime, 3);
+    let status = physics::pressure_status(runtime.app().world()).unwrap();
+    assert_eq!((status.bodies_3d, status.starved_bodies), (11, 0));
+    physics::fracture_now(runtime.app_mut().world_mut(), owner, Vec3::ZERO, 1.).unwrap();
+    // Used to fail every tick from here on with "body capacity exceeded".
+    ticks(&mut runtime, 4);
+    let status = physics::pressure_status(runtime.app().world()).unwrap();
+    println!("{status:?}");
+    // 10 rocks + 24 fragments want 34 bodies in a world of 20.
+    assert_eq!(status.bodies_3d, 20);
+    assert_eq!(status.starved_bodies, 14);
+    assert_eq!(physics::debris_count(runtime.app().world(), None), 24);
+    let warnings = events(&runtime, "physics.capacity.exceeded");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["capacity"], 20);
+    assert_eq!(warnings[0]["starved"], 14);
+    // Removing rocks makes room: starved fragments get their bodies on the next sync, up to
+    // the capacity of 20.
+    for i in 0..10 {
+        let rock = entity_of(&runtime, &format!("rock{i}"));
+        runtime.app_mut().world_mut().despawn(rock);
+    }
+    ticks(&mut runtime, 3);
+    let status = physics::pressure_status(runtime.app().world()).unwrap();
+    assert_eq!(
+        (status.bodies_3d, status.starved_bodies),
+        (20, 4),
+        "{status:?}"
+    );
+    assert_eq!(events(&runtime, "physics.capacity.exceeded").len(), 1);
+}

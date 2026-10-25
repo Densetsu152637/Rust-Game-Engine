@@ -6,14 +6,17 @@
 //! Scripts, behaviours or MCP write `desired_velocity` (world space, m/s); the controller adds
 //! gravity along `up`, collision response, slopes, autostep, ground snapping, pushing of
 //! dynamic bodies and platform riding in every physics step, so movement is deterministic with
-//! the fixed-step option. The simulated position is written back to `Transform` after the step.
+//! the fixed-step option. The simulated position is written back to `Transform` every frame
+//! (blended between the previous and the latest step when `interpolation` is on). Writing the
+//! `Transform` of a character yourself teleports it: the controller resets its ground state.
 //!
 //! A `NavigationAgent` on the same entity is rejected: navigation writes `Transform`
 //! positions directly and would fight the controller. Feed path directions into
 //! `desired_velocity` instead. See `docs/physics-character.md`.
-use super::super::{invalid, mapped, write_world_pose};
+use super::super::{invalid, mapped, world_pose, write_world_pose};
 use super::{
-    Context, Dimension, Feature, Resolved, Worlds, bodies::Record, emit, service, service_mut,
+    Context, Dimension, Feature, Frame, Interpolation, Resolved, Worlds, bodies::Record, emit,
+    service, service_mut,
 };
 use crate::Result;
 use bevy_ecs::prelude::*;
@@ -149,10 +152,19 @@ controller!(
     "Authored 3D character controller. Requires a kinematic `engine.PhysicsBody3D`."
 );
 
-/// What the feature last pushed into engine-physics for one entity.
+/// Largest distance (meters) the `Transform` may differ from what the feature wrote before the
+/// difference counts as a teleport.
+const TELEPORT_EPSILON: f32 = 5e-4;
+
+/// What the feature last pushed into engine-physics for one entity, and the world positions
+/// it needs to blend and to notice a teleport.
 struct Link<D> {
     desc: D,
     jump: u64,
+    /// Simulated world position before the latest step (the start of the interpolation).
+    previous: Option<Vec3>,
+    /// World position the `Transform` held after the feature last wrote it.
+    written: Option<Vec3>,
 }
 pub(super) struct Characters {
     two: BTreeMap<Entity, Link<dim2::CharacterDesc>>,
@@ -201,6 +213,11 @@ fn check_scene(world: &World) -> Result<()> {
             (body.map(|b| b.motion), body.map(|b| b.shape))
         };
         let (Some(motion), Some(shape)) = (motion, shape) else {
+            // A fractured body lost its engine.PhysicsBody on purpose: the controller is
+            // inactive.
+            if entity.contains::<super::Fractured>() {
+                continue;
+            }
             return Err(invalid(
                 "A character controller requires a PhysicsBody of the same dimension",
             ));
@@ -220,7 +237,7 @@ fn check_scene(world: &World) -> Result<()> {
 }
 
 macro_rules! dimension {
-    ($sync:ident, $events:ident, $component:ident, $dim:ident, $field:ident, $number:literal) => {
+    ($sync:ident, $events:ident, $component:ident, $dim:ident, $field:ident, $number:literal, $flat:expr, $array:expr) => {
         fn $sync(
             worlds: &mut Worlds,
             bodies: &super::Bodies,
@@ -243,6 +260,10 @@ macro_rules! dimension {
                     continue;
                 };
                 if !bodies.$field.contains_key(&e) {
+                    // No body (starved, or fractured): the controller waits, or ends with it.
+                    if links.remove(&e).is_some() {
+                        physics.remove_character(e.to_bits());
+                    }
                     continue;
                 }
                 let id = e.to_bits();
@@ -253,6 +274,16 @@ macro_rules! dimension {
                             physics.set_character_desc(id, desc).map_err(mapped)?;
                             link.desc = desc;
                         }
+                        // A `Transform` the feature did not write is a teleport.
+                        if let Some(written) = link.written {
+                            let at = world_pose(world, e)?.2;
+                            if ((at - written) * $flat).length() > TELEPORT_EPSILON {
+                                physics
+                                    .set_character_position(id, $array(at))
+                                    .map_err(mapped)?;
+                                link.previous = None;
+                            }
+                        }
                     }
                     _ => {
                         physics.insert_character(id, desc).map_err(mapped)?;
@@ -261,6 +292,8 @@ macro_rules! dimension {
                             Link {
                                 desc,
                                 jump: config.jump,
+                                previous: None,
+                                written: None,
                             },
                         );
                     }
@@ -321,30 +354,53 @@ macro_rules! dimension {
         }
     };
 }
-dimension!(sync_two, events_two, CharacterController2D, dim2, two, 2);
+dimension!(
+    sync_two,
+    events_two,
+    CharacterController2D,
+    dim2,
+    two,
+    2,
+    Vec3::new(1., 1., 0.),
+    |p: Vec3| [p.x, p.y]
+);
 dimension!(
     sync_three,
     events_three,
     CharacterController3D,
     dim3,
     three,
-    3
+    3,
+    Vec3::ONE,
+    |p: Vec3| p.to_array()
 );
 
-/// Writes the simulated pose of every controlled body back to its `Transform`.
-fn write_poses(
-    links: impl Iterator<Item = Entity>,
+/// Writes the simulated pose of every controlled body to its `Transform`, blended between the
+/// previous and the latest step by `alpha`, and remembers what it wrote.
+fn write_poses<D>(
+    links: &mut BTreeMap<Entity, Link<D>>,
     pose_of: impl Fn(Entity) -> Option<(Vec3, Quat, Vec3)>,
+    alpha: f32,
     world: &mut World,
 ) -> Result<()> {
     let mut writes: Vec<_> = links
-        .filter_map(|e| pose_of(e).map(|(s, r, p)| (e, s, r, p)))
+        .iter()
+        .filter_map(|(e, link)| {
+            let (scale, rotation, position) = pose_of(*e)?;
+            let position = link
+                .previous
+                .map_or(position, |previous| previous.lerp(position, alpha));
+            Some((*e, scale, rotation, position))
+        })
         .collect();
     // Parents before children, like dynamic write-back.
     writes.sort_by_key(|(e, ..)| super::bodies::depth(world, *e));
     for (e, scale, rotation, position) in writes {
         if world.get_entity(e).is_ok() {
             write_world_pose(world, e, scale, rotation, position)?;
+            if let Some(link) = links.get_mut(&e) {
+                link.written = Some(world_pose(world, e)?.2);
+            }
         }
     }
     Ok(())
@@ -368,20 +424,46 @@ impl Feature for Characters {
         sync_two(cx.worlds, cx.bodies, &mut self.two, world)?;
         sync_three(cx.worlds, cx.bodies, &mut self.three, world)
     }
+    fn before_substep(&mut self, cx: Context<'_>, _dt: f32) -> Result<()> {
+        // The pose before the step is the start of the interpolation toward its result.
+        let (worlds, bodies) = (&*cx.worlds, cx.bodies);
+        for (e, link) in &mut self.two {
+            link.previous = bodies
+                .two
+                .get(e)
+                .and_then(|record| pose_two(worlds, record, *e))
+                .map(|pose| pose.2);
+        }
+        for (e, link) in &mut self.three {
+            link.previous = bodies
+                .three
+                .get(e)
+                .and_then(|record| pose_three(worlds, record, *e))
+                .map(|pose| pose.2);
+        }
+        Ok(())
+    }
     fn after_substep(&mut self, cx: Context<'_>, world: &mut World, _dt: f32) -> Result<()> {
         events_two(self, cx.worlds, world)?;
         events_three(self, cx.worlds, world)
     }
-    fn after_step(&mut self, cx: Context<'_>, world: &mut World) -> Result<()> {
+    fn after_frame(&mut self, cx: Context<'_>, world: &mut World, frame: Frame) -> Result<()> {
         let (worlds, bodies) = (&*cx.worlds, cx.bodies);
+        let alpha = if cx.settings.interpolation == Interpolation::Interpolate {
+            frame.alpha
+        } else {
+            1.
+        };
         write_poses(
-            self.two.keys().copied(),
+            &mut self.two,
             |e| pose_two(worlds, bodies.two.get(&e)?, e),
+            alpha,
             world,
         )?;
         write_poses(
-            self.three.keys().copied(),
+            &mut self.three,
             |e| pose_three(worlds, bodies.three.get(&e)?, e),
+            alpha,
             world,
         )
     }

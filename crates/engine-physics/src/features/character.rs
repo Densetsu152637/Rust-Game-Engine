@@ -639,6 +639,44 @@ impl World {
         let (_, table) = self.extension_mut::<Characters>();
         table.map.get_mut(&id).ok_or(Error("unknown character"))
     }
+    /// Teleports character `id` to `position` (world space) without sweeping: the body and its
+    /// next kinematic target move at once, and the controller forgets what it knew of the old
+    /// place - ground, platform, wall contact and vertical speed - so the next step starts
+    /// from rest. The desired velocity is kept. No events are emitted for the reset.
+    pub fn set_character_position(&mut self, id: u64, position: Position) -> Result<()> {
+        if !crate::finite(&position) {
+            return Err(Error("invalid character position"));
+        }
+        if !self.is_character(id) {
+            return Err(Error("unknown character"));
+        }
+        let target = vector(position);
+        let body = self.core.body_mut(id)?;
+        body.set_translation(target, true);
+        body.set_next_kinematic_translation(target);
+        let controller = self.character_mut(id)?;
+        let up = controller.desc.up;
+        let mut zero = Position::default();
+        zero.fill(0.);
+        controller.vertical = 0.;
+        controller.ground = None;
+        controller.steep = false;
+        controller.wall_timer = 0.;
+        controller.state = CharacterState {
+            grounded: false,
+            on_slope: false,
+            sliding: false,
+            ground_normal: up,
+            ground_body: None,
+            wall_contact: false,
+            wall_normal: zero,
+            translation: zero,
+            velocity: zero,
+            ground_velocity: zero,
+            vertical_speed: 0.,
+        };
+        Ok(())
+    }
     /// Desired velocity (m/s, world space) applied every step until changed. Gravity and
     /// jumps are added on top along `up`.
     pub fn set_character_velocity(&mut self, id: u64, velocity: Position) -> Result<()> {

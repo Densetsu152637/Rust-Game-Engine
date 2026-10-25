@@ -395,3 +395,133 @@ fn native_api_reads_state_applies_impulses_and_raycasts_to_entities() {
     let ghost = runtime.app_mut().world_mut().spawn_empty().id();
     assert!(physics::body_state(runtime.app().world(), ghost).is_err());
 }
+
+// ---- Critic fixes: rebuilds keep live state, kinematic targets are spread over steps -------
+
+const STEP: f32 = 1. / 60.;
+
+fn frames(runtime: &mut Runtime, n: usize, dt: f32) {
+    for _ in 0..n {
+        runtime.tick(dt, InputSnapshot::default()).unwrap();
+    }
+}
+
+/// M4: editing a dynamic body's configuration rebuilds it at its current physics pose and with
+/// its current velocity; the authored `velocity` applies only when the body is created (or
+/// when that field itself is edited). With interpolation on, the `Transform` holds a blended
+/// pose, which must not leak into the rebuilt body.
+#[test]
+fn rebuilding_a_dynamic_body_keeps_its_live_pose_and_velocity() {
+    let (_dir, mut runtime) = started(vec![
+        settings(
+            json!({"fixed_timestep":STEP,"interpolation":"interpolate","gravity_3d":[0.,-10.,0.]}),
+        ),
+        entity(
+            "ball",
+            [0., 100., 0.],
+            body3(json!({"shape":"ball","radius":0.5})),
+        ),
+    ]);
+    let ball = runtime.entity("ball").unwrap();
+    frames(&mut runtime, 100, 1. / 144.);
+    let before = physics::body_state(runtime.app().world(), ball).unwrap();
+    let blended = position(&runtime, "ball");
+    println!(
+        "live pose y {} velocity {}; blended Transform y {}",
+        before.position.y, before.linear_velocity.y, blended.y
+    );
+    assert!(
+        before.linear_velocity.y < -6.,
+        "{:?}",
+        before.linear_velocity
+    );
+    assert!(
+        (blended.y - before.position.y).abs() > 1e-3,
+        "blend is visible"
+    );
+    runtime
+        .app_mut()
+        .world_mut()
+        .get_mut::<physics::PhysicsBody3D>(ball)
+        .unwrap()
+        .material
+        .friction = 0.9;
+    // A frame too short to run a step: the rebuilt body must still be where it was.
+    let accumulator = physics::step_status(runtime.app().world())
+        .unwrap()
+        .accumulator;
+    assert!(accumulator < STEP - 0.001, "{accumulator}");
+    frames(&mut runtime, 1, 1e-4);
+    assert_eq!(
+        physics::step_status(runtime.app().world()).unwrap().steps,
+        0
+    );
+    let after = physics::body_state(runtime.app().world(), ball).unwrap();
+    assert!(
+        (after.position - before.position).length() < 1e-4,
+        "pose {:?} vs {:?}",
+        after.position,
+        before.position
+    );
+    assert!(
+        (after.linear_velocity - before.linear_velocity).length() < 1e-3,
+        "velocity {:?} vs {:?}",
+        after.linear_velocity,
+        before.linear_velocity
+    );
+    // Editing the authored velocity itself is an explicit request and does apply.
+    runtime
+        .app_mut()
+        .world_mut()
+        .get_mut::<physics::PhysicsBody3D>(ball)
+        .unwrap()
+        .velocity = [3., 0., 0.];
+    frames(&mut runtime, 1, 1e-4);
+    let set = physics::body_state(runtime.app().world(), ball).unwrap();
+    assert!((set.linear_velocity - Vec3::new(3., 0., 0.)).length() < 1e-3);
+}
+
+/// M5: a kinematic body driven through its `Transform` once per frame moves at the driven
+/// speed in every fixed step of the frame, not in one jump followed by standing still.
+#[test]
+fn kinematic_targets_are_spread_over_the_fixed_steps_of_a_frame() {
+    let (_dir, mut runtime) = started(vec![
+        settings(json!({"fixed_timestep":STEP,"gravity_3d":[0.,0.,0.]})),
+        entity(
+            "platform",
+            [0.; 3],
+            body3(json!({"motion":"kinematic","half_extents":[1.,0.1,1.]})),
+        ),
+    ]);
+    let platform = runtime.entity("platform").unwrap();
+    let mut x = 0.;
+    let mut speeds = vec![];
+    for _ in 0..20 {
+        x += 3. / 30.;
+        runtime
+            .app_mut()
+            .world_mut()
+            .get_mut::<Transform>(platform)
+            .unwrap()
+            .position[0] = x;
+        runtime.tick(1. / 30., InputSnapshot::default()).unwrap();
+        assert_eq!(
+            physics::step_status(runtime.app().world()).unwrap().steps,
+            2
+        );
+        let state = physics::body_state(runtime.app().world(), platform).unwrap();
+        assert!(
+            (state.position.x - x).abs() < 1e-4,
+            "{} vs {x}",
+            state.position.x
+        );
+        speeds.push(state.linear_velocity.x);
+    }
+    println!(
+        "kinematic speed in the last step of each frame: {:?}",
+        &speeds[..4]
+    );
+    for speed in &speeds[2..] {
+        assert!((speed - 3.).abs() < 0.05, "{speeds:?}");
+    }
+}

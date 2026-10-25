@@ -5,14 +5,17 @@
 //!
 //! The bone entities keep animation as their pose writer: the animation service writes the
 //! pose first, this feature reads it (a `Transform` it did not write itself is the animation
-//! pose) and then writes the blended result, so no `engine.PhysicsBody*` goes on bones. See
+//! pose) and then writes the blended result, so no `engine.PhysicsBody*` goes on bones. The
+//! blended pose is rewritten on **every** frame (`after_frame`), including frames that run no
+//! physics step, because the animation service rewrites the bones every frame; with
+//! `interpolation` on it is blended between the previous and the latest step. See
 //! `docs/physics-ragdoll.md`.
-use super::{Context, Feature, Resolved, Worlds, emit};
+use super::{Context, Feature, Frame, Interpolation, Resolved, Worlds, emit};
 use crate::Result;
 use crate::simulation::{decompose, invalid, mapped};
 use bevy_ecs::prelude::*;
 use dim3::Dof;
-use engine_physics::{BodyKind, JointOptions, MotorDesc, dim3};
+use engine_physics::{BodyKind, CollisionLayers, JointOptions, MotorDesc, dim3};
 use glam::{Mat4, Quat, Vec3};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -33,8 +36,6 @@ use build::{Layout, Rest};
 
 /// Most bones in one ragdoll.
 pub const MAX_BONES: usize = 64;
-/// Collision group bit used by the bone colliders when `self_collision` is off.
-const BONE_GROUP: u32 = 1 << 31;
 
 /// Joint IDs live in their own namespace; this keeps them apart from authored joints, which
 /// use entity bits.
@@ -63,8 +64,23 @@ struct Hit {
     recover: f32,
     elapsed: f32,
 }
+/// Live state of one bone body, kept when the bodies are rebuilt in place.
+#[derive(Clone, Copy)]
+struct BodyState {
+    position: [f32; 3],
+    rotation: [f32; 4],
+    velocity: [f32; 3],
+    angular: [f32; 3],
+}
+/// A kinematic bone body moving from where it stood at the start of the frame to its target.
+struct Drive {
+    start: (Vec3, Quat),
+    target: (Vec3, Quat),
+}
 struct Rig {
     structure: Ragdoll,
+    /// Contact exclusion group of the bones when `self_collision` is off: the owner entity.
+    group: u64,
     entities: Vec<Entity>,
     rest_local: Vec<(Vec3, Quat)>,
     bones: Vec<Bone>,
@@ -80,8 +96,23 @@ struct Rig {
     hit: Option<Hit>,
     slow: f32,
     settled: bool,
+    /// Bone world poses (physics, rotated by the bone offset) before the latest step.
+    previous: Vec<(Vec3, Quat)>,
+    /// Kinematic bodies' motion over the frame, by bone index.
+    drives: Vec<Option<Drive>>,
 }
 impl Rig {
+    /// Weight of the physics pose in the written bone pose.
+    fn weight(&self, config: &Ragdoll) -> f32 {
+        let fade = self.fade.as_ref().map_or(1., |f| {
+            if f.elapsed >= f.total {
+                0.
+            } else {
+                (1. - f.elapsed / f.total).clamp(0., 1.)
+            }
+        });
+        config.blend * fade
+    }
     fn hit_scale(&self) -> f32 {
         self.hit.as_ref().map_or(1., |h| {
             h.scale + (1. - h.scale) * (h.elapsed / h.recover).clamp(0., 1.)
@@ -205,6 +236,7 @@ fn arc_y(direction: Vec3) -> Quat {
 impl Rig {
     fn create(
         world: &World,
+        group: u64,
         config: &Ragdoll,
         entities: Vec<Entity>,
         previous_rest: Option<Vec<(Vec3, Quat)>>,
@@ -277,8 +309,10 @@ impl Rig {
                 seen: false,
             })
             .collect();
+        let count = entities.len();
         Ok(Self {
             structure: config.structure(),
+            group,
             entities,
             rest_local,
             bones,
@@ -291,6 +325,8 @@ impl Rig {
             hit: None,
             slow: 0.,
             settled: false,
+            previous: vec![],
+            drives: (0..count).map(|_| None).collect(),
         })
     }
     /// Reads the animation pose (any `Transform` this feature did not write) and derives the
@@ -339,25 +375,61 @@ impl Rig {
         self.built = None;
         self.motors = false;
     }
+    /// The live state of every bone body, if all of them exist.
+    fn capture(&self, worlds: &Worlds) -> Option<Vec<BodyState>> {
+        self.bones
+            .iter()
+            .map(|bone| {
+                let id = bone.entity.to_bits();
+                let pose = worlds.three.pose(id)?;
+                let velocity = worlds.three.velocity(id)?;
+                Some(BodyState {
+                    position: pose.position,
+                    rotation: pose.rotation,
+                    velocity: velocity.linear,
+                    angular: velocity.angular,
+                })
+            })
+            .collect()
+    }
+    /// Creates the bone bodies and their joints. `keep` rebuilds them where they are, with
+    /// their velocities (a settings change); otherwise they start at the animation pose, with
+    /// the animation velocity when `inherit` is set. If the body table has no room for every
+    /// bone nothing is built and `built` stays `None`.
     fn build_bodies(
         &mut self,
         worlds: &mut Worlds,
         settings: &Resolved,
         config: &Ragdoll,
         inherit: bool,
+        keep: Option<Vec<BodyState>>,
     ) -> Result<()> {
         let dynamic = self.active != RagdollMode::Animated;
         let inherit = inherit && dynamic && self.built == Some(false) && config.inherit_velocity;
         self.remove_bodies(worlds);
+        self.drives = (0..self.bones.len()).map(|_| None).collect();
+        if worlds.three.len() + self.bones.len() > worlds.three.capacity() {
+            return Ok(());
+        }
         for i in 0..self.bones.len() {
             let bone = &self.bones[i];
             let layout = &bone.layout;
             let pinned = config.pin_root && layout.parent.is_none();
             let (position, rotation) = self.anim_body(i);
-            let (velocity, angular) = if inherit && !pinned {
-                bone.anim_velocity
-            } else {
-                (Vec3::ZERO, Vec3::ZERO)
+            let (position, rotation, velocity, angular) = match keep.as_ref().map(|k| k[i]) {
+                Some(state) => (
+                    Vec3::from(state.position),
+                    Quat::from_array(state.rotation),
+                    Vec3::from(state.velocity),
+                    Vec3::from(state.angular),
+                ),
+                None if inherit && !pinned => (
+                    position,
+                    rotation,
+                    bone.anim_velocity.0,
+                    bone.anim_velocity.1,
+                ),
+                None => (position, rotation, Vec3::ZERO, Vec3::ZERO),
             };
             let desc = dim3::BodyDesc {
                 kind: if dynamic && !pinned {
@@ -371,17 +443,15 @@ impl Rig {
                 angular_velocity: angular.to_array(),
                 ccd: false,
             };
-            let mut material = settings.material(&crate::simulation::BodyMaterial {
+            // The bones keep the authored (or default) collision groups, so they collide with
+            // whatever the layer matrix says they collide with.
+            let material = settings.material(&crate::simulation::BodyMaterial {
                 density: layout.density,
                 friction: config.friction,
                 restitution: config.restitution,
                 layer_name: config.layer_name.clone(),
                 ..Default::default()
             })?;
-            if !config.self_collision && config.layer_name.is_none() {
-                material.layer = BONE_GROUP;
-                material.mask &= !BONE_GROUP;
-            }
             let shape = dim3::Shape::Compound {
                 parts: vec![dim3::CompoundPart {
                     position: layout.center.to_array(),
@@ -389,10 +459,18 @@ impl Rig {
                     shape: layout.shape.clone(),
                 }],
             };
+            let id = bone.entity.to_bits();
             worlds
                 .three
-                .insert(bone.entity.to_bits(), desc, shape, material)
+                .insert(id, desc, shape, material)
                 .map_err(mapped)?;
+            if !config.self_collision {
+                // Bones of one ragdoll never touch each other, whatever their layers say.
+                worlds
+                    .three
+                    .set_contact_exclusion(id, self.group)
+                    .map_err(mapped)?;
+            }
         }
         if dynamic {
             for bone in &self.bones {
@@ -414,14 +492,39 @@ impl Rig {
         self.built = Some(dynamic);
         Ok(())
     }
-    /// Moves kinematic bodies (every bone when animated, the pinned root otherwise).
-    fn follow_animation(&self, worlds: &mut Worlds, config: &Ragdoll) -> Result<()> {
+    /// Plans the motion of the kinematic bodies (every bone when animated, the pinned root
+    /// otherwise) over the coming frame; `apply_drives` spreads it over the steps.
+    fn follow_animation(&mut self, worlds: &Worlds, config: &Ragdoll) {
         let dynamic = self.active != RagdollMode::Animated;
-        for (i, bone) in self.bones.iter().enumerate() {
+        for i in 0..self.bones.len() {
+            let bone = &self.bones[i];
             if dynamic && !(config.pin_root && bone.layout.parent.is_none()) {
+                self.drives[i] = None;
                 continue;
             }
-            let (position, rotation) = self.anim_body(i);
+            let Some(now) = worlds.three.pose(bone.entity.to_bits()) else {
+                continue;
+            };
+            self.drives[i] = Some(Drive {
+                start: (Vec3::from(now.position), Quat::from_array(now.rotation)),
+                target: self.anim_body(i),
+            });
+        }
+    }
+    /// Moves the kinematic bodies `progress` (0..=1) of the way along their frame motion.
+    fn apply_drives(&self, worlds: &mut Worlds, progress: f32) -> Result<()> {
+        for (bone, drive) in self.bones.iter().zip(&self.drives) {
+            let Some(drive) = drive else {
+                continue;
+            };
+            let (position, rotation) = if progress >= 1. {
+                drive.target
+            } else {
+                (
+                    drive.start.0.lerp(drive.target.0, progress),
+                    drive.start.1.slerp(drive.target.1, progress),
+                )
+            };
             worlds
                 .three
                 .set_kinematic_target(
@@ -480,17 +583,18 @@ impl Rig {
 pub(super) struct Ragdolls {
     rigs: BTreeMap<Entity, Rig>,
     pending: Vec<(Entity, &'static str, serde_json::Value)>,
-    /// Seconds simulated since the last `sync`, and during the current tick.
-    since_sync: f32,
+    /// Seconds simulated during the current tick.
     tick: f32,
+    /// Layers and materials the bodies were last built with; a change rebuilds them.
+    groups: Option<(CollisionLayers, BTreeMap<String, engine_physics::Material>)>,
 }
 impl Ragdolls {
     pub(super) fn new() -> Self {
         Self {
             rigs: BTreeMap::new(),
             pending: vec![],
-            since_sync: 0.,
             tick: 0.,
+            groups: None,
         }
     }
     fn destroy(&mut self, worlds: &mut Worlds, entity: Entity) {
@@ -523,6 +627,7 @@ impl Ragdolls {
         config: &Ragdoll,
         dt: f32,
         commands: &[Command],
+        regroup: bool,
     ) -> Result<()> {
         let bones = match resolve(world, config)? {
             Resolution::Inactive(reason) => {
@@ -549,8 +654,10 @@ impl Ragdolls {
                 .filter(|r| r.entities == bones)
                 .map(|r| r.rest_local.clone());
             self.destroy(worlds, entity);
-            self.rigs
-                .insert(entity, Rig::create(world, config, bones, previous)?);
+            self.rigs.insert(
+                entity,
+                Rig::create(world, entity.to_bits(), config, bones, previous)?,
+            );
         }
         let rig = self.rigs.get_mut(&entity).expect("rig exists");
         rig.refresh_animation(world, dt)?;
@@ -612,9 +719,28 @@ impl Ragdolls {
         let dynamic = rig.active != RagdollMode::Animated;
         if rig.built != Some(dynamic) {
             let from_animated = rig.built == Some(false);
-            rig.build_bodies(worlds, settings, config, from_animated)?;
+            rig.build_bodies(worlds, settings, config, from_animated, None)?;
+        } else if regroup {
+            // Layers or materials changed: the bodies take the new groups where they are.
+            let keep = rig.capture(worlds);
+            rig.build_bodies(worlds, settings, config, false, keep)?;
         }
-        rig.follow_animation(worlds, config)?;
+        if rig.built.is_none() {
+            // Not enough room in the body table for every bone: wait, and say why.
+            if worlds.starved.insert(entity) {
+                worlds.starved_new += 1;
+            }
+            hub.lock().status.insert(
+                entity,
+                RagdollStatus {
+                    inactive_reason: Some("physics body capacity exceeded".into()),
+                    ..RagdollStatus::default()
+                },
+            );
+            return Ok(());
+        }
+        worlds.starved.remove(&entity);
+        rig.follow_animation(worlds, config);
         rig.set_motors(worlds, config)?;
         let mut status = hub.lock();
         let entry = status.status.entry(entity).or_default();
@@ -712,10 +838,18 @@ impl Feature for Ragdolls {
             return Ok(());
         };
         let Context {
-            worlds, settings, ..
+            worlds,
+            settings,
+            frame_dt,
+            ..
         } = cx;
         let commands = std::mem::take(&mut hub.lock().commands);
-        let dt = std::mem::take(&mut self.since_sync);
+        // The animation advanced by this frame's delta since the previous sample.
+        let dt = frame_dt;
+        let regroup = self.groups.as_ref().is_some_and(|(layers, materials)| {
+            *layers != settings.layers || *materials != settings.materials
+        });
+        self.groups = Some((settings.layers.clone(), settings.materials.clone()));
         let mut present: Vec<(Entity, Ragdoll)> = world
             .iter_entities()
             .filter_map(|e| Some((e.id(), e.get::<Ragdoll>()?.clone())))
@@ -734,17 +868,26 @@ impl Feature for Ragdolls {
             .status
             .retain(|e, _| present.iter().any(|(p, _)| p == e));
         for (entity, config) in &present {
-            self.sync_one(worlds, settings, world, hub, *entity, config, dt, &commands)?;
+            self.sync_one(
+                worlds, settings, world, hub, *entity, config, dt, &commands, regroup,
+            )?;
         }
         Ok(())
     }
-    fn before_substep(&mut self, _cx: Context<'_>, dt: f32) -> Result<()> {
+    fn before_substep(&mut self, cx: Context<'_>, dt: f32) -> Result<()> {
         self.tick += dt;
+        for rig in self.rigs.values_mut() {
+            if rig.built.is_none() {
+                continue;
+            }
+            // The pose before the step is the start of the interpolation toward its result.
+            rig.previous = rig.bone_poses(&*cx.worlds)?;
+            rig.apply_drives(cx.worlds, cx.progress)?;
+        }
         Ok(())
     }
     fn after_step(&mut self, cx: Context<'_>, world: &mut World) -> Result<()> {
         let tick = std::mem::take(&mut self.tick);
-        self.since_sync += tick;
         let worlds = &*cx.worlds;
         let entities: Vec<Entity> = self.rigs.keys().copied().collect();
         for entity in entities {
@@ -754,6 +897,9 @@ impl Feature for Ragdolls {
             let Some(rig) = self.rigs.get_mut(&entity) else {
                 continue;
             };
+            if rig.built.is_none() {
+                continue;
+            }
             let outcome = finish(rig, worlds, world, &config, tick)?;
             if let Some(hub) = world.get_resource::<Hub>() {
                 hub.lock().status.insert(entity, outcome.status);
@@ -778,17 +924,112 @@ impl Feature for Ragdolls {
         }
         Ok(())
     }
+    fn after_frame(&mut self, cx: Context<'_>, world: &mut World, frame: Frame) -> Result<()> {
+        // The animation service rewrote the bones this frame; put the physics pose back on
+        // top of it, blended between the previous and the latest step when interpolating.
+        let alpha = if cx.settings.interpolation == Interpolation::Interpolate {
+            frame.alpha
+        } else {
+            1.
+        };
+        let worlds = &*cx.worlds;
+        for (entity, rig) in &mut self.rigs {
+            if rig.built != Some(true) || rig.active == RagdollMode::Animated {
+                continue;
+            }
+            let Some(config) = world.get::<Ragdoll>(*entity).cloned() else {
+                continue;
+            };
+            write_pose(rig, worlds, world, &config, alpha)?;
+        }
+        Ok(())
+    }
 }
 struct Outcome {
     status: RagdollStatus,
     settled: bool,
     faded: bool,
 }
-/// Blends and writes the physics pose, advances fades and hits, and detects settling.
-fn finish(
+impl Rig {
+    /// World pose of every bone as the bodies hold it now.
+    fn bone_poses(&self, worlds: &Worlds) -> Result<Vec<(Vec3, Quat)>> {
+        self.bones
+            .iter()
+            .map(|bone| {
+                let pose = worlds
+                    .three
+                    .pose(bone.entity.to_bits())
+                    .ok_or_else(|| invalid("Ragdoll body missing"))?;
+                let rotation = (Quat::from_array(pose.rotation) * bone.layout.offset).normalize();
+                Ok((Vec3::from(pose.position), rotation))
+            })
+            .collect()
+    }
+    /// Pose of every bone below its parent for the given world poses.
+    fn locals(&self, world: &World, phys: &[(Vec3, Quat)]) -> Result<Vec<(Vec3, Quat)>> {
+        let mut locals = vec![(Vec3::ZERO, Quat::IDENTITY); self.bones.len()];
+        for &i in &self.order {
+            let bone = &self.bones[i];
+            let (position, rotation) = match bone.layout.parent {
+                Some(p) => phys[p],
+                None => parent_world(world, bone.entity)?,
+            };
+            locals[i] = (
+                rotation.inverse() * (phys[i].0 - position),
+                (rotation.inverse() * phys[i].1).normalize(),
+            );
+        }
+        Ok(locals)
+    }
+}
+/// Writes the bone `Transform`s: the physics pose (blended between the previous and the
+/// latest step by `alpha`) mixed with the animation pose by the ragdoll weight. Runs every
+/// frame, because the animation service rewrites the bones every frame.
+fn write_pose(
     rig: &mut Rig,
     worlds: &Worlds,
     world: &mut World,
+    config: &Ragdoll,
+    alpha: f32,
+) -> Result<()> {
+    let mut phys = rig.bone_poses(worlds)?;
+    if rig.previous.len() == phys.len() {
+        for (now, before) in phys.iter_mut().zip(&rig.previous) {
+            *now = (
+                before.0.lerp(now.0, alpha),
+                before.1.slerp(now.1, alpha).normalize(),
+            );
+        }
+    }
+    let locals = rig.locals(world, &phys)?;
+    let weight = rig.weight(config);
+    for i in rig.order.clone() {
+        let bone = &rig.bones[i];
+        let (position, rotation) = if weight <= 0. {
+            bone.anim_local
+        } else if weight >= 1. {
+            locals[i]
+        } else {
+            (
+                bone.anim_local.0.lerp(locals[i].0, weight),
+                bone.anim_local.1.slerp(locals[i].1, weight).normalize(),
+            )
+        };
+        let mut transform = world
+            .get_mut::<crate::Transform>(bone.entity)
+            .ok_or_else(|| invalid("Ragdoll bone lost its Transform"))?;
+        transform.position = position.to_array();
+        transform.rotation = rotation.to_array();
+        let written = (transform.position, transform.rotation);
+        rig.bones[i].written = Some(written);
+    }
+    Ok(())
+}
+/// Advances fades and hits, detects settling, and reads the bones back for the status.
+fn finish(
+    rig: &mut Rig,
+    worlds: &Worlds,
+    world: &World,
     config: &Ragdoll,
     tick: f32,
 ) -> Result<Outcome> {
@@ -805,23 +1046,17 @@ fn finish(
         bones: vec![],
     };
     let mut readouts = vec![];
-    let mut phys: Vec<(Vec3, Quat)> = vec![];
-    for bone in &rig.bones {
+    let phys = rig.bone_poses(worlds)?;
+    for (bone, pose) in rig.bones.iter().zip(&phys) {
         let id = bone.entity.to_bits();
-        let pose = worlds
-            .three
-            .pose(id)
-            .ok_or_else(|| invalid("Ragdoll body missing"))?;
         let velocity = worlds
             .three
             .velocity(id)
             .ok_or_else(|| invalid("Ragdoll body missing"))?;
-        let rotation = (Quat::from_array(pose.rotation) * bone.layout.offset).normalize();
-        phys.push((Vec3::from(pose.position), rotation));
         readouts.push(BoneReadout {
             entity: bone.entity,
-            position: Vec3::from(pose.position),
-            rotation,
+            position: pose.0,
+            rotation: pose.1,
             linear_velocity: Vec3::from(velocity.linear),
             angular_velocity: Vec3::from(velocity.angular),
             dynamic: dynamic && !(config.pin_root && bone.layout.parent.is_none()),
@@ -834,57 +1069,15 @@ fn finish(
             fade.elapsed += tick;
             faded = fade.elapsed >= fade.total;
         }
-        let fade_factor = rig
-            .fade
-            .as_ref()
-            .map_or(1., |f| (1. - f.elapsed / f.total).clamp(0., 1.));
-        let weight = if faded {
-            0.
-        } else {
-            config.blend * fade_factor
-        };
-        status.blend = weight;
+        status.blend = if faded { 0. } else { rig.weight(config) };
+        let locals = rig.locals(world, &phys)?;
         let mut errors = vec![];
         for i in rig.order.clone() {
-            let bone = &rig.bones[i];
-            let local = match bone.layout.parent {
-                Some(p) => {
-                    let (position, rotation) = phys[p];
-                    (
-                        rotation.inverse() * (phys[i].0 - position),
-                        (rotation.inverse() * phys[i].1).normalize(),
-                    )
-                }
-                None => {
-                    let (position, rotation) = parent_world(world, bone.entity)?;
-                    (
-                        rotation.inverse() * (phys[i].0 - position),
-                        (rotation.inverse() * phys[i].1).normalize(),
-                    )
-                }
-            };
-            if bone.layout.parent.is_some() {
-                let error = build::angle_between(local.1, bone.anim_local.1);
+            if rig.bones[i].layout.parent.is_some() {
+                let error = build::angle_between(locals[i].1, rig.bones[i].anim_local.1);
                 readouts[i].pose_error = error;
                 errors.push(error);
             }
-            let (position, rotation) = if weight <= 0. {
-                bone.anim_local
-            } else if weight >= 1. {
-                local
-            } else {
-                (
-                    bone.anim_local.0.lerp(local.0, weight),
-                    bone.anim_local.1.slerp(local.1, weight).normalize(),
-                )
-            };
-            let mut transform = world
-                .get_mut::<crate::Transform>(bone.entity)
-                .ok_or_else(|| invalid("Ragdoll bone lost its Transform"))?;
-            transform.position = position.to_array();
-            transform.rotation = rotation.to_array();
-            let written = (transform.position, transform.rotation);
-            rig.bones[i].written = Some(written);
         }
         if !errors.is_empty() {
             status.pose_error = errors.iter().sum::<f32>() / errors.len() as f32;
