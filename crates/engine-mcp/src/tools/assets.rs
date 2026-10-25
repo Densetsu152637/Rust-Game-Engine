@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 11] = [
+const KINDS: [&str; 12] = [
     "script",
     "mesh",
     "texture",
@@ -23,6 +23,7 @@ const KINDS: [&str; 11] = [
     "model",
     "animation",
     "navigation",
+    "lut",
 ];
 const MAX_USES: usize = 200;
 

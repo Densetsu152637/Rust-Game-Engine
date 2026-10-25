@@ -145,6 +145,7 @@ fn scene(upscaler: UpscalerSettings) -> SceneRenderFrame {
                 true,
             ),
         ],
+        post: Default::default(),
         materials2d: Default::default(),
         lights: vec![
             engine_project::lights::LightInstance3D::directional_toward(

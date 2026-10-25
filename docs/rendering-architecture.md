@@ -432,8 +432,9 @@ integration and requests fall back with the build reason.
 - Lights and shadows: see [rendering-lights.md](rendering-lights.md#limits).
 - Prepasses and shadows ignore custom vertex displacement; transparent meshes
   write no motion or depth.
-- The default output is a linear clamp (no exposure or tonemapping curve;
-  post-processing adds them through `Tonemap`).
+- The default output is a linear clamp. Tonemapping, exposure and the other
+  HDR effects are opt-in per view through `ViewData::post`
+  ([rendering-post.md](rendering-post.md)).
 - Overlay features disable DLSS frame generation.
 - No automatic multi-camera rendering: hosts render additional views
   explicitly (`render_view` per `ViewId`, `render_eyes`).

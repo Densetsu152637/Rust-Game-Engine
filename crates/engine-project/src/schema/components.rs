@@ -221,4 +221,16 @@ pub struct Components {
     pub point_light: Option<crate::lights::PointLight>,
     #[serde(rename = "SpotLight", default, skip_serializing_if = "Option::is_none")]
     pub spot_light: Option<crate::lights::SpotLight>,
+    #[serde(
+        rename = "PostProcess",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub post_process: Option<crate::post::PostProcess>,
+    #[serde(
+        rename = "PostProcessVolume",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub post_process_volume: Option<crate::post::PostProcessVolume>,
 }

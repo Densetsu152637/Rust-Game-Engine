@@ -1,7 +1,7 @@
 //! Shared built-in authoring component documentation.
 use serde_json::{Value, json};
 /// The component keys of an entity's `components` object, in schema order.
-pub const COMPONENT_NAMES: [&str; 13] = [
+pub const COMPONENT_NAMES: [&str; 15] = [
     "Camera3D",
     "MeshMaterial",
     "EventBindings",
@@ -15,6 +15,8 @@ pub const COMPONENT_NAMES: [&str; 13] = [
     "PointLight",
     "SpotLight",
     "AreaLight",
+    "PostProcess",
+    "PostProcessVolume",
 ];
 
 /// Documentation for one authored component type.
@@ -95,6 +97,7 @@ fn frame_generation_schema() -> Value {
 pub fn component_docs() -> Vec<ComponentDoc> {
     let mut docs = builtin_docs();
     docs.extend(super::light_docs::light_docs());
+    docs.extend(super::post_docs::post_docs());
     docs
 }
 

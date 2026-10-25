@@ -628,6 +628,9 @@ pub struct SceneRenderFrame {
     pub meshes: Vec<MeshDraw3D>,
     /// Enabled light components in stable entity ID order.
     pub lights: Vec<crate::lights::LightInstance3D>,
+    /// The active camera's `PostProcess`, enabled `PostProcessVolume`s and
+    /// referenced LUT files; see [`crate::post::resolve_post`].
+    pub post: crate::post::PostFrame,
     pub materials2d: BTreeMap<String, MaterialSnapshot>,
     /// Texture streams sampled by the draws of this frame.
     pub streams: Vec<StreamFrame>,
@@ -644,6 +647,7 @@ impl From<RenderFrame> for SceneRenderFrame {
             camera3d: None,
             meshes: vec![],
             lights: vec![],
+            post: Default::default(),
             materials2d: BTreeMap::new(),
             streams: Vec::new(),
         }

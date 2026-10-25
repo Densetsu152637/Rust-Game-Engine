@@ -50,6 +50,10 @@
 - [Lights and shadows](rendering-lights.md): directional, point, spot and area
   light components in photometric units, clustered forward shading, cascaded,
   spot and cube shadows in a shadow atlas with PCF/PCSS, and lighting status.
+- [HDR post-processing](rendering-post.md): tonemapping (ACES, AgX, Khronos Neutral),
+  manual and histogram auto-exposure, bloom, HDR colour grading with a `.cube` 3D LUT,
+  vignette and film grain; the `PostProcess` and `PostProcessVolume` components,
+  volume blending and post status.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Hardware ray tracing core](rendering-raytracing.md): `engine-render-rt` tiers and

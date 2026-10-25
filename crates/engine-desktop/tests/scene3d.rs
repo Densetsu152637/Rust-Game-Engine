@@ -24,6 +24,7 @@ fn scene() -> SceneRenderFrame {
         }),
         meshes: vec![],
         lights: vec![sun([0.4, 0.7, 1.0], DirectionalLight::default())],
+        post: Default::default(),
         materials2d: Default::default(),
         streams: vec![],
     }

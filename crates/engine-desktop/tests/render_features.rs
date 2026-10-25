@@ -162,6 +162,7 @@ fn streamed_scene(stream: &StreamFrame) -> SceneRenderFrame {
             shader: None,
         }],
         lights: vec![],
+        post: Default::default(),
         materials2d: Default::default(),
         streams: vec![stream.clone()],
     }
@@ -292,6 +293,7 @@ fn xr_eyes_render_into_external_targets_with_their_own_views() -> anyhow::Result
             shader: None,
         }],
         lights: vec![],
+        post: Default::default(),
         materials2d: Default::default(),
         streams: vec![],
     };

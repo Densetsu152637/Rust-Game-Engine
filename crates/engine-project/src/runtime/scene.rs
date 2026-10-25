@@ -23,6 +23,10 @@ pub struct RuntimeSnapshot {
     /// the active camera view; absent without a 3D camera.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lighting: Option<crate::lights::LightingStatus>,
+    /// Renderer-reported post-processing state of the active camera view:
+    /// the influencing volumes and the effective settings summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post: Option<crate::post::PostStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -176,6 +180,7 @@ impl Runtime {
             frame_generation: self.frame_generation_status(),
             render_pipeline: self.render_pipeline_status(),
             lighting: self.lighting_status(),
+            post: self.post_status(),
             ticks: self.ticks,
             scene,
             live_entities: self
@@ -252,6 +257,16 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
         e.insert(value.clone());
     } else {
         e.remove::<crate::lights::AreaLight>();
+    }
+    if let Some(value) = &c.post_process {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::post::PostProcess>();
+    }
+    if let Some(value) = &c.post_process_volume {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::post::PostProcessVolume>();
     }
     if let Some(parent) = &authored.parent {
         e.insert(crate::Parent(parent.clone()));
