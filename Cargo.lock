@@ -1186,6 +1186,7 @@ name = "engine-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "bevy_ecs",
  "bytemuck",
  "engine-audio",
@@ -1194,6 +1195,7 @@ dependencies = [
  "engine-project",
  "engine-render",
  "engine-render-wgpu",
+ "epaint_default_fonts",
  "gilrs",
  "glam 0.34.1",
  "image",
@@ -1262,6 +1264,7 @@ dependencies = [
  "base64",
  "blake3",
  "engine-project",
+ "epaint_default_fonts",
  "regex",
  "serde",
  "serde_json",
@@ -1316,6 +1319,8 @@ dependencies = [
  "engine-navigation",
  "engine-network",
  "engine-physics",
+ "engine-text",
+ "epaint_default_fonts",
  "fs2",
  "glam 0.34.1",
  "image",
@@ -1324,6 +1329,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tempfile",
+ "unicode-linebreak",
 ]
 
 [[package]]

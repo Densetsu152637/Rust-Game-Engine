@@ -11,11 +11,13 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 11] = [
+const KINDS: [&str; 13] = [
     "script",
     "mesh",
     "texture",
     "font",
+    "font_face",
+    "font_config",
     "audio",
     "scene",
     "shader",
@@ -175,6 +177,20 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
             let font = content::load_font(&file)?;
             json!({"glyphs": font.glyphs.len(), "line_height": font.line_height,
                 "fallback_codepoint": font.fallback, "texture_asset": font.texture})
+        }
+        "font_face" => {
+            let face = content::load_font_face(&file)?;
+            let faces: Vec<Value> = face
+                .faces
+                .iter()
+                .map(|f| json!({"family": f.family, "weight": f.weight, "italic": f.italic, "index": f.index}))
+                .collect();
+            json!({"bytes": face.bytes.len(), "faces": faces})
+        }
+        "font_config" => {
+            let config = content::load_font_config(&file)?;
+            json!({"default_family": config.default_family, "default_size": config.default_size,
+                "faces": config.faces.len(), "families": config.families.len()})
         }
         "script" => {
             let bytes = paths::read_bounded(&file, cx.limits.max_file_scan_bytes)

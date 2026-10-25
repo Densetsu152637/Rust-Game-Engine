@@ -63,6 +63,37 @@ pub struct UiCaretStop {
     pub height: f32,
 }
 
+/// A clickable rectangle of a rich label (`[link=id]...[/link]`), relative to
+/// the layout origin. A link that wraps has one region per line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiLinkRegion {
+    pub id: String,
+    pub rect: Rect,
+}
+
+/// An inline image placeholder (`[img=key width=W height=H]`), relative to the
+/// layout origin. `key` names a runtime texture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiInlineImage {
+    pub key: String,
+    pub rect: Rect,
+}
+
+/// Caret, selection and hit-test geometry of one laid-out text, in the layout's
+/// own coordinates. Indices are byte offsets into the laid-out text. Backends
+/// that can place carets inside bidirectional or wrapped text provide it;
+/// otherwise text input falls back to [`UiTextLayout::carets`].
+pub trait UiTextGeometry: std::fmt::Debug + Send + Sync {
+    /// Caret rectangle (width 0, full line height) before byte `index`.
+    fn caret_rect(&self, index: usize) -> Rect;
+    /// One rectangle per contiguous visual piece per line.
+    fn selection_rects(&self, start: usize, end: usize) -> Vec<Rect>;
+    /// Nearest caret stop to `point`.
+    fn hit_test(&self, point: [f32; 2]) -> usize;
+    /// Caret stop one visual (wrapped) line above or below `index`.
+    fn move_vertical(&self, index: usize, down: bool) -> usize;
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct UiTextLayout {
     pub metrics: UiTextMetrics,
@@ -71,6 +102,12 @@ pub struct UiTextLayout {
     pub pages: Vec<Arc<Texture>>,
     /// Ascending by `index`; may be empty for markup.
     pub carets: Vec<UiCaretStop>,
+    /// Clickable link rectangles (rich text backends only).
+    pub links: Vec<UiLinkRegion>,
+    /// Inline image rectangles (rich text backends only).
+    pub images: Vec<UiInlineImage>,
+    /// Precise caret and selection geometry, when the backend has it.
+    pub geometry: Option<Arc<dyn UiTextGeometry>>,
 }
 
 /// Object-safe text backend. Implementations must be deterministic for a
@@ -79,6 +116,60 @@ pub struct UiTextLayout {
 pub trait UiTextBackend: Send + Sync {
     fn measure(&self, request: &UiTextRequest<'_>) -> Result<UiTextMetrics>;
     fn layout(&self, request: &UiTextRequest<'_>) -> Result<UiTextLayout>;
+    /// Called at the start of every UI tick and every draw extraction, so
+    /// backends with a glyph cache can age it. The default does nothing.
+    fn begin_frame(&self) {}
+}
+
+/// The runtime's backend: a font key that resolves to a `font_face` family
+/// (see [`EngineTextBackend::resolves`]) uses the shaping engine, any other key
+/// uses the bitmap font of that name. Without an engine every key is bitmap.
+#[derive(Clone, Copy)]
+pub struct SelectingTextBackend<'a> {
+    pub engine: Option<&'a EngineTextBackend>,
+    pub bitmap: BitmapTextBackend<'a>,
+}
+
+impl<'a> SelectingTextBackend<'a> {
+    pub fn new(
+        engine: Option<&'a EngineTextBackend>,
+        fonts: &'a BTreeMap<String, FontAtlas>,
+        textures: &'a BTreeMap<String, Arc<Texture>>,
+    ) -> Self {
+        Self {
+            engine,
+            bitmap: BitmapTextBackend::new(fonts, textures),
+        }
+    }
+
+    /// Whether `font` is drawn by the shaping engine.
+    pub fn uses_engine(&self, font: &str) -> bool {
+        self.engine.is_some_and(|e| e.resolves(font))
+    }
+
+    fn pick(&self, font: &str) -> Option<&'a EngineTextBackend> {
+        self.engine.filter(|e| e.resolves(font))
+    }
+}
+
+impl UiTextBackend for SelectingTextBackend<'_> {
+    fn measure(&self, request: &UiTextRequest<'_>) -> Result<UiTextMetrics> {
+        match self.pick(request.font) {
+            Some(engine) => engine.measure(request),
+            None => self.bitmap.measure(request),
+        }
+    }
+    fn layout(&self, request: &UiTextRequest<'_>) -> Result<UiTextLayout> {
+        match self.pick(request.font) {
+            Some(engine) => engine.layout(request),
+            None => self.bitmap.layout(request),
+        }
+    }
+    fn begin_frame(&self) {
+        if let Some(engine) = self.engine {
+            engine.begin_frame();
+        }
+    }
 }
 
 /// Measures every string as empty. Used by headless layout without fonts.
@@ -198,6 +289,7 @@ impl UiTextBackend for BitmapTextBackend<'_> {
             glyphs,
             pages: vec![texture.clone()],
             carets,
+            ..Default::default()
         })
     }
 }

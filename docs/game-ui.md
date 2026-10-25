@@ -15,7 +15,7 @@ editor toolkit dependency in game executables.
 
 Module map (`crates/engine-project/src/ui_tree/`): `style` (layout and paint
 style), `widget` (widget kinds and their state), `tree` (hierarchy and
-validation), `layout` (taffy integration), `text` (text backend contract),
+validation), `layout` (taffy integration), `text` (text backend contract), `shaped_text` (the `engine-text` backend),
 `navigation` (tab order and spatial focus), `text_edit` (text-input event
 model), `chrome` (shared widget geometry), `interaction` (`GameUi`), `render`
 (draw extraction), `schema` (authoring descriptor), `builder` (native
@@ -186,7 +186,7 @@ Widget values live in the `UiRoot`, so snapshots include them and
 | --- | --- | --- |
 | `container` | none | Background and children. |
 | `label` | `text` | Wrapped text in the content box. |
-| `rich_label` | `markup` | Markup stored as a plain string; the backend interprets it (the bitmap backend strips `<...>` tags and decodes `&lt; &gt; &amp; &quot;`). |
+| `rich_label` | `markup` | Markup stored as a plain string; the backend interprets it. The shaping backend reads `[b]`, `[color=#rrggbb]`, `[size=N]`, `[link=id]`, `[img=key width=W height=H]` markup (see [Rich labels](text.md#rich-labels-links-and-inline-images)); the bitmap backend strips `<...>` tags and decodes `&lt; &gt; &amp; &quot;`. A rich label whose markup has a `[link=` tag is a pointer target and focusable; clicking a link, or `ui_confirm` on the focused label (first link), sends `ui.link_activated` with the link ID. |
 | `image` | `texture`, `uv` `[u,v,w,h]`, `tint`, `fit` (`stretch`, `contain`, `cover`) | Textured quad in the content box; `cover` crops the UV rectangle. |
 | `nine_slice` | `texture`, `slices` (texture px l,t,r,b), `border` (logical px, default = slices), `center`, `tint` | Nine textured quads over the border box (replaces the background); borders shrink proportionally when they exceed the box. |
 | `button` | `text`, `action` | `ui.clicked` on the pressed edge or `ui_confirm`. |
@@ -304,17 +304,34 @@ The types are:
   - glyph quads, each with `rect`, `uv` `[u0,v0,u1,v1]`, `color` and `page`;
   - RGBA8 atlas `pages`, with white RGB and coverage in alpha;
   - ascending `carets`, each with `index` (byte offset into the laid-out plain
-    text), `x`, `y` and `height`; the last stop is the end of the text.
+    text), `x`, `y` and `height`; the last stop is the end of the text;
+  - `links` and `images`: clickable link rectangles and inline-image
+    rectangles (rich-text backends only);
+  - `geometry`: an optional `UiTextGeometry` (caret rectangle, selection
+    rectangles, hit test, wrapped-line movement) that text input prefers over
+    the caret stops when present.
+
+`UiTextBackend::begin_frame` (default no-op) is called at the start of every
+`tick_world` and `extract_world_with`, so a backend with a glyph cache can age it.
 
 Implementations must be deterministic so that layout, hit testing and rendering
-agree, and must return errors instead of panicking. Two implementations ship:
+agree, and must return errors instead of panicking. Four implementations ship:
 
 - `BitmapTextBackend::new(fonts, textures)` works over the bitmap `FontAtlas`
   and wraps text the same way as `content::text_mesh`.
 - `NullTextBackend` measures everything as empty.
-
-The runtime passes the bitmap backend. A shaping backend (engine-text) can
-replace it without changing `ui_tree`.
+- `EngineTextBackend` shapes TrueType/OpenType text with `engine-text`: fallback
+  chains, bidirectional text, rich markup, links, inline images and precise
+  caret geometry. It is built from `font_face` assets; see [Game UI
+  integration](text.md#game-ui-integration).
+- `SelectingTextBackend::new(engine, fonts, textures)` is what the runtime passes.
+  **Selection rule:** a `style.font` key that resolves to a font family of the
+  engine backend (the asset ID of a `font_face` asset, or a `font_config`
+  family; empty keys resolve only with a configured `defaultFamily`) is shaped
+  by `engine-text`; every other key uses the bitmap font of that name, and a key
+  that is neither fails with `render.font.unknown`. Projects without `font_face`
+  assets behave exactly as before. `Runtime::ui_text()` returns the selecting
+  backend and `Runtime::text_engine()` the engine backend.
 
 ## Text-edit event model (UI contract 4)
 
@@ -339,14 +356,17 @@ pub enum UiTextEvent {
   selection lies between them.
 - **Modifiers:** `shift` extends the selection; `word` moves or deletes by word.
 - **Line keys:** in multiline inputs, Home/End go to the ends of the line and
-  Up/Down move by logical (`\n`) lines. In single-line inputs, Up/Down go to the
-  start/end.
+  Up/Down move by logical (`\n`) lines with the bitmap backend, and by wrapped
+  visual lines (nearest caret stop on the neighbouring line) with the shaping
+  backend. In single-line inputs, Up/Down go to the start/end.
 - **Enter and Escape:** Enter inserts a newline in multiline inputs and emits
   `ui.text_submitted` otherwise. Escape leaves the input.
 - **Inserted text:** control characters are dropped (newlines are kept only in
   multiline inputs) and the result is truncated to `maxLength`.
 - **IME:** a preedit is drawn underlined at the caret but is not part of the
-  value. `Commit` clears the preedit and inserts its text.
+  value. `Commit` clears the preedit and inserts its text. With the shaping
+  backend the caret, selection and underline come from `engine-text` geometry,
+  so they are correct in bidirectional and wrapped text.
 - **Clipboard:** copy and cut go through the `UiClipboard` trait (install one
   with `GameUi::set_clipboard`; the default `MemoryClipboard` is process-local).
   They are disabled for password inputs.
@@ -358,6 +378,11 @@ For the desktop runner:
 - `GameUi::text_input_focus()` says when to enable text entry and IME.
 - `GameUi::ime_area()` gives the caret rectangle for candidate windows.
 - `GameUi::preedit()` returns the current composition.
+
+`engine-desktop` does this wiring: it translates winit keyboard and IME events
+with `translate_window_event`, queues them while an input is focused, calls
+`Window::set_ime_allowed` from `text_input_focus()` and `set_ime_cursor_area`
+from `ime_area()`. See [Desktop forwarding](text.md#desktop-forwarding-typed-text-and-ime).
 
 The queue holds at most 256 events per tick and 1024 bytes per event; beyond
 that `push_text_event` fails with `ui.text_event.overflow` or
@@ -378,7 +403,7 @@ Each box emits up to four draws, in paint order:
 1. Chrome geometry: background, check, fills, scrollbars, tab and dialog bars,
    selection.
 2. Its textured image.
-3. Its text, one draw per atlas page.
+3. Its text, one draw per atlas page, then one draw per inline-image texture.
 4. Top geometry: caret, preedit underline, list and dialog highlights.
 
 Base draws use the root's layer. Open dialogs and their backdrop use
@@ -391,8 +416,10 @@ visuals belong to the styling layer.
 
 - It registers the typed adapter before authored component hydration.
 - It ticks the UI after event dispatch, using `UiModel::gameplay_frame()`, the
-  project's bitmap fonts and the frame's `dt`.
-- It includes the UI draws in both 2D and combined 3D/HUD extraction.
+  selecting text backend (shaped `font_face` families, then bitmap fonts) and
+  the frame's `dt`.
+- It includes the UI draws in both 2D and combined 3D/HUD extraction, and the
+  world-space draws of `engine.WorldText` components.
 - Scene changes and shutdown clear `GameUi`.
 
 Game configuration must not call `ui_tree::register` again. `register`,
@@ -443,7 +470,12 @@ Release builds were not measured.
 ### Known gaps
 
 - The caret does not blink.
-- Up/Down in multiline inputs follow `\n` lines, not visual wrap lines.
+- Up/Down in multiline inputs follow `\n` lines with the bitmap backend (the
+  shaping backend moves by visual line).
+- Text is rasterised at logical pixel size and scaled with the camera fit, like
+  bitmap fonts; there is no physical-pixel rasterisation yet.
+- Typed keys also reach gameplay actions bound to them while an input is
+  focused; the runner does not suppress them.
 - Clicks on virtual-list replicas select the item rather than reaching widgets
   inside the template.
 - Images have no intrinsic size.

@@ -72,6 +72,7 @@ impl Runtime {
             .insert_resource(ProjectResource(Arc::new(project.clone())));
         crate::simulation::register_components(&mut app)?;
         crate::ui_tree::register(&mut app)?;
+        crate::world_text::register(&mut app)?;
         crate::networking::register(&mut app)?;
         crate::simulation::install(app.world_mut(), simulation)?;
         app.world_mut().insert_resource(RuntimeLog::default());
@@ -250,8 +251,7 @@ impl Runtime {
         self.dispatch_events()?;
         let viewport = self.extract_camera().logical_size;
         let ui_input = self.app.world().resource::<UiModel>().gameplay_frame();
-        let ui_text =
-            crate::ui_tree::BitmapTextBackend::new(&self.content.fonts, &self.content.textures);
+        let ui_text = self.content.ui_text();
         let ui_context = crate::ui_tree::UiTickContext {
             viewport,
             dt,

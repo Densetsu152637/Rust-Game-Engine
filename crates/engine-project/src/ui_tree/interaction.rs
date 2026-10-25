@@ -4,7 +4,7 @@ use super::{
     chrome::{self, Popup},
     layout::Laid,
     navigation::{self, UiDirection},
-    text_edit::{Edit, MemoryClipboard, UiClipboard, UiPreedit, UiTextEvent},
+    text_edit::{Edit, MemoryClipboard, UiClipboard, UiEditKey, UiPreedit, UiTextEvent},
     *,
 };
 use crate::input::ActionFrame;
@@ -534,9 +534,9 @@ impl GameUi {
         }
         // At most one activation per widget per tick when keyboard and pointer coincide.
         if !input.pressed("ui_click") && !input.held("ui_click") {
-            self.keyboard(roots, frame, input, navigated, events);
+            self.keyboard(roots, frame, input, navigated, ctx, events);
         }
-        self.edit_text(roots, frame, events);
+        self.edit_text(roots, frame, ctx, events);
     }
 
     fn hover(
@@ -877,6 +877,22 @@ impl GameUi {
                     events.extend(close_dialog(roots, target, i as i64));
                 }
             }
+            UiWidget::RichLabel { .. } => {
+                let origin = target.bounds.content;
+                let hit = link_regions(roots, target, ctx).into_iter().find(|l| {
+                    contains(
+                        Rect {
+                            x: l.rect.x + origin.x,
+                            y: l.rect.y + origin.y,
+                            ..l.rect
+                        },
+                        pointer,
+                    )
+                });
+                if let Some(link) = hit {
+                    events.push(link_event(roots, target, &link.id));
+                }
+            }
             _ => events.extend(activate(roots, target, Some(pointer), 0)),
         }
     }
@@ -985,6 +1001,7 @@ impl GameUi {
         frame: &Frame,
         input: &ActionFrame,
         navigated: bool,
+        ctx: &UiTickContext<'_>,
         events: &mut Vec<UiWidgetEvent>,
     ) {
         if input.pressed("ui_cancel")
@@ -1083,6 +1100,11 @@ impl GameUi {
                     events.extend(select(roots, target, next, Some(reveal)));
                 }
             }
+            UiWidget::RichLabel { .. } => {
+                if confirm && let Some(link) = link_regions(roots, target, ctx).into_iter().next() {
+                    events.push(link_event(roots, target, &link.id));
+                }
+            }
             _ if horizontal != 0 || confirm => {
                 events.extend(activate(roots, target, None, horizontal));
             }
@@ -1121,6 +1143,7 @@ impl GameUi {
         &mut self,
         roots: &mut [(String, UiRoot)],
         frame: &Frame,
+        ctx: &UiTickContext<'_>,
         events: &mut Vec<UiWidgetEvent>,
     ) {
         let Some(t) = self.focus.as_ref().and_then(|f| frame.find(f)) else {
@@ -1135,6 +1158,11 @@ impl GameUi {
         let mut submitted = false;
         let mut cancelled = false;
         let queue = std::mem::take(&mut self.queue);
+        let (font, scale, color) = {
+            let style = &node(roots, target).style;
+            (style.font.clone(), style.font_scale, style.foreground)
+        };
+        let width = target.bounds.content.width;
         {
             let node = node_mut(roots, target);
             let UiWidget::TextInput {
@@ -1166,6 +1194,30 @@ impl GameUi {
                     }
                     UiTextEvent::Commit(_) => self.preedit = None,
                     _ => {}
+                }
+                // Wrapped inputs move by visual line when the backend has geometry.
+                if let UiTextEvent::Key {
+                    key: key @ (UiEditKey::Up | UiEditKey::Down),
+                    modifiers,
+                } = item
+                    && edit.multiline
+                    && let Some(to) = chrome::vertical_caret(
+                        ctx.text,
+                        &font,
+                        scale,
+                        color,
+                        edit.value,
+                        *edit.caret,
+                        edit.password,
+                        width,
+                        *key == UiEditKey::Down,
+                    )
+                {
+                    *edit.caret = to;
+                    if !modifiers.shift {
+                        *edit.anchor = to;
+                    }
+                    continue;
                 }
                 let outcome = edit.apply(item, clipboard.as_ref());
                 changed |= outcome.changed;
@@ -1492,4 +1544,26 @@ fn activate(
     };
     let node = &*node;
     Some(event(target, node, name, value))
+}
+
+/// Link regions of a rich label, relative to its content box. Empty for
+/// backends without rich text (the bitmap backend) and for unlinked text.
+fn link_regions(
+    roots: &[(String, UiRoot)],
+    target: &Target,
+    ctx: &UiTickContext<'_>,
+) -> Vec<UiLinkRegion> {
+    let node = node(roots, target);
+    let Some((content, kind, _, _)) = layout::display_text(node) else {
+        return vec![];
+    };
+    let request = layout::text_request(node, &content, kind, Some(target.bounds.content.width));
+    ctx.text
+        .layout(&request)
+        .map(|l| l.links)
+        .unwrap_or_default()
+}
+
+fn link_event(roots: &[(String, UiRoot)], target: &Target, id: &str) -> UiWidgetEvent {
+    event(target, node(roots, target), "ui.link_activated", json!(id))
 }

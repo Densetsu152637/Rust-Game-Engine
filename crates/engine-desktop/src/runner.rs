@@ -1,7 +1,7 @@
 use crate::{
     BACKEND_ENV_VAR, CameraView, DlssConfig, DlssRequest, FrameHistory, FramePacer,
     GpuRequirements, NativeRenderPasses, RenderLimits, WgpuBackends, WgpuOptions, WindowSurface,
-    input::{Gamepads, PressLatch, sample_tick, window_input},
+    input::{Gamepads, PressLatch, TextBridge, sample_tick, window_input},
 };
 use anyhow::{Context, Result, ensure};
 use engine_audio::{AudioConfig, AudioEngine};
@@ -10,6 +10,7 @@ use engine_project::{
     input::{ActionMapper, RawInput, merge_input},
     rendering3d::{FrameGenerationControl, UpscalerControl},
     runtime::{InputSettings, RuntimeSnapshot},
+    ui_tree::GameUi,
 };
 use serde::Serialize;
 use std::{
@@ -179,6 +180,7 @@ pub fn run_with_wgpu_backends(
         present_skipped: false,
         previous: BTreeSet::new(),
         latch: PressLatch::default(),
+        text: TextBridge::default(),
         pacer: FramePacer::new(FIXED_DELTA),
         history: FrameHistory::default(),
         last_frame: Instant::now(),
@@ -304,6 +306,8 @@ struct DesktopRunner {
     present_skipped: bool,
     previous: BTreeSet<String>,
     latch: PressLatch,
+    /// Typed text and IME forwarding into the game UI.
+    text: TextBridge,
     pacer: FramePacer,
     /// The last two simulation frames, for presenting between them.
     history: FrameHistory,
@@ -441,6 +445,10 @@ impl DesktopRunner {
         self.runtime
             .enqueue_scheduled_events(&self.options.events, self.ticks)?;
         self.runtime.tick(FIXED_DELTA as f32, input)?;
+        if let Some(host) = &self.surface {
+            let ui = self.runtime.app().world().resource::<GameUi>();
+            self.text.sync(&host.window, ui, &camera);
+        }
         self.event_trace.capture(&self.runtime, self.ticks);
         self.ticks += 1;
         Ok(())
@@ -514,6 +522,14 @@ impl ApplicationHandler for DesktopRunner {
             // Failure to initialize the controller service is propagated. A
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);
+            #[cfg(feature = "system-clipboard")]
+            if let Some(clipboard) = crate::input::clipboard::system_clipboard() {
+                self.runtime
+                    .app_mut()
+                    .world_mut()
+                    .resource_mut::<GameUi>()
+                    .set_clipboard(clipboard);
+            }
             host.present_scene(&frame, Some(self.runtime.app().render_world()))?;
             publish_upscaler_status(&mut self.runtime, &host.renderer);
             self.scene_revision = self.runtime.scene_revision();
@@ -563,6 +579,10 @@ impl ApplicationHandler for DesktopRunner {
         )
         .then(|| self.raw.down.clone());
         window_input(&mut self.raw, &event, &mut self.pointer);
+        self.text.handle(
+            &event,
+            &mut self.runtime.app_mut().world_mut().resource_mut::<GameUi>(),
+        );
         if let Some(before) = before {
             self.latch.note_presses(&before, &self.raw.down);
         }
