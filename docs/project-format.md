@@ -42,8 +42,10 @@ rejected rather than dropped.
 
 Each asset has a stable `id`, a project-relative `path` and a `kind`. Kinds are
 `script`, `mesh`, `texture`, `font`, `font_face`, `font_config`, `audio`, `scene` and `shader`
-(plus `prefab`, `model`, `animation`, `navigation`, `string_table`, `locale_config` and
-`caption_track`; see their pages).
+(plus `prefab`, `model`, `animation`, `navigation`, `string_table`, `locale_config`,
+`caption_track` and `graph`; see their pages). A `graph` asset is one JSON graph
+document (behavior trees today) validated at project load against the kind named in
+the document; see [Graph documents](ai-graphs.md).
 
 - IDs are stable authored identifiers (non-empty, at most 256 bytes, no control
   characters). Moving or renaming a file changes only `path`; scenes keep the ID.

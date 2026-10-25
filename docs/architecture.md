@@ -19,6 +19,7 @@ engine is built this way.
 | `engine-network` | Owned network endpoints, validated input/state and bounded transport work |
 | `engine-audio` | Clips, mixer, spatial sources, binaural/reverb/Doppler acoustic DSP and native CPAL output |
 | `engine-acoustics`, `engine-acoustics-gpu` | Acoustic world, CPU ray-traced propagation and the GPU ray-query/compute tiers; the host injects the GPU tiers into `engine-project` |
+| `engine-graph`, `engine-ai` | Independent graph document model with node registries and edit operations, and the behavior tree compiler/executor built on it; no ECS, window or GPU ownership (`engine-project` binds them to the runtime) |
 | `engine-render`, `engine-render-wgpu` | GPU-free rendering contract and real wgpu implementation |
 | `engine-project` | Authored schemas/catalog, runtime adapters, events, UI, content extraction and scene documents |
 | `engine-desktop` | Window/input/device lifecycle, 2D/3D rendering and headless execution |

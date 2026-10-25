@@ -86,6 +86,14 @@
   rigid-body proxy coupling and renderer outputs.
 - [Navigation meshes](navigation.md): layered polygon NavMesh baking, bounded path
   queries, authored `NavigationAgent` data and MCP navigation tools.
+- [Graph documents](ai-graphs.md): the shared node-graph model (`engine-graph`), the
+  `graph` asset kind, graph kinds and node registries, stable validation codes, atomic
+  edit operations, how a domain adds a kind, and the `graph_schema`, `graph_validate`
+  and `graph_edit` MCP tools.
+- [Behavior trees](ai-behavior-trees.md): the `behavior_tree` graph kind and `engine-ai`
+  runtime: composites, decorators with observer aborts, services, the typed blackboard,
+  `engine.BehaviorTreeAgent`, navigation-driven `move_to`, native tasks, events,
+  telemetry and limits.
 - [Physics library](../crates/engine-physics/README.md),
   [animation library](../crates/engine-animation/README.md), and
   [navigation library](../crates/engine-navigation/README.md): native APIs and limits.
