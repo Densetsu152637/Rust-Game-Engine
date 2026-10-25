@@ -1,0 +1,24 @@
+[package]
+name = "engine-physics-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Render features that draw the physics debug view, cloth, soft bodies, particle fluids and destruction fragments through the render extension API."
+
+[dependencies]
+anyhow.workspace = true
+bevy_ecs.workspace = true
+bytemuck.workspace = true
+engine-core.workspace = true
+engine-project = { path = "../engine-project" }
+engine-render-pipeline = { path = "../engine-render-pipeline" }
+glam.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+engine-render-wgpu.workspace = true
+serde_json = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -277,4 +277,5 @@ contributor hook takes a stateless function pointer, so these segments are not m
   momentum symmetry.
 - No surface tension, multiphase or foam/spray models; the colour-field surface flag is a
   heuristic.
-- Drawing the particles (or a surface) is a rendering-domain follow-up; the data is in `PhysicsRenderData`.
+- Particles draw as sphere impostors through `physics.fluid` ([Physics rendering](physics-rendering.md));
+  a screen-space fluid surface is deferred there.
