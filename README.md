@@ -33,6 +33,7 @@ protocols need an adapter. See [Custom and accessible input](docs/custom-input.m
 | `crates/engine-animation` | Skeletal poses, clip playback, crossfades, events and CPU skinning |
 | `crates/engine-navigation` | Bounded layered polygon NavMesh baking and pathfinding, weighted-grid/graph searches and waypoint following |
 | `crates/engine-text` | CPU text engine: font library with script/language fallback, shaping, bidi, line breaking, rich-text markup, caret geometry, coverage/SDF glyph atlases and a glyph WGSL shader |
+| `crates/engine-locale` | Localization: Project Fluent string tables with plural/gender selection, locale fallback and negotiation, runtime language switch, missing-translation reports, per-locale fonts/assets and pseudo-localization |
 | `crates/engine-network` | Opt-in authoritative sessions over mutual-TLS 1.3 (or explicit plaintext trusted-LAN TCP), ownership-checked input, snapshots and interpolation |
 | `crates/engine-platform` | Explicit host capabilities, unsupported-host errors and native package host metadata |
 | `crates/engine-project` | Authored schemas and typed component catalog, hierarchy, callbacks, simulation/network/UI adapters, runtime snapshots, persistence and transactional scene/prefab editing |
