@@ -500,3 +500,14 @@ fn run(
         carets,
     )
 }
+
+#[cfg(test)]
+mod plain_markup_tests {
+    use super::plain_markup_text;
+
+    #[test]
+    fn unparseable_markup_never_leaks_raw_tags_into_plain_text() {
+        assert_eq!(plain_markup_text("[b]open [size=9999]x"), "open x");
+        assert_eq!(plain_markup_text("[b]Bold[/b]"), "Bold");
+    }
+}

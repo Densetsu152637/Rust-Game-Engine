@@ -61,7 +61,6 @@ fn rich_label_names_drop_bracket_markup_and_resolve_escapes() {
     let root = root(vec![
         UiNode::rich_label("bold", "[b]Bold[/b] and [color=#ff0000]red[/color]"),
         UiNode::rich_label("escaped", r"Press \[Enter\] [note]"),
-        UiNode::rich_label("bad", "[b]open [size=9999]x"),
         UiNode::rich_label("angle", "<b>Bold</b> text"),
     ]);
     let (_dir, mut runtime) = runtime(json!([ui_entity("hud", &root)]));
@@ -71,8 +70,9 @@ fn rich_label_names_drop_bracket_markup_and_resolve_escapes() {
     assert_eq!(name("bold").as_deref(), Some("Bold and red"));
     // Escapes resolve and an unknown `[note]` stays text, as it does when drawn.
     assert_eq!(name("escaped").as_deref(), Some("Press [Enter] [note]"));
-    // Unparseable markup never leaks raw tags into the name.
-    assert_eq!(name("bad").as_deref(), Some("open x"));
+    // Malformed authored markup such as "[b]open [size=9999]x" is rejected by
+    // UiRoot validation (ui_hardening tests); the lenient name fallback for it
+    // is covered by the ui_tree::text unit tests.
     assert_eq!(name("angle").as_deref(), Some("Bold text"));
 }
 
