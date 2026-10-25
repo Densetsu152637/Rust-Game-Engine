@@ -76,6 +76,9 @@ pub enum TextError {
     GlyphTooLarge { width: u32, height: u32, page: u32 },
     /// A glyph outline has more segments than the rasterizer accepts (`text.atlas.glyph_too_complex`).
     GlyphTooComplex { segments: usize, max: usize },
+    /// Distance-field generation for a glyph would cost more than the work budget
+    /// (`text.atlas.glyph_too_expensive`).
+    GlyphTooExpensive { work: u64, max: u64 },
 }
 
 impl TextError {
@@ -98,6 +101,7 @@ impl TextError {
             Self::AtlasFull { .. } => "text.atlas.full",
             Self::GlyphTooLarge { .. } => "text.atlas.glyph_too_large",
             Self::GlyphTooComplex { .. } => "text.atlas.glyph_too_complex",
+            Self::GlyphTooExpensive { .. } => "text.atlas.glyph_too_expensive",
         }
     }
 
@@ -151,6 +155,12 @@ impl fmt::Display for TextError {
             ),
             Self::GlyphTooComplex { segments, max } => {
                 write!(f, "glyph outline has {segments} segments, limit is {max}")
+            }
+            Self::GlyphTooExpensive { work, max } => {
+                write!(
+                    f,
+                    "glyph distance field needs {work}+ steps, limit is {max}"
+                )
             }
         }
     }

@@ -124,3 +124,31 @@ fn markup_bounds_tags_and_length() {
         "text.input.too_long"
     );
 }
+
+#[test]
+fn unterminated_brackets_are_scanned_in_linear_time() {
+    // 250 000 `[` without a `]`: each one used to search the whole remainder.
+    let source = "[".repeat(250_000);
+    let literal = MarkupOptions {
+        unknown_tags: UnknownTagPolicy::Literal,
+        ..MarkupOptions::default()
+    };
+    let started = std::time::Instant::now();
+    let rich = parse_markup(&source, &literal).unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(rich.text, source);
+    assert!(elapsed.as_secs_f32() < 0.5, "took {elapsed:?}");
+    // The authored policy still reports the first one.
+    assert_eq!(kind(&source), MarkupErrorKind::Unterminated);
+}
+
+#[test]
+fn the_closing_bracket_must_be_within_512_bytes_of_the_opening_one() {
+    let within = format!("[{}]", "x".repeat(512));
+    let beyond = format!("[{}]", "x".repeat(513));
+    assert_eq!(kind(&within), MarkupErrorKind::UnknownTag);
+    assert_eq!(kind(&beyond), MarkupErrorKind::Unterminated);
+    // A multi-byte character straddling the window edge does not split.
+    let straddle = format!("[{}é{}", "x".repeat(511), "y".repeat(10));
+    assert_eq!(kind(&straddle), MarkupErrorKind::Unterminated);
+}
