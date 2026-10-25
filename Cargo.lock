@@ -1410,6 +1410,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-ai"
+version = "0.1.0"
+dependencies = [
+ "engine-graph",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-animation"
 version = "0.1.0"
 dependencies = [
@@ -1527,6 +1536,14 @@ name = "engine-fluids"
 version = "0.1.0"
 dependencies = [
  "glam 0.34.1",
+]
+
+[[package]]
+name = "engine-graph"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

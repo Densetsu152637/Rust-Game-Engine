@@ -1,0 +1,14 @@
+[package]
+name = "engine-graph"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+description = "Common node-graph document model, per-kind node registries, validation and pure edit operations"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
