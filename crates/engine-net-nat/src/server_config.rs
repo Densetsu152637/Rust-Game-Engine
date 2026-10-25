@@ -190,10 +190,9 @@ mod tests {
         }
         // The non-secret shape stays visible for diagnostics.
         assert!(format!("{:?}", config.auth).contains("Hmac"));
-        let named = RelayServerConfig::from_json(
-            r#"{"auth":{"mode":"hmac","secret_env":"RELAY_SECRET"}}"#,
-        )
-        .unwrap();
+        let named =
+            RelayServerConfig::from_json(r#"{"auth":{"mode":"hmac","secret_env":"RELAY_SECRET"}}"#)
+                .unwrap();
         assert!(format!("{named:?}").contains("RELAY_SECRET"));
     }
 
