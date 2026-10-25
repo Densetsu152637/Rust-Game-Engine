@@ -3,6 +3,7 @@
 pub mod accessibility;
 pub mod acoustics;
 pub mod audio;
+pub mod captions;
 pub mod catalog;
 pub mod content;
 pub mod document;

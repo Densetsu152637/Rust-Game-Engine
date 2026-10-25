@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 17] = [
+const KINDS: [&str; 18] = [
     "script",
     "mesh",
     "texture",
@@ -19,6 +19,7 @@ const KINDS: [&str; 17] = [
     "font_face",
     "font_config",
     "string_table",
+    "caption_track",
     "locale_config",
     "audio",
     "scene",
@@ -213,6 +214,11 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
                 })
                 .unwrap_or_default();
             json!({"entries": table.entries, "bytes": table.text.len(), "locales": locales})
+        }
+        "caption_track" => {
+            let track = engine_project::captions::load_caption_track(&file)?;
+            json!({"cues": track.cues.len(), "speakers": track.speakers.len(),
+                "duration": track.duration()})
         }
         "locale_config" => {
             let config = engine_project::localization::load_locale_config(&file)?;

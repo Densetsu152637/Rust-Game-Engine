@@ -11,11 +11,11 @@ parts:
   platform accessibility API;
 - **accessibility settings** (`engine.AccessibilitySettings`): UI scale, text scale,
   minimum text size, reduced motion, high-contrast theme, focus ring, colour-vision
-  filter;
+  filter, caption preferences;
 - an **input-remapping screen** generated from the project's action bindings.
 
-Captions and subtitles with speakers and timing are not part of this page; see
-[Deferred](#deferred). The colour-vision filter is a render feature: see
+Captions and subtitles are described in [Captions and subtitles](#captions-and-subtitles).
+The colour-vision filter is a render feature: see
 [Colour-vision filter](#colour-vision-filter).
 
 ## Status
@@ -33,6 +33,8 @@ Captions and subtitles with speakers and timing are not part of this page; see
 | Settings: UI scale, text scale, minimum text size, reduced motion, high-contrast theme, focus ring | implemented | `accessibility` tests |
 | Colour-vision filter (protanopia, deuteranopia, tritanopia, achromatopsia; simulate or daltonize; strength) | implemented for 3D frames (PostProcess stage of `engine-ui-render`); not applied to the 2D sprite/UI layer or 2D-only frames | `cargo test -p engine-project --test ui_gpu`, `-p engine-ui-render` and the ignored GPU test `the_colour_filter_turns_red_and_green_patches_into_the_simulated_colours` |
 | Remapping screen with capture, conflicts, reset, events | implemented | `accessibility` tests |
+| Captions: `caption_track` asset, runtime controller, `engine.CaptionPlayer`, presentation, caption settings, live region, WebVTT/SRT import | implemented | `cargo test -p engine-project --test captions`, `-p engine-mcp --test accessibility` |
+| Captions driven by an audio source's playback position | hook only (`CaptionClock`); `engine-audio` exposes no position clock yet | see [Time source](#time-source) |
 | Text selection and caret exposed to AT | not implemented | see [Limits](#limits) |
 
 ## Tree model
@@ -451,10 +453,165 @@ for event in controller.tick(world)? { /* RemapEvent */ }
   refused, not clamped.
 - `uiScale` text sharpness: see [UI scale](#ui-scale).
 
+## Captions and subtitles
+
+Captions are timed text with speakers. They have three parts: the `caption_track`
+asset, the runtime `Captions` controller with the authored `engine.CaptionPlayer`
+component, and a generated caption UI. Code is in `engine_project::captions`.
+
+### The `caption_track` asset
+
+A JSON file registered with kind `caption_track` (editable with the generic asset and file
+tools; `asset_info` reports cue and speaker counts and the duration):
+
+```json
+{ "version": 1,
+  "speakers": [ {"id": "ana", "name": "Ana", "color": [1.0, 0.8, 0.2, 1.0]},
+                {"id": "bo",  "name": "@speaker-bo"} ],
+  "cues": [
+    {"id": "a", "start": 0.0, "end": 2.0, "speaker": "ana", "text": "Hello [b]there[/b]"},
+    {"id": "b", "start": 1.0, "end": 3.0, "speaker": "bo",  "text": "@greeting", "priority": 2},
+    {"id": "c", "start": 1.5, "end": 2.5, "text": "door creaks", "category": "sound_effect"} ] }
+```
+
+| Field | Rule |
+| --- | --- |
+| `version` | `1`. |
+| `speakers[].id` | 1 to 64 characters of `A-Za-z0-9_-.`, unique. At most 64 speakers. |
+| `speakers[].name` | 1 to 128 bytes; a message reference (`@key`) is localized. |
+| `speakers[].color` | RGBA 0 to 1, default white; colours the name. |
+| `cues[].id` | Same rule, unique. At most 20000 cues. |
+| `cues[].start`, `end` | Seconds within 0 to 1000000, `end` after `start`. A cue is visible while `start <= t < end` (start inclusive, end exclusive). |
+| `cues[].speaker` | Optional; must name a speaker of the track. |
+| `cues[].text` | 1 to 1024 bytes; [rich-text markup](text.md), or a message reference (`@key`, `@@` escapes an `@`). Markup is validated at load unless the text is a reference. |
+| `cues[].priority` | Integer, default 0. |
+| `cues[].category` | `dialogue` (default), `sound_effect` or `music`. |
+
+Overlapping cues are allowed. Files are at most 4 MiB. Errors have stable codes:
+`captions.track.parse`, `.version`, `.bounds`, `captions.file.too_large`,
+`captions.speaker.id`, `.name`, `.color`, `.unknown`, `captions.cue.id`, `.time`, `.range`,
+`.text`, `.markup`, `.priority`. Project loading (`Project::load`) validates every
+`caption_track` asset and reports the file.
+
+**Import.** `captions::import::import_captions(text)` (and `import_captions_file(path)`)
+converts WebVTT (starts with `WEBVTT`) or SRT into the same model: timings
+(`hh:mm:ss.mmm`, `mm:ss.mmm`, SRT `hh:mm:ss,mmm`), identifiers, multi-line text,
+`<b>`, `<i>`, `<u>` (to `[b]`, `[i]`, `[u]`), HTML entities `&amp; &lt; &gt; &nbsp;`.
+**Voice tags** `<v Speaker>text</v>` create a speaker (ID from the name, colours cycling
+through a six-colour palette) and set the cue's speaker. A cue whose whole text is in square
+brackets (`[door creaks]`) becomes a `sound_effect` cue without the brackets. Other tags,
+cue settings after the end time, `NOTE`, `STYLE` and `REGION` blocks are dropped. The result
+is validated; bad timings give `captions.import.timing`. The importer is a library function;
+there is no dedicated MCP tool, write the result with the file tools.
+
+### Runtime controller
+
+`Captions` is a resource (`world.resource_mut::<Captions>()`), loaded with every
+`caption_track` asset of the project under its asset ID.
+
+```rust,ignore
+let mut captions = world.resource_mut::<Captions>();
+let id = captions.play("intro", PlayOptions { offset: 4.0, looping: false, clock: None })?;
+captions.seek(id, 12.5)?;      // takes effect on the next advance
+captions.stop(id);
+captions.push(AdHocCue::new("Look out!", 2.0).spoken(guard_speaker))?; // expires after 2 s
+captions.clear();               // stops everything and drops ad-hoc cues
+captions.insert_track("custom", track)?;   // a track built in code
+```
+
+| Call | Result |
+| --- | --- |
+| `play(track, options)` | `PlaybackId`; `captions.track.unknown`, `captions.playback.limit` (32 at once) |
+| `seek(id, seconds)` | `captions.playback.unknown`, `captions.playback.offset` |
+| `push(cue)` | ad-hoc ID; duration within (0, 3600] seconds, at most 64 at once |
+| `active()` | cues visible now, oldest first (`ActiveCue`: speaker resolved, authored text) |
+| `advance(dt)` | moves clocks, returns `CaptionEvent`s; the runtime calls it every tick |
+
+A finished non-looping playback is removed. `captions.cue_started` and
+`captions.cue_ended` are emitted as engine events (payload `cue`, `playback`, `speaker`,
+`text`, `category`) for every cue that appears or disappears, including cues hidden by the
+display preferences; handlers see them one tick later like every engine event.
+
+#### Time source
+
+By default a playback's position advances with the runtime tick time (`dt`). `PlayOptions.clock`
+takes a `CaptionClock` (`Arc<dyn Fn() -> Option<f64> + Send + Sync>`) returning the position
+in seconds; it replaces tick time for that playback (`None` holds the last position; such a
+playback stays until stopped). This is the hook for audio: `engine-audio` exposes no playback
+position yet (a streaming source with a playback clock is a pending cross-domain request), so
+today the clock must come from your own code. `advance(0.0)` re-evaluates without moving time.
+
+### `engine.CaptionPlayer`
+
+Plays a track while its entity exists. Editable with `component_set`.
+
+| Field | Range, default | Effect |
+| --- | --- | --- |
+| `track` | asset ID, empty | The `caption_track` to play; empty plays nothing. An unknown track is recorded in `Captions::errors()`. |
+| `autoplay` | true | Start when the component appears or changes. With false, start tracks from code. |
+| `loop` | false | Restart at 0 after the last cue. |
+| `offset` | 0 to 1000000 s, 0 | Starting position. |
+| `font` | font key, empty | Font of the caption text (a `font_face` family or bitmap font). |
+| `bottomMargin` | 0 to 2000 px, 48 | Safe-area margin below the captions (UI pixels). |
+| `maxWidth` | 0.2 to 1, 0.8 | Widest caption as a fraction of the viewport; longer text wraps. |
+
+The lowest entity carrying the component supplies `font`, `bottomMargin` and `maxWidth`.
+`Captions.style` holds the same values (plus text and background colour) for native code.
+
+### Presentation
+
+Each tick, before the UI tick, the runtime builds a `UiRoot` with the authored ID
+`captions` and writes it to a generated entity (not part of the scene). It is an ordinary
+root: themes and [stylesheets](ui-styling.md) can target `captions` and its `captions.cue.N`
+labels, and it is drawn by the same extraction as all UI, so `uiScale` applies.
+
+- **Layer.** `CAPTION_LAYER` (1000000): above ordinary UI roots, below the modal-dialog
+  layer (`UI_DIALOG_LAYER`) and popup layer (`UI_POPUP_LAYER`), so dialogs and dropdowns draw
+  over captions.
+- **Layout.** A transparent full-screen column, cues centred and stacked bottom up with
+  `bottomMargin` below, one rich label per cue with padding 8 and a box of
+  `captionBackgroundOpacity` in the vertex colour alpha (black by default), at most
+  `maxWidth` of the viewport wide.
+- **Order.** Cues appear oldest first (top) to newest (bottom). When more cues are active
+  than `captionMaxLines`, the highest `priority` stay, and among equal priorities the most
+  recently started.
+- **Text.** Dialogue is `[color=#rrggbb]Name:[/color] text`, the name in the speaker's
+  colour (when `captionSpeakerNames` is on). `sound_effect` and `music` cues are shown as
+  `[text]`, with the brackets escaped, unless `captionSoundEffects` is off.
+- **Localization.** Cue text and speaker names that are `@key` references resolve through
+  `Localization` each tick, so a language switch re-resolves them on the next tick; an
+  invalid translation is shown literally.
+- **Bitmap fonts.** The bracket markup needs the `engine-text` backend (`font_face` assets).
+  A project without any renders cue labels as plain text (no speaker colour, no emphasis).
+
+Caption settings are fields of `engine.AccessibilitySettings` (and of
+`AccessibilityControl::settings`):
+
+| Field | Range, default | Effect |
+| --- | --- | --- |
+| `captionsEnabled` | true | Off removes the caption root; playback and events continue. |
+| `captionTextScale` | 0.5 to 4, 1 | Caption `fontScale`, multiplied by `textScale` and the minimum text size rule. |
+| `captionBackgroundOpacity` | 0 to 1, 0.6 | Alpha of the box behind each cue. |
+| `captionSpeakerNames` | true | Show the speaker prefix. |
+| `captionMaxLines` | 1 to 8, 3 | Most cues shown at once (each cue may wrap onto several lines). |
+| `captionSoundEffects` | true | Show `sound_effect` and `music` cues. |
+
+### Screen readers
+
+The caption root's panel is a `status` node named "Captions" with a **polite live region**
+(`accessibility.live`). Each visible cue is a child label whose accessible name is the plain
+text, speaker prefix included, with the markup removed. When the cue set changes the
+platform adapter announces the change. The root entity is created when the first cue appears
+(a project that never shows a caption has no extra entity) and then stays. Verified in the neutral `AccessTree`
+(`the_live_region_carries_the_active_cue_text_in_the_access_tree`); how a screen reader
+speaks it is not verified (see [Platform status](#platform-status)). The region is absent
+when `captionsEnabled` is off, and removed while a modal dialog is open (see
+[Visibility rules](#visibility-rules)).
+
 ## Deferred
 
-- **Captions and subtitles** with speakers and timing come in the next UI leaf; they
-  use `AccessibilitySettings` for their own options.
+- **Captions from an audio playback position.** `engine-audio` has no
+  playback-position clock yet; use a `CaptionClock` (see [Time source](#time-source)).
 - **Colour-vision filter on the 2D sprite/UI layer and in 2D-only games.** The filter
   needs a stage that reads the composited image; the Overlay stage cannot (see
   [ui-render.md](ui-render.md#not-implemented)).

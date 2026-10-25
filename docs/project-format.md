@@ -42,8 +42,8 @@ rejected rather than dropped.
 
 Each asset has a stable `id`, a project-relative `path` and a `kind`. Kinds are
 `script`, `mesh`, `texture`, `font`, `font_face`, `font_config`, `audio`, `scene` and `shader`
-(plus `prefab`, `model`, `animation`, `navigation`, `string_table` and `locale_config`; see
-their pages).
+(plus `prefab`, `model`, `animation`, `navigation`, `string_table`, `locale_config` and
+`caption_track`; see their pages).
 
 - IDs are stable authored identifiers (non-empty, at most 256 bytes, no control
   characters). Moving or renaming a file changes only `path`; scenes keep the ID.

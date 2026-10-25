@@ -152,6 +152,18 @@ pub struct AccessibilitySettings {
     pub color_filter_mode: ColorFilterMode,
     /// Blend between the unfiltered scene (0) and the full filter (1).
     pub color_filter_strength: f32,
+    /// Show captions (`docs/accessibility.md#captions-and-subtitles`).
+    pub captions_enabled: bool,
+    /// Multiplier of the caption text size, on top of `textScale` (`0.5..=4`).
+    pub caption_text_scale: f32,
+    /// Opacity of the box behind each caption (`0..=1`).
+    pub caption_background_opacity: f32,
+    /// Prefix dialogue with the speaker's name.
+    pub caption_speaker_names: bool,
+    /// Most captions shown at once (`1..=8`).
+    pub caption_max_lines: u32,
+    /// Show captions for sounds and music (bracketed descriptions).
+    pub caption_sound_effects: bool,
 }
 
 impl Default for AccessibilitySettings {
@@ -169,6 +181,12 @@ impl Default for AccessibilitySettings {
             color_filter: ColorFilterKind::None,
             color_filter_mode: ColorFilterMode::Simulate,
             color_filter_strength: 1.0,
+            captions_enabled: true,
+            caption_text_scale: 1.0,
+            caption_background_opacity: 0.6,
+            caption_speaker_names: true,
+            caption_max_lines: 3,
+            caption_sound_effects: true,
         }
     }
 }
@@ -206,6 +224,15 @@ impl AccessibilitySettings {
         if !within(self.color_filter_strength, 0.0, 1.0) {
             return Err(invalid("colorFilterStrength must be within 0..=1"));
         }
+        if !within(self.caption_text_scale, MIN_TEXT_SCALE, MAX_TEXT_SCALE) {
+            return Err(invalid("captionTextScale must be within 0.5..=4"));
+        }
+        if !within(self.caption_background_opacity, 0.0, 1.0) {
+            return Err(invalid("captionBackgroundOpacity must be within 0..=1"));
+        }
+        if !(1..=crate::captions::MAX_CAPTION_LINES).contains(&self.caption_max_lines) {
+            return Err(invalid("captionMaxLines must be within 1..=8"));
+        }
         if self.color_filter == ColorFilterKind::Achromatopsia
             && self.color_filter_mode == ColorFilterMode::Correct
         {
@@ -222,6 +249,18 @@ impl AccessibilitySettings {
             kind: self.color_filter,
             mode: self.color_filter_mode,
             strength: self.color_filter_strength,
+        }
+    }
+
+    /// The caption preferences these settings request.
+    pub fn caption_settings(&self) -> crate::captions::CaptionSettings {
+        crate::captions::CaptionSettings {
+            enabled: self.captions_enabled,
+            text_scale: self.caption_text_scale,
+            background_opacity: self.caption_background_opacity,
+            speaker_names: self.caption_speaker_names,
+            max_lines: self.caption_max_lines,
+            sound_effects: self.caption_sound_effects,
         }
     }
 
@@ -354,7 +393,13 @@ pub fn descriptor() -> ComponentDescriptor {
             "highContrastTheme":{"type":"string","minLength":1,"maxLength":64},
             "colorFilter":{"type":"string","enum":["none","protanopia","deuteranopia","tritanopia","achromatopsia"]},
             "colorFilterMode":{"type":"string","enum":["simulate","correct"]},
-            "colorFilterStrength":{"type":"number","minimum":0,"maximum":1}
+            "colorFilterStrength":{"type":"number","minimum":0,"maximum":1},
+            "captionsEnabled":{"type":"boolean"},
+            "captionTextScale":{"type":"number","minimum":MIN_TEXT_SCALE,"maximum":MAX_TEXT_SCALE},
+            "captionBackgroundOpacity":{"type":"number","minimum":0,"maximum":1},
+            "captionSpeakerNames":{"type":"boolean"},
+            "captionMaxLines":{"type":"integer","minimum":1,"maximum":crate::captions::MAX_CAPTION_LINES},
+            "captionSoundEffects":{"type":"boolean"}
         }}),
         defaults: serde_json::to_value(AccessibilitySettings::default())
             .expect("defaults serialize"),

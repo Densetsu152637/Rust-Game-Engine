@@ -37,6 +37,7 @@ impl Project {
                 "font_face",
                 "font_config",
                 "string_table",
+                "caption_track",
                 "locale_config",
                 "audio",
                 "scene",
@@ -246,6 +247,9 @@ impl Project {
                 }
                 "string_table" => {
                     crate::localization::load_string_table(&file)?;
+                }
+                "caption_track" => {
+                    crate::captions::load_caption_track(&file)?;
                 }
                 "script" => {
                     read_bounded(&file, 1024 * 1024)?;
