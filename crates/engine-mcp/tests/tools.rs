@@ -377,6 +377,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.PhysicsSettings",
         "engine.SkinBinding",
         "engine.UiRoot",
+        "engine.Vehicle3D",
     ]);
     assert_eq!(names, expected);
     assert!(result["scene_rules"].as_array().unwrap().len() >= 4);

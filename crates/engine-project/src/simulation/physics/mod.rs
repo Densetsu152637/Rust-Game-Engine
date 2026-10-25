@@ -32,6 +32,7 @@ mod request;
 mod settings;
 mod stepping;
 mod types;
+mod vehicles;
 pub use api::*;
 pub(crate) use bodies::Bodies;
 pub use character::{
@@ -61,6 +62,12 @@ pub use settings::{
 };
 pub use stepping::{Interpolation, StepStatus, interpolation_alpha, step_status};
 pub use types::*;
+pub use vehicles::{
+    AntiRollSettings, CastKind, CurveSettings, DifferentialKind, DifferentialSettings,
+    EngineSettings, GearMode, GearboxSettings, InputMapping, SteeringSettings, TyreSettings,
+    Vehicle3D, VehicleReadout, WheelReadout, WheelSettings, set_vehicle_controls, vehicle_set_gear,
+    vehicle_shift_down, vehicle_shift_up, vehicle_state, vehicle_wheel_pose, vehicle_wheels,
+};
 
 /// Physics features in execution order. Add one entry per feature.
 fn features() -> Vec<Box<dyn Feature>> {
@@ -69,6 +76,7 @@ fn features() -> Vec<Box<dyn Feature>> {
         Box::new(joints::Joints::new()),
         Box::new(character::Characters::new()),
         Box::new(destruction::Destruction),
+        Box::new(vehicles::Vehicles::new()),
     ]
 }
 
