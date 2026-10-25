@@ -1,6 +1,7 @@
 //! `GameUi`: focus, pointer capture, hover/tooltips, popups, modal stacking,
 //! keyboard/gamepad navigation and text editing over retained roots.
 use super::{
+    accessibility::{AccessInput, AccessState},
     chrome::{self, Popup},
     layout::Laid,
     navigation::{self, UiDirection},
@@ -165,6 +166,12 @@ pub struct GameUi {
     ime_area: Option<Rect>,
     clipboard: Clipboard,
     states: BTreeMap<UiInteraction, UiStateFlags>,
+    /// Keyboard navigation moved focus this tick: scroll it into view.
+    reveal_focus: bool,
+    /// UI scale of the last tick (layout units to window pixels); 0 means 1.
+    ui_scale: f32,
+    /// Accessibility tree, assistive-technology requests and their outcomes.
+    access: AccessState,
 }
 
 struct Target {
@@ -233,12 +240,26 @@ impl Frame {
             let bounds = &frame.laid.boxes[*b];
             let node = &root.tree.nodes[bounds.node];
             let visible = bounds.visible();
+            // A focusable widget scrolled out of a scroll view stays a target,
+            // so keyboard navigation can reach it (focus then scrolls it into
+            // view). It has no visible area, so pointer hits cannot land on it.
+            let scrolled_out = node.widget.focusable()
+                && node.nav.focusable != Some(false)
+                && bounds.rect.width > 0.0
+                && bounds.rect.height > 0.0
+                && bounds.clip.width > 0.0
+                && bounds.clip.height > 0.0
+                && frame.laid.hierarchy.ancestors(bounds.node).any(|a| {
+                    matches!(
+                        root.tree.nodes[a].widget,
+                        UiWidget::ScrollView { .. } | UiWidget::VirtualList { .. }
+                    )
+                });
             if root.enabled
                 && bounds.enabled
                 && bounds.item.is_none()
                 && node.widget.interactive()
-                && visible.width > 0.0
-                && visible.height > 0.0
+                && ((visible.width > 0.0 && visible.height > 0.0) || scrolled_out)
             {
                 targets.push(Target {
                     frame: *f,
@@ -352,9 +373,10 @@ impl GameUi {
 
     /// Visible tooltip: owner, text and anchor point.
     pub fn tooltip(&self) -> Option<(&UiInteraction, &str, [f32; 2])> {
+        let scale = self.scale();
         self.tooltip
             .as_ref()
-            .map(|t| (&t.key, t.text.as_str(), t.at))
+            .map(|t| (&t.key, t.text.as_str(), [t.at[0] * scale, t.at[1] * scale]))
     }
 
     /// Focused text input, when the platform should enable IME/text entry.
@@ -364,7 +386,26 @@ impl GameUi {
 
     /// Absolute caret rectangle of the focused text input (IME candidate placement).
     pub fn ime_area(&self) -> Option<Rect> {
-        self.ime_area
+        let scale = self.scale();
+        self.ime_area.map(|r| Rect {
+            x: r.x * scale,
+            y: r.y * scale,
+            width: r.width * scale,
+            height: r.height * scale,
+        })
+    }
+
+    /// UI scale applied to the last tick (1 without accessibility settings).
+    pub fn scale(&self) -> f32 {
+        if self.ui_scale > 0.0 {
+            self.ui_scale
+        } else {
+            1.0
+        }
+    }
+
+    pub(super) fn set_scale(&mut self, scale: f32) {
+        self.ui_scale = scale;
     }
 
     pub fn preedit(&self) -> Option<&UiPreedit> {
@@ -392,8 +433,14 @@ impl GameUi {
 
     pub fn clear(&mut self) {
         let clipboard = self.clipboard.clone();
+        let access = AccessState {
+            enabled: self.access.enabled,
+            hint: self.access.hint,
+            ..Default::default()
+        };
         *self = Self {
             clipboard,
+            access,
             ..Default::default()
         };
     }
@@ -445,13 +492,20 @@ impl GameUi {
         let frame = Frame::build(roots, ctx)?;
         self.retain(&frame, roots);
         let mut events = vec![];
+        self.apply_access(roots, &frame, &mut events);
         if !input.focused {
             self.suspend();
         } else {
             self.step(roots, &frame, input, ctx, &mut events);
         }
         self.queue.clear();
+        if std::mem::take(&mut self.reveal_focus)
+            && let Some(focus) = self.focus.clone()
+        {
+            self.scroll_into_view(roots, &frame, &focus.root, &focus.node, None, &mut events);
+        }
         self.refresh(roots, &frame, input, ctx);
+        self.build_access(roots, &frame);
         Ok(events)
     }
 
@@ -696,7 +750,9 @@ impl GameUi {
     fn navigate(&mut self, roots: &[(String, UiRoot)], frame: &Frame, input: &ActionFrame) -> bool {
         let before = self.focus.clone();
         self.move_focus(roots, frame, input);
-        self.focus != before
+        let moved = self.focus != before;
+        self.reveal_focus |= moved;
+        moved
     }
 
     fn move_focus(&mut self, roots: &[(String, UiRoot)], frame: &Frame, input: &ActionFrame) {
@@ -1527,15 +1583,7 @@ fn activate(
             } else {
                 return None;
             };
-            // Calculate in f64 so a tiny positive step cannot overflow quantization.
-            let steps = ((candidate as f64 - *min as f64) / *step as f64).round();
-            *value = if candidate >= *max {
-                *max
-            } else if candidate <= *min {
-                *min
-            } else {
-                (steps * *step as f64 + *min as f64).clamp(*min as f64, *max as f64) as f32
-            };
+            *value = quantize(candidate, *min, *max, *step);
             if *value == previous {
                 return None;
             }
@@ -1545,6 +1593,19 @@ fn activate(
     };
     let node = &*node;
     Some(event(target, node, name, value))
+}
+
+/// `candidate` snapped to the slider step grid and clamped to its range.
+fn quantize(candidate: f32, min: f32, max: f32, step: f32) -> f32 {
+    // Calculate in f64 so a tiny positive step cannot overflow quantization.
+    let steps = ((candidate as f64 - min as f64) / step as f64).round();
+    if candidate >= max {
+        max
+    } else if candidate <= min {
+        min
+    } else {
+        (steps * step as f64 + min as f64).clamp(min as f64, max as f64) as f32
+    }
 }
 
 /// Link regions of a rich label, relative to its content box. Empty for
@@ -1568,3 +1629,5 @@ fn link_regions(
 fn link_event(roots: &[(String, UiRoot)], target: &Target, id: &str) -> UiWidgetEvent {
     event(target, node(roots, target), "ui.link_activated", json!(id))
 }
+
+mod access;

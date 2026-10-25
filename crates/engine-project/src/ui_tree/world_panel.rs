@@ -465,6 +465,8 @@ pub(super) fn extract(
         };
         let effective = effective_for_render(world, &panel.id, &panel.root, &by_root)?;
         let root = effective.as_ref().unwrap_or(&panel.root);
+        let scaled_text = crate::accessibility::UiScaling::of(world).text_scaled(root, text);
+        let root = scaled_text.as_ref().unwrap_or(root);
         let mut state = ui.map(|u| u.render_state(&panel.id)).unwrap_or_default();
         state.themed = effective.is_some();
         if let (Some(data), Some(bindings)) = (data, bindings) {

@@ -72,6 +72,7 @@ impl Runtime {
             .insert_resource(ProjectResource(Arc::new(project.clone())));
         crate::simulation::register_components(&mut app)?;
         crate::ui_tree::register(&mut app)?;
+        crate::accessibility::register(&mut app)?;
         crate::world_text::register(&mut app)?;
         crate::networking::register(&mut app)?;
         crate::simulation::install(app.world_mut(), simulation)?;
