@@ -206,8 +206,11 @@ irradiance without shadows), `engine_light_visibility(light, world, n)`,
 `engine_cascade_index(light, world)` (debug views), `engine_cluster_index(frag,
 depth)`, `engine_view_depth(world)`, `engine_range_window` and
 `engine_distance_falloff`. Every function is valid in non-uniform control flow
-(no derivatives). The sprite implementation of `engine::material` provides the
-same functions returning no lighting, so one material compiles for both targets.
+(no derivatives). The sprite implementation of `engine::material` provides
+`engine::brdf` and unlit stand-ins for `engine_direct_lighting`,
+`engine_light_contribution`, `engine_light_incident`, `engine_light_visibility`,
+`engine_cascade_index` and `engine_view_depth`, so a material using those
+compiles for both targets.
 
 ## Native API
 

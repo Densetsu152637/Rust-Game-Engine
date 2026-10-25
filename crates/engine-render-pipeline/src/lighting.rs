@@ -816,6 +816,8 @@ impl ViewLighting {
         uniform: &wgpu::Buffer,
         frame: &LightingFrame<'_>,
     ) -> Result<u32> {
+        // A copy encoded by a frame that failed before submission never ran.
+        self.readback.encoded = false;
         self.collect_readback(gpu);
         let plan = plan_lights(frame)?;
         let device = &gpu.device;
