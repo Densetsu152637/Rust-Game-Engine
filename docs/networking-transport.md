@@ -82,19 +82,28 @@ and a version-1 peer receiving a data frame closes on the malformed frame, so
 mixed versions fail closed. Existing JSON message shapes and behaviour are
 unchanged.
 
-**One socket drain, two event APIs.** `Server::poll -> ServerEvent` (used by
-`engine_project::networking`) and `MessageEndpoint::poll -> LinkEvent` share the
-same drain. Items one API cannot represent are retained for the other instead of
-being lost: data payloads received by the legacy poll wait for the trait poll,
-and `Input`/`InputRejected` (server) or `Snapshot` notifications (client)
-received by the trait poll wait for the next legacy poll. Snapshots are always
-applied to `Client::state()`. Retention is bounded per peer by
-`Limits::max_queued_frames`; at the bound the peer's socket is not read, so TCP
-backpressure reaches the sender. While a peer is blocked this way its idle timer
-does not fire (local backpressure is not peer idleness). Drive each endpoint
-through one API in production; the retention exists so mixing never loses data.
-The inherent `Client::poll`/`Client::disconnect` shadow the trait methods; call
-the trait through a generic `E: MessageEndpoint` or
+**Two event APIs, latched on first poll.** An endpoint is driven through either
+`Server::poll`/`Client::poll` (legacy replication events, used by
+`engine_project::networking`) or `MessageEndpoint::poll -> LinkEvent`. The first
+poll call latches that API; calling the other poll afterwards returns
+`Error::Invalid` and drains nothing. A message the latched API cannot represent
+is a protocol error, never retained:
+
+| Endpoint | Latched API | Unrepresentable message | Result |
+|---|---|---|---|
+| Server | legacy | data frame | peer disconnected, "unexpected client message" |
+| Server | lanes | `Input` command | peer disconnected, "unexpected client message" |
+| Client | legacy | data frame | disconnected, "unexpected server message or version" |
+| Client | lanes | snapshot | applied to `Client::state()`; no notification |
+
+`Input` under the lane API disconnects rather than drop-and-count because a
+lane-driven server has no input path, so an `Input` sender is a mismatched or
+hostile peer. Because nothing is held for another API, every poll reads every
+peer, no peer is ever exempt from `idle_timeout`, and `disconnect` leaves no
+per-peer items behind (memory stays bounded across reconnects). Sending through
+`MessageEndpoint::send`, `send_input` or `publish_snapshot` is independent of the
+latch. The inherent `Client::poll`/`Client::disconnect` shadow the trait
+methods; call the trait through a generic `E: MessageEndpoint` or
 `MessageEndpoint::poll(&mut client, budget)`.
 
 TCP `LinkStats` count framed plaintext bytes and frames; `rtt_ms`,
@@ -350,8 +359,11 @@ hosts:
 
 - TCP: every delivery and lane round-trips in order over plaintext and mutual
   TLS (Authenticated before Connected), size/lane/peer rejection, `QueueFull`
-  for reliable and counted drops for unreliable, legacy and trait polls sharing
-  one drain without loss beyond the retention cap, caller rustls configs with
+  for reliable and counted drops for unreliable, the first poll latching the
+  event API (snapshots still applied under lanes), a peer flooding 33 messages
+  the latched API cannot represent (data under legacy, `Input` under lanes, data
+  to a legacy client) dropped within `idle_timeout` with its single slot
+  reusable, caller rustls configs with
   early data, tickets and missing ALPN corrected and interoperating (policy runs
   once per connection), a caller server config without client auth failing
   closed, and `ConditionedEndpoint` delaying everything (>= 40 ms), dropping and
