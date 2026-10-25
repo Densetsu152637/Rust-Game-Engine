@@ -14,11 +14,16 @@ use bevy_ecs::prelude::*;
 use engine_core::EngineApp;
 
 mod component;
+mod request;
 mod service;
 
 pub use component::{
     BUOYANCY, BuoyancyComponent, MAX_BUOYANCY_POINTS, WATER_BODY, WaterBodyComponent, WaterKind,
     WaterRenderMode, WaterShoreline, WaveModel, WaveSettings, validate_scene,
+};
+pub use request::{
+    MAX_SAMPLE_POINTS, MAX_SAMPLE_TICKS, SampleReport, SampledBody, SampledFog, SampledPoint,
+    sample_scene,
 };
 pub use service::{
     BuoyancyStatus, MAX_BUOYANT_BODIES, MAX_WATER_BODIES, UnderwaterView, WaterClock,

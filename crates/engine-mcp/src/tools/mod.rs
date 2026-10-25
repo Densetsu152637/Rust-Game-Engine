@@ -15,6 +15,7 @@ mod scene;
 mod streaming;
 mod terrain;
 mod tilemap;
+mod water;
 
 pub use components::{COMPONENT_NAMES, ComponentDoc, component_docs};
 
@@ -87,6 +88,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(pcg::tools());
     tools.extend(streaming::tools());
     tools.extend(terrain::tools());
+    tools.extend(water::tools());
     tools
 }
 

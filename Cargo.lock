@@ -1280,6 +1280,7 @@ dependencies = [
  "engine-streaming",
  "engine-terrain",
  "engine-tilemap",
+ "engine-water",
  "glam 0.34.1",
  "regex",
  "serde",

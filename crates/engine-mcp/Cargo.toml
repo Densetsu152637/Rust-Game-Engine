@@ -11,6 +11,7 @@ engine-project = { path = "../engine-project" }
 engine-streaming = { path = "../engine-streaming" }
 engine-terrain = { path = "../engine-terrain" }
 engine-tilemap = { path = "../engine-tilemap" }
+engine-water = { path = "../engine-water" }
 base64.workspace = true
 blake3 = "1"
 glam.workspace = true

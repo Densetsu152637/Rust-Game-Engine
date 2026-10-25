@@ -98,12 +98,12 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 46);
+    assert_eq!(names.len(), 48);
     // Registration order: the 12 original read tools, the 8 original write
     // tools, then the navigation pair (bake writes, query only reads), then the
     // acoustics tools (inspect and query read, bake writes), then the physics pair (both read).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 22);
+    assert_eq!(read_only_names.len(), 24);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -138,6 +138,9 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(names[40..45], WRITE_TOOLS[19..]);
     assert_eq!(names[45], "terrain_info");
     assert_eq!(read_only_names[21], "terrain_info");
+    // Then the water family: two read-only tools (bodies are authored with component_set).
+    assert_eq!(names[46..48], ["water_sample", "water_spectrum"]);
+    assert_eq!(read_only_names[22..24], ["water_sample", "water_spectrum"]);
     assert_eq!(WRITE_TOOLS[8], "navigation_bake");
     assert_eq!(WRITE_TOOLS[9], "acoustics_bake");
     assert_eq!(WRITE_TOOLS[14..17], ["pcg_create", "pcg_edit", "pcg_run"]);
