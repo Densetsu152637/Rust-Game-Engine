@@ -118,7 +118,9 @@ impl ComponentCatalog {
                     let id = reference
                         .as_str()
                         .ok_or_else(|| invalid("Entity reference must be a string"))?;
-                    if !scene.entities.iter().any(|e| e.id == id) {
+                    // The empty string is the schema-friendly "no reference" of string fields
+                    // (`engine.Foliage.terrain`, `engine.LargeWorld.anchor`, ...).
+                    if !id.is_empty() && !scene.entities.iter().any(|e| e.id == id) {
                         return Err(invalid(format!("Unknown entity reference {id}")));
                     }
                 }

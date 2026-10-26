@@ -340,6 +340,8 @@ fn create(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
         zones: &zones,
         holes: ground.holes(),
         max_instances,
+        // Authored files hold absolute positions: the local frame is the absolute one.
+        origin: [0.0; 2],
     };
     let result = scatter(&types, ground.surface(), &params).map_err(failure)?;
     let bytes = asset::encode(&types, &result.field).map_err(failure)?;
@@ -398,6 +400,7 @@ fn paint_tool(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
         zones: &[],
         holes: ground.holes(),
         max_instances: engine_foliage::MAX_INSTANCES,
+        origin: [0.0; 2],
     };
     let (mut added, mut removed) = (0usize, 0usize);
     for (index, op) in ops.iter().enumerate() {

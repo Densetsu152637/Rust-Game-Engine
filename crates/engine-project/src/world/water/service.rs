@@ -6,7 +6,7 @@ use super::component::{
 };
 use crate::content::{Mesh, Vertex};
 use crate::rendering3d::{Camera3D, MeshMaterial};
-use crate::runtime::AuthoredId;
+use crate::runtime::{AuthoredId, RuntimeLog};
 use crate::simulation::physics::{self, Motion, PhysicsBody3D, Shape};
 use crate::world::terrain::TerrainComponent;
 use crate::{Error, GeometryOverride, MeshRenderer, Parent, Result, Transform};
@@ -147,6 +147,9 @@ struct Body {
     mesh_counts: (usize, usize),
     render_path: &'static str,
     notes: Vec<String>,
+    /// Wave time of the current surface in seconds (`clock * time_scale`), for telemetry; the
+    /// waves themselves are evaluated from the f64 clock (see [`advance`]).
+    wave_time: f32,
 }
 
 /// Runtime water state, one entry per `engine.WaterBody` entity.
@@ -158,6 +161,9 @@ pub struct Waters {
     previous: BTreeMap<Entity, Vec3>,
     ground: Arc<Ground>,
     revisions: u64,
+    /// Water bodies skipped by the last tick and why (more than [`MAX_WATER_BODIES`] bodies, a
+    /// singular transform, an invalid wave setup). The rest of the world keeps ticking.
+    failures: BTreeMap<Entity, String>,
 }
 
 /// Terrain heights snapshot for shoreline attenuation (world space).
@@ -245,8 +251,10 @@ fn local_ground<'a>(ground: &'a Ground, body: &'a Body) -> impl Fn(f32, f32) -> 
     }
 }
 
-fn wave_time(clock: &WaterClock, component: &WaterBodyComponent) -> f32 {
-    (clock.time * f64::from(component.waves.time_scale)) as f32
+/// Wave time in f64 seconds. It stays f64 until the waves reduce it to a phase: an f32 clock
+/// loses a wave's phase after a few hours.
+fn wave_clock(clock: &WaterClock, component: &WaterBodyComponent) -> f64 {
+    clock.time * f64::from(component.waves.time_scale)
 }
 
 fn build(component: &WaterBodyComponent, id: String, revision: u64) -> Result<Body> {
@@ -298,23 +306,75 @@ fn build(component: &WaterBodyComponent, id: String, revision: u64) -> Result<Bo
         mesh_counts: (0, 0),
         render_path: "hidden",
         notes: Vec::new(),
+        wave_time: 0.0,
     })
 }
 
+/// Evaluates the waves at the clock. Gerstner phases and FFT mode phases are reduced to one
+/// turn in f64 (`omega * t` mod 2 pi), so the surface after ten hours equals the surface at
+/// the same phase early in the run; only the reduced phase is converted to f32.
 fn advance(body: &mut Body, clock: &WaterClock) -> Result<()> {
-    let t = wave_time(clock, &body.component);
-    let waves = if let Some(set) = &body.gerstner {
-        Waves::Gerstner(set.clone())
+    let t = wave_clock(clock, &body.component);
+    let (waves, time) = if let Some(set) = &body.gerstner {
+        // Baked: the set's phases hold `phase - omega t`, so the surface reads time 0.
+        (Waves::Gerstner(Arc::new(set.at_time(t))), 0.0)
     } else if let Some(spectrum) = &body.spectrum {
-        let frame = spectrum.frame(t).map_err(|e| invalid(e.code, e.message))?;
-        Waves::Ocean(Arc::new(frame))
+        let frame = spectrum
+            .frame_f64(t)
+            .map_err(|e| invalid(e.code, e.message))?;
+        let time = frame.time();
+        (Waves::Ocean(Arc::new(frame)), time)
     } else {
-        Waves::Flat
+        (Waves::Flat, 0.0)
     };
+    body.wave_time = t as f32;
     let surface = Arc::make_mut(&mut body.surface);
     surface.waves = waves;
-    surface.time = t;
+    surface.time = time;
     Ok(())
+}
+
+/// Why `entity` was skipped by the last tick (more than [`MAX_WATER_BODIES`] water bodies, a
+/// singular transform, an invalid wave setup), if it was. Skipped bodies do not fail the tick.
+pub fn failure(world: &World, entity: Entity) -> Option<String> {
+    world
+        .get_resource::<Waters>()?
+        .failures
+        .get(&entity)
+        .cloned()
+}
+
+/// Builds or refreshes one water body for this tick.
+fn update_body(world: &mut World, clock: &WaterClock, id: String, entity: Entity) -> Result<()> {
+    let component = world
+        .get::<WaterBodyComponent>(entity)
+        .cloned()
+        .expect("filtered");
+    let m = matrix(world, entity)?;
+    if !m.is_finite() || m.determinant().abs() < 1.0e-12 {
+        return Err(invalid(
+            "water.transform",
+            format!("{id}: singular transform"),
+        ));
+    }
+    let mut waters = world.resource_mut::<Waters>();
+    let rebuild = waters
+        .bodies
+        .get(&entity)
+        .is_none_or(|b| b.component != component || b.id != id);
+    if rebuild {
+        waters.revisions += 1;
+        let revision = waters.revisions;
+        let mut body = build(&component, id, revision)?;
+        if let Some(old) = waters.bodies.remove(&entity) {
+            body.mesh = old.mesh;
+        }
+        waters.bodies.insert(entity, body);
+    }
+    let body = waters.bodies.get_mut(&entity).expect("built");
+    body.world_from_local = m;
+    body.local_from_world = m.inverse();
+    advance(body, clock)
 }
 
 /// Advances the clock, rebuilds changed water bodies, refreshes the shoreline ground and
@@ -335,11 +395,19 @@ pub fn step_water(world: &mut World, dt: f32) -> Result<()> {
         .map(|e| (authored_id(world, e.id()), e.id()))
         .collect();
     owners.sort();
+    // Bodies past the cap are skipped (and dropped if they were served before), not an error
+    // for the whole tick.
+    let mut failures = BTreeMap::new();
     if owners.len() > MAX_WATER_BODIES {
-        return Err(invalid(
-            "water.capacity",
-            format!("At most {MAX_WATER_BODIES} engine.WaterBody entities"),
-        ));
+        for (id, entity) in owners.split_off(MAX_WATER_BODIES) {
+            failures.insert(
+                entity,
+                format!(
+                    "water.capacity: At most {MAX_WATER_BODIES} engine.WaterBody entities; \
+                     `{id}` is ignored"
+                ),
+            );
+        }
     }
     // Drop bodies whose component went away.
     let live: Vec<Entity> = owners.iter().map(|(_, e)| *e).collect();
@@ -359,37 +427,32 @@ pub fn step_water(world: &mut World, dt: f32) -> Result<()> {
     }
     let ground = snapshot_ground(world);
     for (id, entity) in owners {
-        let component = world
-            .get::<WaterBodyComponent>(entity)
-            .cloned()
-            .expect("filtered");
-        let m = matrix(world, entity)?;
-        if m.determinant().abs() < 1.0e-12 {
-            return Err(invalid(
-                "water.transform",
-                format!("{id}: singular transform"),
-            ));
-        }
-        let mut waters = world.resource_mut::<Waters>();
-        let rebuild = waters
-            .bodies
-            .get(&entity)
-            .is_none_or(|b| b.component != component || b.id != id);
-        if rebuild {
-            waters.revisions += 1;
-            let revision = waters.revisions;
-            let mut body = build(&component, id, revision)?;
-            if let Some(old) = waters.bodies.remove(&entity) {
-                body.mesh = old.mesh;
+        if let Err(error) = update_body(world, &clock, id, entity) {
+            failures.insert(entity, error.to_string());
+            // A body that cannot be updated is not queried with stale state either.
+            if let Some(body) = world.resource_mut::<Waters>().bodies.remove(&entity)
+                && let Some(mesh) = body.mesh
+            {
+                world.despawn(mesh);
             }
-            waters.bodies.insert(entity, body);
         }
-        let body = waters.bodies.get_mut(&entity).expect("built");
-        body.world_from_local = m;
-        body.local_from_world = m.inverse();
-        advance(body, &clock)?;
     }
-    world.resource_mut::<Waters>().ground = ground;
+    let fresh: Vec<String> = {
+        let previous = &world.resource::<Waters>().failures;
+        failures
+            .iter()
+            .filter(|(entity, message)| previous.get(*entity) != Some(message))
+            .map(|(entity, message)| format!("water entity:{}: {message}", entity.to_bits()))
+            .collect()
+    };
+    if let Some(mut log) = world.get_resource_mut::<RuntimeLog>() {
+        log.0.extend(fresh);
+    }
+    {
+        let mut waters = world.resource_mut::<Waters>();
+        waters.ground = ground;
+        waters.failures = failures;
+    }
     apply_buoyancy(world, dt)
 }
 
@@ -480,7 +543,7 @@ pub fn status(world: &World, entity: Entity) -> Option<WaterStatus> {
         render_path: body.render_path,
         mesh_vertices: body.mesh_counts.0,
         mesh_triangles: body.mesh_counts.1,
-        wave_time: body.surface.time,
+        wave_time: body.wave_time,
         lipschitz: body.gerstner.as_ref().map(|g| g.lipschitz()),
         steepness_scale: body.gerstner.as_ref().map(|g| g.steepness_scale()),
         significant_height: body.spectrum.as_ref().map(|s| s.stats().significant_height),
@@ -669,11 +732,17 @@ fn apply_buoyancy(world: &mut World, dt: f32) -> Result<()> {
         }
     }
     for (entity, impulse) in impulses {
+        // A body whose impulse cannot be applied (for example removed this tick) is noted,
+        // not a reason to fail the tick.
+        let mut applied = Ok(());
         if impulse.linear.is_finite() && impulse.linear != Vec3::ZERO {
-            physics::apply_impulse(world, entity, impulse.linear)?;
+            applied = physics::apply_impulse(world, entity, impulse.linear);
         }
-        if impulse.angular.is_finite() && impulse.angular != Vec3::ZERO {
-            physics::apply_angular_impulse(world, entity, impulse.angular)?;
+        if applied.is_ok() && impulse.angular.is_finite() && impulse.angular != Vec3::ZERO {
+            applied = physics::apply_angular_impulse(world, entity, impulse.angular);
+        }
+        if let (Err(error), Some(status)) = (applied, statuses.get_mut(&entity)) {
+            status.notes.push(format!("buoyancy impulse: {error}"));
         }
     }
     let mut waters = world.resource_mut::<Waters>();
@@ -888,7 +957,24 @@ pub fn update_water_render(world: &mut World) -> Result<()> {
                 cast_shadows: false,
                 ..MeshMaterial::default()
             };
+            // The mesh is parented by authored id: a body without a registered one (it would
+            // fall back to `entity:<bits>`) cannot own a mesh without a dangling `Parent`.
+            let registered = world
+                .get::<AuthoredId>(entity)
+                .is_some_and(|a| crate::services::find_entity(world, &a.id) == Some(entity));
             match body.mesh.filter(|m| world.get_entity(*m).is_ok()) {
+                _ if !registered => {
+                    if let Some(mesh) = body.mesh.take() {
+                        world.despawn(mesh);
+                    }
+                    body.mesh_counts = (0, 0);
+                    body.render_path = "hidden";
+                    body.notes.push(
+                        "the CPU surface mesh needs an authored ID registered in the entity \
+                         lookup; nothing draws"
+                            .into(),
+                    );
+                }
                 Some(mesh) => {
                     world.entity_mut(mesh).insert((geometry, material));
                 }

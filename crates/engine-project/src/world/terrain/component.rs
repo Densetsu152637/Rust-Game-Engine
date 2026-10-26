@@ -46,8 +46,8 @@ pub struct TerrainCollision {
     pub layer: u32,
     /// Collision filter bits.
     pub mask: u32,
-    /// Tile edge in cells (8..=255): one fixed heightfield (or, with holes, triangle-mesh)
-    /// collider per tile.
+    /// Tile edge in cells (8..=255): one fixed heightfield collider per tile (hole cells are
+    /// removed from the heightfield, not meshed).
     pub tile_cells: u32,
     pub friction: f32,
     pub restitution: f32,

@@ -20,6 +20,12 @@ use std::collections::HashMap;
 
 /// Most candidate cells one scatter or stroke visits.
 pub const MAX_CANDIDATE_CELLS: u64 = 4_000_000;
+/// Most candidates one type may draw in one scatter or stroke, whatever `max_instances` is.
+pub const MAX_CANDIDATES: usize = 2_000_000;
+/// Candidates a placement may draw per allowed instance. Candidates are rejected by zones,
+/// density maps, slope and spacing, so this is larger than one, but it keeps the transient
+/// memory of a placement proportional to the instance cap instead of to the area.
+pub const CANDIDATES_PER_INSTANCE: usize = 16;
 
 /// Marks ground that must stay empty although the surface has height there (terrain holes).
 pub trait HoleMask: Send + Sync {
@@ -97,6 +103,9 @@ pub struct ScatterParams<'a> {
     pub holes: Option<&'a dyn HoleMask>,
     /// Instance cap (at most [`MAX_INSTANCES`]); exceeding it is an error, not a truncation.
     pub max_instances: usize,
+    /// Absolute `[x, z]` of the local origin (`WorldOrigin.offset`). Candidate cells are hashed
+    /// in absolute coordinates, so the same forest is produced at any origin offset.
+    pub origin: [f64; 2],
 }
 
 impl<'a> ScatterParams<'a> {
@@ -108,6 +117,7 @@ impl<'a> ScatterParams<'a> {
             zones: &[],
             holes: None,
             max_instances: MAX_INSTANCES,
+            origin: [0.0; 2],
         }
     }
 }
@@ -156,25 +166,44 @@ pub(crate) fn candidate_cell(density: f32) -> f32 {
     2f32.powf(ideal.log2().round()).clamp(0.25, 32.0)
 }
 
-/// Draws the candidates of `type_index` inside `rect` (`[[min x, min z], [max x, max z]]`).
+/// Draws the candidates of `type_index` inside `rect` (`[[min x, min z], [max x, max z]]`,
+/// local coordinates). Cells are hashed in absolute coordinates (`origin + local`, in f64) so
+/// the candidate set does not depend on the local frame. Fails before drawing anything when the
+/// expected number of candidates (`area * density`) exceeds `max_candidates`.
 pub(crate) fn candidates(
     seed: u64,
     type_index: usize,
     density: f32,
     rect: [[f32; 2]; 2],
+    origin: [f64; 2],
+    max_candidates: usize,
     out: &mut Vec<Candidate>,
 ) -> Result<()> {
     if density <= 0.0 || rect[1][0] <= rect[0][0] || rect[1][1] <= rect[0][1] {
         return Ok(());
     }
-    let c = candidate_cell(density);
+    let expected_total = (f64::from(rect[1][0]) - f64::from(rect[0][0]))
+        * (f64::from(rect[1][1]) - f64::from(rect[0][1]))
+        * f64::from(density);
+    if expected_total.is_nan() || expected_total > max_candidates as f64 {
+        return Err(Error::new(
+            "foliage.limit.candidates",
+            format!(
+                "about {:.0} candidates (area x density) exceed the limit of {max_candidates}; lower the density, use a smaller area or raise max_instances",
+                expected_total
+            ),
+        ));
+    }
+    let c32 = candidate_cell(density);
+    let c = f64::from(c32);
+    let abs = |v: f32, axis: usize| f64::from(v) + origin[axis];
     let (x0, x1) = (
-        (rect[0][0] / c).floor() as i64,
-        (rect[1][0] / c).floor() as i64,
+        (abs(rect[0][0], 0) / c).floor() as i64,
+        (abs(rect[1][0], 0) / c).floor() as i64,
     );
     let (z0, z1) = (
-        (rect[0][1] / c).floor() as i64,
-        (rect[1][1] / c).floor() as i64,
+        (abs(rect[0][1], 1) / c).floor() as i64,
+        (abs(rect[1][1], 1) / c).floor() as i64,
     );
     let cells = (x1 - x0 + 1) as u64 * (z1 - z0 + 1) as u64;
     if cells > MAX_CANDIDATE_CELLS {
@@ -183,7 +212,7 @@ pub(crate) fn candidates(
             format!("{cells} candidate cells exceed {MAX_CANDIDATE_CELLS}; use a smaller area"),
         ));
     }
-    let expected = density * c * c;
+    let expected = density * c32 * c32;
     for iz in z0..=z1 {
         for ix in x0..=x1 {
             let mut rng = Rng::new(hash_cell(seed, ix, type_index as i64, iz));
@@ -191,8 +220,8 @@ pub(crate) fn candidates(
             let n = whole as u32 + u32::from(rng.next_f32() < expected - whole);
             for _ in 0..n {
                 let candidate = Candidate {
-                    x: (ix as f32 + rng.next_f32()) * c,
-                    z: (iz as f32 + rng.next_f32()) * c,
+                    x: ((ix as f64 + f64::from(rng.next_f32())) * c - origin[0]) as f32,
+                    z: ((iz as f64 + f64::from(rng.next_f32())) * c - origin[1]) as f32,
                     density: rng.next_f32(),
                     scale: rng.next_f32(),
                     yaw: rng.next_f32(),
@@ -222,6 +251,8 @@ pub(crate) struct Placement<'a> {
     pub floor_y: f32,
     pub zones: &'a [ExclusionZone],
     pub holes: Option<&'a dyn HoleMask>,
+    /// Absolute `[x, z]` of the local origin; candidate cells hash in absolute coordinates.
+    pub origin: [f64; 2],
 }
 
 impl<'a> Placement<'a> {
@@ -241,7 +272,13 @@ impl<'a> Placement<'a> {
             floor_y: bounds.min.y,
             zones,
             holes,
+            origin: [0.0; 2],
         }
+    }
+    /// The same placement with the local origin at absolute `[x, z]`.
+    pub fn with_origin(mut self, origin: [f64; 2]) -> Self {
+        self.origin = origin;
+        self
     }
     pub fn is_empty(&self) -> bool {
         !(self.region[1][0] > self.region[0][0] && self.region[1][1] > self.region[0][1])
@@ -438,7 +475,19 @@ pub(crate) fn place_type(
     let t = &types[type_index];
     let exclusions = resolve_exclusions(types, type_index);
     let mut drawn = Vec::new();
-    candidates(seed, type_index, t.density, rect, &mut drawn)?;
+    let budget = max_instances
+        .min(MAX_INSTANCES)
+        .saturating_mul(CANDIDATES_PER_INSTANCE)
+        .min(MAX_CANDIDATES);
+    candidates(
+        seed,
+        type_index,
+        t.density,
+        rect,
+        place.origin,
+        budget,
+        &mut drawn,
+    )?;
     report.candidates += drawn.len();
     let mut survivors: Vec<(Candidate, Instance)> = Vec::with_capacity(drawn.len() / 2);
     for c in &drawn {
@@ -530,7 +579,8 @@ pub fn scatter(
             ..TypeReport::default()
         })
         .collect();
-    let place = Placement::new(surface, &params.bounds, params.zones, params.holes);
+    let place = Placement::new(surface, &params.bounds, params.zones, params.holes)
+        .with_origin(params.origin);
     if !place.is_empty() {
         for (index, report) in reports.iter_mut().enumerate() {
             place_type(
@@ -638,5 +688,77 @@ mod tests {
         let r = scatter(&[t], &surface, &ScatterParams::new(3, bounds(40.0))).unwrap();
         assert!(r.field.len() > 600);
         assert!(r.field.iter().all(|i| i.position[0] < 20.0));
+    }
+
+    #[test]
+    fn a_huge_candidate_count_fails_fast_before_anything_is_drawn() {
+        // 500 x 500 m at density 64 would draw 16 million candidates (> 500 MB).
+        let surface = FlatSurface::new(0.0);
+        let mut t = FoliageType::new("dense", "m");
+        t.density = 64.0;
+        let mut p = ScatterParams::new(1, Aabb::new([0.0; 3], [500.0, 100.0, 500.0]));
+        p.max_instances = 65_536;
+        let started = std::time::Instant::now();
+        let e = scatter(&[t], &surface, &p).unwrap_err();
+        assert_eq!(e.code, "foliage.limit.candidates", "{e:?}");
+        assert!(e.message.contains("candidates"), "{}", e.message);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(250),
+            "the limit is checked before drawing: {:?}",
+            started.elapsed()
+        );
+        let mut out = Vec::new();
+        let e = candidates(
+            1,
+            0,
+            64.0,
+            [[0.0, 0.0], [500.0, 500.0]],
+            [0.0; 2],
+            1_000_000,
+            &mut out,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "foliage.limit.candidates");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn the_same_absolute_forest_is_produced_at_any_origin_offset() {
+        // The ground is 0.5 * absolute x; the local frame is shifted by 2048 m in x and -300 m in z.
+        let near = FnSurface::new(Aabb::new([0.0; 3], [60.0, 1000.0, 60.0]), |x, _| 0.5 * x);
+        let far = FnSurface::new(
+            Aabb::new([-2048.0, 0.0, 300.0], [-1988.0, 1000.0, 360.0]),
+            |x, _| 0.5 * (x + 2048.0),
+        );
+        let mut t = FoliageType::new("a", "m");
+        t.density = 0.5;
+        t.min_spacing = 0.7;
+        let mut p = ScatterParams::new(9, Aabb::new([0.0; 3], [60.0, 1000.0, 60.0]));
+        let a = scatter(&[t.clone()], &near, &p).unwrap().field;
+        p.bounds = Aabb::new([-2048.0, 0.0, 300.0], [-1988.0, 1000.0, 360.0]);
+        p.origin = [2048.0, -300.0];
+        let b = scatter(&[t], &far, &p).unwrap().field;
+        assert!(a.len() > 800, "{}", a.len());
+        assert_eq!(a.len(), b.len());
+        let absolute = |f: &FoliageField, ox: f64, oz: f64| -> Vec<[f64; 3]> {
+            f.iter()
+                .map(|i| {
+                    [
+                        f64::from(i.position[0]) + ox,
+                        f64::from(i.position[1]),
+                        f64::from(i.position[2]) + oz,
+                    ]
+                })
+                .collect()
+        };
+        let (pa, pb) = (absolute(&a, 0.0, 0.0), absolute(&b, 2048.0, -300.0));
+        // Every instance of one forest has a partner in the other within 1 mm.
+        for p in &pa {
+            let nearest = pb
+                .iter()
+                .map(|q| (0..3).map(|k| (p[k] - q[k]).abs()).fold(0.0, f64::max))
+                .fold(f64::INFINITY, f64::min);
+            assert!(nearest < 1e-3, "{p:?}: nearest {nearest}");
+        }
     }
 }

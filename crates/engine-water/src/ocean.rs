@@ -113,9 +113,17 @@ impl OceanSpectrum {
 
     /// Fourier amplitudes `h(k, t)` in FFT order.
     pub fn amplitudes(&self, t: f32) -> Vec<Complex> {
+        self.amplitudes_f64(f64::from(t))
+    }
+
+    /// [`Self::amplitudes`] for an f64 clock: each mode's phase `omega * t` is computed in f64
+    /// and wrapped to one turn before it becomes an f32, so hours of simulated time keep full
+    /// phase accuracy.
+    pub fn amplitudes_f64(&self, t: f64) -> Vec<Complex> {
         (0..self.n * self.n)
             .map(|i| {
-                let phase = Complex::from_angle(self.omega[i] * t);
+                let turns = (f64::from(self.omega[i]) * t).rem_euclid(std::f64::consts::TAU);
+                let phase = Complex::from_angle(turns as f32);
                 self.h0[i] * phase.conj() + self.h0_mirror[i] * phase
             })
             .collect()
@@ -151,9 +159,22 @@ impl OceanSpectrum {
 
     /// Evaluates the patch at time `t`.
     pub fn frame(&self, t: f32) -> Result<OceanFrame> {
+        self.frame_f64(f64::from(t))
+    }
+
+    /// Evaluates the patch at the f64 time `t` (see [`Self::amplitudes_f64`]). A looping
+    /// spectrum (`loop_period > 0`) is evaluated at `t` modulo the period, which is exact because
+    /// every mode frequency is a multiple of `2 pi / loop_period`; the frame's
+    /// [`OceanFrame::time`] is that reduced time.
+    pub fn frame_f64(&self, t: f64) -> Result<OceanFrame> {
+        let t = if self.settings.loop_period > 0.0 {
+            t.rem_euclid(f64::from(self.settings.loop_period))
+        } else {
+            t
+        };
         let n = self.n;
         let lambda = self.settings.choppiness;
-        let h = self.amplitudes(t);
+        let h = self.amplitudes_f64(t);
         let mut pairs = [
             vec![Complex::ZERO; n * n],
             vec![Complex::ZERO; n * n],
@@ -201,7 +222,7 @@ impl OceanSpectrum {
         Ok(OceanFrame {
             n,
             length: self.settings.patch_length,
-            time: t,
+            time: t as f32,
             texels,
         })
     }

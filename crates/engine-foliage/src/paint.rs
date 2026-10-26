@@ -99,6 +99,8 @@ pub struct PaintContext<'a> {
     pub zones: &'a [ExclusionZone],
     pub holes: Option<&'a dyn HoleMask>,
     pub max_instances: usize,
+    /// Absolute `[x, z]` of the local origin (see [`crate::ScatterParams::origin`]).
+    pub origin: [f64; 2],
 }
 
 /// What one stroke changed.
@@ -133,7 +135,8 @@ pub fn paint(
                 ));
             };
             report.details.name = t.name.clone();
-            let place = Placement::new(ctx.surface, &ctx.bounds, ctx.zones, ctx.holes);
+            let place = Placement::new(ctx.surface, &ctx.bounds, ctx.zones, ctx.holes)
+                .with_origin(ctx.origin);
             if place.is_empty() {
                 return Ok(report);
             }
@@ -207,6 +210,7 @@ mod tests {
             zones: &[],
             holes: None,
             max_instances: crate::field::MAX_INSTANCES,
+            origin: [0.0; 2],
         }
     }
 

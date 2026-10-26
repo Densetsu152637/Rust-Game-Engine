@@ -16,7 +16,7 @@ Dependencies: `glam`, `serde`, `serde_json`. No `unsafe`.
 - `brush`: deterministic raise/lower, smooth, flatten, set-height and noise sculpting, splat
   painting and hole painting with circular brushes, returning the dirty region.
 - `asset`: the versioned, checksummed, bounded binary `.terrain` file.
-- `collision`: physics tiles (heightfields, triangle meshes where holes are).
+- `collision`: physics tiles (heightfields; hole cells are removed from the heightfield).
 - `navigation`: the walkable, raster-aligned triangle soup for navmesh baking.
 
 ```rust

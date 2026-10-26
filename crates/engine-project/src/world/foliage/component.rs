@@ -330,7 +330,8 @@ pub(super) fn descriptor() -> ComponentDescriptor {
         }}),
         defaults: serde_json::to_value(FoliageComponent::default()).expect("finite defaults"),
         requires: vec!["Transform".into()],
-        entity_references: vec![],
+        // Prefab instancing remaps the terrain id; an empty string means none (surface mode).
+        entity_references: vec!["/terrain".into()],
         data_only: false,
     }
 }

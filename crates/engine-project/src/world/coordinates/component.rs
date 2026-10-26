@@ -181,7 +181,8 @@ pub(super) fn descriptors() -> Vec<ComponentDescriptor> {
             }),
             defaults: serde_json::to_value(LargeWorld::default()).expect("plain data"),
             requires: vec![],
-            entity_references: vec![],
+            // Prefab instancing remaps the anchor id; an empty string means the active camera.
+            entity_references: vec!["/anchor".into()],
             data_only: false,
         },
     ]

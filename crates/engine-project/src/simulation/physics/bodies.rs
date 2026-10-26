@@ -140,8 +140,19 @@ fn heightfield_holes(c: &PhysicsBody3D) -> Result<Vec<bool>> {
     if c.heightfield_holes.is_empty() {
         return Ok(Vec::new());
     }
-    let cells = (c.heightfield_rows.saturating_sub(1) as usize)
-        * (c.heightfield_columns.saturating_sub(1) as usize);
+    // Validate the sample grid before sizing anything from it: `rows` and `columns` are
+    // authored, only `heights` is bounded.
+    let (rows, columns) = (c.heightfield_rows as usize, c.heightfield_columns as usize);
+    if rows < 2
+        || columns < 2
+        || rows.checked_mul(columns) != Some(c.heights.len())
+        || c.heights.len() > engine_physics::MAX_HEIGHTFIELD_SAMPLES
+    {
+        return Err(invalid(
+            "heightfield needs at least 2x2 samples matching rows x columns (at most 1048576 samples)",
+        ));
+    }
+    let cells = (rows - 1) * (columns - 1);
     let mut holes = vec![false; cells];
     for &cell in &c.heightfield_holes {
         *holes.get_mut(cell as usize).ok_or_else(|| {
@@ -615,4 +626,34 @@ pub(super) fn depth(world: &World, mut entity: Entity) -> usize {
         entity = p;
     }
     count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn field(rows: u32, columns: u32, heights: usize, holes: Vec<u32>) -> PhysicsBody3D {
+        PhysicsBody3D {
+            shape: Shape::HeightField,
+            heightfield_rows: rows,
+            heightfield_columns: columns,
+            heights: vec![0.0; heights],
+            heightfield_holes: holes,
+            ..PhysicsBody3D::default()
+        }
+    }
+
+    #[test]
+    fn heightfield_holes_validate_the_grid_before_allocating() {
+        // (rows - 1) * (columns - 1) would be ~1.1e12 flags: it must be an error, not an
+        // allocation.
+        let huge = field(1_048_576, 1_048_576, 4, vec![0]);
+        assert!(heightfield_holes(&huge).is_err());
+        assert!(shape3(&huge, Vec3::ONE).is_err());
+        let ok = field(3, 3, 9, vec![0, 3]);
+        let holes = heightfield_holes(&ok).unwrap();
+        assert_eq!(holes.len(), 4);
+        assert!(holes[0] && !holes[1] && !holes[2] && holes[3]);
+        assert!(heightfield_holes(&field(3, 3, 9, vec![4])).is_err());
+    }
 }

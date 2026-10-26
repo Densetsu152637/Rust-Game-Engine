@@ -156,7 +156,9 @@ The runtime service (`Terrains` resource) works in the world hooks:
 - `post_transforms` (`update_terrain_render`): picks each terrain's render path, rebuilds CPU
   chunks for the active `Camera3D` and publishes GPU-path terrains in `TerrainRenderSet`.
 
-At most 16 terrain entities, 1024 collider tiles each. Generated entities carry
+At most 16 terrain entities, 1024 collider tiles each; a terrain that cannot be served
+(the 17th, an unreadable asset, no registered authored id) is skipped with a reason
+(`terrain::failure`, logged once) and never fails the tick. Generated entities carry
 `TerrainGenerated { owner }` and authored ids `terrain:<owner id>/chunk/<level>/<x>,<z>` and
 `terrain:<owner id>/collider/<x>,<z>`; they are children (`Parent`) of the terrain entity and
 are removed with it.
@@ -208,7 +210,9 @@ normals), `layer_weight` by layer name (so foliage density maps and PCG `surface
 `layer` read the splat map) and world bounds. The first terrain (by authored id) claims a name;
 later ones get a status note. When a surface is (re-)registered (first sync, an edit, a moved
 terrain), the terrain bumps `regenerate` of every `engine.PcgVolume` using that name, so
-generated content follows the ground. The world hooks run PCG before terrain in
+generated content follows the ground. A matrix change that equals the origin shift (a pure
+translation by a `WorldOrigin` rebase) re-registers the surface without the bump: the ground
+is unchanged in absolute terms and PCG samples absolute coordinates. The world hooks run PCG before terrain in
 `pre_simulation`, so on the first tick a volume referencing a terrain surface fails once
 ("no surface") and regenerates on the next tick; running terrain before PCG would remove that
 tick (a `world/mod.rs` ordering change, owned by the world module).
@@ -226,7 +230,9 @@ a larger `cell_size` for big terrains.
 
 - Native: `engine_terrain::navigation_soup`, `world::terrain::navigation_document(field,
   options, settings, obstacles)` and, for a placed entity (translation-only transform),
-  `world::terrain::navigation_input(world, entity, settings, region)`.
+  `world::terrain::navigation_input(world, entity, settings, region)`. Navigation meshes are
+  absolute, so the entity input is placed at `WorldOrigin.offset + local translation` and
+  `region` is absolute too (tested across a rebase: identical vertices before and after).
 - MCP: `terrain_navmesh` writes a `navigation` document that `navigation_query` and
   `engine.NavigationAgent` use like a `navigation_bake` result.
 

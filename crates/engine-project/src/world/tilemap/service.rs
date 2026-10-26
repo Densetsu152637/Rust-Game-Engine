@@ -3,7 +3,7 @@
 use super::assets::{self, mapped};
 use super::component::{TileChunkRender, TilemapComponent, TilemapGenerated};
 use crate::content::{Mesh, Vertex};
-use crate::runtime::{AuthoredId, ProjectResource};
+use crate::runtime::{AuthoredId, ProjectResource, RuntimeLog};
 use crate::{Collider2D, Error, GeometryOverride, MeshRenderer, Parent, Result, Transform};
 use bevy_ecs::prelude::*;
 use engine_tilemap::{
@@ -70,6 +70,19 @@ struct State {
 pub struct Tilemaps {
     states: BTreeMap<Entity, State>,
     tilesets: BTreeMap<String, Arc<LoadedTileset>>,
+    /// Entities the last sync could not serve and why (capacity, bad asset, no authored id).
+    /// They are skipped; the rest of the world keeps ticking.
+    failures: BTreeMap<Entity, String>,
+}
+
+/// Why `entity` was skipped by the last [`sync_tilemaps`] (more than 64 tilemap entities, an
+/// unreadable asset, no registered authored id, ...), if it was.
+pub fn failure(world: &World, entity: Entity) -> Option<String> {
+    world
+        .get_resource::<Tilemaps>()?
+        .failures
+        .get(&entity)
+        .cloned()
 }
 
 /// Snapshot of a tilemap's runtime state for telemetry and tests.
@@ -438,11 +451,20 @@ pub fn sync_tilemaps(world: &mut World) -> Result<()> {
     if !world.contains_resource::<Tilemaps>() {
         return Ok(());
     }
-    let owners: Vec<Entity> = world
+    let mut named: Vec<(String, Entity)> = world
         .iter_entities()
         .filter(|e| e.contains::<TilemapComponent>())
-        .map(|e| e.id())
+        .map(|e| {
+            (
+                e.get::<AuthoredId>()
+                    .map(|a| a.id.clone())
+                    .unwrap_or_default(),
+                e.id(),
+            )
+        })
         .collect();
+    named.sort();
+    let owners: Vec<Entity> = named.into_iter().map(|(_, e)| e).collect();
     let stale: Vec<Entity> = world
         .resource::<Tilemaps>()
         .states
@@ -469,9 +491,23 @@ pub fn sync_tilemaps(world: &mut World) -> Result<()> {
     for entity in orphans {
         world.despawn(entity);
     }
+    let mut failures = BTreeMap::new();
     for entity in owners {
-        sync_entity(world, entity)?;
+        if let Err(error) = sync_entity(world, entity) {
+            failures.insert(entity, error.to_string());
+        }
     }
+    let fresh: Vec<String> = failures
+        .iter()
+        .filter(|(entity, message)| {
+            world.resource::<Tilemaps>().failures.get(*entity) != Some(*message)
+        })
+        .map(|(entity, message)| format!("tilemap entity:{}: {message}", entity.to_bits()))
+        .collect();
+    if let Some(mut log) = world.get_resource_mut::<RuntimeLog>() {
+        log.0.extend(fresh);
+    }
+    world.resource_mut::<Tilemaps>().failures = failures;
     Ok(())
 }
 

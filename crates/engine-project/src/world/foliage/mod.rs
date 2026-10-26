@@ -27,8 +27,8 @@ pub use cpu::{IMPOSTOR_VERTICES, impostor_mesh, merge_instances};
 pub use ground::TerrainGround;
 pub use service::{
     FoliageGpuRenderer, FoliageRenderItem, FoliageRenderSet, FoliageRenderType, FoliageStatus,
-    Foliages, MAX_FOLIAGES, RenderImpostor, export_asset, field, paint, status, sync_foliage,
-    types, update_foliage_render,
+    Foliages, MAX_FOLIAGES, RenderImpostor, export_asset, failure, field, paint, status,
+    sync_foliage, types, update_foliage_render,
 };
 
 pub fn component_descriptors() -> Vec<ComponentDescriptor> {

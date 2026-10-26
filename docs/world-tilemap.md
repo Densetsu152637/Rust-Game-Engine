@@ -187,6 +187,10 @@ For each `engine.Tilemap` entity the service keeps:
   scale) applies through the parent chain. At most 1024 boxes per tilemap
   (`tilemap.collision.capacity`), the capacity of the 2D solver.
 
+At most 64 tilemap entities (in authored-id order); a tilemap that cannot be served (the 65th,
+an unreadable asset, no registered authored id) is skipped with a reason (`tilemap::failure`,
+logged once) and never fails the tick.
+
 Generated entities carry `TilemapGenerated { owner }`, are not in the entity lookup and
 are not part of scene snapshots. They are despawned when the owner despawns, loses the
 component or reloads. `Runtime::snapshot` still counts them in `live_entities`.

@@ -9,7 +9,7 @@ use super::component::{
 use super::surface::TerrainSurface;
 use crate::content::{Mesh, Texture, Vertex};
 use crate::rendering3d::Camera3D;
-use crate::runtime::{AuthoredId, ProjectResource};
+use crate::runtime::{AuthoredId, ProjectResource, RuntimeLog};
 use crate::simulation::physics::{BodyMaterial, Motion, PhysicsBody3D, Shape};
 use crate::world::pcg::{PcgSurfaceRegistry, PcgVolume};
 use crate::{Error, GeometryOverride, MeshRenderer, Parent, Result, Transform};
@@ -120,6 +120,9 @@ struct Cpu {
     histogram: Vec<usize>,
     budget_limited: bool,
 }
+/// Registered surface name, heightfield revision, world matrix and the `WorldOrigin.offset` the
+/// surface was built for.
+type SurfaceBuilt = (String, u64, [[f32; 4]; 4], [f64; 3]);
 struct State {
     asset: String,
     field: Arc<Heightfield>,
@@ -131,7 +134,7 @@ struct State {
     colliders: BTreeMap<[u32; 2], (Entity, bool)>,
     collision: Option<TerrainCollision>,
     pending_collision: Option<SampleRect>,
-    surface: Option<(String, u64, [[f32; 4]; 4])>,
+    surface: Option<SurfaceBuilt>,
     surface_note: Option<String>,
     render_path: &'static str,
     render_note: Option<String>,
@@ -141,6 +144,47 @@ struct State {
 #[derive(Resource, Default)]
 pub struct Terrains {
     states: BTreeMap<Entity, State>,
+    /// Entities the load and collision/surface sync could not serve, and why (capacity, bad
+    /// asset, missing authored id). They are skipped; the rest of the world keeps ticking.
+    failures: BTreeMap<Entity, String>,
+    /// Entities the render update could not serve, and why.
+    render_failures: BTreeMap<Entity, String>,
+}
+
+/// Records (and logs once per distinct reason) why `entity` could not be served; a success
+/// clears the record.
+fn record_failure(world: &mut World, entity: Entity, render: bool, result: Result<()>) {
+    let mut terrains = world.resource_mut::<Terrains>();
+    let map = if render {
+        &mut terrains.render_failures
+    } else {
+        &mut terrains.failures
+    };
+    let Err(error) = result else {
+        map.remove(&entity);
+        return;
+    };
+    let message = error.to_string();
+    if map.get(&entity) == Some(&message) {
+        return;
+    }
+    map.insert(entity, message.clone());
+    if let Some(mut log) = world.get_resource_mut::<RuntimeLog>() {
+        log.0
+            .push(format!("terrain entity:{}: {message}", entity.to_bits()));
+    }
+}
+
+/// Why `entity` has no terrain state or could not be updated (more than [`MAX_TERRAINS`]
+/// terrain entities, an unreadable asset, no registered authored id, ...), if that is the
+/// case. Such a terrain is skipped; the rest keep running.
+pub fn failure(world: &World, entity: Entity) -> Option<String> {
+    let terrains = world.get_resource::<Terrains>()?;
+    terrains
+        .failures
+        .get(&entity)
+        .or_else(|| terrains.render_failures.get(&entity))
+        .cloned()
 }
 
 pub(super) fn install(world: &mut World) {
@@ -417,16 +461,23 @@ fn sync_surface(
     claimed.insert(name.clone());
     let matrix = crate::world_transform(world, entity)?.matrix;
     let revision = state.field.revision();
+    let origin = crate::world::coordinates::origin(world);
     if state
         .surface
         .as_ref()
-        .is_some_and(|(n, r, m)| *n == name && *r == revision && *m == matrix)
+        .is_some_and(|(n, r, m, _)| *n == name && *r == revision && *m == matrix)
         && world
             .get_resource::<PcgSurfaceRegistry>()
             .is_some_and(|r| r.get(&name).is_some())
     {
         return Ok(());
     }
+    // A pure origin translation moves the terrain matrix by exactly the origin delta: the
+    // ground is unchanged in absolute terms and PCG hashes absolute coordinates, so the volumes
+    // standing on it need no regeneration.
+    let translated_only = state.surface.as_ref().is_some_and(|(n, r, m, o)| {
+        *n == name && *r == revision && is_origin_translation(m, &matrix, o, &origin)
+    });
     let surface = TerrainSurface::new(state.field.clone(), Mat4::from_cols_array_2d(&matrix))
         .ok_or_else(|| invalid("terrain.transform", "Singular terrain transform"))?;
     if !world.contains_resource::<PcgSurfaceRegistry>() {
@@ -438,14 +489,36 @@ fn sync_surface(
     }
     registry.insert(name.clone(), Arc::new(surface));
     // Surface contents are not tracked by PCG: regenerate the volumes standing on this one.
-    let mut volumes = world.query::<&mut PcgVolume>();
-    for mut volume in volumes.iter_mut(world) {
-        if volume.surface == name {
-            volume.regenerate = volume.regenerate.wrapping_add(1);
+    if !translated_only {
+        let mut volumes = world.query::<&mut PcgVolume>();
+        for mut volume in volumes.iter_mut(world) {
+            if volume.surface == name {
+                volume.regenerate = volume.regenerate.wrapping_add(1);
+            }
         }
     }
-    state.surface = Some((name, revision, matrix));
+    state.surface = Some((name, revision, matrix, origin));
     Ok(())
+}
+
+/// Whether `new` is `old` moved by exactly the origin shift `old_origin -> new_origin` (same
+/// linear part; translation changed by `old_origin - new_origin`).
+fn is_origin_translation(
+    old: &[[f32; 4]; 4],
+    new: &[[f32; 4]; 4],
+    old_origin: &[f64; 3],
+    new_origin: &[f64; 3],
+) -> bool {
+    if old_origin == new_origin {
+        return false;
+    }
+    let linear = (0..3).all(|c| (0..4).all(|r| old[c][r] == new[c][r]));
+    linear
+        && (0..3).all(|axis| {
+            let expected = f64::from(old[3][axis]) + old_origin[axis] - new_origin[axis];
+            let tolerance = 1e-5 * expected.abs().max(1.0) + 1e-3;
+            (f64::from(new[3][axis]) - expected).abs() <= tolerance
+        })
 }
 
 // ---- tick hooks --------------------------------------------------------------------------
@@ -501,24 +574,37 @@ fn remove_stale(world: &mut World, owners: &[Entity]) {
     }
 }
 
+/// Loads one terrain and syncs its collider tiles and PCG surface.
+fn sync_one(world: &mut World, entity: Entity, claimed: &mut BTreeSet<String>) -> Result<()> {
+    ensure_loaded(world, entity)?;
+    let component = component(world, entity)?;
+    let owner = owner_id(world, entity)?;
+    let mut state = take_state(world, entity);
+    let result = sync_collision(world, entity, &owner, &component, &mut state)
+        .and_then(|_| sync_surface(world, entity, &component, &mut state, claimed));
+    put_state(world, entity, state);
+    result
+}
+
 /// Loads terrains, rebuilds dirty collider tiles and refreshes PCG surfaces. Runs from
 /// `world::pre_simulation` so edits made by scripts this tick reach physics in the same step.
+/// A terrain that cannot be served (capacity, bad asset, no authored id) is skipped and
+/// reported by [`failure`]; it never fails the tick.
 pub fn sync_terrains(world: &mut World) -> Result<()> {
     if !world.contains_resource::<Terrains>() {
         return Ok(());
     }
     let owners = sorted_owners(world);
     remove_stale(world, &owners);
+    {
+        let mut terrains = world.resource_mut::<Terrains>();
+        terrains.failures.retain(|e, _| owners.contains(e));
+        terrains.render_failures.retain(|e, _| owners.contains(e));
+    }
     let mut claimed = BTreeSet::new();
     for entity in owners {
-        ensure_loaded(world, entity)?;
-        let component = component(world, entity)?;
-        let owner = owner_id(world, entity)?;
-        let mut state = take_state(world, entity);
-        let result = sync_collision(world, entity, &owner, &component, &mut state)
-            .and_then(|_| sync_surface(world, entity, &component, &mut state, &mut claimed));
-        put_state(world, entity, state);
-        result?;
+        let result = sync_one(world, entity, &mut claimed);
+        record_failure(world, entity, false, result);
     }
     Ok(())
 }
@@ -584,61 +670,72 @@ pub fn update_terrain_render(world: &mut World) -> Result<()> {
         .collect();
     let mut set = TerrainRenderSet::default();
     for entity in owners {
-        let Ok(component) = component(world, entity) else {
-            continue;
-        };
-        let owner = owner_id(world, entity)?;
-        let matrix = crate::world_transform(world, entity)?.matrix;
-        let mut state = take_state(world, entity);
-        let gpu = match component.render_mode {
-            TerrainRenderMode::Cpu => false,
-            TerrainRenderMode::Gpu => true,
-            TerrainRenderMode::Auto => gpu_installed,
-        };
-        state.render_note = (component.render_mode == TerrainRenderMode::Gpu && !gpu_installed)
-            .then(|| {
-                "render_mode gpu but no terrain GPU renderer is installed \
-                 (engine_world_render::install); nothing draws"
-                    .to_owned()
-            });
-        let result = if !component.visible || gpu {
-            for (_, chunk) in std::mem::take(&mut state.chunks) {
-                world.despawn(chunk.entity);
-            }
-            state.cpu = None;
-            state.render_path = if component.visible {
-                "gpu-feature"
-            } else {
-                "hidden"
-            };
-            if component.visible {
-                load_images(world, &mut state).map(|_| {
-                    set.items.push(TerrainRenderItem {
-                        owner: entity,
-                        id: owner.clone(),
-                        field: state.field.clone(),
-                        lod: component.lod,
-                        layers: state.layers.clone(),
-                        world_from_local: matrix,
-                    });
-                })
-            } else {
-                Ok(())
-            }
-        } else {
-            state.render_path = "cpu-mesh-chunks";
-            let viewer = camera.map(|p| {
-                Mat4::from_cols_array_2d(&matrix)
-                    .inverse()
-                    .transform_point3(p)
-            });
-            sync_chunks(world, entity, &owner, &component, &mut state, viewer)
-        };
-        put_state(world, entity, state);
-        result?;
+        let result = render_one(world, entity, gpu_installed, camera, &mut set);
+        record_failure(world, entity, true, result);
     }
     world.insert_resource(set);
     Ok(())
+}
+
+fn render_one(
+    world: &mut World,
+    entity: Entity,
+    gpu_installed: bool,
+    camera: Option<Vec3>,
+    set: &mut TerrainRenderSet,
+) -> Result<()> {
+    let Ok(component) = component(world, entity) else {
+        return Ok(());
+    };
+    let owner = owner_id(world, entity)?;
+    let matrix = crate::world_transform(world, entity)?.matrix;
+    let mut state = take_state(world, entity);
+    let gpu = match component.render_mode {
+        TerrainRenderMode::Cpu => false,
+        TerrainRenderMode::Gpu => true,
+        TerrainRenderMode::Auto => gpu_installed,
+    };
+    state.render_note =
+        (component.render_mode == TerrainRenderMode::Gpu && !gpu_installed).then(|| {
+            "render_mode gpu but no terrain GPU renderer is installed \
+             (engine_world_render::install); nothing draws"
+                .to_owned()
+        });
+    let result = if !component.visible || gpu {
+        for (_, chunk) in std::mem::take(&mut state.chunks) {
+            world.despawn(chunk.entity);
+        }
+        state.cpu = None;
+        state.render_path = if component.visible {
+            "gpu-feature"
+        } else {
+            "hidden"
+        };
+        if component.visible {
+            load_images(world, &mut state).map(|_| {
+                set.items.push(TerrainRenderItem {
+                    owner: entity,
+                    id: owner.clone(),
+                    field: state.field.clone(),
+                    lod: component.lod,
+                    layers: state.layers.clone(),
+                    world_from_local: matrix,
+                });
+            })
+        } else {
+            Ok(())
+        }
+    } else {
+        state.render_path = "cpu-mesh-chunks";
+        let viewer = camera.map(|p| {
+            Mat4::from_cols_array_2d(&matrix)
+                .inverse()
+                .transform_point3(p)
+        });
+        sync_chunks(world, entity, &owner, &component, &mut state, viewer)
+    };
+    put_state(world, entity, state);
+    result
 }
 
 fn morph_class(layout: &LodLayout, node: &SelectedNode, viewer: &LodViewer) -> MorphClass {
@@ -933,8 +1030,9 @@ pub fn height_at_world(world: &mut World, entity: Entity, x: f32, z: f32) -> Res
 pub fn export_asset(world: &mut World, entity: Entity) -> Result<Vec<u8>> {
     Ok(engine_terrain::asset::encode(&*heightfield(world, entity)?))
 }
-/// Navigation bake input of the terrain in world space. The terrain transform must be a pure
-/// translation (navigation meshes are world-space and axis-aligned).
+/// Navigation bake input of the terrain in absolute space (`WorldOrigin.offset` plus the local
+/// position; `region` is absolute too). The terrain transform must be a pure translation
+/// (navigation meshes are axis-aligned).
 pub fn navigation_input(
     world: &mut World,
     entity: Entity,
@@ -950,8 +1048,12 @@ pub fn navigation_input(
             "terrain navigation input needs a translation-only terrain transform",
         ));
     }
+    // Navigation meshes are absolute: the terrain's local-frame translation plus the offset the
+    // local frame is expressed in.
+    let offset = crate::world::coordinates::origin(world);
+    let origin: [f32; 3] = std::array::from_fn(|i| (f64::from(translation[i]) + offset[i]) as f32);
     let options = engine_terrain::NavInputOptions {
-        origin: translation.to_array(),
+        origin,
         region,
         ..engine_terrain::NavInputOptions::default()
     };

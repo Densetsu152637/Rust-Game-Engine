@@ -394,7 +394,8 @@ pub(super) fn buoyancy_descriptor() -> ComponentDescriptor {
         }}),
         defaults: serde_json::to_value(BuoyancyComponent::default()).expect("finite defaults"),
         requires: vec!["Transform".into()],
-        entity_references: vec![],
+        // Prefab instancing remaps the water body id; an empty string means any body.
+        entity_references: vec!["/water".into()],
         data_only: false,
     }
 }

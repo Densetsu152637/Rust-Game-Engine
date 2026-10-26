@@ -11,7 +11,7 @@
 //! * [`brush`]: deterministic raise/lower, smooth, flatten, set-height, noise, splat and hole
 //!   brushes returning the dirty region.
 //! * [`asset`]: the versioned, validated, bounded binary `.terrain` file.
-//! * [`collision`]: physics tiles (heightfields, or triangle meshes where holes are).
+//! * [`collision`]: physics tiles (heightfields; hole cells are removed from the heightfield).
 //! * [`navigation`]: the walkable, raster-aligned triangle soup for navmesh baking.
 //!
 //! See docs/terrain.md for the formats and how `engine-project` renders, collides and

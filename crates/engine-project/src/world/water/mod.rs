@@ -28,8 +28,8 @@ pub use request::{
 pub use service::{
     BuoyancyStatus, MAX_BUOYANT_BODIES, MAX_WATER_BODIES, UnderwaterView, WaterClock,
     WaterGpuRenderer, WaterMesh, WaterQuery, WaterRenderItem, WaterRenderSet, WaterStatus, Waters,
-    buoyancy_status, grid_point, status, step_water, surface, underwater_at, update_water_render,
-    water_at, water_at_filtered,
+    buoyancy_status, failure, grid_point, status, step_water, surface, underwater_at,
+    update_water_render, water_at, water_at_filtered,
 };
 
 pub fn component_descriptors() -> Vec<ComponentDescriptor> {
