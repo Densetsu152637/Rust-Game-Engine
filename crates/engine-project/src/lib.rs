@@ -14,6 +14,8 @@ pub mod graphs;
 pub mod input;
 pub mod lights;
 pub mod localization;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ml;
 pub mod model_import;
 pub mod networking;
 pub mod persistence;
