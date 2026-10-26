@@ -100,6 +100,10 @@
   enter conditions, ordered tasks, prioritised and delayed transitions, evaluators,
   `engine.StateTreeAgent`, navigation-driven `move_to`, native tasks and evaluators,
   events, telemetry and limits.
+- [AI perception](ai-perception.md): sight cones with physics occlusion and a ray budget,
+  hearing with an attenuation hook, damage stimuli, team filtering, decaying memory,
+  `engine.PerceptionSensor` and friends, blackboard keys for tree agents, events and
+  telemetry.
 - [Physics library](../crates/engine-physics/README.md),
   [animation library](../crates/engine-animation/README.md), and
   [navigation library](../crates/engine-navigation/README.md): native APIs and limits.
