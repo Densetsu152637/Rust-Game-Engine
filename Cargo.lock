@@ -1799,6 +1799,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-script"
+version = "0.1.0"
+dependencies = [
+ "engine-graph",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-text"
 version = "0.1.0"
 dependencies = [

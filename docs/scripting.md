@@ -1,10 +1,89 @@
-# Native game crates
+# Scripting
 
-Gameplay is written in Rust in an external Cargo crate. There is no scripting
-language, interpreter or sandbox: the engine compiles the crate together with the
-engine into a native executable, and gameplay runs as ordinary Rust against the same
-Bevy ECS world the engine uses. This replaces the earlier embedded Lua scripting.
-Native code is trusted executable code with the user's normal process privileges.
+Gameplay has two layers. **Native Rust game crates** are the primary, trusted way to
+write gameplay: the engine compiles the crate together with the engine into a native
+executable and gameplay runs as ordinary Rust against the same Bevy ECS world. On top
+of that, **data-driven scripts** are additive and optional: visual scripts
+([`script_graph`](visual-scripting.md), shipped) run in a bounded, deterministic VM
+and reach the game only through declared host functions and explicit capabilities.
+There is no Lua: the earlier embedded Lua scripting was removed with the C++ engine
+and nothing here brings back an unbounded interpreter.
+
+| | Native game crates | `script_graph` visual scripts |
+| --- | --- | --- |
+| Trust | Trusted code, the user's process privileges | Bounded by construction (not a defence against a malicious project, which can already edit native code) |
+| Authoring | Rust, compiled into a generation | JSON graph asset edited with `graph_edit` or the node editor |
+| World access | The whole `World` | Declared host functions, staged built-ins, capabilities |
+| Reload | New generation, restarts game state | `Runtime::reload_script_asset`, last good program kept on failure |
+
+## Shared script core
+
+`engine-script` is a pure crate (no ECS, file system, network or clock) shared by
+script backends:
+
+- **Values**: `bool`, `int` (`i64`), `float` (`f64`, rounded to `f32` at vec3,
+  transform and component boundaries), `string` (at most 4096 bytes), `vec3`,
+  `entity` (a runtime handle, never persisted) and `json` (within the shared graph
+  value limits).
+- **Host functions** have dotted lower-case names and a declared signature
+  (`params`, `returns`, `pure`, `cost` of at least 1 fuel, `effects`). The engine
+  provides the reserved `engine.*` built-ins (`engine.find_entity`, `position`,
+  `set_position`, `component_get`, `component_set`, `emit`, `log`, `random_int`,
+  `random_float`, `time`, `self`). A game declares its own in the project's
+  **`scriptFunctions`** file (a project-relative JSON array, at most 1 MiB, set in
+  `project.json` like `componentSchemas`):
+
+  ```json
+  [{"name": "game.damage", "params": [{"name": "target", "type": "entity"}, {"name": "amount", "type": "float"}],
+    "returns": null, "pure": false, "cost": 5, "effects": ["write_self"]}]
+  ```
+
+  and registers the Rust implementation with
+  `engine_project::scripting::register_script_fn(app, "game.damage", sig, f)` from
+  `configure`. `Runtime::start` fails with `script.function.unregistered` or
+  `script.function.signature` when a declaration has no matching implementation.
+  Every argument is checked (type, finiteness, string and JSON bounds) before the
+  native function runs, so invalid script data never reaches game code.
+- **Capabilities** are per `engine.ScriptGraph` component and denied by default:
+  `read` and `write` list component names `engine.component_get` and
+  `engine.component_set` may touch on the script's own entity (writes must pass the
+  component's schema; `engine.set_position` is denied on an entity whose pose is
+  owned by physics, animation or navigation), `emit` is `self_only` or `any`, and
+  `spawn` is reserved (maximum 0: runtime spawn is not shipped).
+- **Budgets**: fuel per instance and tick (default 10,000, authorable
+  100..1,000,000, 2,000,000 across all instances), guest call depth 16, instance
+  state 64 KiB, 64 pending waits, 16 emits per instance and 256 in total per tick.
+  A violation traps the run with a coded `script.*` error.
+- **Staging**: built-in world writes and events are committed only when a run
+  returns normally; a trap discards them. Native game functions are trusted and
+  apply their effects immediately (document the irreversible ones).
+- **Faults**: a trap records its node, emits a targeted `script.faulted` event and
+  applies the component's `fault_policy`: `disable` (default; the instance stops)
+  or `stop_runtime` (the tick returns the error). Faults are listed in the
+  `scripts` field of the runtime snapshot.
+- **Determinism**: instances run in authored-id order, events in delivered order,
+  randomness only from the authored `seed`, time only from accumulated `dt`. The
+  same build, platform and inputs give the same event trace and telemetry.
+- **Events**: scripts handle events delivered to their entity (or broadcast)
+  through `on_event` nodes, for example `collision.enter`, and emit events that are
+  delivered on the next tick through the normal bounded dispatcher.
+- **Tick placement**: the script service runs in the post-update step immediately
+  before the AI services, after event dispatch and native script updates.
+- **Reload**: `Runtime::reload_script_asset(id)` compiles a candidate; on success
+  affected instances stop (`on_stop`) and restart fresh at the next tick boundary,
+  on failure the last good program keeps running and the error is returned. File
+  watching is out of scope.
+- **MCP**: `script_schema` describes the contract (node types, host functions,
+  limits, codes) and `graph_validate` applies the project's declared functions when
+  a project is open. Neither executes scripts or game code.
+
+## Native game crates (trusted)
+
+The engine compiles the game crate together with the engine into a native
+executable, and gameplay runs as ordinary Rust against the same Bevy ECS world the
+engine uses. Native code is trusted executable code with the user's normal process
+privileges.
+
 
 Working examples: [`examples/first-project`](../examples/first-project/src/lib.rs)
 (script lifecycle, game-owned component, systems), [`examples/desktop-2d`](../examples/desktop-2d/README.md)

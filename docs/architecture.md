@@ -42,7 +42,7 @@ cross a dynamic-library Rust ABI or interpreter boundary. Authored metadata and
 network snapshots remain serialized data, not executable Rust. Native game
 code runs with the user's normal process privileges; compilation is not a sandbox.
 Reloading means compiling and launching a new generation, which restarts game
-state. See [Native game crates](scripting.md) and [Project commands](commands.md).
+state. See [Scripting](scripting.md) and [Project commands](commands.md).
 
 ## ECS and the scheduling model
 
@@ -257,7 +257,11 @@ current design:
 - **Gameplay code:** Lua is replaced by external Rust crates compiled on demand with
   the engine into one native generation sharing one Rust type universe. No Rust
   objects cross independently compiled library boundaries, and a failed candidate
-  build never destroys the last working generation.
+  build never destroys the last working generation. Data-driven scripts are
+  additive, not a second type universe: `script_graph` visual scripts run in the
+  bounded `engine-script` VM and touch the world only through declared host
+  functions and the component catalog, with staged commits and a last-good reload
+  ([Scripting](scripting.md)).
 - **Identity:** authored asset/entity IDs stay separate from generation-aware ECS
   handles.
 - **Platforms:** native desktop hosts target Windows/Linux/macOS, with Windows

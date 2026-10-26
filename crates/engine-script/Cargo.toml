@@ -1,0 +1,15 @@
+[package]
+name = "engine-script"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+description = "Pure script core: typed values, host function registry, budgets and traps, and the script_graph visual-scripting VM"
+
+[dependencies]
+engine-graph = { path = "../engine-graph" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
