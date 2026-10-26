@@ -25,6 +25,7 @@ fn invalid() -> Error {
 impl ModelDocument {
     pub fn validate(&self) -> Result<()> {
         let scene = &self.scene;
+        scene.validate_morphs().map_err(|_| invalid())?;
         if self.version != 1
             || self.node_entities.len() != scene.nodes.len()
             || self
@@ -248,6 +249,7 @@ impl ModelDocument {
             }
         }
         for clip in &scene.clips {
+            let mut targets = BTreeSet::new();
             count += clip.channels.len();
             if count > limits.max_entities {
                 return Err(invalid());
@@ -279,7 +281,26 @@ impl ModelDocument {
                         1
                     })
                     .ok_or_else(invalid)?;
+                let property = match &channel.values {
+                    ChannelValues::Translation(_) => 0,
+                    ChannelValues::Rotation(_) => 1,
+                    ChannelValues::Scale(_) => 2,
+                    ChannelValues::Weights(_) => 3,
+                };
+                if !targets.insert((channel.target_node, property)) {
+                    return Err(invalid());
+                }
                 let valid = match &channel.values {
+                    ChannelValues::Weights(v) => {
+                        let width = scene.nodes[channel.target_node]
+                            .mesh
+                            .and_then(|mesh| {
+                                scene.morphs.primitives.iter().find(|m| m.mesh == mesh)
+                            })
+                            .map_or(0, |m| m.targets.len());
+                        keys = keys.checked_add(v.len()).ok_or_else(invalid)?;
+                        width > 0 && expected.checked_mul(width) == Some(v.len()) && finite(v)
+                    }
                     ChannelValues::Translation(v) | ChannelValues::Scale(v) => {
                         v.len() == expected && v.iter().all(|v| finite(v))
                     }

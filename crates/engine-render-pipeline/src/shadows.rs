@@ -3,9 +3,36 @@
 //! spot lights, six cube faces for point and area lights, and packing of
 //! power-of-two views into atlas pages (layers of one depth texture array).
 
-use crate::lights::ShadowView;
+use crate::lights::{LightKind, ShadowView};
 use anyhow::{Result, ensure};
 use glam::{Mat4, Vec3, Vec4Swizzles};
+
+/// One allocated atlas tile that a [`crate::PipelineFeature`] may add casters to.
+///
+/// Available only during [`crate::Stage::Shadow`]. Indices and atlas placement
+/// belong to this frame and view; do not cache them across frames. The pipeline
+/// owns allocation and clears each used layer before any shadow feature runs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowRenderView {
+    /// Index into `engine_shadows`, identical to this entry's slice index.
+    pub index: u32,
+    /// Index of the light in the submitted [`crate::LightList`].
+    pub light_index: usize,
+    /// Index of the light in the uploaded `engine_lights` list (directional first).
+    pub light_slot: u32,
+    pub light_kind: LightKind,
+    /// Cascade index for directional lights; cube face (+X, -X, +Y, -Y,
+    /// +Z, -Z) for point/area lights; zero for a spot light.
+    pub view_index: u32,
+    /// Depth-array layer and square tile in atlas texels (top-left origin).
+    pub layer: u32,
+    pub x: u32,
+    pub y: u32,
+    pub size: u32,
+    /// The exact projection used by receivers, including its world-to-clip
+    /// matrix, near/far range, cascade split and texel scale.
+    pub view: ShadowView,
+}
 
 /// Shadow atlas pages of a view: `page_size`^2 `Depth32Float` layers,
 /// allocated on demand up to `max_pages`.

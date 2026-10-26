@@ -272,10 +272,10 @@ current design:
 The workspace supplies working feature foundations with explicit failure paths,
 not AAA readiness or full parity with a mature commercial engine. Important gaps
 include image-based lighting, animation
-IK/retargeting, crowd avoidance, multiplayer prediction/matchmaking/NAT
+retargeting, crowd avoidance, multiplayer prediction/matchmaking/NAT
 traversal, DLSS Frame Generation/Ray Reconstruction/neural rendering,
 text-input/accessibility UI, and platform-certified distribution. Domain docs
 state exact supported subsets; [animation pose graphs](animation-graph.md)
-cover state transitions and 1D/2D blend spaces. Passing unit tests, a local GPU test and compiling
+cover state transitions, 1D/2D blend spaces and rotation-only two-bone IK. Passing unit tests, a local GPU test and compiling
 portable libraries establish different properties; none substitutes for platform
 deployment, content-scale profiling or interactive acceptance.

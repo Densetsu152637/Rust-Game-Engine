@@ -82,6 +82,7 @@ impl Runtime {
         }
         crate::accessibility::register(&mut app)?;
         crate::captions::register(&mut app)?;
+        crate::video::register(&mut app)?;
         app.world_mut()
             .resource_mut::<crate::captions::Captions>()
             .style
@@ -308,6 +309,7 @@ impl Runtime {
             dt,
             text: &ui_text,
         };
+        crate::video::tick(self.app.world_mut())?;
         crate::captions::tick(self.app.world_mut(), dt)?;
         crate::ui_tree::tick_world(self.app.world_mut(), &ui_context, &ui_input)?;
         let mut scripts = std::mem::take(&mut self.scripts);
@@ -398,6 +400,7 @@ impl Runtime {
             return Ok(());
         }
         let mut error = None;
+        crate::video::shutdown(self.app.world_mut());
         crate::networking::shutdown(self.app.world_mut());
         crate::ai::shutdown(self.app.world_mut());
         for script in std::mem::take(&mut self.scripts).into_iter().rev() {

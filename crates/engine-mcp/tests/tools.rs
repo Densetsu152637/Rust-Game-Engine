@@ -376,6 +376,8 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.Destructible3D",
         "engine.FluidVolume",
         "engine.Formation",
+        "engine.MorphPlayer",
+        "engine.MorphWeights",
         "engine.NavigationAgent",
         "engine.NavigationObstacle",
         "engine.NetworkHitboxes",
@@ -398,6 +400,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.UiTheme",
         "engine.UiWorldPanel",
         "engine.Vehicle3D",
+        "engine.VideoPlayer",
         "engine.WorldText",
         "engine.XrSettings",
     ]);
@@ -468,7 +471,7 @@ fn asset_list_lists_filters_and_pages() {
 #[test]
 fn asset_list_rejects_unknown_kinds() {
     let dir = fixture();
-    let result = data(dir.path(), "asset_list", json!({"kind":"video"}));
+    let result = data(dir.path(), "asset_list", json!({"kind":"not_a_kind"}));
     assert_eq!(error_code(&result), "invalid_argument");
 }
 

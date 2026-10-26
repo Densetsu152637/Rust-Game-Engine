@@ -41,6 +41,8 @@ pub enum StreamState {
 /// Source time is PCM submitted to the mixer, not hardware presentation time.
 #[derive(Clone, Debug)]
 pub struct StreamSnapshot {
+    pub sample_rate: u32,
+    pub channels: u16,
     pub generation: StreamGeneration,
     pub state: StreamState,
     pub source_frame: f64,
@@ -178,6 +180,8 @@ fn snapshot(shared: &Shared) -> Result<StreamSnapshot> {
         StreamState::Playing
     };
     Ok(StreamSnapshot {
+        sample_rate: shared.config.sample_rate,
+        channels: shared.config.channels,
         generation: q.generation,
         state,
         source_frame: q.cursor,

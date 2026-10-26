@@ -1,6 +1,6 @@
 use super::Graph;
 use super::compile::{Node, valid_parameter};
-use crate::{Clip, ClipEvent, LocalPose, blend_poses};
+use crate::{Clip, ClipEvent, LocalPose, Skeleton, Vec3, blend_poses, ik::TwoBone};
 use anyhow::{Result, ensure};
 use serde_json::Value;
 use std::{
@@ -31,6 +31,8 @@ struct State {
 pub struct GraphPlayer {
     graph: Arc<Graph>,
     rest: Vec<LocalPose>,
+    skeleton: Option<Arc<Skeleton>>,
+    solvers: Vec<Option<TwoBone>>,
     clips: BTreeMap<String, Arc<Clip>>,
     parameters: BTreeMap<String, Value>,
     states: Vec<State>,
@@ -41,6 +43,43 @@ impl GraphPlayer {
         graph: Arc<Graph>,
         rest: Vec<LocalPose>,
         clips: BTreeMap<String, Arc<Clip>>,
+    ) -> Result<Self> {
+        Self::with_parameters(graph, rest, clips, &BTreeMap::new())
+    }
+    /// Applies and validates initial overrides before the first pose evaluation.
+    pub fn with_parameters(
+        graph: Arc<Graph>,
+        rest: Vec<LocalPose>,
+        clips: BTreeMap<String, Arc<Clip>>,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<Self> {
+        ensure!(
+            !graph.requires_skeleton(),
+            "IK graph requires an explicit Skeleton"
+        );
+        Self::bound(graph, rest, clips, None, parameters)
+    }
+    /// Binds the complete validated hierarchy and its local rest pose for IK nodes.
+    pub fn with_skeleton(
+        graph: Arc<Graph>,
+        skeleton: Arc<Skeleton>,
+        clips: BTreeMap<String, Arc<Clip>>,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<Self> {
+        Self::bound(
+            graph,
+            skeleton.rest_pose().to_vec(),
+            clips,
+            Some(skeleton),
+            parameters,
+        )
+    }
+    fn bound(
+        graph: Arc<Graph>,
+        rest: Vec<LocalPose>,
+        clips: BTreeMap<String, Arc<Clip>>,
+        skeleton: Option<Arc<Skeleton>>,
+        parameters: &BTreeMap<String, Value>,
     ) -> Result<Self> {
         ensure!(
             !rest.is_empty() && rest.len() <= 4096 && graph.nodes.len() * rest.len() <= 262144,
@@ -57,6 +96,20 @@ impl GraphPlayer {
                 "missing clip or joint count differs: {id}"
             );
         }
+        let solvers = graph
+            .nodes
+            .iter()
+            .map(|node| match node {
+                Node::Ik { chain, limits, .. } => Ok(Some(TwoBone::new(
+                    skeleton
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("IK requires a Skeleton"))?,
+                    *chain,
+                    *limits,
+                )?)),
+                _ => Ok(None),
+            })
+            .collect::<Result<Vec<_>>>()?;
         let states = graph
             .nodes
             .iter()
@@ -74,9 +127,12 @@ impl GraphPlayer {
             pose: rest.clone(),
             graph,
             rest,
+            skeleton,
+            solvers,
             clips,
             states,
         };
+        player.set_parameters(parameters)?;
         player.evaluate(0., false)?;
         Ok(player)
     }
@@ -98,6 +154,16 @@ impl GraphPlayer {
                 "unknown or mistyped animation parameter {name}"
             );
             values.insert(name.clone(), value.clone());
+        }
+        for node in &self.graph.nodes {
+            if let Node::Ik { weight, .. } = node {
+                ensure!(
+                    values[weight]
+                        .as_f64()
+                        .is_some_and(|v| (0.0..=1.).contains(&v)),
+                    "IK weight must be in 0..1"
+                );
+            }
         }
         self.parameters = values;
         Ok(())
@@ -170,6 +236,30 @@ impl GraphPlayer {
                             .zip(space.weights([number(x), number(y)])?),
                     );
                     weighted_pose(&poses, &inputs)?
+                }
+                Node::Ik {
+                    input,
+                    target,
+                    pole,
+                    weight,
+                    ..
+                } => {
+                    inputs.push((*input, 1.));
+                    let vector = |name: &str| {
+                        Vec3::from_array(std::array::from_fn(|i| {
+                            self.parameters[name][i]
+                                .as_f64()
+                                .expect("validated vec3 parameter")
+                                as f32
+                        }))
+                    };
+                    self.solvers[i].as_ref().expect("bound IK solver").solve(
+                        self.skeleton.as_deref().expect("bound IK skeleton"),
+                        &poses[*input],
+                        vector(target),
+                        vector(pole),
+                        number(weight),
+                    )?
                 }
                 Node::Machine {
                     inputs: samples,

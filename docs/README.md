@@ -72,6 +72,8 @@
   jobs and optional native ECS services.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
   fingerprints, ownership and reload behavior.
+- [Morph targets](animation-morph.md): imported defaults, live weight controls,
+  cubic weight playback and morph-before-skin mesh deformation.
 - [Authored simulation](simulation.md): 2D/3D rigid bodies, animation and navigation
   adapters, transform authority and callback events.
 - [Physics core](physics.md): shapes, material combine rules, named collision layers,
@@ -192,6 +194,6 @@
   access levels and limits.
 
 - [Animation pose graphs](animation-graph.md): validated pose DAGs, state
-  transitions, 1D/2D blend spaces, project bindings and CPU skin deformation.
+  transitions, 1D/2D blend spaces, two-bone IK, project bindings and CPU skin deformation.
 
 Per-crate details are in `crates/*/README.md`.

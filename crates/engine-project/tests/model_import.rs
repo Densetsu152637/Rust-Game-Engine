@@ -274,3 +274,47 @@ fn mesh_loader_rejects_mismatched_normal_array() {
     .unwrap();
     assert!(content::load_mesh(&path).is_err());
 }
+
+#[test]
+fn morph_import_builds_live_prefab_controls_and_keeps_bindings_during_instantiation() {
+    let temp = tempfile::tempdir().unwrap();
+    fixture::write_project(temp.path());
+    fixture::write_morph_source(temp.path());
+    let project = Project::load(temp.path().join("project.json")).unwrap();
+    import_model(&project, Path::new("source/model.gltf"), "morph").unwrap();
+    let project = Project::load(&project.manifest).unwrap();
+    let mut model = load_model(&project.resolve_asset("morph:model").unwrap()).unwrap();
+    assert_eq!(model.scene.morphs.node_weights[&1], vec![0.25]);
+    assert!(matches!(
+        model.scene.clips[0].channels[0].values,
+        engine_assets::ChannelValues::Weights(_)
+    ));
+    model.scene.morphs.primitives[0].weights.push(0.);
+    assert!(model.validate().is_err());
+    let mut document = SceneDocument::new(project);
+    let revision = document.revision().to_owned();
+    document
+        .apply(
+            EditOperation::InstantiatePrefab {
+                asset: "morph:prefab".into(),
+                prefix: "copy:".into(),
+                parent: None,
+            },
+            &revision,
+        )
+        .unwrap();
+    let primitive = document
+        .snapshot()
+        .entities
+        .iter()
+        .find(|e| e.id == "copy:node:1:primitive:0")
+        .unwrap();
+    assert_eq!(
+        primitive.components.custom["engine.MorphWeights"].data,
+        serde_json::json!({"model":"morph:model","mesh_node":1,"primitive":0,"weights":[]})
+    );
+    assert_eq!(
+        primitive.components.custom["engine.MorphPlayer"].data["clip"],
+        0
+    );
+}

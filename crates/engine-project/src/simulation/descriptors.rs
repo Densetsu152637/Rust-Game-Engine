@@ -21,7 +21,15 @@ fn descriptor<T: serde::Serialize>(
 pub fn component_descriptors() -> Vec<crate::ComponentDescriptor> {
     let mut result = vec![];
     result.push(descriptor("engine.SkinBinding",SkinBinding::default(),json!({"model":{"type":"string","maxLength":128},"mesh_node":{"type":"integer","minimum":0,"maximum":4095},"primitive":{"type":"integer","minimum":0,"maximum":65535},"bindings":{"type":"array","maxItems":4096,"items":{"type":"string","maxLength":128}}})));
-    result.push(descriptor("engine.AnimationGraphPlayer",AnimationGraphPlayer::default(),json!({"graph":{"type":"string","maxLength":128},"bindings":{"type":"array","maxItems":4096,"items":{"type":"string","maxLength":128}},"parameters":{"type":"object"}})));
+    result.push(descriptor("engine.AnimationGraphPlayer",AnimationGraphPlayer::default(),json!({"graph":{"type":"string","maxLength":128},"rig":{"type":"string","maxLength":128},"bindings":{"type":"array","maxItems":4096,"items":{"type":"string","maxLength":128}},"parameters":{"type":"object"}})));
+    result.push(descriptor("engine.MorphWeights",MorphWeights::default(),json!({"model":{"type":"string","maxLength":128},"mesh_node":{"type":"integer","minimum":0,"maximum":99999},"primitive":{"type":"integer","minimum":0,"maximum":99999},"weights":{"type":"array","maxItems":256,"items":{"type":"number"}}})));
+    let mut morph_player = descriptor(
+        "engine.MorphPlayer",
+        MorphPlayer::default(),
+        json!({"clip":{"type":"integer","minimum":0,"maximum":99999},"time":{"type":"number"},"speed":{"type":"number","minimum":-100,"maximum":100},"looping":{"type":"boolean"},"playing":{"type":"boolean"}}),
+    );
+    morph_player.requires.push("engine.MorphWeights".into());
+    result.push(morph_player);
     result.extend(physics::component_descriptors());
     result.push(descriptor("engine.AnimationPlayer",AnimationPlayer::default(),json!({"clip":{"type":"string","maxLength":128},"looping":{"type":"boolean"},"speed":{"type":"number","minimum":0,"maximum":100},"bindings":{"type":"array","maxItems":4096,"items":{"type":"string","maxLength":128}}})));
     result.push(descriptor("engine.NavigationAgent",NavigationAgent::default(),json!({"speed":{"type":"number","minimum":0,"maximum":1000000},"waypoints":{"type":"array","maxItems":65536,"items":vector(3)},"navmesh":{"type":"string","maxLength":128},"target":vector(3),"repath":{"type":"integer","minimum":0},"query":{"type":"object","additionalProperties":false,"properties":{"max_distance":{"type":"number","minimum":0,"maximum":1000},"max_polygons":{"type":"integer","minimum":1,"maximum":65536},"max_expansions":{"type":"integer","minimum":0,"maximum":65536},"max_points":{"type":"integer","minimum":2,"maximum":65536}}}})));
