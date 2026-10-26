@@ -20,12 +20,15 @@ path prioritizes compatibility and is not a low-latency GPU texture bridge.
 Preview construction does not start or tick gameplay callbacks.
 
 Choose 2D or 3D in the toolbar. Right drag orbits the 3D camera, middle drag pans,
-and the wheel zooms. Click near an entity origin to select it; left drag moves
-the selected entity in the camera plane with a transient visual preview. Each viewport drag commits one edit on
-release, so undo restores the previous transform. A stale revision rejects the
-gesture. Selection origins show colored translation axes. Frame selection moves
-the view center to the selected entity. Picking is origin-proximity selection,
-not a pixel/object-ID picking buffer.
+and the wheel zooms. Click rendered geometry to select; Ctrl/Command toggles,
+Shift adds, and empty-space drags select visible pixels in a rectangle. The
+hierarchy also supports multi-selection, including non-rendered entities.
+W/E/R choose move, rotate and scale handles. Each completed viewport gesture is
+one revision-checked undo transaction; Escape and focus loss cancel previews.
+Grid, snapping, local/world axes, selection pivots and camera bookmarks are
+configurable and saved separately in `editor.json`.
+See [Scene view editing](editor-scene.md) for controls, picking semantics,
+bounded CPU raster limits, transform limitations and verification coverage.
 
 Invalid preview data leaves the last successful image visible with diagnostics.
 Closing a dirty document prompts Save, Discard or Cancel. Changes are validated

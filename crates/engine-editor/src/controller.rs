@@ -32,7 +32,8 @@ pub trait PlayHost {
 pub struct EditorController {
     document: Option<SceneDocument>,
     manifest: Option<PathBuf>,
-    selected: Option<String>,
+    /// Selected entity IDs in selection order; the last is the active entity.
+    selection: Vec<String>,
     host: Box<dyn PlayHost>,
     playing: bool,
     status: String,
@@ -45,7 +46,7 @@ impl EditorController {
         Self {
             document: None,
             manifest: None,
-            selected: None,
+            selection: Vec::new(),
             host,
             playing: false,
             status: "No project open".into(),
@@ -60,8 +61,16 @@ impl EditorController {
     pub fn manifest(&self) -> Option<&Path> {
         self.manifest.as_deref()
     }
+    /// The active entity: the most recently selected one.
     pub fn selected(&self) -> Option<&str> {
-        self.selected.as_deref()
+        self.selection.last().map(String::as_str)
+    }
+    /// Every selected entity in selection order (the last is active).
+    pub fn selection(&self) -> &[String] {
+        &self.selection
+    }
+    pub fn is_selected(&self, id: &str) -> bool {
+        self.selection.iter().any(|selected| selected == id)
     }
     pub fn is_dirty(&self) -> bool {
         self.document.as_ref().is_some_and(SceneDocument::is_dirty)
@@ -80,18 +89,57 @@ impl EditorController {
     }
 
     pub fn select(&mut self, id: Option<String>) -> Result<()> {
-        if let Some(id) = &id {
-            ensure!(
-                self.document.as_ref().is_some_and(|d| d
-                    .snapshot()
-                    .entities
-                    .iter()
-                    .any(|e| &e.id == id)),
-                "selected entity does not exist: {id}"
-            );
+        self.select_many(id.into_iter().collect())
+    }
+
+    /// Replaces the selection. Duplicates collapse (keeping the last position);
+    /// the last entry becomes the active entity. Unknown IDs are rejected and
+    /// leave the selection unchanged.
+    pub fn select_many(&mut self, ids: Vec<String>) -> Result<()> {
+        for id in &ids {
+            ensure!(self.has_entity(id), "selected entity does not exist: {id}");
         }
-        self.selected = id;
+        let mut selection: Vec<String> = Vec::with_capacity(ids.len());
+        for id in ids {
+            selection.retain(|existing| existing != &id);
+            selection.push(id);
+        }
+        self.selection = selection;
         Ok(())
+    }
+
+    /// Adds `id` if absent (making it active) or removes it if present.
+    pub fn toggle_selection(&mut self, id: &str) -> Result<()> {
+        let mut selection = self.selection.clone();
+        if let Some(index) = selection.iter().position(|existing| existing == id) {
+            selection.remove(index);
+        } else {
+            selection.push(id.to_owned());
+        }
+        self.select_many(selection)
+    }
+
+    /// Adds `id` to the selection and makes it active.
+    pub fn extend_selection(&mut self, id: &str) -> Result<()> {
+        let mut selection = self.selection.clone();
+        selection.push(id.to_owned());
+        self.select_many(selection)
+    }
+
+    fn has_entity(&self, id: &str) -> bool {
+        self.document
+            .as_ref()
+            .is_some_and(|d| d.snapshot().entities.iter().any(|e| e.id == id))
+    }
+
+    fn prune_selection(&mut self) {
+        let Some(document) = &self.document else {
+            self.selection.clear();
+            return;
+        };
+        let entities = &document.snapshot().entities;
+        self.selection
+            .retain(|id| entities.iter().any(|entity| &entity.id == id));
     }
 
     pub fn open(&mut self, manifest: impl AsRef<Path>, discard_unsaved: bool) -> Result<()> {
@@ -106,10 +154,12 @@ impl EditorController {
             }
             self.document = Some(candidate);
             self.manifest = Some(manifest.as_ref().to_path_buf());
-            self.selected = self
+            self.selection = self
                 .document
                 .as_ref()
-                .and_then(|d| d.snapshot().entities.first().map(|e| e.id.clone()));
+                .and_then(|d| d.snapshot().entities.first().map(|e| e.id.clone()))
+                .into_iter()
+                .collect();
             Ok(())
         })();
         self.finish("Project opened", result)
@@ -248,6 +298,7 @@ impl EditorController {
     fn finish(&mut self, success: &str, result: Result<()>) -> Result<()> {
         match &result {
             Ok(()) => {
+                self.prune_selection();
                 self.status = success.into();
                 self.diagnostics.clear();
                 self.append_log(success.into());
