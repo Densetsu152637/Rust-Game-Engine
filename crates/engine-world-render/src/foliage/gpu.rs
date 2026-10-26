@@ -7,10 +7,10 @@ use engine_project::content::{Mesh, Texture};
 use engine_project::world::foliage::{FoliageRenderItem, FoliageRenderSet, FoliageRenderType};
 use engine_render_pipeline::{
     DEPTH_FORMAT, DrawStats, ENGINE_VERTEX_LAYOUT, EngineVertex, FeatureContext, FeatureSetup,
-    GpuContext, GpuMesh, GpuTexture, HDR_FORMAT, InstanceBatcher, ViewId, frustum_planes,
-    sphere_in_frustum,
+    GpuContext, GpuMesh, GpuTexture, HDR_FORMAT, InstanceBatcher, MAX_SHADOWS, ViewId,
+    frustum_planes, sphere_in_frustum,
 };
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -48,6 +48,11 @@ struct Prepared {
     wind_layout: wgpu::BindGroupLayout,
     mesh: wgpu::RenderPipeline,
     billboard: wgpu::RenderPipeline,
+    shadow_mesh: wgpu::RenderPipeline,
+    shadow_billboard: wgpu::RenderPipeline,
+    shadow_indices: wgpu::BindGroup,
+    shadow_index_stride: u32,
+    _shadow_index_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
     white: Arc<GpuTexture>,
     quad: Arc<GpuMesh>,
@@ -159,6 +164,7 @@ fn pipeline(
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
     vertex: &str,
+    shadow: bool,
 ) -> wgpu::RenderPipeline {
     let instance = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -193,9 +199,13 @@ fn pipeline(
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
             module,
-            entry_point: Some("fs_main"),
+            entry_point: Some(if shadow { "fs_shadow" } else { "fs_main" }),
             compilation_options: Default::default(),
-            targets: &[Some(HDR_FORMAT.into())],
+            targets: if shadow {
+                &[]
+            } else {
+                &[Some(HDR_FORMAT.into())]
+            },
         }),
         multiview_mask: None,
         cache: None,
@@ -276,8 +286,61 @@ impl Shared {
             ],
             immediate_size: 0,
         });
-        let mesh = pipeline(device, &pipeline_layout, &module, "vs_mesh");
-        let billboard = pipeline(device, &pipeline_layout, &module, "vs_billboard");
+        let shadow_index_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("world.foliage shadow index"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    count: None,
+                }],
+            });
+        let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("world.foliage.shadow"),
+            bind_group_layouts: &[
+                Some(&setup.layouts.view),
+                Some(&type_layout),
+                Some(&wind_layout),
+                Some(&shadow_index_layout),
+            ],
+            immediate_size: 0,
+        });
+        let mesh = pipeline(device, &pipeline_layout, &module, "vs_mesh", false);
+        let billboard = pipeline(device, &pipeline_layout, &module, "vs_billboard", false);
+        let shadow_mesh = pipeline(device, &shadow_layout, &module, "vs_shadow_mesh", true);
+        let shadow_billboard =
+            pipeline(device, &shadow_layout, &module, "vs_shadow_billboard", true);
+        let shadow_index_stride = device.limits().min_uniform_buffer_offset_alignment.max(16);
+        let shadow_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("world.foliage shadow indices"),
+            size: u64::from(shadow_index_stride) * MAX_SHADOWS as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        for index in 0..MAX_SHADOWS as u32 {
+            setup.gpu.queue.write_buffer(
+                &shadow_index_buffer,
+                u64::from(index * shadow_index_stride),
+                bytemuck::cast_slice(&[index, 0u32, 0, 0]),
+            );
+        }
+        let shadow_indices = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("world.foliage shadow indices"),
+            layout: &shadow_index_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &shadow_index_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(16),
+                }),
+            }],
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("world.foliage"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -315,6 +378,11 @@ impl Shared {
             wind_layout,
             mesh,
             billboard,
+            shadow_mesh,
+            shadow_billboard,
+            shadow_indices,
+            shadow_index_stride,
+            _shadow_index_buffer: shadow_index_buffer,
             sampler,
             white,
             quad,
@@ -686,12 +754,113 @@ impl Shared {
         Ok(frame)
     }
 
+    /// Select casters against this light's tile, independently of colour frustum culling.
+    /// Beyond the camera's visible distance, use the coarsest real mesh instead of
+    /// suppressing a caster that can still project into the tile.
+    pub(crate) fn collect_shadow(
+        &mut self,
+        ctx: &FeatureContext<'_>,
+        batcher: &mut InstanceBatcher<FoliageInstance>,
+        clip: Mat4,
+    ) -> Result<FrameDraw> {
+        if self.prepared.is_none() {
+            bail!("world.foliage is not prepared");
+        }
+        let mut frame = FrameDraw::default();
+        self.order.clear();
+        let Some(render_set) = ctx.world.and_then(|w| w.get_resource::<FoliageRenderSet>()) else {
+            return Ok(frame);
+        };
+        let live: Vec<&str> = render_set.items.iter().map(|i| i.id.as_str()).collect();
+        self.sets.retain(|id, _| live.contains(&id.as_str()));
+        let planes = frustum_planes(clip);
+        let camera = ctx.view.camera_position();
+        let quad = self.prepared.as_ref().expect("prepared").quad.clone();
+        for item in &render_set.items {
+            match self.sync_set(ctx.gpu, item) {
+                Ok(true) => frame.uploads += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    frame.notes.push(format!("{}: {error}", item.id));
+                    continue;
+                }
+            }
+            let set_index = self.order.len();
+            self.order.push(item.id.clone());
+            let set = self.sets.get(&item.id).expect("synced");
+            // Preview the same hysteretic choice the later colour pass will make,
+            // without advancing its per-view tracker during any shadow tile.
+            let mut tracker = set.trackers.get(&ctx.view.id).cloned().unwrap_or_default();
+            for (key, cell) in item.field.cells() {
+                let levels = tracker.levels_mut(key, cell.revision, cell.instances.len());
+                for (index, instance) in cell.instances.iter().enumerate() {
+                    let t = usize::from(instance.type_index);
+                    let (Some(render_type), Some(gpu_type)) = (item.types.get(t), set.types.get(t))
+                    else {
+                        continue;
+                    };
+                    let position = Vec3::from(instance.position);
+                    let scale = instance.scale.iter().copied().fold(0.0, f32::max);
+                    // Wind displaces vertices horizontally; bound the maximum gust/side sway.
+                    let wind_reach = item.wind.strength.abs()
+                        * (1.0 + item.wind.gust_strength.abs())
+                        * render_type.wind_weight.abs()
+                        * 1.5;
+                    if !sphere_in_frustum(&planes, position, gpu_type.radius * scale + wind_reach) {
+                        continue;
+                    }
+                    let distance = position.distance(camera);
+                    let previous = LodLevel::from_code(levels[index]);
+                    let level = match render_type.bands.select(distance, previous) {
+                        LodLevel::Culled => LodLevel::Mesh((gpu_type.meshes.len() - 1) as u8),
+                        level => level,
+                    };
+                    let data = FoliageInstance {
+                        rotation: instance.rotation,
+                        position_phase: [
+                            instance.position[0],
+                            instance.position[1],
+                            instance.position[2],
+                            instance.phase,
+                        ],
+                        scale: [instance.scale[0], instance.scale[1], instance.scale[2], 0.0],
+                    };
+                    match level {
+                        LodLevel::Mesh(n) => batcher.push(
+                            &gpu_type.meshes[usize::from(n).min(gpu_type.meshes.len() - 1)],
+                            ((set_index << 20) | (t << 1)) as u64,
+                            data,
+                        ),
+                        LodLevel::Impostor if gpu_type.billboard_bind.is_some() => {
+                            batcher.push(&quad, ((set_index << 20) | (t << 1) | 1) as u64, data)
+                        }
+                        _ => continue,
+                    }
+                    frame.instances += 1;
+                }
+            }
+        }
+        Ok(frame)
+    }
+
+    pub(crate) fn shadow_index(&self, index: u32) -> Result<(wgpu::BindGroup, u32)> {
+        let prepared = self
+            .prepared
+            .as_ref()
+            .context("world.foliage is not prepared")?;
+        Ok((
+            prepared.shadow_indices.clone(),
+            index * prepared.shadow_index_stride,
+        ))
+    }
+
     /// Draws the batches `collect` produced.
     pub(crate) fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         view_group: &wgpu::BindGroup,
         batcher: &InstanceBatcher<FoliageInstance>,
+        shadow: bool,
     ) -> Result<DrawStats> {
         let prepared = self
             .prepared
@@ -714,10 +883,11 @@ impl Shared {
                 Some(&gpu_type.mesh_bind)
             };
             let Some(bind) = bind else { return };
-            pass.set_pipeline(if billboard {
-                &prepared.billboard
-            } else {
-                &prepared.mesh
+            pass.set_pipeline(match (shadow, billboard) {
+                (true, true) => &prepared.shadow_billboard,
+                (true, false) => &prepared.shadow_mesh,
+                (false, true) => &prepared.billboard,
+                (false, false) => &prepared.mesh,
             });
             pass.set_bind_group(1, bind, &[]);
             pass.set_bind_group(2, &set.wind_bind, &[]);

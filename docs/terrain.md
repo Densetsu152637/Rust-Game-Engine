@@ -261,16 +261,13 @@ terrain, or a 6 m ridge (about 80 degrees), makes the same query `Unreachable`.
 - depth is written in the scene pass (`LessEqual`). `world.terrain.normals` (`Prepass`, after
   `engine.prepass.normals`) draws the same surface into the normals target and scene depth
   when a running feature needs normals.
-- **Shadows.** `world.terrain.shadow` (`Shadow`, after `engine.shadows`) renders terrain depth
-  into a per-view terrain shadow map: a `Depth32Float` array of `SHADOW_MAP_SIZE` (1024)
-  texels per edge with one layer per cascade (`MAX_CASCADES` = 4 layers, 16 MiB per view),
-  using the engine's own cascade matrices of the first directional light
-  (`engine_shadows[shadow_index + cascade]`; cascades the light does not have are clipped in
-  the vertex shader). Every camera-selected node is drawn without frustum culling, holes cast
-  nothing. The colour pass samples the map with the engine's cascade selection and blend and
-  the light's depth / normal bias (in this map's texels), 3 x 3 PCF, and multiplies the result
-  into the first directional light's visibility next to the engine shadow atlas, so terrain
-  shadows terrain and engine meshes (boxes, characters) still shadow terrain through the atlas.
+- **Shadows.** `world.terrain.shadow` (`Shadow`, after `engine.shadows`) writes terrain depth
+  into every allocated tile of the engine-owned shared shadow atlas, including directional
+  cascades, spot views, and point faces. Node selection uses the camera's CDLOD morphing
+  inputs but culls against each light view, so terrain outside the camera frustum can cast.
+  Holes discard in the depth fragment shader. The colour pass uses `engine_direct_lighting`
+  and therefore receives shadows from terrain, native meshes, foliage, and opted-in water
+  through the same atlas. Native meshes also receive terrain shadows.
 - **Motion vectors.** `world.terrain.motion` (`Opaque`, after `world.terrain`) runs when a
   feature or the host needs motion (DLSS requests it): it redraws the colour pass's nodes into
   the motion target (current-to-previous, render pixels, y down, like
@@ -306,7 +303,7 @@ features in the preview status and keep the CPU fallback. `Camera3D.render_featu
 disable `world.terrain` (or `world.terrain.shadow`, `world.terrain.motion`) per camera.
 `TerrainRenderStatusHandle::get()` reports views, terrains, nodes, culled nodes, draw calls,
 uploads, whether the normals, shadow (and its draw calls) and motion passes ran, whether the
-colour pass used the terrain shadow map, and notes (for example a missing `TerrainRenderSet`
+terrain shadow writer ran for the colour view, and notes (for example a missing `TerrainRenderSet`
 when `install` was not called).
 
 Verified on this machine (RTX 5080, Vulkan,
@@ -320,11 +317,8 @@ Verified on this machine (RTX 5080, Vulkan,
   camera (82 nodes over three levels, 1700 vertices mid-morph) rendered by the
   feature and by the CPU chunk meshes as unlit scene meshes gives **0** coverage
   mismatches over 19200 pixels (10175 terrain pixels).
-- terrain shadows: a 12 m ridge on flat ground under a shadowed sun 31 degrees up shadows the
-  ground 10 m behind it down to the ambient term (linear luminance 0.040, expected 0.04;
-  shadowed / lit 0.235), ground 28 m behind the crest is lit again (1.00 of the lit
-  reference), the shadow pass makes 4 draw calls (one per layer) and disabling
-  `world.terrain.shadow` for the view brings the ratio back to 1.00;
+- the ridge, native receiver, and engine box shadow readbacks are covered by ignored GPU
+  tests; the shared-atlas implementation still needs a fresh GPU run after integration;
 - an engine box mesh (6 m cube, light at 45 degrees) shadows the terrain through the engine
   atlas: ambient-only luminance 0.040 in its shadow, shadowed / lit 0.183;
 - motion vectors with `host_needs.motion` (as DLSS asks): a 2 m camera pan gives
@@ -335,13 +329,9 @@ Verified on this machine (RTX 5080, Vulkan,
 
 ### Limits
 
-- Terrain shadows reach only the terrain's own colour pass: features cannot render into the
-  engine shadow atlas (`FeatureContext` exposes neither the atlas layer views nor the per-light
-  shadow draw rectangles; both are crate-private in `engine-render-pipeline`), so engine meshes,
-  foliage and water do not receive terrain shadows. Only the first directional light's
-  cascades are covered; local lights get no terrain shadow.
-- All four cascade layers are cleared and drawn every frame (the cascade count is only on the
-  GPU), each with every camera-selected node: no per-cascade culling.
+- Terrain shadows are limited by the shared atlas's allocated light views and tile resolution.
+- Shadow nodes use camera-selected CDLOD levels so their geomorph pose matches the colour
+  surface; each light tile then culls nodes conservatively by the node's height range.
 - Motion of a node that changed LOD level between frames uses the current node's morph with
   the previous viewer (the previous selection is not kept); popping-free by construction of the
   geomorph, but not an exact history.

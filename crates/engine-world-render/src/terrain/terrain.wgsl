@@ -33,17 +33,8 @@ struct TerrainUniform {
 @group(1) @binding(6) var terrain_clamp: sampler;
 @group(1) @binding(7) var terrain_repeat: sampler;
 
-// Terrain shadow map of the view (colour pass only): one layer per cascade of the first
-// directional light, rendered with the engine's cascade matrices by world.terrain.shadow.
-struct TerrainShadowParams {
-    // x: 1 when the map holds this frame's terrain depth; y: layer edge in texels.
-    params: vec4<f32>,
-}
-@group(2) @binding(0) var terrain_shadow_map: texture_depth_2d_array;
-@group(2) @binding(1) var terrain_shadow_sampler: sampler_comparison;
-@group(2) @binding(2) var<uniform> terrain_shadow: TerrainShadowParams;
-// Shadow pass only: x = the cascade being rendered.
-@group(2) @binding(3) var<uniform> terrain_shadow_cascade: vec4<u32>;
+// Shadow pass only: index of the engine-owned shared atlas view.
+@group(2) @binding(3) var<uniform> terrain_shadow_index: vec4<u32>;
 
 struct Output {
     @builtin(position) @invariant position: vec4<f32>,
@@ -159,92 +150,6 @@ fn terrain_albedo_at(local_xz: vec2<f32>) -> vec3<f32> {
     return albedo;
 }
 
-// ------------------------------------------------------------ terrain shadow map
-
-// Visibility of `world` (normal `n`) in terrain shadow layer `layer`, rendered with
-// engine_shadows[index]'s orthographic matrix. The engine's depth and normal bias (in
-// texels) are applied with this map's texel size. 3 x 3 PCF; outside the view: lit.
-fn terrain_shadow_view(index: u32, layer: u32, world: vec3<f32>, n: vec3<f32>) -> f32 {
-    let shadow = engine_shadows[index];
-    let m = shadow.clip_from_world;
-    // An orthographic cascade spans 2 / |row 0| world units over the layer edge.
-    let row = vec3<f32>(m[0].x, m[1].x, m[2].x);
-    let size = terrain_shadow.params.y;
-    let texel = 2.0 / (length(row) * size);
-    let p = m * vec4<f32>(world + n * (shadow.bias.y * texel), 1.0);
-    let ndc = p.xyz / p.w;
-    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z > 1.0 {
-        return 1.0;
-    }
-    let reference = max(ndc.z, 0.0) - shadow.bias.x * texel / max(shadow.range.y - shadow.range.x, 0.000001);
-    var sum = 0.0;
-    for (var y = -1; y <= 1; y++) {
-        for (var x = -1; x <= 1; x++) {
-            let at = clamp(uv + vec2<f32>(f32(x), f32(y)) / size, vec2<f32>(0.0), vec2<f32>(1.0));
-            sum += textureSampleCompareLevel(terrain_shadow_map, terrain_shadow_sampler, at, i32(layer), reference);
-        }
-    }
-    return sum / 9.0;
-}
-
-// Fraction of the first directional light reaching `world` past the terrain itself: the
-// engine's cascade selection and blend over the terrain shadow map. 1 without one.
-fn terrain_shadow_visibility(world: vec3<f32>, n: vec3<f32>) -> f32 {
-    if terrain_shadow.params.x < 0.5 || engine_lights.counts.y == 0u {
-        return 1.0;
-    }
-    let light = engine_lights.lights[0];
-    let cascade = engine_cascade_index(light, world);
-    if cascade < 0 {
-        return 1.0;
-    }
-    let base = u32(light.shadow_index);
-    let index = base + u32(cascade);
-    var visibility = terrain_shadow_view(index, u32(cascade), world, n);
-    let blend = light.params.y;
-    let split = engine_shadows[index].range;
-    let start = split.w - blend * (split.w - split.z);
-    let depth = engine_view_depth(world);
-    if blend > 0.0 && depth > start {
-        var next = 1.0;
-        if u32(cascade) + 1u < u32(light.params.x) {
-            next = terrain_shadow_view(index + 1u, u32(cascade) + 1u, world, n);
-        }
-        visibility = mix(visibility, next, clamp((depth - start) / max(split.w - start, 0.000001), 0.0, 1.0));
-    }
-    return visibility;
-}
-
-// engine_direct_lighting with the terrain's own shadow multiplied into the first directional
-// light's screen visibility (the engine shadow atlas holds no terrain).
-fn terrain_direct_lighting(surface: EngineSurface, world: vec3<f32>, v: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
-    var sum = vec3<f32>(0.0);
-    let directional = engine_lights.counts.y;
-    if directional > 0u {
-        var screen = engine_screen_shadow_at(frag).xy;
-        screen.x *= terrain_shadow_visibility(world, surface.normal);
-        sum += engine_light_contribution_screen(engine_lights.lights[0], surface, world, v, true, screen);
-    }
-    for (var i = 1u; i < directional; i++) {
-        sum += engine_light_contribution(engine_lights.lights[i], surface, world, v, true);
-    }
-    if engine_clusters.params.x == 1u {
-        for (var i = directional; i < engine_lights.counts.x; i++) {
-            sum += engine_light_contribution(engine_lights.lights[i], surface, world, v, true);
-        }
-        return sum;
-    }
-    let cluster = engine_cluster_index(frag, engine_view_depth(world));
-    let count = engine_clusters.counts[cluster];
-    let first = cluster * engine_clusters.dims.w;
-    for (var i = 0u; i < count; i++) {
-        let light = engine_lights.lights[engine_cluster_lights[first + i]];
-        sum += engine_light_contribution(light, surface, world, v, true);
-    }
-    return sum;
-}
-
 @fragment fn fs_main(input: Output) -> @location(0) vec4<f32> {
     let albedo = terrain_albedo_at(input.local_xz);
     var surface: EngineSurface;
@@ -253,7 +158,7 @@ fn terrain_direct_lighting(surface: EngineSurface, world: vec3<f32>, v: vec3<f32
     surface.roughness = 0.9;
     surface.normal = normalize(input.normal);
     let v = normalize(engine_camera_position() - input.world);
-    let direct = terrain_direct_lighting(surface, input.world, v, input.position.xy);
+    let direct = engine_direct_lighting(surface, input.world, v, input.position.xy, true);
     let ambient = engine_indirect_lighting(surface, v, input.position.xy);
     if terrain_is_hole(input.local_xz) {
         discard;
@@ -274,8 +179,7 @@ struct ShadowOutput {
     @location(0) local_xz: vec2<f32>,
 }
 
-// Terrain depth into shadow layer `terrain_shadow_cascade.x` with the matrix of that cascade
-// of the first directional light; cascades the light does not have are clipped away.
+// Terrain depth into one allocated shared shadow tile.
 @vertex fn vs_shadow(
     @location(0) grid: vec3<f32>,
     @location(4) node: vec4<u32>,
@@ -286,14 +190,7 @@ struct ShadowOutput {
     let world = terrain_world(s, morph, viewer);
     var out: ShadowOutput;
     out.local_xz = s.local_xz;
-    out.position = vec4<f32>(0.0, 0.0, -1.0, 1.0);
-    let cascade = terrain_shadow_cascade.x;
-    if engine_lights.counts.y > 0u {
-        let light = engine_lights.lights[0];
-        if light.shadow_index >= 0 && cascade < u32(light.params.x) {
-            out.position = engine_shadows[u32(light.shadow_index) + cascade].clip_from_world * world;
-        }
-    }
+    out.position = engine_shadows[terrain_shadow_index.x].clip_from_world * world;
     return out;
 }
 

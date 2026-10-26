@@ -5,7 +5,7 @@ use bytemuck::{Pod, Zeroable};
 use engine_project::world::water::{WaterRenderItem, WaterRenderSet};
 use engine_render_pipeline::{
     DEPTH_FORMAT, ENGINE_VERTEX_LAYOUT, EngineVertex, FeatureContext, FeatureSetup, GpuContext,
-    GpuMesh, HDR_FORMAT,
+    GpuMesh, HDR_FORMAT, MAX_SHADOWS,
 };
 use engine_water::{NoGround, Underwater, WaterShape, WaterSurface, Waves};
 use glam::{Mat4, Vec3};
@@ -44,11 +44,17 @@ struct Prepared {
     layout: wgpu::BindGroupLayout,
     fog_layout: wgpu::BindGroupLayout,
     water: wgpu::RenderPipeline,
+    shadow: wgpu::RenderPipeline,
+    shadow_indices: wgpu::BindGroup,
+    shadow_index_stride: u32,
+    _shadow_index_buffer: wgpu::Buffer,
     underwater: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     /// 1 x 1 placeholders for bodies without an ocean frame or shore grid.
     blank_rgba: wgpu::Texture,
     blank_rg: wgpu::Texture,
+    blank_color: wgpu::Texture,
+    blank_depth: wgpu::Texture,
     fog_uniform: wgpu::Buffer,
 }
 
@@ -259,6 +265,86 @@ impl Shared {
             multiview_mask: None,
             cache: None,
         });
+        let shadow_index_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("world.water shadow index"),
+                entries: &[entry(
+                    0,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    wgpu::ShaderStages::VERTEX,
+                )],
+            });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("world.water.shadow"),
+                bind_group_layouts: &[
+                    Some(&setup.layouts.view),
+                    Some(&layout),
+                    Some(&shadow_index_layout),
+                ],
+                immediate_size: 0,
+            });
+        let shadow = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("world.water.shadow"),
+            layout: Some(&shadow_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &water_module,
+                entry_point: Some("vs_shadow"),
+                compilation_options: Default::default(),
+                buffers: &[Some(ENGINE_VERTEX_LAYOUT)],
+            },
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &water_module,
+                entry_point: Some("fs_shadow"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let shadow_index_stride = device.limits().min_uniform_buffer_offset_alignment.max(16);
+        let shadow_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("world.water shadow indices"),
+            size: u64::from(shadow_index_stride) * MAX_SHADOWS as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        for index in 0..MAX_SHADOWS as u32 {
+            setup.gpu.queue.write_buffer(
+                &shadow_index_buffer,
+                u64::from(index * shadow_index_stride),
+                bytemuck::cast_slice(&[index, 0u32, 0, 0]),
+            );
+        }
+        let shadow_indices = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("world.water shadow indices"),
+            layout: &shadow_index_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &shadow_index_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(16),
+                }),
+            }],
+        });
         let fog_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("world.water.underwater"),
             bind_group_layouts: &[Some(&setup.layouts.view), Some(&fog_layout)],
@@ -317,6 +403,13 @@ impl Shared {
             8,
             bytemuck::cast_slice(&[1.0f32, 0.0]),
         );
+        let blank_depth = texture(setup.gpu, "world.water blank depth", [1, 1], DEPTH_FORMAT);
+        let blank_color = texture(
+            setup.gpu,
+            "world.water blank color",
+            [1, 1],
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         let fog_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("world.water.underwater"),
             size: std::mem::size_of::<FogUniform>() as u64,
@@ -327,10 +420,16 @@ impl Shared {
             layout,
             fog_layout,
             water,
+            shadow,
+            shadow_indices,
+            shadow_index_stride,
+            _shadow_index_buffer: shadow_index_buffer,
             underwater,
             sampler,
             blank_rgba,
             blank_rg,
+            blank_color,
+            blank_depth,
             fog_uniform,
         });
         self.bodies.clear();
@@ -713,6 +812,111 @@ impl Shared {
         drop(pass);
         frame.bodies = groups.len();
         Ok(frame)
+    }
+
+    /// Opted-in water draws opaque depth from the same displaced mesh and uniforms as colour.
+    pub(crate) fn draw_shadow(
+        &mut self,
+        ctx: &mut FeatureContext<'_>,
+    ) -> Result<(FrameDraw, engine_render_pipeline::DrawStats)> {
+        if self.prepared.is_none() {
+            bail!("world.water is not prepared");
+        }
+        let mut frame = FrameDraw::default();
+        let views = ctx.shadow_views()?.to_vec();
+        if views.is_empty() {
+            return Ok((frame, Default::default()));
+        }
+        let Some(set) = ctx.world.and_then(|w| w.get_resource::<WaterRenderSet>()) else {
+            return Ok((frame, Default::default()));
+        };
+        let live: Vec<&str> = set.items.iter().map(|i| i.id.as_str()).collect();
+        self.bodies.retain(|id, _| live.contains(&id.as_str()));
+        let mut drawn = Vec::new();
+        for item in set.items.iter().filter(|i| i.cast_shadows) {
+            match self.sync_body(ctx.gpu, item) {
+                Ok(n) => {
+                    frame.uploads += n;
+                    drawn.push(item.id.clone());
+                }
+                Err(error) => frame.notes.push(format!("{}: {error}", item.id)),
+            }
+        }
+        if drawn.is_empty() {
+            return Ok((frame, Default::default()));
+        }
+        let prepared = self.prepared.as_ref().expect("prepared");
+        let blank = prepared.blank_rgba.create_view(&Default::default());
+        let blank_rg = prepared.blank_rg.create_view(&Default::default());
+        let blank_color = prepared.blank_color.create_view(&Default::default());
+        let blank_depth = prepared.blank_depth.create_view(&Default::default());
+        let mut groups = Vec::new();
+        for id in &drawn {
+            let body = &self.bodies[id];
+            let displacement = body
+                .ocean
+                .as_ref()
+                .map_or(blank.clone(), |o| o.1.create_view(&Default::default()));
+            let normal = body
+                .ocean
+                .as_ref()
+                .map_or(blank.clone(), |o| o.2.create_view(&Default::default()));
+            let shore = body
+                .shore
+                .as_ref()
+                .map_or(blank_rg.clone(), |s| s.0.create_view(&Default::default()));
+            let views = [&displacement, &normal, &shore, &blank_color, &blank_depth];
+            let mut entries = vec![wgpu::BindGroupEntry {
+                binding: 0,
+                resource: body.uniform.as_entire_binding(),
+            }];
+            for (index, view) in views.iter().enumerate() {
+                entries.push(wgpu::BindGroupEntry {
+                    binding: index as u32 + 1,
+                    resource: wgpu::BindingResource::TextureView(view),
+                });
+            }
+            entries.push(wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::Sampler(&prepared.sampler),
+            });
+            let bind = ctx
+                .gpu
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("world.water.shadow"),
+                    layout: &prepared.layout,
+                    entries: &entries,
+                });
+            groups.push((bind, body.mesh.clone()));
+        }
+        let mut stats = engine_render_pipeline::DrawStats::default();
+        let view_group = ctx.view_bind_group;
+        for (tile, view) in views.iter().enumerate() {
+            let mut pass = ctx.shadow_pass("world.water.shadow", tile)?;
+            pass.set_pipeline(&prepared.shadow);
+            pass.set_bind_group(0, view_group, &[]);
+            pass.set_bind_group(
+                2,
+                &prepared.shadow_indices,
+                &[view.index * prepared.shadow_index_stride],
+            );
+            for (bind, mesh) in &groups {
+                pass.set_bind_group(1, bind, &[]);
+                pass.set_vertex_buffer(0, mesh.vertex.slice(..));
+                match &mesh.index {
+                    Some(index) => {
+                        pass.set_index_buffer(index.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..mesh.count, 0, 0..1);
+                    }
+                    None => pass.draw(0..mesh.count, 0..1),
+                }
+                stats.draw_calls += 1;
+                stats.instances += 1;
+            }
+        }
+        frame.bodies = groups.len();
+        Ok((frame, stats))
     }
 
     /// Fogs the view when its camera is under a water surface (`world.water.underwater`);

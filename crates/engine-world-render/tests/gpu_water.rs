@@ -66,6 +66,7 @@ fn world_with(surface: WaterSurface, half: f32, grid: u32) -> World {
             world_from_local: Mat4::IDENTITY.to_cols_array_2d(),
             half_extent: [half, half],
             grid_resolution: grid,
+            cast_shadows: false,
             shore: None,
             revision: 1,
         }],
@@ -138,10 +139,9 @@ impl Renderer {
     fn new() -> Result<Self> {
         let gpu = gpu()?;
         let mut pipeline = ScenePipeline::new(gpu.clone())?;
-        let status = water::WaterRenderStatusHandle::default();
-        let (surface, underwater) = water::WaterFeature::pair(status.clone());
-        pipeline.register(surface)?;
-        pipeline.register(underwater)?;
+        let mut features = PipelineFeatures::default();
+        let status = water::register(&mut features)?;
+        pipeline.add_features(features.0)?;
         Ok(Self {
             gpu,
             pipeline,
@@ -154,12 +154,21 @@ impl Renderer {
         meshes: &[SceneMesh<'_>],
         world: Option<&World>,
     ) -> Result<(Vec<u8>, ViewReport)> {
+        self.render_with_lights(view, meshes, world, &sun())
+    }
+    fn render_with_lights(
+        &mut self,
+        view: &ViewData,
+        meshes: &[SceneMesh<'_>],
+        world: Option<&World>,
+        lights: &LightList,
+    ) -> Result<(Vec<u8>, ViewReport)> {
         let target = offscreen(&self.gpu);
         let report = self.pipeline.render_view(
             &SceneFrame {
                 view,
                 meshes,
-                lights: &sun(),
+                lights,
                 world,
             },
             &target.target,
@@ -442,5 +451,99 @@ fn fft_ocean_uploads_frames_and_renders() -> Result<()> {
     eprintln!("coverage {coverage:.3}, changed {changed}");
     assert!(coverage > 0.3);
     assert!(changed > 500);
+    Ok(())
+}
+
+/// Opt-in displaced water changes a native ground receiver through the shared atlas.
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn opted_in_water_casts_animated_opaque_depth() -> Result<()> {
+    let mut renderer = Renderer::new()?;
+    let corner = |x: f32, z: f32| EngineVertex {
+        position: [x, 0.0, z],
+        uv: [0.0; 2],
+        color: [1.0; 4],
+        normal: Vec3::Y.to_array(),
+    };
+    let ground = GpuMesh::from_engine_vertices(
+        &renderer.gpu.device,
+        "water shadow receiver",
+        &[
+            corner(-20.0, -20.0),
+            corner(-20.0, 20.0),
+            corner(20.0, 20.0),
+            corner(20.0, -20.0),
+        ],
+        &[0, 1, 2, 0, 2, 3],
+    )?;
+    let receiver = [SceneMesh {
+        id: "ground",
+        mesh: ground,
+        world_from_local: Mat4::IDENTITY,
+        shader: None,
+        params: MaterialParams::default(),
+        base_color: None,
+        metallic_roughness: None,
+        normal_map: None,
+    }];
+    let light = LightList {
+        lights: vec![
+            Light::directional(Vec3::new(-1.0, -1.0, 0.0).normalize(), Vec3::ONE, 1.0)
+                .with_shadow(ShadowSettings::default()),
+        ],
+    };
+    let view = view(Vec3::new(0.0, 20.0, 25.0), Vec3::new(-5.0, 0.0, 0.0))?;
+    let mut world = world_with(surface(lake(4.0), gerstner(), 0.0), 4.0, 64);
+    {
+        let mut set = world.resource_mut::<WaterRenderSet>();
+        set.items[0].world_from_local =
+            Mat4::from_translation(Vec3::new(0.0, 5.0, 0.0)).to_cols_array_2d();
+    }
+    let (bare, _) = renderer.render_with_lights(&view, &receiver, Some(&world), &light)?;
+    world.resource_mut::<WaterRenderSet>().items[0].cast_shadows = true;
+    let (cast0, report) = renderer.render_with_lights(&view, &receiver, Some(&world), &light)?;
+    assert_eq!(
+        report.features.get(names::WATER_SHADOW).unwrap().activity,
+        Activity::Ran
+    );
+    world.resource_mut::<WaterRenderSet>().items[0].surface =
+        Arc::new(surface(lake(4.0), gerstner(), 1.3));
+    world.resource_mut::<WaterRenderSet>().items[0].cast_shadows = false;
+    let (bare1, _) = renderer.render_with_lights(&view, &receiver, Some(&world), &light)?;
+    world.resource_mut::<WaterRenderSet>().items[0].cast_shadows = true;
+    let (cast1, _) = renderer.render_with_lights(&view, &receiver, Some(&world), &light)?;
+    let mut shadowed = 0;
+    let mut animated = 0;
+    for ix in 0..49 {
+        for iz in 0..25 {
+            let (x, y) = pixel_of(
+                &view,
+                Vec3::new(-9.0 + ix as f32 * 0.125, 0.0, -3.0 + iz as f32 * 0.25),
+            );
+            if x >= SIZE[0] || y >= SIZE[1] {
+                continue;
+            }
+            let a = luminance(pixel(&bare, x, y));
+            let a1 = luminance(pixel(&bare1, x, y));
+            let b = luminance(pixel(&cast0, x, y));
+            let c = luminance(pixel(&cast1, x, y));
+            if a > 0.02 && b < a * 0.8 {
+                shadowed += 1;
+            }
+            // Directly visible water changes colour as waves move. Require the
+            // no-caster images to be stable, leaving ground-receiver changes.
+            if (a - a1).abs() < 0.005 && (b - c).abs() > 0.01 {
+                animated += 1;
+            }
+        }
+    }
+    assert!(
+        shadowed > 0,
+        "opt-in water produced no native receiver shadow"
+    );
+    assert!(
+        animated > 0,
+        "water shadow did not follow the animated pose"
+    );
     Ok(())
 }

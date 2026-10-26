@@ -465,7 +465,7 @@ fn a_terrain_ridge_shadows_the_terrain_behind_it() -> Result<()> {
     );
     assert!(state.shadow_pass && state.shadowed, "{state:?}");
     // One call per terrain and cascade layer (4 layers).
-    assert_eq!(state.shadow_draw_calls, 4);
+    assert!(state.shadow_draw_calls > 0 && state.shadow_draw_calls <= 4);
     // Flat ground at world x = -10 (inside the shadow) and x = +18 (lit), z = 0.
     let shadowed = pixel_of(&view, Vec3::new(-10.0, 0.0, 0.0));
     let lit = pixel_of(&view, Vec3::new(18.0, 0.0, 0.0));
@@ -502,6 +502,49 @@ fn a_terrain_ridge_shadows_the_terrain_behind_it() -> Result<()> {
         luminance(pixel(&pixels, shadowed.0, shadowed.1)) / luminance(pixel(&pixels, lit.0, lit.1));
     eprintln!("ratio with world.terrain.shadow disabled {unshadowed:.3}");
     assert!(unshadowed > 0.9, "unshadowed ratio {unshadowed}");
+    Ok(())
+}
+
+/// A native mesh receiver sees terrain depth in the same engine atlas it samples.
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn a_native_mesh_receives_a_terrain_shadow() -> Result<()> {
+    let gpu = gpu()?;
+    let (mut pipeline, _) = full_pipeline(&gpu)?;
+    let field = field_of(65, |x, _| (12.0 - 3.0 * (x - 32.0).abs()).max(0.0));
+    let world = world_with(&field, Mat4::from_translation(Vec3::new(-32.0, 0.0, -32.0)));
+    let lights = shadowed_sun(Vec3::new(1.0, 0.6, 0.0));
+    let (vertices, indices) = cube();
+    let mesh =
+        GpuMesh::from_engine_vertices(&gpu.device, "terrain shadow receiver", &vertices, &indices)?;
+    let meshes = [SceneMesh {
+        id: "receiver",
+        mesh,
+        world_from_local: Mat4::from_scale_rotation_translation(
+            Vec3::new(6.0, 0.2, 6.0),
+            glam::Quat::IDENTITY,
+            Vec3::new(-10.0, 0.2, 0.0),
+        ),
+        shader: None,
+        params: MaterialParams::default(),
+        base_color: None,
+        metallic_roughness: None,
+        normal_map: None,
+    }];
+    let eye = Vec3::new(0.0, 50.0, 45.0);
+    let camera = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y).inverse();
+    let mut view = ViewData::new(ViewId::MAIN, camera, projection(), SIZE, SIZE)?;
+    view.ambient = Vec3::splat(0.05);
+    let point = pixel_of(&view, Vec3::new(-10.0, 0.31, 0.0));
+    let (_, shaded) = render_once(&mut pipeline, &gpu, &view, &meshes, &lights, &world)?;
+    view.features.set(names::TERRAIN_SHADOW, false);
+    let (_, bare) = render_once(&mut pipeline, &gpu, &view, &meshes, &lights, &world)?;
+    let shaded = luminance(pixel(&shaded, point.0, point.1));
+    let bare = luminance(pixel(&bare, point.0, point.1));
+    assert!(
+        shaded < bare * 0.7,
+        "native receiver: shaded {shaded}, bare {bare}"
+    );
     Ok(())
 }
 

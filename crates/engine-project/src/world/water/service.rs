@@ -57,6 +57,8 @@ pub struct WaterRenderItem {
     pub world_from_local: [[f32; 4]; 4],
     pub half_extent: [f32; 2],
     pub grid_resolution: u32,
+    /// Authored opaque depth-only shadow policy.
+    pub cast_shadows: bool,
     /// Per grid vertex `(amplitude factor, shoreline foam)`, row-major over
     /// `(grid_resolution + 1)^2` vertices; `None` without ground (open water).
     pub shore: Option<Arc<Vec<[f32; 2]>>>,
@@ -939,12 +941,19 @@ pub fn update_water_render(world: &mut World) -> Result<()> {
                     world_from_local: body.world_from_local.to_cols_array_2d(),
                     half_extent: body.component.half_extent,
                     grid_resolution: body.component.grid_resolution,
+                    cast_shadows: body.component.cast_shadows,
                     shore,
                     revision: body.revision,
                 });
             }
         } else {
             body.render_path = "cpu-mesh";
+            if body.component.cast_shadows {
+                body.notes.push(
+                    "cast_shadows requires the GPU water renderer; transparent CPU surface meshes cannot write the engine shadow atlas"
+                        .into(),
+                );
+            }
             let mesh = surface_mesh(&body, shore.as_deref().map(|v| v.as_slice()));
             body.mesh_counts = (mesh.vertices.len(), mesh.indices.len() / 3);
             let geometry = GeometryOverride(Arc::new(mesh));
