@@ -7,6 +7,7 @@ license = "MIT"
 description = "Owned audio sources, deterministic mixing, and native device playback"
 
 [dependencies]
+engine-graph = { path = "../engine-graph" }
 cpal = "=0.18.2"
 hound = "=3.5.1"
 symphonia = { version = "=0.6.1", default-features = false, features = ["wav", "pcm", "flac", "ogg", "vorbis", "mp3"] }

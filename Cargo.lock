@@ -1519,6 +1519,7 @@ name = "engine-audio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "engine-graph",
  "hound",
  "symphonia",
 ]

@@ -10,6 +10,7 @@ mod decode;
 mod decode_worker;
 mod device;
 mod dsp;
+pub mod graph;
 mod mixer;
 mod sources;
 mod stream;
