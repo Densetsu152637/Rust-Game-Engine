@@ -346,14 +346,16 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
                     fields.push((component, "navmesh", navmesh));
                 }
             }
-            for field in ["graph", "navmesh"] {
-                if let Some(id) = c
-                    .custom
-                    .get("engine.BehaviorTreeAgent")
-                    .and_then(|v| v.data.get(field))
-                    .and_then(Value::as_str)
-                {
-                    fields.push(("engine.BehaviorTreeAgent", field, id));
+            for agent in ["engine.BehaviorTreeAgent", "engine.StateTreeAgent"] {
+                for field in ["graph", "navmesh"] {
+                    if let Some(id) = c
+                        .custom
+                        .get(agent)
+                        .and_then(|v| v.data.get(field))
+                        .and_then(Value::as_str)
+                    {
+                        fields.push((agent, field, id));
+                    }
                 }
             }
             for (component, field, id) in fields {

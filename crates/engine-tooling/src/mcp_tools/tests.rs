@@ -145,6 +145,11 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         "acoustics":{"requested":"Auto","active":"Cpu","state":"Active","sources":[]},
         "behavior_trees":{"total":1,"dropped_events":0,"agents":[{"entity":"guard","graph":"patrol",
             "enabled":true,"ticks":12,"last_finished":"success","active_path":["root","seq"],
+            "blackboard":{"alarm":true}}]},
+        "state_trees":{"total":1,"dropped_events":0,"agents":[{"entity":"guard","graph":"mood",
+            "enabled":true,"ticks":9,"phase":"running","last_finished":null,
+            "active_path":["alert","chase"],
+            "transitions":[{"tick":4,"event":"transition","id":"spot","to":"chase"}],
             "blackboard":{"alarm":true}}]}
     }});
     let summary = summarize(&report, None, 50);
@@ -180,6 +185,14 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     assert_eq!(
         summary["behavior_trees"]["agents"][0]["blackboard"]["alarm"],
         true
+    );
+    assert_eq!(
+        summary["state_trees"]["agents"][0]["active_path"][1],
+        "chase"
+    );
+    assert_eq!(
+        summary["state_trees"]["agents"][0]["transitions"][0]["to"],
+        "chase"
     );
     assert_eq!(summary["telemetry_omitted"], json!([]));
     let oversized_acoustics = summarize(
@@ -226,8 +239,19 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         oversized_trees["telemetry_omitted"],
         json!(["behavior_trees"])
     );
+    let oversized_state_trees = summarize(
+        &json!({"scene":{"state_trees":{"agents":["x".repeat(65_536)]}}}),
+        None,
+        50,
+    );
+    assert!(oversized_state_trees["state_trees"].is_null());
+    assert_eq!(
+        oversized_state_trees["telemetry_omitted"],
+        json!(["state_trees"])
+    );
     let absent = summarize(&json!({}), None, 50);
     assert!(absent["behavior_trees"].is_null());
+    assert!(absent["state_trees"].is_null());
     assert!(absent["upscaler"].is_null());
     assert!(absent["render_pipeline"].is_null());
     assert!(absent["frame_generation"].is_null());

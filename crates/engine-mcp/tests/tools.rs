@@ -391,6 +391,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.Ragdoll",
         "engine.SkinBinding",
         "engine.SoftBody",
+        "engine.StateTreeAgent",
         "engine.UiData",
         "engine.UiRoot",
         "engine.UiTheme",

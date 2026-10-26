@@ -288,47 +288,47 @@ struct Builder<'a> {
 }
 
 /// Effective parameters of one node with typed accessors that report problems.
-struct Params<'a> {
-    values: BTreeMap<String, Value>,
-    id: &'a str,
+pub(crate) struct Params<'a> {
+    pub(crate) values: BTreeMap<String, Value>,
+    pub(crate) id: &'a str,
 }
 
 impl Params<'_> {
-    fn missing(&self, name: &str) -> GraphDiagnostic {
+    pub(crate) fn missing(&self, name: &str) -> GraphDiagnostic {
         GraphDiagnostic::new(
             codes::PARAM_MISSING,
             format!("/nodes/{}/params/{name}", self.id),
             "required parameter is missing",
         )
     }
-    fn f64(&self, name: &str) -> Result<f64, GraphDiagnostic> {
+    pub(crate) fn f64(&self, name: &str) -> Result<f64, GraphDiagnostic> {
         self.values
             .get(name)
             .and_then(Value::as_f64)
             .ok_or_else(|| self.missing(name))
     }
-    fn u64(&self, name: &str) -> Result<u64, GraphDiagnostic> {
+    pub(crate) fn u64(&self, name: &str) -> Result<u64, GraphDiagnostic> {
         self.values
             .get(name)
             .and_then(Value::as_u64)
             .ok_or_else(|| self.missing(name))
     }
-    fn bool(&self, name: &str) -> Result<bool, GraphDiagnostic> {
+    pub(crate) fn bool(&self, name: &str) -> Result<bool, GraphDiagnostic> {
         self.values
             .get(name)
             .and_then(Value::as_bool)
             .ok_or_else(|| self.missing(name))
     }
-    fn str(&self, name: &str) -> Result<&str, GraphDiagnostic> {
+    pub(crate) fn str(&self, name: &str) -> Result<&str, GraphDiagnostic> {
         self.values
             .get(name)
             .and_then(Value::as_str)
             .ok_or_else(|| self.missing(name))
     }
-    fn json(&self, name: &str) -> Option<&Value> {
+    pub(crate) fn json(&self, name: &str) -> Option<&Value> {
         self.values.get(name)
     }
-    fn path(&self, name: &str) -> String {
+    pub(crate) fn path(&self, name: &str) -> String {
         format!("/nodes/{}/params/{name}", self.id)
     }
 }
@@ -341,11 +341,11 @@ fn policy(text: &str) -> Policy {
     }
 }
 
-fn valid_event_name(name: &str) -> bool {
+pub(crate) fn valid_event_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 128 && !name.chars().any(char::is_control)
 }
 
-fn valid_native_name(name: &str) -> bool {
+pub(crate) fn valid_native_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
         && name

@@ -636,7 +636,7 @@ fn project_validation_rejects_bad_graph_references() {
     );
     // another graph kind
     let mut other = wait();
-    other["kind"] = json!("state_tree");
+    other["kind"] = json!("visual_script");
     assert_eq!(
         load(Some(other), json!({"graph":"g"}), false).diagnostics[0].code,
         "graph.kind.unknown"

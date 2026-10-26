@@ -3,14 +3,15 @@
 Behavior trees, state trees, visual scripts and the animation, audio and material
 graphs of other domains share one data model, the `engine-graph` crate. A graph is a
 project asset of kind `graph`: one JSON document whose `kind` field selects the graph
-kind (`behavior_tree` today) that gives its nodes meaning. One generic node-graph
-editor widget, one validator and one set of MCP tools therefore serve every graph
-domain.
+kind (`behavior_tree` and `state_tree` today) that gives its nodes meaning. One generic
+node-graph editor widget, one validator and one set of MCP tools therefore serve every
+graph domain.
 
 `engine-graph` is a pure crate (serde and serde_json only). Domains own their node
-types and runtimes: `engine-ai` defines the `behavior_tree` kind and compiles it
-([Behavior trees](ai-behavior-trees.md)); `engine-project` keeps the registry of kinds
-and binds graph assets to the project and runtime.
+types and runtimes: `engine-ai` defines the `behavior_tree` and `state_tree` kinds and
+compiles them ([Behavior trees](ai-behavior-trees.md), [State trees](ai-state-trees.md));
+`engine-project` keeps the registry of kinds and binds graph assets to the project and
+runtime.
 
 ## Document format
 
@@ -149,8 +150,9 @@ Operations are JSON objects: `{"op":"connect","from":{"node":"seq","port":"child
   (`load_graph`, `validate_document`, `kinds`).
 - A project whose graph asset is invalid does not load, like any other asset kind.
   That is why `graph_edit` writes only complete graphs.
-- Components reference graph assets by id (`engine.BehaviorTreeAgent.graph`); scene
-  validation checks the reference and compiles the graph.
+- Components reference graph assets by id (`engine.BehaviorTreeAgent.graph`,
+  `engine.StateTreeAgent.graph`); scene validation checks the reference and compiles the
+  graph.
 
 ### Adding a graph kind to another domain
 

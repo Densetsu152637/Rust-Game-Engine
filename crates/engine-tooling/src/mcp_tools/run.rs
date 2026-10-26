@@ -109,6 +109,8 @@ impl Tool for RunTool {
                     "Acoustic propagation status: requested and active backend, state and fallback reason, world statistics, update counters and timings, mixer counters and up to 32 per-source entries. Null without an engine.AcousticEnvironment."})),
                 ("behavior_trees", json!({"type":["object","null"], "description":
                     "Behavior tree agents: {total, agents:[{entity, graph, enabled, ticks, last_finished, active_path, blackboard}], dropped_events}; at most 32 agents, 16 path nodes and 16 blackboard keys each. Null without an engine.BehaviorTreeAgent."})),
+                ("state_trees", json!({"type":["object","null"], "description":
+                    "State tree agents: {total, agents:[{entity, graph, enabled, ticks, phase, last_finished, active_path, transitions, blackboard}], dropped_events}; at most 32 agents, 16 path states, 8 recent transitions ({tick, event, id, to}) and 16 blackboard keys each. Null without an engine.StateTreeAgent."})),
                 ("telemetry_omitted", json!({"type":"array","items":{"type":"string"}})),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
@@ -235,11 +237,12 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
     let ray_tracing = telemetry("ray_tracing", &snapshot["ray_tracing"]);
     let acoustics = telemetry("acoustics", &snapshot["acoustics"]);
     let behavior_trees = telemetry("behavior_trees", &snapshot["behavior_trees"]);
+    let state_trees = telemetry("state_trees", &snapshot["state_trees"]);
     json!({
         "upscaler": upscaler, "frame_generation": frame_generation,
         "localization": localization, "ui_render": ui_render,
         "render_pipeline": render_pipeline, "ray_tracing": ray_tracing,
-        "acoustics": acoustics, "behavior_trees": behavior_trees,
+        "acoustics": acoustics, "behavior_trees": behavior_trees, "state_trees": state_trees,
         "profile": profile, "profile_frames_truncated": profile_frames_truncated,
         "network": network, "input_devices": input_devices, "telemetry_omitted": telemetry_omitted,
         "event_trace":event_trace, "event_count":report["event_trace"]["count"].as_u64().unwrap_or(0),
