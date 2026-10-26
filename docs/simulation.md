@@ -14,7 +14,8 @@ gravity and per-dimension body capacity. Passing `None` disables these services;
 authored simulation components then cause an explicit startup error.
 
 Native scripts and ECS Update systems run first. Core's fallible
-`tick_with_post_update` boundary then runs animation, navigation, physics, and
+`tick_with_post_update` boundary then runs [cinematic sequences](cinematics.md),
+animation, navigation, physics, final morph/skin deformation, and
 world-transform propagation before extraction/render. Service failure returns an
 error, marks the core generation failed, and prevents that frame's render. The
 profiler records this boundary as `PostUpdate`. Typed hydration precedes startup.
@@ -70,6 +71,11 @@ participant, with the other participant as source and `{dimension,other}` payloa
 Names are `physics.contact.start` and `physics.contact.stop`.
 Rapier evaluates contacts before integration, so a newly reached kinematic target
 is detected by the next physics substep.
+
+`simulation::refresh_deformation(world)` refreshes retained skin/morph geometry from the
+current local transforms and existing morph playback position without advancing any clock.
+Cinematic native seek/stop controls use it for immediate render extraction. It does not
+rerun graph evaluation, navigation or physics synchronization.
 
 ## Animation and imported models
 

@@ -174,3 +174,79 @@ fn native_joint_seek_and_stop_refresh_deformation_without_a_runtime_tick() {
     assert!(local_vertex_x(&rt).abs() < 1e-5);
     assert!(world_vertex_x(&mut rt).abs() < 1e-5);
 }
+#[test]
+fn native_scrub_preserves_graph_morph_and_physics_clocks() {
+    let dir = fixture(true);
+    let path = dir.path().join("model.json");
+    let mut model: model_import::ModelDocument =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    model.scene.morphs.primitives.push(ImportedMorphPrimitive {
+        mesh: 0,
+        primitive: 0,
+        weights: vec![0.25],
+        targets: vec![ImportedMorphTarget {
+            positions: Some(vec![[2., 0., 0.]; 3]),
+            normals: None,
+            tangents: None,
+        }],
+    });
+    model.scene.clips.push(ImportedClip {
+        name: None,
+        duration: 2.,
+        channels: vec![ImportedChannel {
+            target_node: 1,
+            interpolation: Interpolation::Linear,
+            times: vec![0., 2.],
+            values: ChannelValues::Weights(vec![0., 1.]),
+        }],
+    });
+    fs::write(path, serde_json::to_vec(&model).unwrap()).unwrap();
+    let path = dir.path().join("scene.json");
+    let mut scene: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let custom = &mut scene["entities"][3]["components"]["custom"];
+    custom["engine.MorphWeights"] =
+        json!({"version":1,"data":{"model":"rig","mesh_node":1,"primitive":0}});
+    custom["engine.MorphPlayer"] = json!({"version":1,"data":{"time":0.5}});
+    scene["entities"].as_array_mut().unwrap().push(json!({"id":"body","name":"Body","components":{"Transform":{"position":[20,10,0]},"custom":{"engine.PhysicsBody3D":{"version":1,"data":{}}}}}));
+    fs::write(path, serde_json::to_vec(&scene).unwrap()).unwrap();
+    let mut rt = runtime(&dir);
+    let primitive = rt.entity("primitive").unwrap();
+    let body = rt.entity("body").unwrap();
+    let bone = rt.entity("bone").unwrap();
+    let owner = rt.entity("director").unwrap();
+    let before = simulation::physics::body_state(rt.app().world(), body).unwrap();
+    let graph_pose = rt.app().world().get::<Transform>(bone).unwrap().clone();
+    let morph_time = rt
+        .app()
+        .world()
+        .get::<simulation::MorphPlayer>(primitive)
+        .unwrap()
+        .time;
+    assert!((local_vertex_x(&rt) - 2.5).abs() < 1e-5);
+    sequencer::command(
+        rt.app_mut().world_mut(),
+        owner,
+        Command::Seek {
+            position: 1.5,
+            events: SeekEvents::Silent,
+        },
+    )
+    .unwrap();
+    assert!((world_vertex_x(&mut rt) - 5.5).abs() < 1e-5);
+    assert_eq!(
+        simulation::physics::body_state(rt.app().world(), body).unwrap(),
+        before
+    );
+    assert_eq!(
+        rt.app().world().get::<Transform>(bone).unwrap(),
+        &graph_pose
+    );
+    assert_eq!(
+        rt.app()
+            .world()
+            .get::<simulation::MorphPlayer>(primitive)
+            .unwrap()
+            .time,
+        morph_time
+    );
+}

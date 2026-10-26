@@ -72,6 +72,8 @@
   jobs and optional native ECS services.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
   fingerprints, ownership and reload behavior.
+- [Cinematic sequences](cinematics.md): authored transform/FOV tracks, camera cuts,
+  deterministic playback, marker events and immediate native scrubbing.
 - [Morph targets](animation-morph.md): imported defaults, live weight controls,
   cubic weight playback and morph-before-skin mesh deformation.
 - [Authored simulation](simulation.md): 2D/3D rigid bodies, animation and navigation

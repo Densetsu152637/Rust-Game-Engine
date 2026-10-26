@@ -264,6 +264,7 @@ impl SceneDocument {
                     for (name, value) in &mut entity.components.custom {
                         if name == "engine.AnimationPlayer"
                             || name == "engine.AnimationGraphPlayer"
+                            || name == "engine.SequencePlayer"
                             || name == "engine.SkinBinding"
                         {
                             crate::simulation::remap_animation_bindings(&mut value.data, &ids);

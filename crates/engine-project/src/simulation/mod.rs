@@ -213,6 +213,20 @@ pub fn prepare(world: &mut World) -> Result<()> {
     world.insert_resource(services);
     result
 }
+/// Refresh retained mesh deformation from current transforms and morph state without
+/// advancing animation, morph, navigation or physics clocks. Native timeline scrubs
+/// use this after writing local poses so immediate render extraction sees the result.
+pub fn refresh_deformation(world: &mut World) -> Result<()> {
+    let Some(mut services) = world.remove_resource::<Services>() else {
+        return Ok(());
+    };
+    let result = (|| {
+        services.skins.sync(world)?;
+        services.skins.evaluate(world)
+    })();
+    world.insert_resource(services);
+    result
+}
 pub fn step(world: &mut World, dt: f32) -> Result<()> {
     validate(world)?;
     let Some(mut services) = world.remove_resource::<Services>() else {

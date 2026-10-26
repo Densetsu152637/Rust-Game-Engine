@@ -161,7 +161,7 @@ Stopping, component removal, authored reconfiguration, scene replacement and run
 restore surviving owned fields only when their current values still equal the sequence's last
 written values and no competing known authority has appeared. Externally changed values and
 new remote/physics authority are preserved. Removed/recreated entities never inherit a stale
-capture. A project operation failure cancels all sequence captures and clears the typed crossing batch; it is not a transactional rollback of every scene service. Cleanup attempts to refresh deformation after restoring owned fields, preserves the original error, and cannot promise a refresh if a model or target is missing. Runtime
+capture. A sequence operation failure cancels all sequence captures and clears the typed crossing batch; it is not a transactional rollback of every scene service. Cleanup attempts to refresh deformation after restoring owned fields, preserves the original error, and cannot promise a refresh if a model or target is missing. Runtime
 errors follow the normal runtime stop path. Mutating the scene camera set while cuts are owned
 is an error: stop the sequence, modify cameras, then reacquire. Changing a binding to resolve
 to a different live entity requires reauthoring/restarting; silent live rebinding is rejected.
@@ -189,3 +189,5 @@ bounded failure, authored runtime transforms and render camera cuts, controls, c
 removal/failure cleanup, external ownership, remote/physics conflicts and prefab binding remaps.
 Imported-skin tests verify same-tick joint deformation, animated-rig anchor composition, direct
 graph target conflicts, and seek/stop deformation with immediate render extraction and no tick.
+Integration cases also cover startup failure cleanup, scene-generation rebinding and preservation
+of current graph, morph and physics state during native scrubs.

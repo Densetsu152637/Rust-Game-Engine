@@ -1,4 +1,4 @@
-﻿# Project and scene format, version 1
+# Project and scene format, version 1
 
 The authoring contract is JSON, parsed and validated by `engine-project`
 (`Project::load`, `load_scene`, `Scene::validate`). A project directory contains a
@@ -136,3 +136,8 @@ Scenes additionally support local quaternion/scale transforms, entity parents,
 a declarative `componentSchemas` file and `prefab` scene-fragment assets. Defaults
 preserve existing schema-1 scenes. See [components and scene commands](meta-programming.md)
 for formats, validation, cloning and runtime integration.
+
+Built-in `engine.SequencePlayer` components embed authored cinematic timeline JSON with
+an explicit entity binding list. They use the same versioned custom-component envelope,
+validation and prefab remapping, with a 64 KiB component bound. See [cinematic sequences](cinematics.md)
+for tracks, camera cuts, native controls, event crossings and authority rules.

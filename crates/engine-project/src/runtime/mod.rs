@@ -76,6 +76,7 @@ impl Runtime {
         app.world_mut()
             .insert_resource(ProjectResource(Arc::new(project.clone())));
         crate::simulation::register_components(&mut app)?;
+        crate::sequencer::register(&mut app)?;
         crate::ui_tree::register(&mut app)?;
         if let Some(text) = &content.text {
             text.attach_gpu(app.world().resource::<crate::ui_tree::UiGpuQueue>().clone());
@@ -245,10 +246,17 @@ impl Runtime {
         )?;
         self.validate_event_bindings()?;
         crate::networking::validate(self.app.world())?;
-        crate::simulation::prepare(self.app.world_mut())?;
-        crate::ai::prepare(self.app.world_mut())?;
-        crate::transforms::refresh_world_transforms(self.app.world_mut())?;
-        self.sync_collision()?;
+        let prepared = (|| {
+            crate::sequencer::prepare(self.app.world_mut())?;
+            crate::simulation::prepare(self.app.world_mut())?;
+            crate::ai::prepare(self.app.world_mut())?;
+            crate::transforms::refresh_world_transforms(self.app.world_mut())?;
+            self.sync_collision()
+        })();
+        if let Err(error) = prepared {
+            let _ = self.stop();
+            return Err(error);
+        }
         if let Err(error) = self.start_acoustics() {
             let _ = self.stop();
             return Err(error);
@@ -338,6 +346,7 @@ impl Runtime {
             .tick_with_post_update(dt, |world| {
                 crate::networking::validate(world)?;
                 crate::ai::step(world, dt)?;
+                crate::sequencer::step(world, dt)?;
                 crate::simulation::step(world, dt)?;
                 crate::networking::after_step(world, tick)?;
                 crate::transforms::refresh_world_transforms(world)?;
@@ -400,6 +409,7 @@ impl Runtime {
             return Ok(());
         }
         let mut error = None;
+        crate::sequencer::reset(self.app.world_mut());
         crate::video::shutdown(self.app.world_mut());
         crate::networking::shutdown(self.app.world_mut());
         crate::ai::shutdown(self.app.world_mut());

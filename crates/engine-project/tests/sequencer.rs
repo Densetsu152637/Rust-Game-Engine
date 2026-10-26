@@ -235,7 +235,8 @@ fn external_field_change_is_preserved_when_sequence_cancels() {
 fn natural_completion_holds_endpoint_until_explicit_stop() {
     let dir = fixture();
     let mut rt = runtime(&dir);
-    rt.tick(2., InputSnapshot::default()).unwrap();
+    rt.tick(1., InputSnapshot::default()).unwrap();
+    rt.tick(1., InputSnapshot::default()).unwrap();
     assert_eq!(x(&rt), 4.);
     let owner = rt.entity("director").unwrap();
     assert_eq!(
@@ -255,4 +256,63 @@ fn ancestor_of_world_space_physics_writer_is_rejected() {
         simulation::PhysicsBody3D::default(),
     ));
     assert!(sequencer::prepare(rt.app_mut().world_mut()).is_err());
+}
+#[test]
+fn later_startup_service_failure_restores_sequence_captures() {
+    let dir = fixture();
+    let project = Project::load(dir.path().join("project.json")).unwrap();
+    let mut rt = Runtime::new_with_simulation(project, None).unwrap();
+    // The sequence writes time zero, then disabled physics rejects this independent body.
+    rt.app_mut()
+        .world_mut()
+        .spawn((Transform::default(), simulation::PhysicsBody3D::default()));
+    assert!(rt.start().is_err());
+    assert_eq!(x(&rt), 8.);
+    let owner = rt.entity("director").unwrap();
+    assert!(sequencer::status(rt.app().world(), owner).is_none());
+    assert!(!rt.running());
+}
+#[test]
+fn scene_transition_releases_old_captures_before_binding_the_new_generation() {
+    let dir = fixture();
+    let path = dir.path().join("project.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["assets"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":"next","kind":"scene","path":"next.json"}));
+    fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let next = json!({"schema":1,"scene_id":"next","entities":[
+        {"id":"spawn","name":"Spawn","components":{"Transform":{"position":[100,0,0]}}},
+        {"id":"actor","name":"Actor","components":{"Transform":{"position":[100,0,0]}}},
+        {"id":"director","name":"Next director","components":{"custom":{"engine.SequencePlayer":{"version":1,"data":{"bindings":["actor"],"timeline":{"version":1,"duration":2,"tracks":[{"binding":0,"property":"translation","channel":{"keys":[{"time":0,"value":[20,0,0]},{"time":2,"value":[24,0,0]}]}}]}}}}}}
+    ]});
+    fs::write(
+        dir.path().join("next.json"),
+        serde_json::to_vec(&next).unwrap(),
+    )
+    .unwrap();
+    let mut rt = runtime(&dir);
+    let old_owner = rt.entity("director").unwrap();
+    let actor = rt.entity("actor").unwrap();
+    runtime::request_scene(
+        rt.app_mut().world_mut(),
+        runtime::SceneRequest {
+            asset: "next".into(),
+            spawn: "spawn".into(),
+            traveller: "actor".into(),
+        },
+    )
+    .unwrap();
+    rt.tick(0.1, InputSnapshot::default()).unwrap();
+    assert_eq!(rt.active_scene().id, "next");
+    assert_eq!(rt.entity("actor"), Some(actor));
+    assert_ne!(rt.entity("director"), Some(old_owner));
+    assert!(sequencer::status(rt.app().world(), old_owner).is_none());
+    assert_eq!(x(&rt), 20.);
+    assert!(rt.extract_scene_frame().unwrap().camera3d.is_none());
+    rt.tick(0.1, InputSnapshot::default()).unwrap();
+    assert!((x(&rt) - 20.2).abs() < 1e-5);
+    control(&mut rt, Command::Stop);
+    assert_eq!(x(&rt), 100.);
 }
