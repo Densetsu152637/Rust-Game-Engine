@@ -595,3 +595,362 @@ fn the_colour_filter_turns_red_and_green_patches_into_the_simulated_colours() {
         );
     }
 }
+
+// ---- Ordered final presentation ----------------------------------------------------
+
+fn screen_quad(id: String, layer: i32, color: [f32; 4]) -> engine_project::runtime::Draw {
+    use engine_project::content::{Mesh, Vertex};
+    use engine_project::runtime::{Draw, DrawSpace, DrawState};
+    let positions = [
+        [0.0, 0.0, 0.0],
+        [320.0, 0.0, 0.0],
+        [320.0, 180.0, 0.0],
+        [0.0, 180.0, 0.0],
+    ];
+    Draw {
+        id,
+        layer,
+        space: DrawSpace::Ui,
+        mesh: std::sync::Arc::new(Mesh {
+            vertices: positions
+                .into_iter()
+                .map(|position| Vertex {
+                    position,
+                    uv: [0.0; 2],
+                    color,
+                })
+                .collect(),
+            normals: vec![],
+            indices: vec![0, 1, 2, 0, 2, 3],
+        }),
+        texture: None,
+        clip: None,
+        state: DrawState::default(),
+        motion: None,
+        offset: [0.0; 3],
+    }
+}
+
+fn frame_image(gpu: &mut Gpu, frame: &engine_project::rendering3d::SceneRenderFrame) -> Image {
+    gpu.renderer
+        .render_scene_without_generation(frame, &gpu.target.view, None)
+        .unwrap();
+    Image {
+        size: gpu.size,
+        rgba: gpu.target.read_rgba(&gpu.renderer.gpu).unwrap(),
+    }
+}
+
+fn assert_rgb(actual: [u8; 4], expected: [u8; 3]) {
+    for c in 0..3 {
+        assert!(
+            actual[c].abs_diff(expected[c]) <= 3,
+            "got {actual:?}, expected {expected:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn sprite_background_sdf_text_and_foreground_keep_authored_paint_order_in_2d_and_3d() {
+    use engine_project::rendering3d::{Camera3D, CameraInstance3D};
+    let scene = hud("sdf");
+    let runtime = scene.runtime();
+    let queue = runtime.app().world().resource::<UiGpuQueue>().clone();
+    let mut gpu = Gpu::new([320, 180], &runtime, Some(UiRenderOptions::default()));
+    let original = runtime.extract_scene_frame().unwrap();
+    let published = queue.frame();
+    let sdf = published
+        .sdf_text
+        .first()
+        .expect("actual font glyphs routed to SDF");
+    let prefix = sdf.id.rsplit_once(':').unwrap().0;
+    for camera3d in [false, true] {
+        queue.publish((*published).clone());
+        let mut frame = original.clone();
+        frame.camera3d = camera3d.then(|| CameraInstance3D {
+            camera: Camera3D::default(),
+            world: glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 5.0)).to_cols_array_2d(),
+        });
+        frame.sprites.draws = vec![screen_quad(
+            format!("{prefix}:0"),
+            sdf.layer,
+            [1.0, 0.0, 0.0, 1.0],
+        )];
+        let background = frame_image(&mut gpu, &frame);
+        let at = background
+            .rgba
+            .chunks_exact(4)
+            .position(|p| p == &[255, 255, 255, 255])
+            .expect("text must paint above its red background");
+        let (x, y) = (at as u32 % 320, at as u32 / 320);
+        frame.sprites.draws.push(screen_quad(
+            format!("{prefix}:3"),
+            sdf.layer,
+            [0.0, 0.0, 1.0, 0.5],
+        ));
+        let foreground = frame_image(&mut gpu, &frame);
+        assert_rgb(foreground.at(x, y), encode([0.5, 0.5, 1.0]));
+        // Final filtering runs over the UI too, after its one alpha blend.
+        let filter = ColorFilterSettings {
+            kind: ColorFilterKind::Protanopia,
+            mode: ColorFilterMode::Simulate,
+            strength: 0.5,
+        };
+        let mut filtered = (*published).clone();
+        filtered.color_filter = filter;
+        queue.publish(filtered);
+        let image = frame_image(&mut gpu, &frame);
+        assert_rgb(
+            image.at(x, y),
+            encode(apply_linear([0.5, 0.5, 1.0], filter)),
+        );
+    }
+}
+
+struct DisplayImage {
+    texture: wgpu::Texture,
+    target: engine_render_pipeline::OutputTarget,
+}
+impl DisplayImage {
+    fn new(gpu: &GpuContext, size: [u32; 2], format: wgpu::TextureFormat, color: [f32; 3]) -> Self {
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("synthetic UI-free generated/real output"),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target = engine_render_pipeline::OutputTarget {
+            view: texture.create_view(&Default::default()),
+            format,
+            size,
+            viewport: engine_render_pipeline::Viewport::full(size),
+        };
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("synthetic source colour"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: color[0] as f64,
+                            g: color[1] as f64,
+                            b: color[2] as f64,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+        }
+        gpu.queue.submit([encoder.finish()]);
+        Self { texture, target }
+    }
+    fn read(&self, gpu: &GpuContext) -> Image {
+        let size = self.target.size;
+        let mut rgba =
+            engine_render_wgpu::read_texture_rgba(gpu, &self.texture, size[0], size[1]).unwrap();
+        if self.target.format == wgpu::TextureFormat::Bgra8UnormSrgb {
+            for p in rgba.chunks_exact_mut(4) {
+                p.swap(0, 2);
+            }
+        }
+        Image { size, rgba }
+    }
+}
+
+/// Simulate a newly extracted UI frame arriving between generated/real
+/// outputs. Both text and filter must keep the sequence's earlier snapshot.
+struct PublishBetweenOutputs {
+    queue: UiGpuQueue,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl engine_render_pipeline::PipelineFeature for PublishBetweenOutputs {
+    fn descriptor(&self) -> engine_render_pipeline::FeatureDescriptor {
+        engine_render_pipeline::FeatureDescriptor::new(
+            "test.publish_ui",
+            engine_render_pipeline::Stage::Composite,
+        )
+        .after(engine_project::ui_tree::FEATURE_COLOR_FILTER)
+        .replayable()
+    }
+    fn encode(&mut self, _: &mut engine_render_pipeline::FeatureContext<'_>) -> anyhow::Result<()> {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.queue.publish(engine_project::ui_tree::UiGpuFrame {
+                ui_size: [320, 180],
+                ..Default::default()
+            });
+        }
+        Ok(())
+    }
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn late_real_and_generated_outputs_share_one_ui_snapshot_without_double_alpha_or_filter() {
+    use engine_project::rendering3d::{Camera3D, CameraInstance3D};
+    use engine_render_pipeline::PresentationInput;
+    let scene = hud("sdf");
+    let runtime = scene.runtime();
+    let queue = runtime.app().world().resource::<UiGpuQueue>().clone();
+    let mut gpu = Gpu::new([320, 180], &runtime, Some(UiRenderOptions::default()));
+    let original = runtime.extract_scene_frame().unwrap();
+    let published = queue.frame();
+    let reference = frame_image(&mut gpu, &original);
+    let glyph = (1..179)
+        .flat_map(|y| (1..319).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            (y - 1..=y + 1)
+                .all(|sy| (x - 1..=x + 1).all(|sx| reference.at(sx, sy) == [255, 255, 255, 255]))
+        })
+        .expect("solid interior of the actual SDF glyph");
+    let sdf = published.sdf_text.first().unwrap();
+    let prefix = sdf.id.rsplit_once(':').unwrap().0;
+    let filter = ColorFilterSettings {
+        kind: ColorFilterKind::Protanopia,
+        mode: ColorFilterMode::Simulate,
+        strength: 0.5,
+    };
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut extra = PipelineFeatures::default();
+    extra
+        .register(PublishBetweenOutputs {
+            queue: queue.clone(),
+            armed: armed.clone(),
+        })
+        .unwrap();
+    gpu.renderer.set_features(extra).unwrap();
+    assert!(
+        gpu.renderer
+            .pipeline()
+            .unwrap()
+            .presentation_blockers(&Default::default())
+            .is_empty()
+    );
+    for camera3d in [false, true] {
+        let mut frame = original.clone();
+        frame.camera3d = camera3d.then(|| CameraInstance3D {
+            camera: Camera3D::default(),
+            world: glam::Mat4::IDENTITY.to_cols_array_2d(),
+        });
+        frame.sprites.draws = vec![
+            screen_quad(format!("{prefix}:0"), sdf.layer, [1.0, 1.0, 0.0, 0.25]),
+            screen_quad(format!("{prefix}:3"), sdf.layer, [0.0, 0.0, 1.0, 0.5]),
+        ];
+        for (size, format) in [
+            ([320, 180], wgpu::TextureFormat::Rgba8UnormSrgb),
+            ([640, 360], wgpu::TextureFormat::Bgra8UnormSrgb),
+            ([160, 90], wgpu::TextureFormat::Rgba8Unorm),
+        ] {
+            gpu.renderer.resize(size[0], size[1]).unwrap();
+            let mut ui = (*published).clone();
+            ui.color_filter = filter;
+            queue.publish(ui);
+            armed.store(true, std::sync::atomic::Ordering::SeqCst);
+            let real = DisplayImage::new(&gpu.renderer.gpu, size, format, [1.0, 0.0, 0.0]);
+            let generated = DisplayImage::new(&gpu.renderer.gpu, size, format, [0.0, 1.0, 0.0]);
+            let before = queue.status();
+            let outputs = [
+                PresentationOutput {
+                    source: PresentationInput {
+                        view: &real.target.view,
+                        size,
+                    },
+                    target: &real.target,
+                },
+                PresentationOutput {
+                    source: PresentationInput {
+                        view: &generated.target.view,
+                        size,
+                    },
+                    target: &generated.target,
+                },
+            ];
+            // Deliberate source/target aliasing exercises the owned snapshot.
+            gpu.renderer
+                .composite_presentations(&frame, &outputs, None)
+                .unwrap();
+            for (image, base) in [
+                (real.read(&gpu.renderer.gpu), [1.0, 0.0, 0.0]),
+                (generated.read(&gpu.renderer.gpu), [0.0, 1.0, 0.0]),
+            ] {
+                let outside_text = [base[0] * 0.375 + 0.125, base[1] * 0.375 + 0.125, 0.5];
+                let expected = apply_linear(outside_text, filter);
+                let expected = if format.is_srgb() {
+                    encode(expected)
+                } else {
+                    expected.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
+                };
+                assert_rgb(image.at(size[0] - 3, size[1] - 3), expected);
+                if size == [320, 180] {
+                    assert_rgb(
+                        image.at(glyph.0, glyph.1),
+                        encode(apply_linear([0.5, 0.5, 1.0], filter)),
+                    );
+                }
+            }
+            let after = queue.status();
+            for feature in [UiGpuFeature::SdfText, UiGpuFeature::ColorFilter] {
+                assert_eq!(
+                    after.feature(feature).unwrap().frames
+                        - before.feature(feature).unwrap().frames,
+                    2,
+                    "one report per output, independent of painter batches"
+                );
+            }
+            assert!(
+                after.feature(UiGpuFeature::SdfText).unwrap().last_draws > 0,
+                "SDF snapshot survives the between-output publication"
+            );
+            assert!(
+                queue.frame().sdf_text.is_empty(),
+                "newer publication arrived while the sequence retained its snapshot"
+            );
+        }
+    }
+    // The sequence lease is released: a later output must see the new empty
+    // text/filter publication rather than keeping the earlier snapshot.
+    let mut frame = original.clone();
+    frame.sprites.draws = vec![
+        screen_quad(format!("{prefix}:0"), sdf.layer, [1.0, 1.0, 0.0, 0.25]),
+        screen_quad(format!("{prefix}:3"), sdf.layer, [0.0, 0.0, 1.0, 0.5]),
+    ];
+    let fresh = DisplayImage::new(
+        &gpu.renderer.gpu,
+        [320, 180],
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        [1.0, 0.0, 0.0],
+    );
+    gpu.renderer
+        .composite_presentations(
+            &frame,
+            &[PresentationOutput {
+                source: PresentationInput {
+                    view: &fresh.target.view,
+                    size: [320, 180],
+                },
+                target: &fresh.target,
+            }],
+            None,
+        )
+        .unwrap();
+    assert_rgb(
+        fresh.read(&gpu.renderer.gpu).at(glyph.0, glyph.1),
+        encode([0.5, 0.125, 0.5]),
+    );
+    gpu.renderer.gpu.check_errors().unwrap();
+}

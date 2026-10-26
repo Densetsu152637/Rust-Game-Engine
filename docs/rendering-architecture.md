@@ -65,7 +65,8 @@ Per view, in order (render size until Upscale, output size after):
 | `Upscale` | `engine.upscale` | bilinear when sizes differ; a host (DLSS) may replace the stage |
 | `PostProcess` | — | HDR ping-pong at output size |
 | `Tonemap` | `engine.output` (required) | the output operator into the target viewport |
-| `Overlay` | `engine.sprites` (host node) | after tonemapping: UI, gizmos, debug draw |
+| `Overlay` | `engine.sprites` (host node), ordered producers | after tonemapping: UI, gizmos, debug draw |
+| `Composite` | optional final filters | readable display-colour ping-pong after overlays, including 2D-only frames |
 
 Before `Prepare` the pipeline clears HDR colour to opaque black, depth to 1 and
 requested normal/motion targets to 0. Scene stages are submitted before the
@@ -134,6 +135,7 @@ such passes are now `Overlay`-stage features.
 | `hdr()`, `depth()`, `normals()`, `motion()`, `screen_lighting()` | frame textures (see below) |
 | `shadow_views()`, `shadow_pass(label, index)` | allocated shared-atlas tiles and a depth-only Load pass (Shadow only; see below) |
 | `scene_pass(label)` | render pass over HDR + depth (load/store), scene stages only |
+| `composite_io()` | final sampled source + distinct destination at output target size/format (Composite only) |
 | `post_process_io()` | `(source, destination)`; the destination becomes current (PostProcess) |
 | `upscale_io()` | `(render HDR, output-size destination)` (Upscale) |
 | `hdr_input()`, `output()`, `output_pass(label)` | Tonemap/Overlay input and target; `output_pass` clears to black and sets the viewport |
@@ -141,6 +143,48 @@ such passes are now `Overlay`-stage features.
 
 Output and overlay features receive any target format (`output().format`); build
 pipelines per format on first use.
+
+### Ordered overlays and final composition (source checkpoint)
+
+This UI/presentation revision is not yet built or runtime/GPU-validated. The
+previous shadow-writer verification remains historical evidence for its commit;
+rerun affected checks on the integrated renderer before acceptance.
+
+A `PipelineFeature` may opt into ordered overlays by returning
+`Some(Vec<OverlayItem>)` from `overlay_items` and implementing `encode_overlay`.
+Hosts have matching optional `HostStages` hooks. Each item supplies an
+`OverlayOrderKey { ui, layer, id }` and an opaque token; producers define the
+paint IDs rather than deriving order from geometry. Keys and producer-local
+tokens must be unique. The sprite host uses its established world/UI, layer,
+ID order. UI SDF restores its producer's text slot (`:sNN` -> `:2NN`) for ordering
+without changing resource identity.
+
+The pipeline merges ordered items at `engine.sprites` (or the first ordered
+source when that node is absent/disabled), dispatching contiguous producer runs.
+`OverlayBatch` marks each producer's first/last batch; empty producers finish
+once too. Whole-pass extensions retain their normal execution. Constraints
+around the combined stream name `engine.sprites`, rather than an individual
+interleaved producer. Queue submissions preserve painter order across host and
+feature batches.
+
+`Composite` follows every Overlay feature. An active final filter requests
+`composite_io`, which returns a sampled source and distinct render destination
+with the caller target's full size/format. Per-view scratch is recreated on
+size/format changes; inactive filters allocate/encode nothing. Tonemap and UI
+write an owned target when needed, then a final full-image blit writes the
+caller target. The caller's swapchain needs no sampled or copy-source usage.
+sRGB views retain automatic decode/encode; raw formats keep the producer's
+numerical encoding contract.
+
+`Presentation::SceneOnly` suppresses both Overlay and Composite for UI-free
+scene output. `render_overlay_over(PresentationInput, target, ...)` runs late
+presentation in a separate overlay-only state, without advancing scene history.
+It supports source/target aliasing by sampling the source into scratch first.
+`with_presentation_sequence` pins feature data across outputs and releases it on
+success/error. Desktop FG pins before scene/NGX work and uses the same late path
+for generated and real targets. Only extensions declaring `.replayable()` are
+eligible; unknown enabled presentation extensions cause a named FG fallback,
+while disabled extensions do not block it.
 
 ### Shared shadow writers
 
@@ -388,11 +432,11 @@ the sprite texture before the sprites draw). At most 64 streams, 8192 px edges.
   returns the display-size output, which then goes through PostProcess,
   Tonemap and Overlay. A failed evaluation aborts the view and the frame is
   re-rendered natively with the reason recorded.
-- **DLSS Frame Generation**: the scene (super-resolved or native) is rendered
-  into the HUD-less colour as the output target with sprites skipped; depth and
-  motion are exported at the render size; sprites are drawn into the
-  backbuffer; NGX generates. Registered overlay features disable frame
-  generation (fallback with reason), because generated frames lack them.
+- **DLSS Frame Generation**: render the scene with Overlay/Composite suppressed;
+  export depth/motion; feed UI-free SDR colour to NGX without a separate
+  HUD-less input. Then late-compose the same ordered UI/final-filter snapshot
+  on each generated and real output. Non-replayable enabled extensions still
+  cause a named fallback. This revised integration awaits runtime/GPU validation.
 - Without the NGX SDK at build time the DLSS paths compile but cannot run and
   report the build reason (this machine has no SDK; see Verification).
 
@@ -497,7 +541,8 @@ integration and requests fall back with the build reason.
 - The default output is a linear clamp. Tonemapping, exposure and the other
   HDR effects are opt-in per view through `ViewData::post`
   ([rendering-post.md](rendering-post.md)).
-- Overlay features disable DLSS frame generation.
+- Presentation extensions must declare replay support to accompany DLSS frame
+  generation; hardware validation of the revised late-UI integration is pending.
 - No automatic multi-camera rendering: hosts render additional views
   explicitly (`render_view` per `ViewId`, `render_eyes`).
 - 2D sprites are composed after the 3D output and no longer depth-test against

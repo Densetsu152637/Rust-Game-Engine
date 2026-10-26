@@ -68,3 +68,9 @@ pub use shader::validate_wgsl;
 pub use wgpu;
 pub use window::*;
 pub use winit;
+
+/// Register eligible UI rendering defaults before a GPU host extracts its
+/// first frame. Explicit `engine_ui_render::install_with` options win.
+pub fn install_default_ui_features(app: &mut engine_core::EngineApp) -> anyhow::Result<()> {
+    engine_ui_render::install_defaults(app)
+}

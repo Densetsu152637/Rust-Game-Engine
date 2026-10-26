@@ -6,7 +6,7 @@ use crate::instancing::DrawStats;
 use crate::shader::ShaderComposer;
 use crate::targets::{FrameTargets, Target};
 use crate::view::{ViewData, Viewport};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use bevy_ecs::world::World;
 use engine_render_wgpu::GpuContext;
 
@@ -42,6 +42,22 @@ pub struct OutputTarget {
     pub viewport: Viewport,
 }
 
+/// Readable final display image and a distinct full-size render destination.
+/// sRGB texture views decode on sampling/encode on write; other formats keep
+/// the output producer's existing numerical colour contract.
+pub struct CompositeIo {
+    pub source: wgpu::TextureView,
+    pub destination: wgpu::TextureView,
+    pub format: wgpu::TextureFormat,
+    pub size: [u32; 2],
+}
+
+/// An externally produced, UI-free display image for late presentation.
+pub struct PresentationInput<'a> {
+    pub view: &'a wgpu::TextureView,
+    pub size: [u32; 2],
+}
+
 /// Frame textures and stage I/O of one view, shared by its features.
 #[derive(Default)]
 pub(crate) struct FrameIo {
@@ -52,6 +68,9 @@ pub(crate) struct FrameIo {
     /// Which texture `current_hdr` is.
     pub source: HdrSource,
     pub output: Option<OutputTarget>,
+    pub composite: Option<crate::targets::CompositeTargets>,
+    pub composite_index: usize,
+    pub final_output: Option<OutputTarget>,
 }
 
 /// Which texture holds the current HDR colour.
@@ -287,6 +306,32 @@ impl<'a> FeatureContext<'a> {
         Ok((source, destination))
     }
 
+    /// Read the fully composed image and write a distinct destination, which
+    /// becomes current. Composite stage only; valid in both 2D and 3D frames.
+    pub fn composite_io(&mut self) -> Result<CompositeIo> {
+        ensure!(
+            self.stage == Stage::Composite,
+            "{}: composite_io is for the composite stage",
+            self.name
+        );
+        let targets = self
+            .io
+            .composite
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("{}: no active final composite", self.name))?;
+        let source = targets.colors[self.io.composite_index].view.clone();
+        let next = 1 - self.io.composite_index;
+        let destination = targets.colors[next].view.clone();
+        self.io.composite_index = next;
+        self.io.output.as_mut().context("no output target")?.view = destination.clone();
+        Ok(CompositeIo {
+            source,
+            destination,
+            format: targets.format,
+            size: targets.size,
+        })
+    }
+
     /// The current HDR colour at the output size (Tonemap: the output
     /// operator's input).
     pub fn hdr_input(&self) -> Result<wgpu::TextureView> {
@@ -299,8 +344,11 @@ impl<'a> FeatureContext<'a> {
     /// The output target (Tonemap and Overlay stages).
     pub fn output(&self) -> Result<&OutputTarget> {
         ensure!(
-            matches!(self.stage, Stage::Tonemap | Stage::Overlay),
-            "{}: the output target is for the tonemap and overlay stages",
+            matches!(
+                self.stage,
+                Stage::Tonemap | Stage::Overlay | Stage::Composite
+            ),
+            "{}: the output target is for tonemap, overlay and composite stages",
             self.name
         );
         self.io

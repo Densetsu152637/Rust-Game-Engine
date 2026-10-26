@@ -1,4 +1,4 @@
-// ui.color_filter - the colour-vision filter: one 3x3 matrix on linear HDR
+// ui.color_filter - the colour-vision filter: one 3x3 matrix on the sampled final linear
 // colour (see color.rs for the matrices and their sources).
 #import engine::fullscreen
 

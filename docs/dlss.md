@@ -398,14 +398,18 @@ synchronization.
 
 ### Renderer integration
 
-The desktop renderer implements the HUD-less/UI split, `R32Float`/`Rg16Float`
-depth and motion, unjittered row-major camera constants with SR's jitter passed
-in render pixels, shared reset triggers plus a no-game-frames gap, and
-in-order window presentation with sleep-based even spacing. See
-[Frame generation](rendering3d.md#frame-generation-dlss-frame-generation) for
-the contract, evidence and limits. The jitter unit could not be confirmed:
-pixels, clip units, zero and negated jitter gave identical generated frames in
-the SR+FG test scene.
+The desktop host now has a source-only late-presentation revision: it pins UI
+before rendering, suppresses Overlay/Composite for NGX scene inputs, supplies
+UI-free backbuffer colour without a separate HUD-less input, then runs ordered
+UI and final filters on each real/generated output. Aliased output inputs use
+owned scratch. Replayable UI features no longer block FG; other enabled
+presentation extensions keep a named fallback. Evaluation failure preserves
+already rendered real colour and does not advance scene history a second time.
+
+This revision's compile, CPU/GPU regressions and NGX execution are pending.
+Synthetic generated/real GPU tests use the same compositor but do not verify
+NGX image quality, synchronization or on-screen pacing. Prior camera/motion,
+reset and pacing evidence above remains evidence for the earlier integration.
 
 ### Remaining for renderer integration
 
@@ -414,7 +418,7 @@ the SR+FG test scene.
 - an asynchronous lifetime to replace the per-frame wait;
 - VSync and frame-rate-limit interaction, and latency reduction (Reflex);
 - a context that does not require the SR runtime for FG-only use;
-- overlay render features with frame generation (they currently disable it);
+- hardware validation of the revised replayable overlay/final-composite integration;
 - `OutputReal`, UI-alpha recomposition, `NotRenderingGameFrames`, HDR and
   dynamic-resolution parameters;
 - Linux runtime packaging (`libnvidia-ngx-dlssg.so.<ver>`, unvalidated);

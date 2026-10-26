@@ -251,9 +251,9 @@ Fallback reasons include those of Super Resolution plus: the device was
 prepared without Frame Generation extensions; FG device preparation failed;
 `FrameGenerator` creation failed (for example the FG runtime
 `nvngx_dlssg.dll` is missing next to `nvngx_dlss.dll`); a multiplier above
-NGX's maximum; overlay render features are registered (they draw after the
-HUD, which generated frames do not contain); and an evaluation failure, after which only real frames are
-presented until the request or size changes.
+NGX's maximum; an enabled presentation feature has not declared replay support;
+and an evaluation failure, after which only real frames are presented until the
+request or size changes.
 
 ### Device and runtime
 
@@ -268,25 +268,26 @@ runtime even when `upscaler.mode` is `none`.
 
 ### Frame structure
 
-For each real frame (sizes are those of the 3D viewport, the "output"):
+The late-UI revision below is a source checkpoint; it has not yet been executed
+against NGX. Earlier hardware observations describe the prior HUD-less/UI split.
 
-1. The render pipeline renders the scene with the HUD-less color as its
-   output target: an `Rgba8Unorm` texture written through an sRGB view, so it
-   holds the same encoded bytes as an sRGB swapchain. With SR the view is
-   super-resolved as above; without SR it renders at output size without
-   jitter. Sprites are skipped.
-2. The host hook exports `R32Float` depth and copies `Rg16Float`
-   current-to-previous pixel motion at the render size into the generator's
-   textures.
-3. The HUD-less color is copied into the backbuffer and 2D sprites/UI are drawn
-   over it. The two images differ only where UI is drawn.
-4. For indices `1..=multiplier-1`, `FrameGenerator::evaluate` generates the
-   frames between the previous and this real frame, with unjittered camera
-   constants in NVIDIA's row-major post-multiply convention
-   (`view_to_clip`, `clip_to_prev_clip` from this and the previous
-   view-projection, camera basis, near/far, FOV, aspect), motion scale 1 and
-   the SR jitter in render pixels. Only `Presentable` results are kept.
-5. Hosts present the generated frames in order, then the real frame.
+For each real frame (sizes are the 3D viewport's output size):
+
+1. Pin one presentation snapshot and render the native/super-resolved scene once
+   with both Overlay and Composite suppressed, into SDR sRGB-view colour.
+2. Export render-size depth/motion. NGX reads that UI-free image as its backbuffer
+   with no separate HUD-less input (`hudless: false`).
+3. Evaluate indices `1..=multiplier-1`, retaining only presentable slots.
+4. `GpuRenderer::composite_presentations` applies ordered sprites/SDF, replayable
+   overlay features and final filters to every generated slot and the real
+   backbuffer. It snapshots aliased inputs before writes, uses separate late-view
+   state and releases retained UI data on success/error.
+5. Present/capture these already composed textures; presentation only blits.
+
+An interpolation failure keeps the rendered real source in a poisoned stage,
+discards generated slots, and late-composes/presents only the real output.
+Completion commits history once; it does not rerender that source frame. Sticky
+failure prevents further same-request evaluations; retry replaces a poisoned stage.
 
 `GpuRenderer::render_generated(frame)` renders the real frame and generates;
 `generated_frame_count`, `present_generated(i, view)` and `present_real(view)`
@@ -330,7 +331,9 @@ for even motion without judder or a stuttering HUD, and compare the
 
 ### Frame generation limitations
 
-- Overlay render features disable frame generation (fallback with reason).
+- Enabled Overlay/Composite features without replay support disable generation
+  with a named reason. SDF and final colour filtering opt in; revised hardware
+  FG execution remains unverified.
 - No UI alpha recomposition, `OutputReal`, `NotRenderingGameFrames`, HDR or
   dynamic resolution parameters; SDR `Rgba8Unorm` only.
 - Generated frames inherit the motion limits above (transparent surfaces,

@@ -31,7 +31,7 @@ The colour-vision filter is a render feature: see
 | NVDA, Narrator, JAWS | **not verified** (no screen reader was run) | none |
 | macOS (NSAccessibility), Linux (AT-SPI) | **not built and not run** in this work (only Windows was available) | none |
 | Settings: UI scale, text scale, minimum text size, reduced motion, high-contrast theme, focus ring | implemented | `accessibility` tests |
-| Colour-vision filter (protanopia, deuteranopia, tritanopia, achromatopsia; simulate or daltonize; strength) | implemented for 3D frames (PostProcess stage of `engine-ui-render`); not applied to the 2D sprite/UI layer or 2D-only frames | `cargo test -p engine-project --test ui_gpu`, `-p engine-ui-render` and the ignored GPU test `the_colour_filter_turns_red_and_green_patches_into_the_simulated_colours` |
+| Colour-vision filter (protanopia, deuteranopia, tritanopia, achromatopsia; simulate or daltonize; strength) | source implementation for final 2D/3D composition, including UI; revised execution pending | `cargo test -p engine-project --test ui_gpu`, `-p engine-ui-render` and the ignored GPU test `the_colour_filter_turns_red_and_green_patches_into_the_simulated_colours` |
 | Remapping screen with capture, conflicts, reset, events | implemented | `accessibility` tests |
 | Captions: `caption_track` asset, runtime controller, `engine.CaptionPlayer`, presentation, caption settings, live region, WebVTT/SRT import | implemented | `cargo test -p engine-project --test captions`, `-p engine-mcp --test accessibility` |
 | Captions driven by an audio source's playback position | hook only (`CaptionClock`); `engine-audio` exposes no position clock yet | see [Time source](#time-source) |
@@ -304,7 +304,7 @@ Each UI tick, `accessibility::sync`:
 | `focusThickness` | 1 to 16 px, 2 | Focus ring thickness. |
 | `focusHighContrast` | false | Draw the ring as a white ring inside a black one so it shows on any background. |
 | `highContrastTheme` | none | Name of a `UiTheme` made the active theme while set; clearing restores the previous active theme. Roots that name their own `theme` keep it. A name no theme has fails the tick with `ui.theme.unknown`, like `set_active_theme`. |
-| `colorFilter` | `none`, `protanopia`, `deuteranopia`, `tritanopia`, `achromatopsia`; `none` | Colour-vision filter of the 3D scene, see [below](#colour-vision-filter). |
+| `colorFilter` | `none`, `protanopia`, `deuteranopia`, `tritanopia`, `achromatopsia`; `none` | Colour-vision filter of the final scene/UI image, see [below](#colour-vision-filter). |
 | `colorFilterMode` | `simulate`, `correct`; `simulate` | Show the deficiency, or daltonize for it. `correct` with `achromatopsia` is rejected (nothing to correct). |
 | `colorFilterStrength` | 0 to 1, 1 | Blend from the unfiltered scene to the full filter. |
 
@@ -329,32 +329,32 @@ ignored (the last applied settings stay).
 `colorFilter`, `colorFilterMode` and `colorFilterStrength` drive the `ui.color_filter`
 render feature of [engine-ui-render](ui-render.md#colour-vision-filter). Each extraction
 publishes the effective settings into the UI GPU queue; the feature applies one 3x3 matrix
-to the linear HDR scene colour in the PostProcess stage (after `engine.post`, before
-tonemapping), so strength 0 or `none` costs nothing and a frame with the filter off is
-untouched.
+to the final composed display image in Composite (after tonemapping and UI).
+Inactive settings allocate no final scratch and encode no filter pass. The new
+2D/late-presentation path is a source checkpoint awaiting execution.
 
 - **Simulate** shows the scene as a person with the deficiency sees it, for testing
   palettes. **Correct** (daltonization) moves the colour difference the deficiency loses
   into channels that stay distinguishable, for players with the deficiency. Achromatopsia
   is greyscale (Rec. 709 luminance) and has no correction.
 - **Colour space.** Linear sRGB (Rec. 709) RGB, because the published matrices are defined
-  there and the HDR scene is linear. Simulation uses the severity-1.0 matrices of
+  there; sRGB target views decode the sampled final image. Raw non-sRGB targets
+  retain their producer's numerical encoding contract. Simulation uses the severity-1.0 matrices of
   G. M. Machado, M. M. Oliveira and L. A. F. Fernandes, "A Physiologically-based Model for
   Simulation of Color Vision Deficiency", IEEE TVCG 15(6), 2009; `strength` interpolates
   linearly from the identity, as the paper does between severities. The correction shifts
   the simulation error with `[[0,0,0],[.7,1,0],[.7,0,1]]` for protanopia and deuteranopia
   (Fidaner, Lin and Dhar, "Daltonize", 2005); the tritanopia shift `[[1,0,.7],[0,1,.7],[0,0,0]]`
   is this engine's analogue and not a published constant.
-- **Scope.** Only the 3D scene is filtered. The 2D sprite/UI layer is composed after
-  tonemapping and has no pixel-read stage, and a game without a `Camera3D` has no
-  PostProcess stage, so the filter is not applied there. Design 2D palettes with the
-  CPU reference (`engine_ui_render::color::apply_linear`) or the simulate mode of a 3D
-  preview.
+- **Scope.** The final image includes the 3D scene, sprites and SDF text, or the
+  pure-2D game. Replayable presentation also applies it once to each generated
+  and real output; no separate pre-tonemap copy of the filter runs.
 - **Status.** `RuntimeSnapshot.ui_render` lists `ui.color_filter` as `gpu` or `fallback`
   with the reason (feature not registered, not prepared by a wgpu renderer, or requested
-  but no 3D frame has run it).
+  but no final presentation has run it).
 
-Register the feature with `engine_ui_render::install(app)` (or `register`).
+GPU window/screenshot hosts install defaults; explicit `install_with` options
+(or standalone `register`) can select or disable features.
 
 ### UI scale
 
@@ -625,9 +625,6 @@ when `captionsEnabled` is off, and removed while a modal dialog is open (see
 
 - **Captions from an audio playback position.** `engine-audio` has no
   playback-position clock yet; use a `CaptionClock` (see [Time source](#time-source)).
-- **Colour-vision filter on the 2D sprite/UI layer and in 2D-only games.** The filter
-  needs a stage that reads the composited image; the Overlay stage cannot (see
-  [ui-render.md](ui-render.md#not-implemented)).
 - Reading operating-system preferences (reduced motion, high contrast, text
   size, "screen reader running") and applying them to the settings.
 - Caret, selection and text-run exposure (above), and tree support for world-space

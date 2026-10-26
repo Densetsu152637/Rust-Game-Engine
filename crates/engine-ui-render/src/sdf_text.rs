@@ -1,13 +1,9 @@
 //! `ui.sdf_text`: screen-space UI text of SDF families, drawn from engine-text
 //! SDF atlas pages with `GLYPH_SHADER_WGSL` in the Overlay stage.
 //!
-//! The Overlay stage runs after tonemapping, in the target format, and after
-//! the host's `engine.sprites` node, so this is where the UI composites: the
-//! text lands on top of the sprite/UI layer (sprites and UI are drawn first;
-//! see `docs/ui-render.md` for what that means for layering). Glyph quads are
-//! positioned by the UI's logical-pixel camera fit, scaled in the fragment
-//! shader from the distance field, so edges stay about one pixel wide at any
-//! UI scale.
+//! Runs join the host sprite painter stream using the UI producer's authored
+//! paint IDs. The SDF-only `sNN` atlas marker is normalized back to the text
+//! marker `2NN`, so same-node foreground/caret geometry remains above text.
 use crate::{
     gpu::{
         Geometry, GrowBuffer, MeshRange, TextureUploads, UI_VERTEX_LAYOUT, linear_sampler,
@@ -21,7 +17,8 @@ use engine_project::{
     ui_tree::{FEATURE_SDF_TEXT, UiFeatureReport, UiGpuFeature, UiGpuFrame, UiGpuQueue},
 };
 use engine_render_pipeline::{
-    FeatureContext, FeatureDescriptor, FeatureSetup, PipelineFeature, Stage, ViewKind, names,
+    FeatureContext, FeatureDescriptor, FeatureSetup, OverlayBatch, OverlayItem, OverlayOrderKey,
+    PipelineFeature, Stage, ViewData, ViewKind, names,
 };
 use engine_text::{GLYPH_SHADER_WGSL, SHADER_MODE_SDF};
 use std::{collections::HashSet, sync::Arc};
@@ -58,6 +55,9 @@ pub struct SdfTextFeature {
     uniform: Option<wgpu::Buffer>,
     /// The published frame the buffers hold (the queue replaces it each frame).
     uploaded: Option<(Arc<UiGpuFrame>, Vec<Run>)>,
+    snapshot: Option<Arc<UiGpuFrame>>,
+    sequence: Option<Arc<UiGpuFrame>>,
+    pending: UiFeatureReport,
 }
 
 impl SdfTextFeature {
@@ -71,6 +71,9 @@ impl SdfTextFeature {
             indices: GrowBuffer::new("ui sdf indices", wgpu::BufferUsages::INDEX),
             uniform: None,
             uploaded: None,
+            snapshot: None,
+            sequence: None,
+            pending: UiFeatureReport::default(),
         }
     }
 
@@ -84,7 +87,7 @@ impl SdfTextFeature {
         }
         let mut geometry = Geometry::default();
         let mut runs = Vec::with_capacity(frame.sdf_text.len());
-        for draw in &frame.sdf_text {
+        for draw in frame.sdf_text.iter().filter(|d| renderable(d)) {
             let Some(texture) = draw.texture.clone() else {
                 continue;
             };
@@ -169,7 +172,9 @@ fn pipeline(
 
 impl PipelineFeature for SdfTextFeature {
     fn descriptor(&self) -> FeatureDescriptor {
-        FeatureDescriptor::new(FEATURE_SDF_TEXT, Stage::Overlay).after(names::SPRITES)
+        FeatureDescriptor::new(FEATURE_SDF_TEXT, Stage::Overlay)
+            .after(names::SPRITES)
+            .replayable()
     }
 
     fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
@@ -219,22 +224,86 @@ impl PipelineFeature for SdfTextFeature {
         Ok(())
     }
 
+    fn begin_presentation_sequence(&mut self) -> Result<()> {
+        self.sequence = Some(self.queue.frame());
+        Ok(())
+    }
+    fn end_presentation_sequence(&mut self) {
+        self.sequence = None;
+        self.snapshot = None;
+    }
+
+    fn overlay_items(&mut self, view: &ViewData) -> Result<Option<Vec<OverlayItem>>> {
+        if view.kind != ViewKind::Camera {
+            return Ok(None);
+        }
+        let frame = self.sequence.clone().unwrap_or_else(|| self.queue.frame());
+        let items = frame
+            .sdf_text
+            .iter()
+            .filter(|d| renderable(d))
+            .enumerate()
+            .map(|(index, draw)| OverlayItem {
+                order: OverlayOrderKey {
+                    ui: true,
+                    layer: draw.layer,
+                    id: paint_id(&draw.id),
+                },
+                token: index as u64,
+            })
+            .collect();
+        self.snapshot = Some(frame);
+        Ok(Some(items))
+    }
+
+    fn encode_overlay(
+        &mut self,
+        ctx: &mut FeatureContext<'_>,
+        batch: OverlayBatch<'_>,
+    ) -> Result<()> {
+        if batch.first {
+            self.pending = UiFeatureReport::default();
+        }
+        let frame = self
+            .snapshot
+            .clone()
+            .context("SDF painter snapshot was not retained")?;
+        let report = self.draw_frame(ctx, &frame, Some(batch.tokens))?;
+        self.pending.draws += report.draws;
+        self.pending.items += report.items;
+        if batch.last {
+            self.queue.report(UiGpuFeature::SdfText, self.pending);
+            self.snapshot = None;
+        }
+        Ok(())
+    }
+
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
-        // Other views (editor viewports, XR eyes, probes) have no screen UI.
         if ctx.view.kind != ViewKind::Camera {
             return Ok(());
         }
         let frame = self.queue.frame();
+        let report = self.draw_frame(ctx, &frame, None)?;
+        self.queue.report(UiGpuFeature::SdfText, report);
+        Ok(())
+    }
+}
+
+impl SdfTextFeature {
+    fn draw_frame(
+        &mut self,
+        ctx: &mut FeatureContext<'_>,
+        frame: &Arc<UiGpuFrame>,
+        tokens: Option<&[u64]>,
+    ) -> Result<UiFeatureReport> {
         let target = ctx.output()?.clone();
         let Some(fit) = UiFit::new(frame.ui_size, target.size) else {
-            return Ok(());
+            return Ok(UiFeatureReport::default());
         };
         if frame.sdf_text.is_empty() {
-            self.queue
-                .report(UiGpuFeature::SdfText, UiFeatureReport::default());
-            return Ok(());
+            return Ok(UiFeatureReport::default());
         }
-        self.upload(ctx, &frame)?;
+        self.upload(ctx, frame)?;
         let device = self
             .device
             .as_mut()
@@ -314,7 +383,15 @@ impl PipelineFeature for SdfTextFeature {
             wgpu::IndexFormat::Uint32,
         );
         let mut drawn = 0;
-        for run in runs {
+        let all: Vec<u64> = if tokens.is_none() {
+            (0..runs.len() as u64).collect()
+        } else {
+            vec![]
+        };
+        for token in tokens.unwrap_or(&all) {
+            let run = runs
+                .get(*token as usize)
+                .context("SDF overlay token is not in the retained snapshot")?;
             let Some((x, y, w, h)) = fit.scissor(run.clip) else {
                 continue;
             };
@@ -335,13 +412,44 @@ impl PipelineFeature for SdfTextFeature {
             drawn += 1;
         }
         drop(pass);
-        self.queue.report(
-            UiGpuFeature::SdfText,
-            UiFeatureReport {
-                draws: drawn,
-                items: runs.len() as u32,
-            },
-        );
-        Ok(())
+        Ok(UiFeatureReport {
+            draws: drawn,
+            items: tokens.map_or(runs.len(), <[u64]>::len) as u32,
+        })
+    }
+}
+
+fn renderable(draw: &engine_project::runtime::Draw) -> bool {
+    draw.texture.is_some()
+        && !draw.mesh.indices.is_empty()
+        && draw
+            .mesh
+            .indices
+            .iter()
+            .all(|&i| (i as usize) < draw.mesh.vertices.len())
+}
+
+fn paint_id(id: &str) -> String {
+    if let Some((prefix, tail)) = id.rsplit_once(':')
+        && tail.len() == 3
+        && tail.starts_with('s')
+        && tail[1..].bytes().all(|b| b.is_ascii_digit())
+    {
+        format!("{prefix}:2{}", &tail[1..])
+    } else {
+        id.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sdf_marker_restores_the_authored_text_slot_below_foreground() {
+        let key = paint_id("game-ui:68!00000:s00");
+        assert_eq!(key, "game-ui:68!00000:200");
+        assert!("game-ui:68!00000:1" < key.as_str());
+        assert!(key.as_str() < "game-ui:68!00000:3");
+        assert_eq!(paint_id("arbitrary:sdf"), "arbitrary:sdf");
     }
 }

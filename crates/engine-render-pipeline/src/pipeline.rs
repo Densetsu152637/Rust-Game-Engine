@@ -4,6 +4,7 @@ use crate::builtin::mesh::{MeshRenderer, MeshViewState, SceneMesh};
 use crate::builtin::passes::{OutputPass, UpscalePass};
 use crate::context::{
     FeatureContext, FeatureSetup, FrameIo, HdrSource, OutputTarget, PipelineLayouts,
+    PresentationInput,
 };
 use crate::feature::{
     Activity, FeatureBody, FeatureDescriptor, FeatureRegistry, PipelineFeature, ResolvedFeatures,
@@ -12,10 +13,11 @@ use crate::feature::{
 use crate::instancing::DrawStats;
 use crate::lighting::{LightingFrame, LightingRenderer, LightingReport, ViewLighting};
 use crate::lights::LightList;
+use crate::overlay::run_presentation;
 use crate::shader::ShaderComposer;
 use crate::shadows::ShadowAtlasConfig;
-use crate::targets::{FrameTargets, Target};
-use crate::view::{VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId};
+use crate::targets::{CompositeTargets, FrameTargets, Target};
+use crate::view::{Presentation, VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, Viewport};
 use anyhow::{Context, Result, bail, ensure};
 use bevy_ecs::world::World;
 use engine_render_wgpu::GpuContext;
@@ -60,6 +62,30 @@ pub trait HostStages {
     /// [`HostUpscale::Abort`] to stop this view's frame without output.
     fn upscale(&mut self, _gpu: &GpuContext, _scene: &SceneTextures<'_>) -> Result<HostUpscale> {
         Ok(HostUpscale::NotHandled)
+    }
+
+    /// Ordered painter items of a host node. None retains whole-node execution.
+    fn overlay_items(
+        &mut self,
+        _node: &str,
+        _view: &ViewData,
+    ) -> Result<Option<Vec<crate::OverlayItem>>> {
+        Ok(None)
+    }
+
+    /// Initialize the host's shared painter stream before any producer draws.
+    fn begin_overlay(&mut self, _gpu: &GpuContext, _target: &OutputTarget) -> Result<()> {
+        Ok(())
+    }
+
+    fn overlay_batch(
+        &mut self,
+        _node: &str,
+        _gpu: &GpuContext,
+        _target: &OutputTarget,
+        _batch: crate::OverlayBatch<'_>,
+    ) -> Result<()> {
+        anyhow::bail!("ordered host overlay did not implement overlay_batch")
     }
 
     /// Execute a host overlay node (for example [`names::SPRITES`]) into
@@ -125,6 +151,7 @@ struct ViewState {
     lighting: ViewLighting,
     report: ViewReport,
     final_hdr: Option<wgpu::Texture>,
+    composite: Option<CompositeTargets>,
 }
 
 impl ViewState {
@@ -144,6 +171,7 @@ impl ViewState {
             lighting,
             report: ViewReport::default(),
             final_hdr: None,
+            composite: None,
         }
     }
 }
@@ -266,7 +294,7 @@ pub fn builtin_registry() -> Result<FeatureRegistry> {
         registry.insert(descriptor, FeatureBody::Builtin)?;
     }
     registry.insert(
-        FeatureDescriptor::new(names::SPRITES, Stage::Overlay),
+        FeatureDescriptor::new(names::SPRITES, Stage::Overlay).replayable(),
         FeatureBody::Host,
     )?;
     Ok(registry)
@@ -285,11 +313,14 @@ pub struct ScenePipeline {
     post: std::sync::Arc<crate::post::PostShared>,
     mesh: MeshRenderer,
     output: OutputPass,
+    composite_copy: OutputPass,
     upscale: UpscalePass,
     views: HashMap<ViewId, ViewState>,
     shadow_alignment: u32,
     lighting: LightingRenderer,
     atlas: ShadowAtlasConfig,
+    presentation_sequence: bool,
+    presentation_sequence_features: Vec<usize>,
 }
 
 impl ScenePipeline {
@@ -299,6 +330,7 @@ impl ScenePipeline {
         let layouts = layouts(device);
         let mesh = MeshRenderer::new(&gpu, &layouts).context("creating the built-in mesh path")?;
         let output = OutputPass::new(device)?;
+        let composite_copy = OutputPass::new(device)?;
         let upscale = UpscalePass::new(device)?;
         let mut registry = builtin_registry()?;
         let composer = ShaderComposer::new();
@@ -323,11 +355,14 @@ impl ScenePipeline {
             post,
             mesh,
             output,
+            composite_copy,
             upscale,
             views: HashMap::new(),
             shadow_alignment,
             lighting,
             atlas: ShadowAtlasConfig::default(),
+            presentation_sequence: false,
+            presentation_sequence_features: Vec::new(),
         })
     }
 
@@ -374,6 +409,10 @@ impl ScenePipeline {
     /// Prepare every feature of `features` on this device, then add them.
     /// Fails without changes on a preparation error or a name conflict.
     pub fn add_features(&mut self, mut features: FeatureRegistry) -> Result<()> {
+        ensure!(
+            !self.presentation_sequence,
+            "cannot register features during a presentation sequence"
+        );
         let setup = FeatureSetup {
             gpu: &self.gpu,
             layouts: &self.layouts,
@@ -520,12 +559,10 @@ impl ScenePipeline {
         queue.write_buffer(&state.uniform, 0, bytemuck::bytes_of(&uniform));
 
         let mut stats = DrawStats::default();
-        let mut io = FrameIo {
-            targets: Some(targets),
-            current_hdr: None,
-            source: HdrSource::Scene,
-            output: Some(target.clone()),
-        };
+        let composite = view.presentation == Presentation::Enabled
+            && composite_needed(&self.registry, &resolved, view);
+        let mut io = presentation_io(&device, target, state.composite.take(), composite);
+        io.targets = Some(targets);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("engine scene stages"),
         });
@@ -587,11 +624,13 @@ impl ScenePipeline {
             Ok(decision) => decision,
             Err(error) => {
                 state.targets = io.targets.take();
+                state.composite = io.composite.take();
                 return Err(error);
             }
         };
         if let Some(HostUpscale::Abort) = decision {
             state.targets = io.targets.take();
+            state.composite = io.composite.take();
             let report = ViewReport {
                 view: Some(view.id),
                 aborted: true,
@@ -616,18 +655,35 @@ impl ScenePipeline {
         }
         let result = (|| -> Result<()> {
             let stages: &[Stage] = if io.source == HdrSource::Host {
-                &[Stage::PostProcess, Stage::Tonemap, Stage::Overlay]
+                &[
+                    Stage::PostProcess,
+                    Stage::Tonemap,
+                    Stage::Overlay,
+                    Stage::Composite,
+                ]
             } else {
                 &[
                     Stage::Upscale,
                     Stage::PostProcess,
                     Stage::Tonemap,
                     Stage::Overlay,
+                    Stage::Composite,
                 ]
             };
             for &stage in stages {
-                if stage == Stage::Overlay {
-                    run_overlay(
+                if matches!(stage, Stage::Overlay | Stage::Composite) {
+                    if view.presentation == Presentation::SceneOnly {
+                        for feature in resolved
+                            .states
+                            .iter_mut()
+                            .filter(|f| f.stage == stage && f.enabled)
+                        {
+                            feature.activity = Activity::Idle;
+                        }
+                        continue;
+                    }
+                    run_presentation(
+                        stage,
                         &self.gpu,
                         layouts,
                         &mut self.registry,
@@ -664,6 +720,7 @@ impl ScenePipeline {
                     &mut stats,
                 )?;
             }
+            finish_presentation(&mut self.composite_copy, &self.gpu, &mut encoder, &io)?;
             Ok(())
         })();
         queue.submit([encoder.finish()]);
@@ -675,6 +732,7 @@ impl ScenePipeline {
             HdrSource::Host => None,
         };
         state.targets = Some(targets);
+        state.composite = io.composite.take();
         result?;
         state.history.commit(current);
         for feature in &mut resolved.states {
@@ -695,16 +753,49 @@ impl ScenePipeline {
         Ok(report)
     }
 
-    /// Run only the Overlay stage into `target` (frames without a 3D view):
-    /// host nodes and overlay features in order.
+    /// Run overlays and final display filters without a 3D scene.
     pub fn render_overlay_only(
         &mut self,
         target: &OutputTarget,
         world: Option<&World>,
-        overrides: &crate::feature::FeatureOverrides,
+        overrides: &crate::FeatureOverrides,
         host: &mut dyn HostStages,
     ) -> Result<ViewReport> {
-        let size = [target.size[0].max(1), target.size[1].max(1)];
+        self.render_presentation(None, target, world, overrides, host)
+    }
+
+    /// Composite overlays and final filters over an already tonemapped,
+    /// UI-free image. Source and target have equal size. The source may alias
+    /// the target: it is sampled into an owned scratch image before any writes
+    /// to the caller's target. Scene temporal histories are not advanced.
+    pub fn render_overlay_over(
+        &mut self,
+        source: PresentationInput<'_>,
+        target: &OutputTarget,
+        world: Option<&World>,
+        overrides: &crate::FeatureOverrides,
+        host: &mut dyn HostStages,
+    ) -> Result<ViewReport> {
+        ensure!(
+            source.size == target.size,
+            "presentation source and target sizes must match"
+        );
+        self.render_presentation(Some(source), target, world, overrides, host)
+    }
+
+    fn render_presentation(
+        &mut self,
+        source: Option<PresentationInput<'_>>,
+        target: &OutputTarget,
+        world: Option<&World>,
+        overrides: &crate::FeatureOverrides,
+        host: &mut dyn HostStages,
+    ) -> Result<ViewReport> {
+        ensure!(
+            target.size[0] > 0 && target.size[1] > 0,
+            "presentation target must be nonzero"
+        );
+        let size = target.size;
         let mut view = ViewData::new(
             OVERLAY_ONLY,
             glam::Mat4::IDENTITY,
@@ -714,47 +805,78 @@ impl ScenePipeline {
         )?;
         view.features = overrides.clone();
         let device = self.gpu.device.clone();
-        let layouts = &self.layouts;
         let gpu = &self.gpu;
-        let lighting = &self.lighting;
+        let layouts = &self.layouts;
         let state = self
             .views
             .entry(OVERLAY_ONLY)
-            .or_insert_with(|| ViewState::new(gpu, layouts, lighting));
+            .or_insert_with(|| ViewState::new(gpu, layouts, &self.lighting));
         let uniform = view.uniform(view.clip_from_world(), 0, 0);
-        self.gpu
-            .queue
+        gpu.queue
             .write_buffer(&state.uniform, 0, bytemuck::bytes_of(&uniform));
         let mut resolved = self.registry.resolve(&view.features);
         for feature in resolved
             .states
             .iter_mut()
-            .filter(|s| s.stage != Stage::Overlay && s.enabled)
+            .filter(|f| !matches!(f.stage, Stage::Overlay | Stage::Composite) && f.enabled)
         {
             feature.activity = Activity::Idle;
         }
+        let needs_composite =
+            source.is_some() || composite_needed(&self.registry, &resolved, &view);
+        let mut io = presentation_io(&device, target, state.composite.take(), needs_composite);
         let mut stats = DrawStats::default();
-        let mut io = FrameIo {
-            output: Some(target.clone()),
-            ..Default::default()
-        };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("engine overlay"),
+            label: Some("engine late presentation"),
         });
-        let result = run_overlay(
-            &self.gpu,
-            layouts,
-            &mut self.registry,
-            state.lighting.bind_group(),
-            &view,
-            world,
-            &mut encoder,
-            &mut io,
-            &mut resolved,
-            &mut stats,
-            host,
-        );
-        self.gpu.queue.submit([encoder.finish()]);
+        let result = (|| -> Result<()> {
+            if let Some(source) = source {
+                let output = io.output.as_ref().context("no presentation output")?;
+                self.composite_copy.encode(
+                    &device,
+                    &gpu.queue,
+                    &mut encoder,
+                    source.view,
+                    &output.view,
+                    output.format,
+                    Viewport::full(size),
+                )?;
+            } else if io.final_output.is_some() {
+                let output = io.output.as_ref().context("no presentation output")?;
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("engine clear presentation"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &output.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+            }
+            for stage in [Stage::Overlay, Stage::Composite] {
+                run_presentation(
+                    stage,
+                    gpu,
+                    layouts,
+                    &mut self.registry,
+                    state.lighting.bind_group(),
+                    &view,
+                    world,
+                    &mut encoder,
+                    &mut io,
+                    &mut resolved,
+                    &mut stats,
+                    host,
+                )?;
+            }
+            finish_presentation(&mut self.composite_copy, gpu, &mut encoder, &io)
+        })();
+        gpu.queue.submit([encoder.finish()]);
+        state.composite = io.composite.take();
         result?;
         for feature in &mut resolved.states {
             if feature.activity == Activity::Pending {
@@ -770,6 +892,70 @@ impl ScenePipeline {
         };
         state.report = report.clone();
         Ok(report)
+    }
+
+    /// Pin presentation data before producing a UI-free scene or generated
+    /// frames. The host must end the sequence on every Result path.
+    pub fn begin_presentation_sequence(&mut self) -> Result<()> {
+        ensure!(
+            !self.presentation_sequence,
+            "presentation sequence already active"
+        );
+        self.presentation_sequence = true;
+        self.presentation_sequence_features.clear();
+        let result = (|| {
+            for (index, entry) in self.registry.features.iter_mut().enumerate() {
+                if matches!(entry.descriptor.stage, Stage::Overlay | Stage::Composite)
+                    && let FeatureBody::Owned(feature) = &mut entry.body
+                {
+                    // Include the attempted feature so an error can release its
+                    // partially acquired snapshot; never end an unstarted one.
+                    self.presentation_sequence_features.push(index);
+                    feature.begin_presentation_sequence()?;
+                }
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.end_presentation_sequence();
+        }
+        result
+    }
+
+    pub fn end_presentation_sequence(&mut self) {
+        if !self.presentation_sequence {
+            return;
+        }
+        for index in std::mem::take(&mut self.presentation_sequence_features)
+            .into_iter()
+            .rev()
+        {
+            if let FeatureBody::Owned(feature) = &mut self.registry.features[index].body {
+                feature.end_presentation_sequence();
+            }
+        }
+        self.presentation_sequence = false;
+    }
+
+    /// Share a snapshot across all outputs, or join the host's existing
+    /// sequence. Releases a locally created sequence on success and error.
+    pub fn with_presentation_sequence<T>(
+        &mut self,
+        body: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        if self.presentation_sequence {
+            return body(self);
+        }
+        self.begin_presentation_sequence()?;
+        let result = body(self);
+        self.end_presentation_sequence();
+        result
+    }
+
+    /// Names of running presentation extensions that have not opted into
+    /// replay on generated frames. Disabled features do not block generation.
+    pub fn presentation_blockers(&self, overrides: &crate::FeatureOverrides) -> Vec<String> {
+        self.registry.presentation_blockers(overrides)
     }
 
     /// Read back the final HDR colour (after post-processing, output size)
@@ -1194,64 +1380,63 @@ fn run_builtin(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_overlay(
-    gpu: &GpuContext,
-    layouts: &PipelineLayouts,
-    registry: &mut FeatureRegistry,
-    view_bind_group: &wgpu::BindGroup,
+fn composite_needed(
+    registry: &FeatureRegistry,
+    resolved: &ResolvedFeatures,
     view: &ViewData,
-    world: Option<&World>,
+) -> bool {
+    registry.features.iter().any(|entry| {
+        entry.descriptor.stage == Stage::Composite
+            && resolved.is_enabled(&entry.descriptor.name)
+            && match &entry.body {
+                FeatureBody::Owned(feature) => feature.composite_active(view),
+                _ => false,
+            }
+    })
+}
+
+fn presentation_io(
+    device: &wgpu::Device,
+    target: &OutputTarget,
+    cached: Option<CompositeTargets>,
+    active: bool,
+) -> FrameIo {
+    let mut io = FrameIo {
+        output: Some(target.clone()),
+        composite: cached,
+        ..Default::default()
+    };
+    if active {
+        let targets = match io.composite.take() {
+            Some(targets) if targets.size == target.size && targets.format == target.format => {
+                targets
+            }
+            _ => CompositeTargets::new(device, target.size, target.format),
+        };
+        io.output.as_mut().expect("set above").view = targets.colors[0].view.clone();
+        io.final_output = Some(target.clone());
+        io.composite = Some(targets);
+    }
+    io
+}
+
+fn finish_presentation(
+    copy: &mut OutputPass,
+    gpu: &GpuContext,
     encoder: &mut wgpu::CommandEncoder,
-    io: &mut FrameIo,
-    resolved: &mut ResolvedFeatures,
-    stats: &mut DrawStats,
-    host: &mut dyn HostStages,
+    io: &FrameIo,
 ) -> Result<()> {
-    let order: Vec<usize> = registry.ordered().to_vec();
-    for index in order {
-        let registered = &mut registry.features[index];
-        if registered.descriptor.stage != Stage::Overlay {
-            continue;
-        }
-        let name = registered.descriptor.name.clone();
-        if !resolved.is_enabled(&name) {
-            continue;
-        }
-        match &mut registered.body {
-            FeatureBody::Host => {
-                let finished = std::mem::replace(
-                    encoder,
-                    gpu.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("engine overlay"),
-                        }),
-                );
-                gpu.queue.submit([finished.finish()]);
-                let target = io.output.as_ref().context("no output target")?;
-                host.overlay(&name, gpu, target)
-                    .with_context(|| format!("host overlay {name}"))?;
-            }
-            FeatureBody::Builtin | FeatureBody::Descriptor => {}
-            FeatureBody::Owned(feature) => {
-                let mut context = FeatureContext {
-                    gpu,
-                    encoder,
-                    stage: Stage::Overlay,
-                    view,
-                    view_bind_group,
-                    layouts,
-                    world,
-                    shadows: None,
-                    io,
-                    stats,
-                    name: &name,
-                };
-                feature
-                    .encode(&mut context)
-                    .with_context(|| format!("render feature {name}"))?;
-            }
-        }
+    if let Some(target) = &io.final_output {
+        let source = &io.output.as_ref().context("no composite source")?.view;
+        copy.encode(
+            &gpu.device,
+            &gpu.queue,
+            encoder,
+            source,
+            &target.view,
+            target.format,
+            Viewport::full(target.size),
+        )?;
     }
     Ok(())
 }

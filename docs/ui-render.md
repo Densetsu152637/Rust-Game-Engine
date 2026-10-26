@@ -1,36 +1,43 @@
 # UI render features (`engine-ui-render`)
 
 GPU features of the game UI, written against the render extension API
-([rendering-architecture.md](rendering-architecture.md)). Status: implemented and
-GPU-tested on Windows / RTX 5080 (Vulkan); see [Verification](#verification).
+([rendering-architecture.md](rendering-architecture.md)). The ordered overlay,
+final-composite and late Frame Generation changes are a source checkpoint:
+build, Clippy and new CPU/GPU regression execution are pending. Earlier GPU
+measurements below describe the previous implementation.
 
 | Feature | Stage | Draws | Needs |
 | --- | --- | --- | --- |
-| `ui.sdf_text` | Overlay (after `engine.sprites`) | screen-UI text of SDF font families from engine-text SDF atlas pages with `GLYPH_SHADER_WGSL` | any wgpu frame (2D or 3D) |
+| `ui.sdf_text` | Overlay (merged with `engine.sprites` in paint order) | screen-UI text of SDF font families from engine-text SDF atlas pages with `GLYPH_SHADER_WGSL` | any wgpu frame (2D or 3D) |
 | `ui.world` | Transparent (after `engine.transparent`) | `engine.UiWorldPanel` and `engine.WorldText` in `Camera3D` scenes: depth-tested, back-to-front, billboarded per view, SDF text | a `Camera3D` |
-| `ui.color_filter` | PostProcess (after `engine.post`) | the colour-vision filter of `engine.AccessibilitySettings` | a 3D frame (2D-only frames have no post stage) |
+| `ui.color_filter` | Composite (after all overlays) | the colour-vision filter of `engine.AccessibilitySettings` | 2D and 3D presentation, including late generated/real outputs |
 
 The crate depends on `engine-render-pipeline`, `engine-project` and `engine-text`;
-`engine-desktop` is only a dev-dependency (GPU tests), and the renderer needed no
-change.
+`engine-desktop` is only a dev-dependency (GPU tests). The desktop host depends
+on this crate to install default UI features; GPU feature code does not depend
+on the desktop host.
 
-## Opting in
+## Defaults and explicit options
 
 ```rust
-// Before the runner starts (the app is the runtime's EngineApp):
-engine_ui_render::install(runtime.app_mut())?;
+// Override the defaults before the runner starts:
+engine_ui_render::install_with(runtime.app_mut(), UiRenderOptions {
+    sdf_text: true, world_ui: true, color_filter: true,
+})?;
 ```
 
-`install` takes the runtime's `UiGpuQueue` resource, creates the `PipelineFeatures`
-resource when the game has none and registers the three features
-(`install_with(app, UiRenderOptions { .. })` picks a subset). Games that build
-`PipelineFeatures` themselves call `register(&mut features, &queue)`. The desktop
-runner and `render_screenshot` already hand `PipelineFeatures` to the renderer
-(`GpuRenderer::set_features`), which prepares the features on its device.
+The desktop window runner and screenshot host call
+`engine_desktop::install_default_ui_features` before extraction, prepare the
+features on their renderer, then re-extract the presented frame after readiness.
+Explicit `install_with` options, including all false, override defaults. A game
+that registered its own UI subset keeps it. Other existing feature names are
+preserved. A standalone `GpuRenderer` can use `install` / `register` explicitly.
 
-`ui.sdf_text` is an Overlay-stage feature: a registered overlay feature disables
-DLSS Frame Generation ([rendering-architecture.md](rendering-architecture.md#host-integration)).
-Leave it out (`sdf_text: false`) when a project uses frame generation and no SDF text.
+`install` uses the runtime's `UiGpuQueue` and `PipelineFeatures` resource;
+`register` accepts those handles directly. Screen SDF and final filtering declare
+replayable presentation support and can accompany Frame Generation. An enabled
+custom Overlay/Composite feature without that capability still gives a precise
+FG fallback reason; disabling that feature for the camera removes the blocker.
 
 ## Routing rule (no double drawing)
 
@@ -49,36 +56,35 @@ published into the queue. A feature is disabled for a camera with
 so disabling a feature sends its content back to the 2D path instead of hiding it.
 A feature that is registered but not prepared (a 2D-only or non-wgpu backend such
 as `OffscreenSprites::headless`, or before the first frame has created the
-renderer) routes nothing. Two consequences:
-
-- The very first presented frame of a window is extracted before the renderer
-  exists, so it still shows the 2D fallback; later frames use the features.
-- Hosts that extract before preparing the features (`render_screenshot` extracts
-  first) render that frame with the fallback.
+renderer) routes nothing. Hosts that extract before preparing features keep coverage for that snapshot;
+they must re-extract after readiness to route SDF. Default window and screenshot
+hosts perform that handoff before the final presented image.
 
 Details of the routing:
 
 - SDF output is requested from the text backend only while the screen roots are
   extracted; world panels keep coverage text at their own raster density (a panel
   is a texture-like surface rasterised 1:1 at its `pixelsPerUnit`).
-- A screen root with a dialog, dropdown popup or tooltip is extracted with
-  coverage text for that frame. SDF text composites above the whole sprite/UI layer
-  and could not stay under the overlay (see Limits).
+- Dialogs, dropdowns and tooltips retain SDF when ready. Their authored layers
+  place them above ordinary roots in the same painter stream.
 - SDF runs are recognised by their draw ID (`game-ui:...:sNN`, `is_sdf_draw`); the
   runtime splits them off the draw list in `extract_frame`.
 
 ## `ui.sdf_text`
 
-Overlay is the stage where the UI composites: after tonemapping, in the target
-format, after the host's sprite/UI node. The feature draws the SDF runs of
-`UiGpuFrame::sdf_text` (UI-space meshes in logical pixels, sorted by layer then ID)
-with the glyph shader from `engine-text` (mode 1, signed distance in alpha,
-`smoothstep` over `fwidth`, so edges stay about one pixel wide at any scale). The
-2D camera fit is reproduced exactly (`layout::UiFit`: integer scale above 1x,
-fractional below, centred letterbox), so the text lines up with sprites; clips
-become physical scissor rectangles. Pages are uploaded once per `Arc` snapshot
-(the text backend republishes a page only when it changes). Colours are written
-unchanged into the target, as the sprite path does.
+Overlay runs after tonemapping in the target format. The SDF feature supplies
+ordered items alongside the host's sprite commands, using the existing UI
+producer's root/preorder/paint IDs. Its `:sNN` distance-field marker is normalized
+to the original text slot `:2NN` for ordering only; cache/draw identity stays
+unchanged. Background/image geometry stays below text, and caret/foreground,
+dialog, popup and tooltip geometry stays above it. Items merge by world/UI,
+layer and paint ID; only contiguous runs from the same producer are batched.
+
+A producer retains its frame while all its batches encode. The glyph shader from
+`engine-text` uses mode 1, signed distance in alpha and `fwidth` smoothing. The
+2D camera fit (`layout::UiFit`) and physical scissor still match sprites. Atlas
+pages upload once per `Arc` snapshot. Telemetry reports once per encoded output,
+including an empty output, rather than once per interleaved batch.
 
 SDF atlas: `AtlasConfig::sdf()` (48 px base, 6 px spread), created on first use
 next to the coverage atlas. One bitmap serves every size; quads are the base
@@ -126,13 +132,12 @@ Settings: `engine.AccessibilitySettings` fields `colorFilter` (`none`,
 unknown values, a strength outside 0..=1 and `correct` with `achromatopsia` (there
 is nothing to correct). See [accessibility.md](accessibility.md#colour-vision-filter).
 
-Maths ([`color`]): one 3x3 matrix on **linear** sRGB (Rec. 709) RGB, applied in the
-HDR PostProcess stage. Linear is chosen because the matrices are defined for linear
-RGB and the HDR scene colour is linear; applying them to gamma-encoded values would
-shift hues. The filter runs after `engine.post` (exposure, bloom, grading) and
-before tonemapping, so it filters scene-referred colour: with the default clamp
-output the result is exactly the matrix applied to the displayed linear colour, with
-a nonlinear tonemapper the result differs slightly from filtering the final image.
+Maths ([`color`]): one 3x3 matrix on linear sRGB (Rec. 709) RGB. The
+Composite stage reads the fully composed display image after tonemapping,
+sprites and SDF, and writes a distinct destination. Both textures match output
+size and format; an sRGB source view decodes on sampling and an sRGB destination
+encodes on write. Raw non-sRGB targets retain their producer's numerical encoding
+contract; encoded 8-bit content should use an sRGB view for linear filtering.
 
 | Mode | Matrix |
 | --- | --- |
@@ -141,9 +146,34 @@ a nonlinear tonemapper the result differs slightly from filtering the final imag
 | correct (daltonize) | `I + S (I - Sim)`: the simulation error moved into the channels the deficiency keeps. `S` is the protan/deutan shift `[[0,0,0],[.7,1,0],[.7,0,1]]` after Fidaner, Lin and Dhar, "Daltonize" (2005); tritanopia uses this engine's analogue `[[1,0,.7],[0,1,.7],[0,0,0]]` (not a published constant) |
 | strength `t` | `I + t (M - I)`; Machado's paper interpolates its matrices linearly between severities |
 
-The 2D sprite/UI layer composes after tonemapping and is **not** filtered, and a
-frame without a `Camera3D` has no PostProcess stage, so the filter does nothing in
-2D-only games. The status says so (`requested, but ... no 3D frame has run it`).
+The filter includes the 2D sprite/UI layer and pure-2D frames. Inactive settings
+allocate no final-composite scratch and encode no filter pass. Active scratch
+textures are owned per pipeline view and recreated on size/format changes;
+callers need no sampled/copy-source swapchain usage.
+
+## Late presentation and Frame Generation
+
+The scene is rendered and tonemapped with both Overlay and Composite suppressed.
+NGX receives UI-free SDR colour (`hudless: false` and no separate HUD-less input).
+After evaluation, `GpuRenderer::composite_presentations` runs the same ordered
+UI and final filters on every presentable generated output and the real output.
+Source and target may alias: the source is first sampled into an owned scratch
+image. Captures read those composed textures; presenting them only blits, so UI
+is not applied twice.
+
+One presentation sequence pins text and colour-filter data before scene/NGX work
+and retains it for every output, even if extraction publishes a newer UI frame.
+The snapshot is released on success/error. Late output uses separate overlay-only
+view state and does not advance the scene's temporal history.
+
+If interpolation fails after the scene rendered, its valid real colour remains
+available in a poisoned stage. Only the real output is late-composited/presented;
+scene rendering/history is not repeated for that source. Sticky failure blocks
+further same-request evaluations; a retry replaces a poisoned generator.
+
+The new integration has not been executed against NGX in this source checkpoint.
+Synthetic GPU regressions exercise the same late-composition API, but they do
+not establish hardware FG image quality or pacing.
 
 ## Status and telemetry
 
@@ -160,8 +190,8 @@ frame without a `Camera3D` has no PostProcess stage, so the filter does nothing 
 
 `state` is `gpu` or `fallback`; the reason distinguishes *not registered*,
 *registered but not prepared by a wgpu renderer*, *disabled for the camera
-(`render_features`)*, *no active `Camera3D`* and, for the filter, *requested but no 3D
-frame has run it*. `EngineTextBackend::render_status()` (`TextRenderStatus`) reports
+(`render_features`)*, *no active `Camera3D`* and, for the filter, *requested but no final presentation
+has run it*. `EngineTextBackend::render_status()` (`TextRenderStatus`) reports
 SDF text per path: `screen` (`ui.sdf_text`, used by screen text of SDF families) and
 `world` (`ui.world`, used by `engine.WorldText` that asked for SDF). `state` is `sdf` when
 every path in use is on the GPU and `sdf_fallback` otherwise, with the reasons of the
@@ -173,7 +203,21 @@ report also carries `sdf_gpu_layouts`. The headless run report
 `features` array above (`name`, `state`, `reason`, `frames`, `last_draws`, `last_items`),
 or `null` when no status was published; it does not carry `TextRenderStatus`.
 
+## Source-checkpoint validation plan
+
+Not executed for this revision yet:
+
+- Package CPU tests, project `ui_gpu` tests, strict scoped Clippy and formatting.
+- `gpu_ui`: actual SDF glyph between background/translucent foreground in both
+  2D/3D; final filtering of those pixels; two aliased synthetic real/generated
+  targets at three sizes/formats; once-only alpha/filtering; publication between
+  outputs; retained text/filter snapshots and their release.
+- Existing pipeline/light/post/UI GPU regressions and DLSS-feature compilation.
+- Actual NGX FG remains a separate hardware check with SDK/runtime prerequisites.
+
 ## Verification
+
+Historical observations below predate the source-only presentation revision.
 
 Commands (GPU tests: RTX 5080, Vulkan, `--test-threads=1`):
 
@@ -205,11 +249,12 @@ Commands (GPU tests: RTX 5080, Vulkan, `--test-threads=1`):
 - **Routing by readiness.** Routing keyed on registration alone would lose text on
   backends that never prepare features; keying on prepared-on-a-device keeps the
   fallback exact. The cost is the one-frame start-up handoff.
-- **SDF text above the sprite layer.** The sprite pass samples textures with a
-  nearest sampler and has no distance-field shader (custom 2D materials use a
-  nearest sampler too), and the Overlay stage is where the extension API composites. Layering
-  relative to other sprites and UI roots is therefore not preserved (only among SDF
-  runs, and dialogs/popups fall back to coverage).
+- **A shared painter stream.** Sprite and SDF producers publish compatible
+  ordering keys while retaining their own shaders/resources. Existing whole-pass
+  extensions keep their behaviour; constraints around the combined stream use
+  `engine.sprites`.
+- **Final display filtering.** The Composite stage reads an owned image after UI,
+  including 2D-only and late generated/real outputs, without sampling a swapchain.
 - **One matrix for the filter.** Simulation, daltonization and strength are all
   linear, so the shader multiplies one CPU-tested matrix.
 
@@ -217,8 +262,6 @@ Commands (GPU tests: RTX 5080, Vulkan, `--test-threads=1`):
 
 - SDF outlines, glow and soft shadows (the glyph shader supports an edge bias;
   there is no authored outline or shadow style yet).
-- Filtering the 2D sprite/UI layer and 2D-only frames (the Overlay stage cannot
-  read the composited target).
 - MSDF pages (engine-text generates none).
 - Mipmaps for world panel textures, per-fragment ordering, interleaving with the
   built-in transparent meshes.

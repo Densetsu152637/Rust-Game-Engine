@@ -39,11 +39,11 @@ use engine_project::rendering3d::{
     UpscalerSettings, UpscalerStatus,
 };
 use engine_project::runtime::RenderFrame;
-use engine_render::RenderTarget;
+use engine_render::{DrawCommand, RenderCommandBuffer, RenderTarget};
 use engine_render_pipeline::{
     FeatureOverrides, GpuTexture, HostStages, HostUpscale, LightingReport, OutputTarget,
-    PipelineFeatures, SceneFrame, ScenePipeline, SceneTextures, Stage, ViewData, ViewId, ViewKind,
-    ViewReport, Viewport, names,
+    OverlayBatch, OverlayItem, PipelineFeatures, Presentation, PresentationInput, SceneFrame,
+    ScenePipeline, SceneTextures, Stage, ViewData, ViewId, ViewKind, ViewReport, Viewport, names,
 };
 use engine_render_wgpu::{WgpuBackend, WgpuOptions};
 use glam::Mat4;
@@ -94,6 +94,13 @@ pub struct EyeTarget<'a> {
     pub size: [u32; 2],
 }
 
+/// One UI-free presentation image and its final output target. Source and
+/// target may be the same image; late composition snapshots the source first.
+pub struct PresentationOutput<'a> {
+    pub source: PresentationInput<'a>,
+    pub target: &'a OutputTarget,
+}
+
 /// A renderer usable by a game window, editor viewport or offscreen test. CPU
 /// assets are immutable Arc snapshots: retaining the same Arc means unchanged;
 /// publish a new Arc for edits. GPU resources retain the Arc to prevent address
@@ -131,11 +138,28 @@ pub struct GpuRenderer {
 /// How the `engine.sprites` overlay node draws a frame's 2D sprites/UI.
 enum SpriteMode {
     /// Over the composed 3D output (preserving it).
-    Over(sprite::BuiltFrame),
+    Over(OrderedSprites),
     /// Into an empty target (2D-only frames; clears it).
-    Alone(sprite::BuiltFrame),
+    Alone(OrderedSprites),
     /// Not at all (HUD-less frame generation input, XR eyes).
     Skip,
+}
+
+struct OrderedSprites {
+    draws: Vec<DrawCommand>,
+    painter: Vec<OverlayItem>,
+    viewport: engine_render::PixelRect,
+    stats: RenderStats,
+}
+impl From<sprite::BuiltFrame> for OrderedSprites {
+    fn from(frame: sprite::BuiltFrame) -> Self {
+        Self {
+            draws: frame.commands.into_ordered(),
+            painter: frame.painter,
+            viewport: frame.viewport,
+            stats: frame.stats,
+        }
+    }
 }
 
 type UpscaleHook<'a> = dyn FnMut(&GpuContext, &SceneTextures<'_>) -> Result<HostUpscale> + 'a;
@@ -159,18 +183,63 @@ impl HostStages for DesktopHost<'_, '_> {
         }
     }
 
-    fn overlay(&mut self, node: &str, gpu: &GpuContext, target: &OutputTarget) -> Result<()> {
+    fn overlay_items(&mut self, node: &str, _view: &ViewData) -> Result<Option<Vec<OverlayItem>>> {
+        if node != names::SPRITES {
+            return Ok(None);
+        }
+        Ok(Some(match &self.mode {
+            SpriteMode::Over(built) | SpriteMode::Alone(built) => built.painter.clone(),
+            SpriteMode::Skip => vec![],
+        }))
+    }
+
+    fn begin_overlay(&mut self, gpu: &GpuContext, target: &OutputTarget) -> Result<()> {
+        copy_streams(self.sprites, gpu, &self.stream_copies);
+        if let SpriteMode::Alone(built) = &self.mode {
+            let mut desc = engine_render::FrameDesc::new(RenderTarget::Surface);
+            desc.viewport = Some(built.viewport);
+            submit_to(
+                self.sprites,
+                &target.view,
+                RenderTargetInfo {
+                    width: target.size[0],
+                    height: target.size[1],
+                    format: target.format,
+                },
+                desc,
+                RenderCommandBuffer::new(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn overlay_batch(
+        &mut self,
+        node: &str,
+        _gpu: &GpuContext,
+        target: &OutputTarget,
+        batch: OverlayBatch<'_>,
+    ) -> Result<()> {
         if node != names::SPRITES {
             return Ok(());
         }
-        let (built, preserve) = match std::mem::replace(&mut self.mode, SpriteMode::Skip) {
-            SpriteMode::Over(built) => (built, true),
-            SpriteMode::Alone(built) => (built, false),
+        let built = match &self.mode {
+            SpriteMode::Over(built) | SpriteMode::Alone(built) => built,
             SpriteMode::Skip => return Ok(()),
         };
-        copy_streams(self.sprites, gpu, &self.stream_copies);
-        let mut desc = built.desc(RenderTarget::Surface);
-        desc.preserve_color = preserve;
+        let mut commands = RenderCommandBuffer::new();
+        for &token in batch.tokens {
+            commands.record(
+                built
+                    .draws
+                    .get(token as usize)
+                    .context("sprite painter token is not in the retained frame")?
+                    .clone(),
+            )?;
+        }
+        let mut desc = engine_render::FrameDesc::new(RenderTarget::Surface);
+        desc.viewport = Some(built.viewport);
+        desc.preserve_color = true;
         submit_to(
             self.sprites,
             &target.view,
@@ -180,10 +249,39 @@ impl HostStages for DesktopHost<'_, '_> {
                 format: target.format,
             },
             desc,
-            built.commands,
+            commands,
         )?;
-        sprite::add_stats(&mut self.stats, built.stats);
+        if batch.first {
+            sprite::add_stats(&mut self.stats, built.stats);
+        }
         Ok(())
+    }
+
+    fn overlay(&mut self, node: &str, gpu: &GpuContext, target: &OutputTarget) -> Result<()> {
+        self.begin_overlay(gpu, target)?;
+        let items = self
+            .overlay_items(
+                node,
+                &ViewData::new(
+                    ViewId::MAIN,
+                    Mat4::IDENTITY,
+                    Mat4::IDENTITY,
+                    target.size,
+                    target.size,
+                )?,
+            )?
+            .unwrap_or_default();
+        let tokens: Vec<_> = items.iter().map(|item| item.token).collect();
+        self.overlay_batch(
+            node,
+            gpu,
+            target,
+            OverlayBatch {
+                tokens: &tokens,
+                first: true,
+                last: true,
+            },
+        )
     }
 }
 
@@ -358,11 +456,109 @@ impl GpuRenderer {
     /// Whether registered (non-built-in) overlay features exist.
     fn has_overlay_features(&self) -> bool {
         self.scene.as_ref().is_some_and(|scene| {
-            scene
-                .registry()
-                .descriptors()
-                .any(|d| d.stage == Stage::Overlay && !d.name.starts_with("engine."))
+            scene.registry().descriptors().any(|d| {
+                matches!(d.stage, Stage::Overlay | Stage::Composite) && d.name != names::SPRITES
+            })
         })
+    }
+
+    fn presentation_blocker(&self, frame: &SceneRenderFrame) -> Option<String> {
+        let overrides = FeatureOverrides(
+            frame
+                .camera3d
+                .as_ref()
+                .map(|c| c.camera.render_features.clone())
+                .unwrap_or_default(),
+        );
+        let blocked = self.scene.as_ref()?.presentation_blockers(&overrides);
+        (!blocked.is_empty()).then(|| {
+            format!(
+                "presentation features do not support replay on generated frames: {}",
+                blocked.join(", ")
+            )
+        })
+    }
+
+    /// Apply the same retained UI/overlay/filter snapshot to a sequence of
+    /// externally produced display images. This is also the late Frame
+    /// Generation path, and can be used with synthetic generated images.
+    pub fn composite_presentations(
+        &mut self,
+        frame: &SceneRenderFrame,
+        outputs: &[PresentationOutput<'_>],
+        world: Option<&World>,
+    ) -> Result<RenderStats> {
+        let overrides = FeatureOverrides(
+            frame
+                .camera3d
+                .as_ref()
+                .map(|c| c.camera.render_features.clone())
+                .unwrap_or_default(),
+        );
+        for output in outputs {
+            ensure!(
+                output.source.size == output.target.size,
+                "presentation input/output sizes must match"
+            );
+            self.sprites
+                .validate_scene(frame, (output.target.size[0], output.target.size[1]))?;
+        }
+        self.pipeline()?;
+        let copies = stream_copies(frame, &self.uploads.streams);
+        let scene = self.scene.as_mut().expect("created above");
+        let sprites = &mut self.sprites;
+        let mut last_report = None;
+        let stats = scene.with_presentation_sequence(|scene| {
+            let mut stats = RenderStats::default();
+            for output in outputs {
+                let built =
+                    sprites.build_overlay(frame, (output.target.size[0], output.target.size[1]))?;
+                let mut host = DesktopHost {
+                    sprites: &mut *sprites,
+                    mode: SpriteMode::Over(built.into()),
+                    stats: RenderStats::default(),
+                    stream_copies: copies.clone(),
+                    upscale: None,
+                };
+                last_report = Some(scene.render_overlay_over(
+                    PresentationInput {
+                        view: output.source.view,
+                        size: output.source.size,
+                    },
+                    output.target,
+                    world,
+                    &overrides,
+                    &mut host,
+                )?);
+                sprite::add_stats(&mut stats, host.stats);
+            }
+            Ok(stats)
+        })?;
+        if let Some(report) = last_report {
+            let late = status_of(&report, RenderPipelineState::Rendered, &overrides.0);
+            if self.status.state == RenderPipelineState::Rendered {
+                for feature in late
+                    .features
+                    .into_iter()
+                    .filter(|f| matches!(f.stage.as_str(), "overlay" | "composite"))
+                {
+                    if let Some(current) = self
+                        .status
+                        .features
+                        .iter_mut()
+                        .find(|f| f.name == feature.name)
+                    {
+                        *current = feature;
+                    } else {
+                        self.status.features.push(feature);
+                    }
+                }
+            } else {
+                self.status = late;
+            }
+        }
+        self.gpu.check_errors()?;
+        Ok(stats)
     }
 
     /// The persistent GPU texture of the external stream `name` (created at
@@ -412,7 +608,7 @@ impl GpuRenderer {
         target: &wgpu::TextureView,
         world: Option<&World>,
     ) -> Result<RenderStats> {
-        if let Some(stats) = self.render_generated(frame)? {
+        if let Some(stats) = self.render_generated_with_world(frame, world)? {
             self.present_real(target)?;
             return Ok(stats);
         }
@@ -499,7 +695,7 @@ impl GpuRenderer {
         let copies = stream_copies(frame, &self.uploads.streams);
         let mut host = DesktopHost {
             sprites: &mut self.sprites,
-            mode: SpriteMode::Alone(built),
+            mode: SpriteMode::Alone(built.into()),
             stats: RenderStats::default(),
             stream_copies: copies,
             upscale: None,
@@ -555,7 +751,7 @@ impl GpuRenderer {
         self.sprites.validate_scene(frame, size)?;
         let lights = scene3d::light_list(frame)?;
         let mode = if sprites {
-            SpriteMode::Over(self.sprites.build_overlay(frame, size)?)
+            SpriteMode::Over(self.sprites.build_overlay(frame, size)?.into())
         } else {
             SpriteMode::Skip
         };
@@ -785,6 +981,9 @@ impl GpuRenderer {
         view.jitter = jitter;
         view.reset_history = reset;
         view.host_needs.motion = true;
+        if fg_inputs.is_some() {
+            view.presentation = Presentation::SceneOnly;
+        }
         let depth_export = self.depth_export()?;
         let now = std::time::Instant::now();
         let delta_ms = stage.last_evaluation.map_or(1000.0 / 60.0, |last| {
@@ -867,6 +1066,16 @@ impl GpuRenderer {
     /// [`Self::present_real`]. `Ok(None)`: not requested or unsupported (see
     /// [`Self::frame_generation_status`]); render with [`Self::render_scene`].
     pub fn render_generated(&mut self, frame: &SceneRenderFrame) -> Result<Option<RenderStats>> {
+        self.render_generated_with_world(frame, None)
+    }
+
+    /// World-aware Frame Generation entry point; late replayable extensions
+    /// retain the same extracted-world access as ordinary presentation.
+    pub fn render_generated_with_world(
+        &mut self,
+        frame: &SceneRenderFrame,
+        world: Option<&World>,
+    ) -> Result<Option<RenderStats>> {
         self.gpu.check_errors()?;
         let request = frame
             .camera3d
@@ -881,7 +1090,13 @@ impl GpuRenderer {
             .sprites
             .scene_viewport(frame, (self.info.width, self.info.height))?;
         self.framegen.discard_frames();
-        let stats = self.render_generated_frame(frame, request, viewport)?;
+        self.pipeline()?.begin_presentation_sequence()?;
+        let result = self.render_generated_frame(frame, request, viewport, world);
+        self.scene
+            .as_mut()
+            .expect("created above")
+            .end_presentation_sequence();
+        let stats = result?;
         if stats.is_some() {
             self.framegen.viewport = [viewport.x, viewport.y, viewport.width, viewport.height];
             self.framegen.real_ready = true;
@@ -893,9 +1108,10 @@ impl GpuRenderer {
     #[cfg(not(feature = "dlss"))]
     fn render_generated_frame(
         &mut self,
-        _: &SceneRenderFrame,
+        frame: &SceneRenderFrame,
         request: FrameGenerationSettings,
         viewport: crate::PixelRect,
+        _world: Option<&World>,
     ) -> Result<Option<RenderStats>> {
         let output = [viewport.width, viewport.height];
         let reason = self
@@ -903,7 +1119,7 @@ impl GpuRenderer {
             .precheck(
                 request,
                 &self.upscaler.device,
-                self.has_overlay_features(),
+                self.presentation_blocker(frame).as_deref(),
                 (output, output),
             )
             .unwrap_or_default();
@@ -917,6 +1133,7 @@ impl GpuRenderer {
         frame: &SceneRenderFrame,
         request: FrameGenerationSettings,
         viewport: crate::PixelRect,
+        world: Option<&World>,
     ) -> Result<Option<RenderStats>> {
         let output = [viewport.width, viewport.height];
         let prior = self
@@ -927,14 +1144,14 @@ impl GpuRenderer {
         if let Some(reason) = self.framegen.precheck(
             request,
             &self.upscaler.device,
-            self.has_overlay_features(),
+            self.presentation_blocker(frame).as_deref(),
             prior,
         ) {
             self.framegen.fallback(request, &reason);
             return Ok(None);
         }
         let mut stage = self.take_stage();
-        let result = self.generate_with_stage(&mut stage, frame, request, viewport);
+        let result = self.generate_with_stage(&mut stage, frame, request, viewport, world);
         self.upscaler.dlss = Some(stage);
         result
     }
@@ -947,6 +1164,7 @@ impl GpuRenderer {
         frame: &SceneRenderFrame,
         request: FrameGenerationSettings,
         viewport: crate::PixelRect,
+        world: Option<&World>,
     ) -> Result<Option<RenderStats>> {
         let camera = frame
             .camera3d
@@ -1000,7 +1218,7 @@ impl GpuRenderer {
             .framegen
             .stage
             .as_ref()
-            .is_none_or(|s| (s.output, s.render) != sizes)
+            .is_none_or(|s| s.poisoned || (s.output, s.render) != sizes)
         {
             self.framegen.stage = None;
             match framegen::stage::FgStage::new(context, &session_options, output, render) {
@@ -1058,7 +1276,7 @@ impl GpuRenderer {
                 frame,
                 upscale,
                 &hudless,
-                None,
+                world,
                 false,
                 Some(fg_inputs),
             )?
@@ -1079,6 +1297,7 @@ impl GpuRenderer {
             let mut view = scene3d::camera_view(camera, ViewId::MAIN, output, output)?;
             view.reset_history = reset;
             view.host_needs.motion = true;
+            view.presentation = Presentation::SceneOnly;
             let depth_export = self.depth_export()?;
             let (fg_depth, fg_motion) = fg_inputs;
             let mut hook = |gpu: &GpuContext, scene: &SceneTextures<'_>| -> Result<HostUpscale> {
@@ -1095,46 +1314,13 @@ impl GpuRenderer {
                 gpu.queue.submit([encoder.finish()]);
                 Ok(HostUpscale::NotHandled)
             };
-            let (_, stats) = self.draw_3d(frame, view, &hudless, None, false, Some(&mut hook))?;
+            let (_, stats) = self.draw_3d(frame, view, &hudless, world, false, Some(&mut hook))?;
             (stats, [0.0; 2])
         };
 
-        // Backbuffer = HUD-less scene + 2D/UI at output resolution.
-        let size = (output[0], output[1]);
-        let overlay = self.sprites.build_overlay(frame, size)?;
-        let fg = self.framegen.stage.as_ref().expect("generator");
-        let (backbuffer, hudless) = (fg.backbuffer.view.clone(), fg.hudless.texture.clone());
-        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
-        encoder.copy_texture_to_texture(
-            hudless.as_image_copy(),
-            fg.backbuffer.texture.as_image_copy(),
-            hudless.size(),
-        );
-        self.gpu.queue.submit([encoder.finish()]);
-        let overlay_desc = {
-            let mut desc = overlay.desc(RenderTarget::Surface);
-            desc.preserve_color = true;
-            desc
-        };
+        // NGX sees only the UI-free scene. Every presentable output receives
+        // the same late painter/filter pass after all evaluations finish.
         let mut stats = stats;
-        sprite::add_stats(&mut stats, overlay.stats);
-        copy_streams(
-            &self.sprites,
-            &self.gpu,
-            &stream_copies(frame, &self.uploads.streams),
-        );
-        submit_to(
-            &mut self.sprites,
-            &backbuffer,
-            RenderTargetInfo {
-                width: output[0],
-                height: output[1],
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            },
-            overlay_desc,
-            overlay.commands,
-        )?;
-
         // Generated frames between the previous and this real frame.
         let camera_constants =
             framegen::generation_camera(camera, aspect, projection, current_vp, previous_vp);
@@ -1147,8 +1333,8 @@ impl GpuRenderer {
         let mut failure = None;
         for index in 1..=count {
             let inputs = engine_dlss::GenerationInputs {
-                backbuffer: &fg.backbuffer.texture,
-                hudless: Some(&fg.hudless.texture),
+                backbuffer: &fg.hudless.texture,
+                hudless: None,
                 depth: &fg.depth.0,
                 motion: &fg.motion.0,
             };
@@ -1176,14 +1362,45 @@ impl GpuRenderer {
                 }
             }
         }
-        self.framegen.history.commit(camera);
-        self.framegen.finish_frame(std::time::Instant::now());
-        if let Some(reason) = failure {
-            // The generator is poisoned: present the real frame only, and
-            // retry after the request or sizes change.
-            self.framegen.stage = None;
-            self.framegen.remember_failure(request, sizes, &reason);
-            self.framegen.fallback(request, &reason);
+        if failure.is_some() {
+            fg.poisoned = true;
+            presentable.clear();
+        }
+        let sources: Vec<wgpu::TextureView> = std::iter::once(fg.hudless.view.clone())
+            .chain(presentable.iter().map(|&i| fg.generated[i].view.clone()))
+            .collect();
+        let destinations: Vec<OutputTarget> = std::iter::once(fg.backbuffer.view.clone())
+            .chain(presentable.iter().map(|&i| fg.generated[i].view.clone()))
+            .map(|view| OutputTarget {
+                view,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                size: output,
+                viewport: Viewport::full(output),
+            })
+            .collect();
+        let outputs: Vec<PresentationOutput<'_>> = sources
+            .iter()
+            .zip(&destinations)
+            .map(|(source, target)| PresentationOutput {
+                source: PresentationInput {
+                    view: source,
+                    size: output,
+                },
+                target,
+            })
+            .collect();
+        let success = self.framegen.complete_evaluation(
+            camera,
+            std::time::Instant::now(),
+            request,
+            sizes,
+            failure.as_deref(),
+        );
+        let ui_stats = self.composite_presentations(frame, &outputs, world)?;
+        sprite::add_stats(&mut stats, ui_stats);
+        // Interpolation failure still presents the already-rendered real frame;
+        // keeping the stage's textures avoids a second scene/history advance.
+        if !success {
             return Ok(Some(stats));
         }
         if reset {
