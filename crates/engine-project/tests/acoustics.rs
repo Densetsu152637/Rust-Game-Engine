@@ -7,12 +7,14 @@
 use bevy_ecs::prelude::*;
 use engine_acoustics::{AcousticState, PropagationResult};
 use engine_audio::{AudioControl, AudioEngine, Bus, VoiceState};
+use engine_project::simulation::physics;
 use engine_project::{
-    ActionFrame, CustomValue, EngineEvent, Project, Result, Runtime, Transform,
+    ActionFrame, CustomValue, EngineEvent, EventLimits, Project, Result, Runtime, Transform,
     acoustics::{self, AcousticControl},
     audio::{self, AuthoredEmitter, EntityAudio},
     register_event_handler,
 };
+use glam::{Quat, Vec3};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -2209,4 +2211,347 @@ fn asynchronous_procedural_fault_is_reported_and_runtime_tears_down_its_voice() 
         "audio.graph.frequency"
     );
     assert_eq!(control.voice_count(), 0);
+}
+
+#[test]
+fn physics_box_colliders_occlude_with_masks_materials_and_live_motion() {
+    let body = |id: &str, position: [f32; 3], shape: &str, sensor: bool, custom: Value| {
+        let mut custom = custom;
+        custom["engine.PhysicsBody3D"] = data(json!({
+            "motion":"kinematic", "shape":shape,
+            "half_extents":[1.,2.,0.5],
+            "material":{"sensor":sensor}
+        }));
+        entity(id, position, json!({}), custom)
+    };
+    let dir = write_project(
+        vec![
+            env_entity(json!({"geometry":{"physics_bodies":true,"mask":7}})),
+            body(
+                "box",
+                [0., 0., -5.],
+                "box",
+                false,
+                json!({
+                    "engine.AcousticMaterial":data(json!({"preset":"brick"})),
+                    "engine.AcousticGeometry":data(json!({"mask":2}))
+                }),
+            ),
+            body("sensor", [3., 0., -5.], "box", true, json!({})),
+            body("unsupported", [6., 0., -5.], "ball", false, json!({})),
+            body(
+                "excluded",
+                [9., 0., -5.],
+                "box",
+                false,
+                json!({
+                    "engine.AcousticGeometry":data(json!({"mode":"exclude"}))
+                }),
+            ),
+            {
+                let mut e = body("rendered", [12., 0., -5.], "box", false, json!({}));
+                e["components"]["MeshRenderer"] = json!({"mesh":"quad"});
+                e
+            },
+        ],
+        vec![],
+    );
+    let mut rt = runtime(&dir);
+    rt.start().unwrap();
+    let collected = collect_world(&rt, &dir);
+    assert_eq!(
+        collected
+            .instances
+            .iter()
+            .map(|i| i.key.as_str())
+            .collect::<Vec<_>>(),
+        ["box", "rendered"]
+    );
+    assert_eq!(collected.instances[0].mask, 2);
+    assert_eq!(
+        collected.instances[0].mobility,
+        acoustics::Mobility::Dynamic
+    );
+    assert_eq!(
+        collected.materials[collected.instances[0].material].preset,
+        acoustics::Preset::Brick
+    );
+    assert_eq!(collected.instances[1].mesh, "quad");
+    assert!(
+        collected
+            .warnings
+            .iter()
+            .any(|w| w.contains("unsupported") && w.contains("Ball"))
+    );
+    let built = acoustics::build_world(&collected).unwrap();
+    assert_eq!(built.world.stats().triangles, 14);
+    assert!(
+        built
+            .world
+            .raycast([0., 0., 0.], [0., 0., -1.], 10., 2)
+            .is_some()
+    );
+    assert!(
+        built
+            .world
+            .raycast([0., 0., 0.], [0., 0., -1.], 10., 4)
+            .is_none()
+    );
+    let listener = engine_acoustics::direct::ListenerFrame::new(&engine_acoustics::ListenerPose {
+        position: [0.; 3],
+        forward: [0., 0., -1.],
+        up: [0., 1., 0.],
+    })
+    .unwrap();
+    let blocked =
+        engine_acoustics::direct::direct_path(&built.world, &listener, [0., 0., -10.], 0., 8, true);
+    assert_eq!(blocked.visible_fraction, 0.0);
+    let baked = acoustics::to_document(
+        &collected,
+        acoustics::BakeInclude {
+            meshes: true,
+            proxy2d: false,
+            volumes: false,
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(baked.instances.len(), 2);
+
+    let box_entity = rt.entity("box").unwrap();
+    physics::set_body_pose(
+        rt.app_mut().world_mut(),
+        box_entity,
+        Vec3::new(20., 0., -5.),
+        Quat::IDENTITY,
+        None,
+    )
+    .unwrap();
+    tick(&mut rt, 0.016);
+    let moved = collect_world(&rt, &dir);
+    assert_eq!(moved.signature(), collected.signature());
+    assert_ne!(moved.dynamic_transforms(), collected.dynamic_transforms());
+    let mut world = acoustics::build_world(&moved).unwrap().world;
+    let cleared =
+        engine_acoustics::direct::direct_path(&world, &listener, [0., 0., -10.], 0., 8, true);
+    assert_eq!(cleared.visible_fraction, 1.0);
+    assert!(world.raycast([0., 0., 0.], [0., 0., -1.], 10., 2).is_none());
+    rt.app_mut().world_mut().despawn(box_entity);
+    tick(&mut rt, 0.016);
+    let removed = collect_world(&rt, &dir);
+    assert_ne!(removed.signature(), collected.signature());
+    world = acoustics::build_world(&removed).unwrap().world;
+    assert!(world.raycast([0., 0., 0.], [0., 0., -1.], 10., 2).is_none());
+}
+
+#[test]
+fn collider_opt_in_tracks_shape_material_and_fixed_motion_without_rendering() {
+    let dir = write_project(
+        vec![
+            env_entity(json!({"geometry":{"physics_bodies":true,"render_meshes":false,"mask":4}})),
+            entity(
+                "solid",
+                [0., 0., -5.],
+                json!({"MeshRenderer":{"mesh":"quad"}}),
+                json!({
+                    "engine.PhysicsBody3D":data(json!({"motion":"fixed","half_extents":[1.,1.,0.5]})),
+                    "engine.AcousticMaterial":data(json!({"preset":"brick"}))
+                }),
+            ),
+        ],
+        vec![],
+    );
+    let mut rt = runtime(&dir);
+    rt.start().unwrap();
+    let before = collect_world(&rt, &dir);
+    assert_eq!(before.instances.len(), 1);
+    assert_ne!(before.instances[0].mesh, "quad");
+    assert_eq!(before.instances[0].mask, 4);
+    assert_eq!(before.instances[0].mobility, acoustics::Mobility::Static);
+    assert!(
+        acoustics::build_world(&before)
+            .unwrap()
+            .world
+            .raycast([0., 0., 0.], [0., 0., -1.], 10., 4)
+            .is_some()
+    );
+
+    let solid = rt.entity("solid").unwrap();
+    rt.app_mut()
+        .world_mut()
+        .get_mut::<physics::PhysicsBody3D>(solid)
+        .unwrap()
+        .half_extents = [2., 1., 0.5];
+    let resized = collect_world(&rt, &dir);
+    assert_ne!(before.signature(), resized.signature());
+    rt.app_mut()
+        .world_mut()
+        .get_mut::<acoustics::AcousticMaterialSpec>(solid)
+        .unwrap()
+        .preset = acoustics::Preset::Concrete;
+    let rematerialed = collect_world(&rt, &dir);
+    assert_ne!(resized.signature(), rematerialed.signature());
+    rt.app_mut()
+        .world_mut()
+        .get_mut::<Transform>(solid)
+        .unwrap()
+        .position = [20., 0., -5.];
+    tick(&mut rt, 0.016);
+    let moved = collect_world(&rt, &dir);
+    assert_ne!(rematerialed.signature(), moved.signature());
+}
+
+#[test]
+fn accepted_3d_contacts_drive_only_targeted_emitters_at_post_step_pose() {
+    let dir = write_project(
+        vec![
+            entity(
+                "settings",
+                [0.; 3],
+                json!({}),
+                json!({
+                    "engine.PhysicsSettings":data(json!({"gravity_3d":[0.,0.,0.]}))
+                }),
+            ),
+            entity(
+                "fixed",
+                [0.6, 0., 0.],
+                json!({}),
+                json!({
+                    "engine.PhysicsBody3D":data(json!({"motion":"fixed"}))
+                }),
+            ),
+            entity(
+                "moving",
+                [0., 0., 0.],
+                json!({}),
+                json!({
+                    "engine.PhysicsBody3D":data(json!({"velocity":[0.1,0.,0.]})),
+                    "engine.AudioEmitter":data(json!({
+                        "clip":"sfx","autoplay":false,"looped":true,
+                        "play_on":"physics.contact.start","stop_on":"physics.contact.stop"
+                    }))
+                }),
+            ),
+            entity(
+                "unrelated",
+                [8., 0., 0.],
+                json!({}),
+                json!({
+                    "engine.AudioEmitter":data(json!({
+                        "clip":"sfx","autoplay":false,"play_on":"physics.contact.start"
+                    }))
+                }),
+            ),
+        ],
+        vec![],
+    );
+    let mut a = with_audio(dir);
+    tick(&mut a.rt, 0.016);
+    let moving = a.rt.entity("moving").unwrap();
+    let unrelated = a.rt.entity("unrelated").unwrap();
+    let state = |rt: &Runtime, entity| {
+        let source = rt
+            .app()
+            .world()
+            .get::<AuthoredEmitter>(entity)
+            .unwrap()
+            .source;
+        rt.app()
+            .world()
+            .get::<EntityAudio>(entity)
+            .unwrap()
+            .sources
+            .state(source)
+    };
+    assert_eq!(state(&a.rt, moving), VoiceState::Playing);
+    assert_eq!(state(&a.rt, unrelated), VoiceState::Stopped);
+    let source =
+        a.rt.app()
+            .world()
+            .get::<AuthoredEmitter>(moving)
+            .unwrap()
+            .source;
+    let position =
+        a.rt.app()
+            .world()
+            .get::<EntityAudio>(moving)
+            .unwrap()
+            .sources
+            .options(source)
+            .unwrap()
+            .spatial
+            .position;
+    assert_eq!(
+        position,
+        engine_project::world_transform(a.rt.app().world(), moving)
+            .unwrap()
+            .position()
+    );
+    physics::set_body_pose(
+        a.rt.app_mut().world_mut(),
+        moving,
+        Vec3::new(20., 0., 0.),
+        Quat::IDENTITY,
+        Some((Vec3::ZERO, Vec3::ZERO)),
+    )
+    .unwrap();
+    tick(&mut a.rt, 0.016);
+    assert_eq!(state(&a.rt, moving), VoiceState::Stopped);
+}
+
+#[test]
+fn dropped_3d_contacts_and_headless_audio_are_inert() {
+    let entities = vec![
+        entity(
+            "fixed",
+            [0.6, 0., 0.],
+            json!({}),
+            json!({
+                "engine.PhysicsBody3D":data(json!({"motion":"fixed"}))
+            }),
+        ),
+        entity(
+            "moving",
+            [0., 0., 0.],
+            json!({}),
+            json!({
+                "engine.PhysicsBody3D":data(json!({})),
+                "engine.AudioEmitter":data(json!({
+                    "clip":"sfx","autoplay":false,"play_on":"physics.contact.start"
+                }))
+            }),
+        ),
+    ];
+    let mut a = with_audio(write_project(entities.clone(), vec![]));
+    a.rt.app_mut().world_mut().insert_resource(EventLimits {
+        queued: 0,
+        ..EventLimits::default()
+    });
+    tick(&mut a.rt, 0.016);
+    let moving = a.rt.entity("moving").unwrap();
+    let source =
+        a.rt.app()
+            .world()
+            .get::<AuthoredEmitter>(moving)
+            .unwrap()
+            .source;
+    assert_eq!(
+        a.rt.app()
+            .world()
+            .get::<EntityAudio>(moving)
+            .unwrap()
+            .sources
+            .state(source),
+        VoiceState::Stopped
+    );
+    let mut headless = runtime(&write_project(entities, vec![]));
+    tick(&mut headless, 0.016);
+    assert!(
+        headless
+            .app()
+            .world()
+            .get::<EntityAudio>(headless.entity("moving").unwrap())
+            .is_none()
+    );
 }

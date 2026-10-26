@@ -590,6 +590,18 @@ pub fn notify_triggers(world: &mut World) -> Result<()> {
     }
     Ok(())
 }
+/// Play accepted 3D physics contact transitions at their post-step attached positions.
+pub(crate) fn notify_physics_contacts(world: &mut World) -> Result<()> {
+    if !world.contains_resource::<RuntimeAudio>() {
+        return Ok(());
+    }
+    for (target, name) in crate::events::pending_audio_contacts(world) {
+        if world.get::<EntityAudio>(target).is_some() {
+            notify(world, target, &name)?;
+        }
+    }
+    Ok(())
+}
 pub fn shutdown(world: &mut World) -> Result<()> {
     let owners: Vec<_> = world
         .iter_entities()

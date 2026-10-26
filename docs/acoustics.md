@@ -79,7 +79,7 @@ Authoring rules:
 | `air` | 20 C, 50 % | ISO 9613-1 absorption from `temperature_c` (-20 to 50) and `humidity_percent` at the four exact octave midbands, or explicit `absorption_db_per_m` (4 bands, wins), or `enabled: false`. The mixer and tracer use it as an amplitude coefficient in Np/m (energy decays as `exp(-2 m d)`). |
 | `quality` | see schema | `occlusion_rays` 16, `reflection_order` 2, `max_reflections` 8, `er_rays` 256, `reverb_rays` 4096, `max_bounces` 64, `histogram_length_s` 2, `histogram_bin_ms` 1, `late_start_ms` 80, `receiver_radius_m` 1, `time_budget_ms` 4. With `backend: "cpu"`, `reverb_rays` is at most 65,536. |
 | `seed` | 1 | Deterministic tracing seed. |
-| `geometry` | meshes on | `render_meshes`, baked `asset`, `default_material`, `mask`. |
+| `geometry` | meshes on | `render_meshes`, `physics_bodies` (default false), baked `asset`, `default_material`, `mask`. |
 | `proxy2d` | absent | The 2D to 3D proxy (next section). |
 
 ### AcousticSource and AudioEmitter
@@ -112,6 +112,25 @@ most four). When more than 256 sources are playing, the highest
 in authored-ID order wins, and a native `audio::listener` call overrides it.
 
 ## 3D scenes and acoustic geometry
+
+3D `engine.PhysicsBody3D` contact transitions can drive an authored emitter:
+set `play_on: "physics.contact.start"` and/or
+`stop_on: "physics.contact.stop"`. The accepted, bounded contact event targets
+each body separately. Audio observes it in the physics frame after attachment
+positions update; script and event-binding callbacks still receive it on the
+next tick. This works for all 3D collider shapes and needs a configured audio
+host.
+
+Set `AcousticEnvironment.geometry.physics_bodies: true` to include collider-only,
+non-sensor 3D **box** bodies in the acoustic world. Fixed boxes are static;
+dynamic and kinematic boxes update as dynamic instances. Their authored
+`AcousticMaterial` controls sound, independently of the physics material.
+`AcousticGeometry.mask` (or the environment mask) applies. Explicit
+`AcousticGeometry.mesh` and enabled `MeshRenderer` geometry take precedence
+over the collider, and `AcousticGeometry.mode: "exclude"` removes it. Other
+3D collider shapes currently produce a named warning and no acoustic proxy.
+The opt-in defaults off, so existing scenes retain their geometry behavior.
+Collider boxes contribute to acoustic bakes when meshes are included.
 
 Every entity with a `MeshRenderer` and a world transform contributes its mesh
 as an instance (`static` unless `AcousticGeometry.mode` says otherwise). Tips:

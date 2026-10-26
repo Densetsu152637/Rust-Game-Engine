@@ -355,6 +355,7 @@ impl Runtime {
             .map_err(|e| Error::new("runtime.update", e.to_string()))?;
         self.sync_collision()?;
         crate::audio::synchronize(self.app.world_mut())?;
+        crate::audio::notify_physics_contacts(self.app.world_mut())?;
         self.tick_acoustics(dt)?;
         let triggers = self
             .app
