@@ -1539,6 +1539,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-gameplay"
+version = "0.1.0"
+dependencies = [
+ "engine-net-predict",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-graph"
 version = "0.1.0"
 dependencies = [

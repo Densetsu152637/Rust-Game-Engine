@@ -1,0 +1,15 @@
+[package]
+name = "engine-gameplay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+description = "Pure gameplay frameworks: a GAS-style ability system with attributes, tags, effects, abilities and prediction keys"
+
+[dependencies]
+engine-net-predict = { path = "../engine-net-predict" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
