@@ -32,6 +32,7 @@ mod feature;
 mod instancing;
 mod lighting;
 mod lights;
+mod overlay;
 mod pipeline;
 pub mod post;
 pub mod readback;
@@ -46,7 +47,9 @@ pub use builtin::mesh::{
     GpuInstance, MAX_SCENE_MESHES, MaterialParams, SceneMesh, id_hash, validate_params,
 };
 pub use builtin::passes::DepthExport;
-pub use context::{FeatureContext, FeatureSetup, OutputTarget, PipelineLayouts};
+pub use context::{
+    CompositeIo, FeatureContext, FeatureSetup, OutputTarget, PipelineLayouts, PresentationInput,
+};
 pub use engine_render_wgpu::{
     ComposedDevice, DeviceFeatureReport, DeviceFeatureRequest, GpuContext, GpuRequirements,
     RequestOutcome,
@@ -66,6 +69,7 @@ pub use lights::{
     MAX_LIGHTS, MAX_PCF_RADIUS, MAX_PCSS_RADIUS, MAX_SHADOWS, MAX_SUBMITTED_LIGHTS,
     SHADOW_RESOLUTIONS, ShadowFilter, ShadowSettings, ShadowView, photometric,
 };
+pub use overlay::{OverlayBatch, OverlayItem, OverlayOrderKey};
 pub use pipeline::{
     AutoExposureState, HdrImage, HostStages, HostUpscale, NoHost, SceneFrame, ScenePipeline,
     SceneTextures, ViewReport, builtin_registry, names,
@@ -83,7 +87,8 @@ pub use targets::{
     SCREEN_LIGHTING_DEFAULTS, SCREEN_LIGHTING_FORMAT, ScreenLighting, Target,
 };
 pub use view::{
-    VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, ViewKind, ViewUniform, Viewport, project,
+    Presentation, VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, ViewKind, ViewUniform,
+    Viewport, project,
 };
 
 use anyhow::{Result, bail};

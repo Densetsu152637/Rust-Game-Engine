@@ -524,3 +524,80 @@ fn the_authored_component_drives_the_filter_after_a_tick() {
     assert_eq!(filter.kind, ColorFilterKind::Tritanopia);
     assert!((filter.strength - 0.6).abs() < 1e-6);
 }
+
+#[test]
+fn open_dialogs_keep_sdf_text_routed_instead_of_switching_the_root_to_coverage() {
+    let mut document = scene(None);
+    let label = UiNode::label("behind", "Behind")
+        .with_size(UiLength::Pixels(200.0), UiLength::Pixels(30.0))
+        .with_style(|s| s.font = "ui".into());
+    let mut dialog = UiNode::dialog("dialog", "Dialog", vec!["Continue".into()])
+        .with_size(UiLength::Pixels(200.0), UiLength::Pixels(100.0))
+        .with_style(|s| s.font = "ui".into());
+    if let UiWidget::ModalDialog { open, .. } = &mut dialog.widget {
+        *open = true;
+    }
+    let root = UiRoot {
+        tree: UiTree {
+            nodes: vec![label, dialog],
+        },
+        ..Default::default()
+    };
+    document["entities"][0]["components"]["custom"]["engine.UiRoot"]["data"] =
+        serde_json::to_value(root).unwrap();
+    let (_dir, runtime) = runtime(document, true);
+    let queue = queue(&runtime);
+    ready(&queue);
+    let frame = runtime.extract_frame().unwrap();
+    let published = queue.frame();
+    assert!(published.sdf_text.iter().any(|draw| draw.layer == 0));
+    assert!(
+        published
+            .sdf_text
+            .iter()
+            .any(|draw| draw.layer == UI_DIALOG_LAYER)
+    );
+    assert!(frame.draws.iter().all(|draw| !is_sdf_draw(draw)));
+}
+
+#[test]
+fn final_filter_status_supports_2d_and_reports_camera_disable_precisely() {
+    let queue = UiGpuQueue::default();
+    queue.mark_registered(UiGpuFeature::ColorFilter);
+    queue.set_ready(UiGpuFeature::ColorFilter, true);
+    queue.route(None);
+    queue.publish(UiGpuFrame {
+        color_filter: engine_project::accessibility::ColorFilterSettings {
+            kind: ColorFilterKind::Protanopia,
+            mode: ColorFilterMode::Simulate,
+            strength: 1.0,
+        },
+        ..Default::default()
+    });
+    assert!(
+        queue
+            .state_of(UiGpuFeature::ColorFilter)
+            .1
+            .unwrap()
+            .contains("no final presentation")
+    );
+    queue.report(
+        UiGpuFeature::ColorFilter,
+        UiFeatureReport { draws: 1, items: 1 },
+    );
+    assert_eq!(
+        queue.state_of(UiGpuFeature::ColorFilter),
+        (UiFeatureState::Gpu, None)
+    );
+    queue.route(Some(&std::collections::BTreeMap::from([(
+        FEATURE_COLOR_FILTER.to_owned(),
+        false,
+    )])));
+    assert!(
+        queue
+            .state_of(UiGpuFeature::ColorFilter)
+            .1
+            .unwrap()
+            .contains("disabled for the active camera")
+    );
+}

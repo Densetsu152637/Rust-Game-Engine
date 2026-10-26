@@ -346,10 +346,9 @@ pub struct UiExtraction {
 
 /// [`extract_world_with`] that routes content to the UI render features. Only
 /// screen-root text of SDF families is produced as SDF runs (world panels
-/// rasterise text at their own density), and a root with a dialog, dropdown
-/// popup or tooltip is drawn with coverage text for the frame, because SDF
-/// text composites above the whole sprite layer and could not stay below the
-/// overlay.
+/// rasterise text at their own density). Screen text, including dialogs,
+/// dropdowns and tooltips, participates in the same painter stream as backgrounds, foregrounds,
+/// dialogs and popups.
 pub fn extract_world_routed(
     world: &World,
     viewport: [u32; 2],
@@ -399,13 +398,6 @@ pub fn extract_world_routed(
         sdf.set(routing.sdf_text);
         let mut root_draws =
             drawn.extract_draws_with(&id, layout_viewport, &state, text, textures)?;
-        if routing.sdf_text
-            && root_draws.iter().any(is_sdf_draw)
-            && root_draws.iter().any(|d| d.layer >= UI_DIALOG_LAYER)
-        {
-            sdf.set(false);
-            root_draws = drawn.extract_draws_with(&id, layout_viewport, &state, text, textures)?;
-        }
         if scaling.ui_scale != 1.0 {
             root_draws = scale_draws(root_draws, scaling.ui_scale);
         }

@@ -587,6 +587,7 @@ impl ApplicationHandler for DesktopRunner {
             return;
         }
         let result = (|| -> Result<()> {
+            crate::install_default_ui_features(self.runtime.app_mut())?;
             let frame = self.runtime.extract_scene_frame()?;
             let [width, height] = frame.sprites.camera.logical_size;
             let window = Arc::new(
@@ -637,6 +638,8 @@ impl ApplicationHandler for DesktopRunner {
                 .remove_resource::<PipelineFeatures>()
                 .unwrap_or_default();
             host.renderer.set_features(features)?;
+            // Re-extract after readiness so the first presented frame can use SDF.
+            let frame = self.runtime.extract_scene_frame()?;
             // Failure to initialize the controller service is propagated. A
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);

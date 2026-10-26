@@ -717,3 +717,105 @@ fn motion_vectors_and_normals_are_produced_on_request() -> Result<()> {
     );
     Ok(())
 }
+
+/// Lifecycle probes deliberately do no GPU work; a real pipeline is needed to
+/// exercise prepared feature ownership and lazy registration around snapshots.
+struct PresentationHook {
+    name: &'static str,
+    stage: Stage,
+    fail: bool,
+    calls: Arc<std::sync::Mutex<Vec<String>>>,
+}
+impl PipelineFeature for PresentationHook {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new(self.name, self.stage).replayable()
+    }
+    fn begin_presentation_sequence(&mut self) -> Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("begin {}", self.name));
+        anyhow::ensure!(!self.fail, "intentional begin failure");
+        Ok(())
+    }
+    fn end_presentation_sequence(&mut self) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("end {}", self.name));
+    }
+    fn encode(&mut self, _: &mut FeatureContext<'_>) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn presentation_pins_only_enabled_participants_and_cleans_up_exactly_once() -> Result<()> {
+    let context = gpu()?;
+    let mut pipeline = ScenePipeline::new(context.clone())?;
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    for (name, fail) in [
+        ("test.first", false),
+        ("test.failing", true),
+        ("test.last", false),
+    ] {
+        pipeline.register(PresentationHook {
+            name,
+            stage: Stage::Overlay,
+            fail,
+            calls: calls.clone(),
+        })?;
+    }
+    assert!(
+        pipeline
+            .begin_presentation_sequence(&FeatureOverrides::default())
+            .is_err()
+    );
+    pipeline.end_presentation_sequence();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [
+            "begin test.first",
+            "begin test.failing",
+            "end test.failing",
+            "end test.first"
+        ]
+    );
+    calls.lock().unwrap().clear();
+    let mut overrides = FeatureOverrides::default();
+    overrides.set("test.failing", false);
+    let result: Result<()> = pipeline.with_presentation_sequence(&overrides, |pipeline| {
+        // Lazy scene registration appends indices and leaves pinned owners intact.
+        pipeline.register(PresentationHook {
+            name: "test.lazy_scene",
+            stage: Stage::Prepass,
+            fail: true,
+            calls: calls.clone(),
+        })?;
+        assert!(
+            pipeline
+                .register(PresentationHook {
+                    name: "test.late_ui",
+                    stage: Stage::Overlay,
+                    fail: false,
+                    calls: calls.clone()
+                })
+                .is_err()
+        );
+        anyhow::bail!("intentional output failure")
+    });
+    assert!(result.is_err());
+    pipeline.end_presentation_sequence();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [
+            "begin test.first",
+            "begin test.last",
+            "end test.last",
+            "end test.first"
+        ]
+    );
+    context.check_errors()?;
+    Ok(())
+}

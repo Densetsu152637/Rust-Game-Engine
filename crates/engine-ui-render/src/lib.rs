@@ -5,14 +5,14 @@
 //! * `ui.world` (Transparent): `engine.UiWorldPanel` and `engine.WorldText` in
 //!   `Camera3D` scenes, depth-tested, sorted back to front and billboarded per
 //!   view ([`WorldUiFeature`]).
-//! * `ui.color_filter` (PostProcess): the colour-vision filter driven by
+//! * `ui.color_filter` (Composite): the colour-vision filter driven by
 //!   `engine.AccessibilitySettings` ([`ColorFilterFeature`], matrices in
 //!   [`color`]).
 //!
 //! The features read what `engine-project`'s draw extraction publishes into
 //! the shared [`UiGpuQueue`] and report their state back through it
-//! (`RuntimeSnapshot.ui_render`, `TextRenderStatus`). Opting in is one call
-//! before the runner starts, with no change to the renderer:
+//! (`RuntimeSnapshot.ui_render`, `TextRenderStatus`). Desktop window and
+//! screenshot hosts install defaults. Standalone renderers can opt in:
 //!
 //! ```ignore
 //! engine_ui_render::install(runtime.app_mut())?;
@@ -38,15 +38,14 @@ pub use sdf_text::SdfTextFeature;
 pub use world::WorldUiFeature;
 
 use anyhow::Result;
-use engine_core::EngineApp;
+use engine_core::{EngineApp, bevy_ecs};
 use engine_render_pipeline::PipelineFeatures;
 
 /// Which UI features [`register_with`] adds. The default adds all three.
 ///
-/// `sdf_text` is an Overlay-stage feature, and a registered overlay feature
-/// disables DLSS Frame Generation (generated frames lack overlays): leave it
-/// out when a project relies on frame generation and has no SDF text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Screen SDF and final filtering support late presentation on generated
+/// frames. A host can install defaults while explicit options preserve opt-out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bevy_ecs::prelude::Resource)]
 pub struct UiRenderOptions {
     pub sdf_text: bool,
     pub world_ui: bool,
@@ -98,6 +97,7 @@ pub fn install(app: &mut EngineApp) -> Result<()> {
 /// [`install`] with a choice of features.
 pub fn install_with(app: &mut EngineApp, options: UiRenderOptions) -> Result<()> {
     let world = app.world_mut();
+    world.insert_resource(options);
     let queue = match world.get_resource::<UiGpuQueue>() {
         Some(queue) => queue.clone(),
         None => {
@@ -112,4 +112,73 @@ pub fn install_with(app: &mut EngineApp, options: UiRenderOptions) -> Result<()>
     let result = register_with(&mut features, &queue, options);
     world.insert_resource(features);
     result
+}
+
+/// Install defaults for GPU hosts while respecting explicit installation,
+/// explicit all-false options, and features already supplied by game code.
+pub fn install_defaults(app: &mut EngineApp) -> Result<()> {
+    let world = app.world();
+    if world.contains_resource::<UiRenderOptions>()
+        || world
+            .get_resource::<UiGpuQueue>()
+            .is_some_and(UiGpuQueue::any_registered)
+    {
+        return Ok(());
+    }
+    let registry = world.get_resource::<PipelineFeatures>();
+    let missing = |name| registry.is_none_or(|features| features.0.descriptor(name).is_none());
+    let options = UiRenderOptions {
+        sdf_text: missing(FEATURE_SDF_TEXT),
+        world_ui: missing(FEATURE_WORLD),
+        color_filter: missing(FEATURE_COLOR_FILTER),
+    };
+    install_with(app, options)
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+    #[test]
+    fn gpu_defaults_are_idempotent_and_explicit_empty_options_win() {
+        let mut app = EngineApp::new();
+        install_defaults(&mut app).unwrap();
+        install_defaults(&mut app).unwrap();
+        assert_eq!(app.world().resource::<PipelineFeatures>().0.len(), 3);
+        let mut opted_out = EngineApp::new();
+        install_with(
+            &mut opted_out,
+            UiRenderOptions {
+                sdf_text: false,
+                world_ui: false,
+                color_filter: false,
+            },
+        )
+        .unwrap();
+        install_defaults(&mut opted_out).unwrap();
+        assert!(
+            opted_out
+                .world()
+                .resource::<PipelineFeatures>()
+                .0
+                .is_empty()
+        );
+    }
+    #[test]
+    fn explicitly_registered_subset_is_not_replaced_by_defaults() {
+        let mut app = EngineApp::new();
+        install_with(
+            &mut app,
+            UiRenderOptions {
+                sdf_text: true,
+                world_ui: false,
+                color_filter: false,
+            },
+        )
+        .unwrap();
+        install_defaults(&mut app).unwrap();
+        assert_eq!(
+            app.world().resource::<PipelineFeatures>().0.names(),
+            [FEATURE_SDF_TEXT]
+        );
+    }
 }

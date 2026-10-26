@@ -1556,6 +1556,7 @@ dependencies = [
  "engine-render-pipeline",
  "engine-render-rt",
  "engine-render-wgpu",
+ "engine-ui-render",
  "epaint_default_fonts",
  "gilrs",
  "glam 0.34.1",

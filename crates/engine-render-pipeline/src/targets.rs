@@ -227,3 +227,28 @@ impl FrameTargets {
         })
     }
 }
+
+/// Display-colour ping-pong targets; separate from scene HDR and available to
+/// overlay-only views. Format/size exactly match the caller's output.
+pub(crate) struct CompositeTargets {
+    pub size: [u32; 2],
+    pub format: wgpu::TextureFormat,
+    pub colors: [Target; 2],
+}
+impl CompositeTargets {
+    pub fn new(device: &wgpu::Device, size: [u32; 2], format: wgpu::TextureFormat) -> Self {
+        Self {
+            size,
+            format,
+            colors: [0, 1].map(|i| {
+                Target::new(
+                    device,
+                    &format!("engine final composite {i}"),
+                    size,
+                    format,
+                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                )
+            }),
+        }
+    }
+}
