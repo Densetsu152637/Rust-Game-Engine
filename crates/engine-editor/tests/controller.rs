@@ -69,6 +69,12 @@ impl PlayHost for Host {
         state.captured = Some(project);
         Ok(())
     }
+    fn reload(&mut self, _: engine_project::Project) -> Result<()> {
+        Ok(())
+    }
+    fn cancel_reload(&mut self) -> Result<()> {
+        Ok(())
+    }
     fn stop(&mut self) -> Result<()> {
         let mut state = self.0.borrow_mut();
         state.stops += 1;

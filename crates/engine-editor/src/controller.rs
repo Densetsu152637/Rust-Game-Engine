@@ -14,15 +14,30 @@ use engine_project::{EditOperation, Project, SceneDocument};
 pub enum PlayStatus {
     Compiling,
     Running,
-    Stopped { success: bool, message: String },
+    /// The previous game runs while a candidate compiles/reaches readiness.
+    Reloading,
+    /// Candidate rejected before teardown; the previous game is still active.
+    ReloadFailed {
+        message: String,
+    },
+    Stopped {
+        success: bool,
+        message: String,
+    },
 }
 
 /// Tooling supplies native compilation and process ownership. `start` receives an
 /// isolated clone containing unsaved authored edits. It must not alter the source
 /// project files. `stop` must release the generation before reporting success.
-/// Hosts should return promptly from start/poll, doing compilation in a worker.
+/// Hosts queue compilation in a worker. Polling activation may wait for the
+/// previous generation's bounded graceful teardown before starting a candidate.
 pub trait PlayHost {
     fn start(&mut self, project: Project) -> Result<()>;
+    /// Prepare a replacement without stopping the running game. Activation
+    /// happens at poll after readiness and successful previous-game teardown.
+    fn reload(&mut self, project: Project) -> Result<()>;
+    /// Discard only the pending candidate; retain the previous game.
+    fn cancel_reload(&mut self) -> Result<()>;
     fn stop(&mut self) -> Result<()>;
     fn poll(&mut self) -> Result<PlayStatus>;
 }
@@ -32,9 +47,12 @@ pub trait PlayHost {
 pub struct EditorController {
     document: Option<SceneDocument>,
     manifest: Option<PathBuf>,
-    selected: Option<String>,
+    /// Selected entity IDs in selection order; the last is the active entity.
+    selection: Vec<String>,
     host: Box<dyn PlayHost>,
     playing: bool,
+    runtime_running: bool,
+    reloading: bool,
     status: String,
     diagnostics: Vec<String>,
     log: VecDeque<String>,
@@ -45,9 +63,11 @@ impl EditorController {
         Self {
             document: None,
             manifest: None,
-            selected: None,
+            selection: Vec::new(),
             host,
             playing: false,
+            runtime_running: false,
+            reloading: false,
             status: "No project open".into(),
             diagnostics: Vec::new(),
             log: VecDeque::new(),
@@ -60,14 +80,28 @@ impl EditorController {
     pub fn manifest(&self) -> Option<&Path> {
         self.manifest.as_deref()
     }
+    /// The active entity: the most recently selected one.
     pub fn selected(&self) -> Option<&str> {
-        self.selected.as_deref()
+        self.selection.last().map(String::as_str)
+    }
+    /// Every selected entity in selection order (the last is active).
+    pub fn selection(&self) -> &[String] {
+        &self.selection
+    }
+    pub fn is_selected(&self, id: &str) -> bool {
+        self.selection.iter().any(|selected| selected == id)
     }
     pub fn is_dirty(&self) -> bool {
         self.document.as_ref().is_some_and(SceneDocument::is_dirty)
     }
     pub fn is_playing(&self) -> bool {
         self.playing
+    }
+    pub fn can_reload_play(&self) -> bool {
+        self.runtime_running && !self.reloading
+    }
+    pub fn is_reloading_play(&self) -> bool {
+        self.reloading
     }
     pub fn status(&self) -> &str {
         &self.status
@@ -80,18 +114,57 @@ impl EditorController {
     }
 
     pub fn select(&mut self, id: Option<String>) -> Result<()> {
-        if let Some(id) = &id {
-            ensure!(
-                self.document.as_ref().is_some_and(|d| d
-                    .snapshot()
-                    .entities
-                    .iter()
-                    .any(|e| &e.id == id)),
-                "selected entity does not exist: {id}"
-            );
+        self.select_many(id.into_iter().collect())
+    }
+
+    /// Replaces the selection. Duplicates collapse (keeping the last position);
+    /// the last entry becomes the active entity. Unknown IDs are rejected and
+    /// leave the selection unchanged.
+    pub fn select_many(&mut self, ids: Vec<String>) -> Result<()> {
+        for id in &ids {
+            ensure!(self.has_entity(id), "selected entity does not exist: {id}");
         }
-        self.selected = id;
+        let mut selection: Vec<String> = Vec::with_capacity(ids.len());
+        for id in ids {
+            selection.retain(|existing| existing != &id);
+            selection.push(id);
+        }
+        self.selection = selection;
         Ok(())
+    }
+
+    /// Adds `id` if absent (making it active) or removes it if present.
+    pub fn toggle_selection(&mut self, id: &str) -> Result<()> {
+        let mut selection = self.selection.clone();
+        if let Some(index) = selection.iter().position(|existing| existing == id) {
+            selection.remove(index);
+        } else {
+            selection.push(id.to_owned());
+        }
+        self.select_many(selection)
+    }
+
+    /// Adds `id` to the selection and makes it active.
+    pub fn extend_selection(&mut self, id: &str) -> Result<()> {
+        let mut selection = self.selection.clone();
+        selection.push(id.to_owned());
+        self.select_many(selection)
+    }
+
+    fn has_entity(&self, id: &str) -> bool {
+        self.document
+            .as_ref()
+            .is_some_and(|d| d.snapshot().entities.iter().any(|e| e.id == id))
+    }
+
+    fn prune_selection(&mut self) {
+        let Some(document) = &self.document else {
+            self.selection.clear();
+            return;
+        };
+        let entities = &document.snapshot().entities;
+        self.selection
+            .retain(|id| entities.iter().any(|entity| &entity.id == id));
     }
 
     pub fn open(&mut self, manifest: impl AsRef<Path>, discard_unsaved: bool) -> Result<()> {
@@ -106,10 +179,12 @@ impl EditorController {
             }
             self.document = Some(candidate);
             self.manifest = Some(manifest.as_ref().to_path_buf());
-            self.selected = self
+            self.selection = self
                 .document
                 .as_ref()
-                .and_then(|d| d.snapshot().entities.first().map(|e| e.id.clone()));
+                .and_then(|d| d.snapshot().entities.first().map(|e| e.id.clone()))
+                .into_iter()
+                .collect();
             Ok(())
         })();
         self.finish("Project opened", result)
@@ -176,6 +251,41 @@ impl EditorController {
         )
     }
 
+    /// Rebuild gameplay using the current authored snapshot, including unsaved
+    /// edits. Runtime state remains in the old process until replacement.
+    pub fn reload_play(&mut self) -> Result<()> {
+        let result = (|| {
+            ensure!(
+                self.can_reload_play(),
+                "a running game with no pending reload is required"
+            );
+            let document = self
+                .document
+                .as_ref()
+                .ok_or_else(|| anyhow!("no project is open"))?;
+            let mut project = document.project().clone();
+            project.scene = document.snapshot().clone();
+            project.validate_scene(&project.scene)?;
+            self.host.reload(project)?;
+            self.reloading = true;
+            Ok(())
+        })();
+        self.finish("Preparing replacement; previous game continues", result)
+    }
+
+    pub fn cancel_play_reload(&mut self) -> Result<()> {
+        let result = (|| {
+            ensure!(self.reloading, "no game reload is pending");
+            self.host.cancel_reload()?;
+            self.reloading = false;
+            Ok(())
+        })();
+        self.finish(
+            "Reload cancelled; previous game retained if still running",
+            result,
+        )
+    }
+
     pub fn stop(&mut self) -> Result<()> {
         if !self.playing {
             return Ok(());
@@ -183,6 +293,8 @@ impl EditorController {
         let result = (|| {
             self.host.stop()?;
             self.playing = false;
+            self.runtime_running = false;
+            self.reloading = false;
             if let Some(document) = &mut self.document {
                 document.end_play();
             }
@@ -198,15 +310,37 @@ impl EditorController {
         }
         match self.host.poll() {
             Ok(PlayStatus::Compiling) => {
+                self.runtime_running = false;
                 self.status = "Compiling native runtime; authored scene is unchanged".into();
                 Ok(())
             }
+            Ok(PlayStatus::Reloading) => {
+                self.runtime_running = true;
+                self.reloading = true;
+                self.status = "Preparing replacement; previous game continues".into();
+                Ok(())
+            }
+            Ok(PlayStatus::ReloadFailed { message }) => {
+                self.runtime_running = true;
+                self.reloading = false;
+                self.finish("Reload failed", Err(anyhow!(message)))
+            }
             Ok(PlayStatus::Running) => {
+                self.runtime_running = true;
+                if self.reloading {
+                    self.reloading = false;
+                    return self.finish(
+                        "Game reloaded from authored snapshot; runtime state restarted",
+                        Ok(()),
+                    );
+                }
                 self.status = "Native play running; authored scene is unchanged".into();
                 Ok(())
             }
             Ok(PlayStatus::Stopped { success, message }) => {
                 self.playing = false;
+                self.runtime_running = false;
+                self.reloading = false;
                 if let Some(document) = &mut self.document {
                     document.end_play();
                 }
@@ -248,6 +382,7 @@ impl EditorController {
     fn finish(&mut self, success: &str, result: Result<()>) -> Result<()> {
         match &result {
             Ok(()) => {
+                self.prune_selection();
                 self.status = success.into();
                 self.diagnostics.clear();
                 self.append_log(success.into());

@@ -3,7 +3,7 @@
 Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
 Initial plan commit: `7d614e9`. Main contains accepted audio/server changes through
 `ebc765c`. Larger branches are assembled in `codex/pending-integration`, currently
-`8e6701f` with reviewed XR support. Nothing has been published this session;
+`6183242` with reviewed XR, animation graph and ML support. Nothing has been published this session;
 final integrated checks remain pending.
 
 This is the implementation record for the pending-feature request. Existing
@@ -89,13 +89,14 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   degenerate/unreachable chains, rest/proportion mapping, graph diagnostics.
 - Outcome: graph/blend milestone `71cc1c4` accepted after independent source
   review, 125 focused tests, fmt and scoped Clippy. IK source and regression
-  tests are ready for review/validation; retargeting remains pending. Integration
-  waits for the external AI foundation handoff.
+  tests are ready for validation after an initialization-order review fix;
+  retargeting remains pending. The graph milestone and committed AI foundation
+  are assembled at `b62ef9e`; the external manager retains remaining AI work.
 
 ### 5. Editor scene recovery and graph authoring
 
-- Status: in progress (scene recovery); graph authoring remains pending and
-  depends on engine-graph foundation.
+- Status: in progress (scene validation and reusable graph canvas). The canvas
+  uses the committed engine-graph foundation; shell wiring follows scene handoff.
 - Objective: finish scene WIP `9e4a063`, multi-selection/gizmos/picking/settings,
   then reusable node/port canvas with graph-kind palettes, edits, undo and save.
 - Owned paths: engine-editor, engine-editor-settings, editor docs/tests.
@@ -118,7 +119,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 7. Platform services
 
-- Status: in progress (ML/video validation; XR review and server work accepted).
+- Status: in progress (video validation; XR, ML and server milestones accepted).
 - Objective: review OpenXR `daa2888`, finish ML WIP `609ccb2`, implement
   existing self-hosted services and real video decode/playback. The user clarified
   that services means completing/validating the existing server, not adding cloud
@@ -135,16 +136,18 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   XR repair `3e8c09a` resolves six reviewed defects; 39 unit tests, one compile-fail
   doctest, eight project tests, three Vulkan GPU tests, fmt and scoped Clippy
   passed. Integrated as `8e6701f`; combined workspace checks remain pending.
-  Headset interoperability and macOS execution remain unverified. ML core tests
-  pass, including reviewed output-contract and stale-handle repairs; project
-  adapter validation is running.
+  Headset interoperability and macOS execution remain unverified. ML `8a7b6d4`
+  is accepted and integrated as `6183242`: 13 core tests, two native adapter tests,
+  scoped strict Clippy and fmt pass, including output-contract and stale-handle
+  repairs. CPU inference is supported; GPU inference remains explicitly unavailable.
   Video implementation uses an explicit FFmpeg executable backend with a shared
   audio/caption clock; frame resampling and dependency requirements must be
   documented and tested before acceptance.
 
 ### 8. Remaining animation/editor/audio integrations
 
-- Status: pending; depends on relevant earlier stages.
+- Status: in progress (hot-reload tooling and morph targets); other slices remain pending and
+  depend on relevant earlier stages.
 - Objective: morph import/animation/deformation, cinematics timeline/sequencer,
   editor hot reload/tooling, procedural audio graph, microphone/voice codec,
   streamed voice playback and physics3D-reactive spatial audio.
@@ -155,6 +158,11 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Acceptance: actual morph+skin vertices; deterministic timeline seek/events;
   successful and failed reloads; graph PCM; codec/capture lifecycle and voice
   loopback; collision-driven audio and collider acoustic geometry behavior.
+- Handoff: hot reload prepares a candidate while the old game runs, then activates
+  through the existing generation barrier. Tooling source is in progress; editor
+  action wiring waits for scene-editor handoff to avoid concurrent ownership.
+  Morph import and weight playback feed a single geometry-deformation writer
+  before skinning; shared simulation registration waits for IK handoff.
 
 ### 9. Rendering round two
 
@@ -196,7 +204,10 @@ external worktrees are not cleanup targets.
 | codex-render-contracts | `91b961c` | Shared shadows; `codex/render-contracts` | active |
 | codex-pending-integration | `697e36f` | Root integration and final checks; `codex/pending-integration` | active |
 | parity-editor-scene | `9e4a063` | Resume scene WIP; existing `claude/parity-editor-scene` | active, retain |
-| parity-platform-services-ml | `609ccb2` | Complete ML; existing `claude/parity-platform-services-ml` | active, retain |
+| parity-editor-hotreload | `319c7df` | Runtime generation replacement; existing `claude/parity-editor-hotreload` | active, retain |
+| parity-editor-graph | `b62ef9e` | Reusable graph authoring; existing `claude/parity-editor-graph` | active, retain |
+| parity-animation-morph | `b62ef9e` | Morph import/playback/deformation; existing `claude/parity-animation-morph` | active, retain |
+| parity-platform-services-ml | `609ccb2` | Complete ML; existing `claude/parity-platform-services-ml` | integrated, retained for existing owner |
 | parity-platform-services-services | `7d614e9` | Existing server; existing `claude/parity-platform-services-services` | integrated, retained for existing owner |
 | parity-platform-services-xr | `daa2888` | Reviewed repairs; existing `claude/parity-platform-services-xr` | integrated, retained for existing owner |
 | parity-platform-services-video | `dc061859` | Video/audio/caption integration; existing `claude/parity-platform-services-video` | active, retain |

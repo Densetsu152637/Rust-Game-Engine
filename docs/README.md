@@ -68,6 +68,8 @@
 - [PC VR (OpenXR)](xr.md): `engine-xr` runtime discovery and honest status,
   session lifecycle, controller actions and `XR:` bindings, tracking, haptics,
   Vulkan swapchains and the `engine.XrSettings` component.
+- [Machine learning](ml.md): bounded ONNX model admission, CPU inference, asynchronous
+  jobs and optional native ECS services.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
   fingerprints, ownership and reload behavior.
 - [Authored simulation](simulation.md): 2D/3D rigid bodies, animation and navigation
