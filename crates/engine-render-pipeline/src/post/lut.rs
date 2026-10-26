@@ -149,8 +149,10 @@ pub fn f32_to_f16_bits(value: f32) -> u16 {
         let m = (mantissa | 0x0080_0000) >> (1 - exponent);
         return sign | ((m + 0x1000) >> 13) as u16;
     }
-    let rounded = ((exponent as u32) << 10) | ((mantissa + 0x1000) >> 13);
-    sign | rounded as u16
+    // Addition carries a rounded mantissa into the exponent. Keep finite
+    // values saturated when that carry would otherwise create infinity.
+    let rounded = ((exponent as u32) << 10) + ((mantissa + 0x1000) >> 13);
+    sign | rounded.min(0x7bff) as u16
 }
 
 #[cfg(test)]
@@ -188,6 +190,20 @@ mod tests {
         );
         assert!(Lut3d::parse_cube(&bad_domain).is_err());
         assert!(Lut3d::parse_cube("BOGUS 1\n").is_err());
+    }
+
+    #[test]
+    fn half_rounding_carries_and_saturates_at_exponent_boundaries() {
+        assert_eq!(f32_to_f16_bits(1.9999), 0x4000);
+        assert_eq!(f32_to_f16_bits(-1.9999), 0xc000);
+        assert_eq!(f32_to_f16_bits(0.9999), 0x3c00);
+        assert_eq!(f32_to_f16_bits(-0.9999), 0xbc00);
+        for value in [65_504.0, 65_519.0, 65_520.0, 65_535.0, f32::MAX] {
+            assert_eq!(f32_to_f16_bits(value), 0x7bff);
+            assert_eq!(f32_to_f16_bits(-value), 0xfbff);
+        }
+        assert_eq!(f32_to_f16_bits(2f32.powi(-24)), 1);
+        assert!(crate::readback::f16_to_f32(f32_to_f16_bits(f32::NAN)).is_nan());
     }
 
     #[test]
