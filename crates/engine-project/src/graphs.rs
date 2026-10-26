@@ -44,6 +44,7 @@ fn build() -> GraphKinds {
     let kinds = [
         engine_ai::behavior_tree::kind(),
         engine_ai::state_tree::kind(),
+        engine_gameplay::dialogue::kind(),
     ];
     GraphKinds {
         kinds: kinds.into_iter().map(|k| (k.name.clone(), k)).collect(),

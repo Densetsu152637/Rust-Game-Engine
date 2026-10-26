@@ -29,6 +29,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub mod progression;
 pub(crate) mod tasks;
 
 pub const ABILITY_SYSTEM: &str = "engine.AbilitySystem";
@@ -207,6 +208,7 @@ pub fn load_definitions(project: &Project, id: &str) -> Result<Arc<Library>> {
 /// Scene checks: every `engine.AbilitySystem` names the same existing `gameplay` asset,
 /// and its sets, attributes, abilities, effects and tags exist and are valid.
 pub fn validate_scene(project: &Project, scene: &Scene) -> Result<()> {
+    progression::validate_scene(project, scene)?;
     let mut definitions: Option<(String, Arc<Library>)> = None;
     for entity in &scene.entities {
         let Some(value) = entity.components.custom.get(ABILITY_SYSTEM) else {
@@ -256,6 +258,7 @@ pub fn validate_scene(project: &Project, scene: &Scene) -> Result<()> {
 pub(crate) fn register(app: &mut EngineApp) -> Result<()> {
     crate::register_component::<AbilitySystemComponent>(app, ABILITY_SYSTEM, 1)?;
     app.world_mut().insert_resource(Gameplay::default());
+    progression::register(app)?;
     crate::register_event_handler(app, TRIGGER_HANDLER, trigger_handler)
 }
 
@@ -323,7 +326,7 @@ pub fn prepare(world: &mut World) -> Result<()> {
         return Ok(());
     };
     with_service(world, |world, service| sync(world, service, &project)).transpose()?;
-    Ok(())
+    progression::prepare(world)
 }
 
 /// Syncs components, then advances effects and ability instances by `dt`. Runs once per
@@ -332,6 +335,7 @@ pub fn step(world: &mut World, dt: f32) -> Result<()> {
     let Some(project) = project(world) else {
         return Ok(());
     };
+    progression::step(world, dt)?;
     with_service(world, |world, service| -> Result<()> {
         service.emitted = 0;
         service.attribute_events = 0;
@@ -348,6 +352,7 @@ pub fn step(world: &mut World, dt: f32) -> Result<()> {
 
 /// Cancels every instance without events; called when the runtime stops.
 pub fn shutdown(world: &mut World) {
+    progression::shutdown(world);
     with_service(world, |world, service| {
         if let Some(runtime) = service.runtime.as_mut() {
             runtime.shutdown(world);

@@ -67,6 +67,7 @@ pub fn descriptors() -> Vec<crate::ComponentDescriptor> {
     all.push(env_query::descriptor());
     all.push(smart_object::descriptor());
     all.push(crate::gameplay::descriptor());
+    all.extend(crate::gameplay::progression::descriptors());
     all
 }
 
