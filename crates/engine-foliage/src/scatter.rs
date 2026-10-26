@@ -189,7 +189,7 @@ pub(crate) fn candidates(
         return Err(Error::new(
             "foliage.limit.candidates",
             format!(
-                "about {:.0} candidates (area x density) exceed the limit of {max_candidates};                  lower the density, use a smaller area or raise max_instances",
+                "about {:.0} candidates (area x density) exceed the limit of {max_candidates}; lower the density, use a smaller area or raise max_instances",
                 expected_total
             ),
         ));

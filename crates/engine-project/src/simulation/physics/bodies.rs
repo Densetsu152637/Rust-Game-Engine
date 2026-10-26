@@ -149,7 +149,7 @@ fn heightfield_holes(c: &PhysicsBody3D) -> Result<Vec<bool>> {
         || c.heights.len() > engine_physics::MAX_HEIGHTFIELD_SAMPLES
     {
         return Err(invalid(
-            "heightfield needs at least 2x2 samples matching rows x columns              (at most 1048576 samples)",
+            "heightfield needs at least 2x2 samples matching rows x columns (at most 1048576 samples)",
         ));
     }
     let cells = (rows - 1) * (columns - 1);
