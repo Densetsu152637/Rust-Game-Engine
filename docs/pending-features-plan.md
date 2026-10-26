@@ -1,6 +1,7 @@
 # Pending engine features
 
 Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
+Initial plan commit: `7d614e9`.
 
 This is the implementation record for the pending-feature request. Existing
 spatial audio, first-round rendering, physics, UI and networking are the baseline.
@@ -61,7 +62,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 3. Audio streaming and media clock
 
-- Status: pending; depends on baseline only.
+- Status: in progress; depends on baseline only.
 - Objective: bounded streamed PCM sources, pause/seek/underrun/EOF semantics,
   source clock epochs, incremental compressed decoding and cancellation.
 - Owned paths: engine-audio and focused audio documentation/tests.
@@ -72,7 +73,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 4. Animation graph, blend spaces, IK and retargeting
 
-- Status: pending; depends on committed engine-graph foundation.
+- Status: in progress; depends on committed engine-graph foundation.
 - Objective: executable pose graph and state transitions, 1D/2D blends,
   validated IK solvers/retarget maps and project runtime integration.
 - Owned paths: engine-animation, animation-specific project modules/tests/docs.
@@ -83,7 +84,8 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 5. Editor scene recovery and graph authoring
 
-- Status: pending; depends on engine-graph foundation.
+- Status: in progress (scene recovery); graph authoring remains pending and
+  depends on engine-graph foundation.
 - Objective: finish scene WIP `9e4a063`, multi-selection/gizmos/picking/settings,
   then reusable node/port canvas with graph-kind palettes, edits, undo and save.
 - Owned paths: engine-editor, engine-editor-settings, editor docs/tests.
@@ -94,7 +96,8 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 6. Render integration seams
 
-- Status: pending; depends on baseline and committed World rendering contracts.
+- Status: in progress (shared-shadow contract); depends on baseline and
+  committed World rendering contracts for terrain/foliage integration.
 - Objective: shared shadow targets/writer API, terrain and foliage casters,
   ordered UI overlays and final compositing including Frame Generation, and
   the two UI pipeline hooks. Establish scene-effects and temporal-resolve seams.
@@ -105,9 +108,11 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 7. Platform services
 
-- Status: pending.
+- Status: in progress (XR review, ML implementation, server validation).
 - Objective: review OpenXR `daa2888`, finish ML WIP `609ccb2`, implement
-  self-hosted services and real video decode/playback.
+  existing self-hosted services and real video decode/playback. The user clarified
+  that services means completing/validating the existing server, not adding cloud
+  saves, achievements or leaderboards.
 - Owned paths: platform feature crates/adapters and focused docs/tests.
 - Depends on: stage 3 for video A/V clock integration. Existing CaptionClock
   and texture streams are reused; no independent drifting subtitle clock.
@@ -153,16 +158,30 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ## Session worktree record
 
-Managed worktree creations are pending; root will fill final paths/branches once
-the host returns completion. Existing external worktrees are not cleanup targets.
+Managed worktree creations are delayed in the host's ignored-instruction scan.
+Manual Git worktrees in the configured directory allow implementation to proceed.
+Root must reconcile the unused managed creations when they return. Existing
+external worktrees are not cleanup targets.
 
 | Host name | Base | Assigned purpose | State |
 | --- | --- | --- | --- |
-| world-completion | `5ada8a3` | Render seams against World; no World batch-B ownership | planned |
-| gameplay-completion | `834c047` | Editor recovery/graph authoring; no AI ownership | planned |
-| audio-foundation | `91b961c` | Streamed audio and media clock | planned |
-| animation-features | `834c047` | Animation graph and pose features | planned |
+| world-completion | `5ada8a3` | Unused managed creation; archive when ready | creating |
+| gameplay-completion | `834c047` | Unused managed creation; archive when ready | creating |
+| audio-foundation | `91b961c` | Unused managed creation; archive when ready | creating |
+| animation-features | `834c047` | Unused managed creation; archive when ready | creating |
+| codex-audio-streams | `91b961c` | Audio source/clock; `codex/audio-streams` | active |
+| codex-animation-graph | `834c047` | Graph/blends; `codex/animation-graph` | active |
+| codex-render-contracts | `91b961c` | Shared shadows; `codex/render-contracts` | creating |
+| parity-editor-scene | `9e4a063` | Resume scene WIP; existing `claude/parity-editor-scene` | active, retain |
+| parity-platform-services-ml | `609ccb2` | Complete ML; existing `claude/parity-platform-services-ml` | active, retain |
+| parity-platform-services-services | `7d614e9` | Existing server; existing `claude/parity-platform-services-services` | active, retain |
 
-Root creates branches after initialization, accepts handoffs, integrates and
-retires these checkouts. Every worker reports exact tested SHA, logs, residuals
-and stopped processes. New plan stages/records are added before dispatch.
+Manual and reused paths are `D:/Git-Worktrees/Rust-Game-Engine/<name>`; managed
+paths are `D:/Git-Worktrees/<name>/Rust-Game-Engine`. Root creates task branches,
+accepts handoffs, integrates and retires task-created checkouts. Reused paused
+worktrees are preserved for their existing owners. Every worker reports exact
+tested SHA, logs, residuals and stopped processes.
+
+Baseline evidence: fmt and workspace Clippy passed on `91b961c`; workspace tests
+are running. The only root change during those tests is this plan. Logs live in
+`target/task-baseline`. These checks do not validate pending feature branches.
