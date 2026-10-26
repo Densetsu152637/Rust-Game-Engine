@@ -34,7 +34,7 @@ for implemented behavior. See [testing](testing.md), [architecture](architecture
 
 The user set a limit of eight parallel workers for this session. The user also
 confirmed that prior World and AI-gameplay managers are still running elsewhere.
-They retain those areas and their existing worktrees. This chat owns Animation,
+World is handed off and the AI manager has now stopped; Codex continues scripting in its own worktree. Existing Claude worktrees remain with their owner. This chat owns Animation,
 Editor, platform services, Audio and second-round Rendering. Do not resolve or
 commit the other managers' dirty worktrees. Consume their completed revisions
 after handoff. Root owns this record, cross-stream contracts and integration.
@@ -59,20 +59,25 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   reported the verified main ancestry. No push has occurred.
 - Followups: shared-shadow adoption is stage 6; the later combined branch still
   needs its own execution gates. Deferred World limits remain documented.
-### 2. AI-gameplay completion (external owner)
+### 2. AI-gameplay and scripting completion
 
-- Status: in progress.
-- Objective: perception, EQS, smart objects, predicted abilities,
-  inventory/quests/dialogue, Rhai, visual scripts and security review.
-- Existing revision: `834c047` includes engine-graph, BT/ST and crowds.
-- Owned paths: existing AI manager's worktrees, engine-ai/engine-graph and
-  gameplay project adapters. Perception/EQS/smart-object drafts were dirty at
-  inspection and remain with that manager.
-- Acceptance: native and runtime behavior tests, prediction confirm/reject and
-  replay tests, bounded script execution/adversarial tests, independent review.
-- Handoff: downstream animation/editor consume committed engine-graph APIs;
-  coordinate any graph registry changes at integration.
-
+- Status: in progress; completed gameplay handed off, scripting transferred to Codex.
+- User handoff: Claude stopped at its weekly usage gate. Clean revision
+  `d88464d` contains crowds, graph/BT/ST, perception, EQS, smart objects,
+  predicted abilities, inventory, quests and dialogue. The author reports focused
+  fmt/Clippy/tests passed; combined Codex validation remains required.
+- Root-owned continuation: `codex/ai-scripting`, starting from combined `ee57d57`,
+  merges the completed AI handoff and implements saved scripting slices V0–V4
+  and T1–T2. Claude worktrees and branches remain with their existing owner.
+- Design source: `_records/ai-gameplay-script-design.md` in the external worktree
+  record directory. Verify its explicitly unconfirmed Rhai APIs and prefab path.
+  Use the shared graph crate, typed capability checks, bounded execution,
+  transactional built-in writes, deterministic events and last-good reload.
+- Acceptance: actual visual and Rhai runtime behavior, adversarial resource and
+  capability tests, independent scripting security review with fixes, default and
+  no-text builds, strict lint and the final combined workspace gate.
+- Ownership: scripting manager has three slots including itself within the user
+  limit of eight. Root schedules all heavy builds and owns final integration.
 ### 3. Audio streaming and media clock
 
 - Status: in progress; depends on baseline only.
@@ -453,3 +458,35 @@ GPU oracle sources cover HDR response, rotation, specular mip/BRDF response,
 probe blending/priority, screen-lighting precedence, and view lifecycle. Authored
 loading, World IBL shading and lightmap UV2/consumption remain pending. All new
 IBL numerical and GPU execution checks remain unrun.
+
+### Current acceptance checkpoint after AI handoff
+
+Main World remains complete at `598e395`: formatting, strict workspace Clippy,
+5,015 workspace passes, 11 World GPU passes and one desktop default-render pass.
+No push has occurred. Older progress entries above record their original state.
+
+Pending integration now includes IBL sampling repair `df9f7f2` and spatial AA
+`ec013a6`, merged at `fa6dfb7`. Both passed independent source review. The earlier
+pipeline CPU run passed 50 library tests but failed one of nine indirect tests;
+regularized-GGX sampling coverage caused the grazing-angle error. The repair
+keeps the independent oracle, thresholds and 4,096-sample limit unchanged.
+Its real Rust test rerun is pending. The separate UI presentation-pin GPU test
+passed on the RTX 5080 at `ee57d57`.
+
+The full UI GPU build at `ee57d57` failed before test execution with E0716 in
+World foliage's target-array lifetime. Its owner is repairing this mechanical
+compile error; no UI pass is claimed. Logs are `target/combined-validation`.
+The dedicated integration build cache is `target/validation-build`.
+
+Spatial AA uses an optional HDR PostProcess pass before tonemapping/UI, with
+native, authored camera and desktop adapters. Its source-reviewed tests compare
+real GPU results to an independent supersampled analytic diagonal reference;
+execution remains pending. Native lit 2D sprite implementation is in progress,
+reusing World's tile geometry, existing normal/MR slots and sprite ordering.
+Project/desktop tile lighting and opted-in hybrid routing follow that native
+slice; native-only checks will not establish complete World rendering acceptance.
+
+Worktree record addition: `codex-ai-scripting`, path
+`D:/Git-Worktrees/Rust-Game-Engine/codex-ai-scripting`, branch `codex/ai-scripting`,
+base `ee57d57`, creator/cleanup root, active scripting manager. Its own branch
+integrates `d88464d` before scripting. No cross-checkout build cache reuse.
