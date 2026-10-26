@@ -51,6 +51,10 @@ pub struct RuntimeSnapshot {
     /// agent; absent without an `engine.StateTreeAgent`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_trees: Option<crate::ai::StateTreeStatus>,
+    /// Perception: per-perceiver memory summary, ray budget use and drops; absent
+    /// without an `engine.PerceptionSensor`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perception: Option<crate::ai::PerceptionStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -219,6 +223,7 @@ impl Runtime {
             acoustics: self.acoustics_status(),
             behavior_trees: crate::ai::status(self.app.world()),
             state_trees: crate::ai::state_tree_status(self.app.world()),
+            perception: crate::ai::perception_status(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self

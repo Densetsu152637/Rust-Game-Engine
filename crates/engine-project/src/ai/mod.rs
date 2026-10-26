@@ -1,4 +1,4 @@
-//! AI gameplay for the runtime: behavior tree and state tree agents.
+//! AI gameplay for the runtime: behavior tree and state tree agents, perception.
 //!
 //! * `engine.BehaviorTreeAgent` ([`BehaviorTreeAgent`]): runs a `behavior_tree`
 //!   graph asset on an entity.
@@ -7,8 +7,11 @@
 //!   `behavior_trees` telemetry of the runtime snapshot.
 //! * [`state_tree`]: `engine.StateTreeAgent`, its native API, events and the
 //!   `state_trees` telemetry.
+//! * [`perception`]: sight, hearing and damage senses, memory, events, blackboard
+//!   keys and the `perception` telemetry.
 //!
-//! The services tick immediately before `simulation::step` (behavior trees first),
+//! The services run immediately before `simulation::step` (perception first, then
+//! behavior trees, then state trees),
 //! so a `move_to` task that sets the entity's `engine.NavigationAgent` target is
 //! routed in the same tick. See `docs/ai-behavior-trees.md` and
 //! `docs/ai-state-trees.md`.
@@ -22,6 +25,7 @@ const NAVIGATION_AGENT: &str = "engine.NavigationAgent";
 
 mod component;
 mod host;
+pub mod perception;
 mod runtime;
 pub mod state_tree;
 
@@ -31,6 +35,11 @@ pub use component::{BEHAVIOR_TREE_AGENT, BehaviorTreeAgent, MAX_OVERRIDES, descr
 pub use engine_ai::{
     BbValue, Blackboard as BtBlackboard,
     behavior_tree::{NativeTask, Status as TaskStatus, TaskContext},
+};
+pub use perception::{
+    PERCEPTION_NOISE, PERCEPTION_SENSOR, PERCEPTION_SETTINGS, PERCEPTION_STIMULUS, PerceptionNoise,
+    PerceptionSensor, PerceptionSettings, PerceptionStatus, PerceptionStimulus, Perceptions,
+    register_hearing_attenuation, report_damage, report_noise, status as perception_status,
 };
 pub use runtime::{
     AgentStatus, BehaviorTreeStatus, BehaviorTrees, EVENT_ABORTED, EVENT_FINISHED, MAX_AGENTS,
@@ -43,19 +52,23 @@ pub use state_tree::{
 
 /// Catalog descriptors of this module's components.
 pub fn descriptors() -> Vec<crate::ComponentDescriptor> {
-    vec![descriptor(), state_tree::descriptor()]
+    let mut all = vec![descriptor(), state_tree::descriptor()];
+    all.extend(perception::descriptors());
+    all
 }
 
 /// Registers the component adapters and the runtime services.
 pub fn register(app: &mut EngineApp) -> Result<()> {
     crate::register_component::<BehaviorTreeAgent>(app, BEHAVIOR_TREE_AGENT, 1)?;
     app.world_mut().insert_resource(BehaviorTrees::default());
-    state_tree::register(app)
+    state_tree::register(app)?;
+    perception::register(app)
 }
 
 /// Brings every AI service in line with the world's agent components. Called at
 /// runtime start and after scene transitions.
 pub fn prepare(world: &mut World) -> Result<()> {
+    perception::prepare(world)?;
     runtime::prepare(world)?;
     state_tree::prepare(world)
 }
@@ -63,6 +76,7 @@ pub fn prepare(world: &mut World) -> Result<()> {
 /// Ticks every due agent: behavior trees, then state trees. Runs once per runtime
 /// tick, before `simulation::step`.
 pub fn step(world: &mut World, dt: f32) -> Result<()> {
+    perception::step(world, dt)?;
     runtime::step(world, dt)?;
     state_tree::step(world, dt)
 }
@@ -104,7 +118,8 @@ pub fn register_bt_task(
 /// [`state_tree::validate_scene`].
 pub fn validate_scene(project: &Project, scene: &Scene) -> Result<()> {
     validate_behavior_trees(project, scene)?;
-    state_tree::validate_scene(project, scene)
+    state_tree::validate_scene(project, scene)?;
+    perception::validate_scene(project, scene)
 }
 
 /// Behavior tree checks: graph assets exist and compile as behavior trees,

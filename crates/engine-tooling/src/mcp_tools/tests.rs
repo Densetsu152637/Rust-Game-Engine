@@ -150,7 +150,12 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
             "enabled":true,"ticks":9,"phase":"running","last_finished":null,
             "active_path":["alert","chase"],
             "transitions":[{"tick":4,"event":"transition","id":"spot","to":"chase"}],
-            "blackboard":{"alarm":true}}]}
+            "blackboard":{"alarm":true}}]},
+        "perception":{"total":1,"stimuli":2,"rays_cast":1,"rays_deferred":0,"noises":0,
+            "dropped_events":0,"dropped_stimuli":0,"perceivers":[{"entity":"guard","team":1,
+            "known":1,"sensed":1,"records":[],"best":{"subject":"thief","sense":"sight",
+            "affiliation":"hostile","position":[0.0,0.0,-6.0],"strength":1.0,"sensed":true,
+            "age":0.0}}]}
     }});
     let summary = summarize(&report, None, 50);
     assert_eq!(summary["profile"]["frames"].as_array().unwrap().len(), 32);
@@ -194,6 +199,11 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         summary["state_trees"]["agents"][0]["transitions"][0]["to"],
         "chase"
     );
+    assert_eq!(
+        summary["perception"]["perceivers"][0]["best"]["subject"],
+        "thief"
+    );
+    assert_eq!(summary["perception"]["rays_cast"], 1);
     assert_eq!(summary["telemetry_omitted"], json!([]));
     let oversized_acoustics = summarize(
         &json!({"scene":{"acoustics":{"fallback_reason":"x".repeat(65_536)}}}),
@@ -249,7 +259,18 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         oversized_state_trees["telemetry_omitted"],
         json!(["state_trees"])
     );
+    let oversized_perception = summarize(
+        &json!({"scene":{"perception":{"perceivers":["x".repeat(65_536)]}}}),
+        None,
+        50,
+    );
+    assert!(oversized_perception["perception"].is_null());
+    assert_eq!(
+        oversized_perception["telemetry_omitted"],
+        json!(["perception"])
+    );
     let absent = summarize(&json!({}), None, 50);
+    assert!(absent["perception"].is_null());
     assert!(absent["behavior_trees"].is_null());
     assert!(absent["state_trees"].is_null());
     assert!(absent["upscaler"].is_null());

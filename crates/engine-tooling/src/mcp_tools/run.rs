@@ -111,6 +111,8 @@ impl Tool for RunTool {
                     "Behavior tree agents: {total, agents:[{entity, graph, enabled, ticks, last_finished, active_path, blackboard}], dropped_events}; at most 32 agents, 16 path nodes and 16 blackboard keys each. Null without an engine.BehaviorTreeAgent."})),
                 ("state_trees", json!({"type":["object","null"], "description":
                     "State tree agents: {total, agents:[{entity, graph, enabled, ticks, phase, last_finished, active_path, transitions, blackboard}], dropped_events}; at most 32 agents, 16 path states, 8 recent transitions ({tick, event, id, to}) and 16 blackboard keys each. Null without an engine.StateTreeAgent."})),
+                ("perception", json!({"type":["object","null"], "description":
+                    "Perception: {total, stimuli, perceivers:[{entity, team, known, sensed, best, records}], rays_cast, rays_deferred, noises, dropped_events, dropped_stimuli}; best and records entries are {subject, sense, affiliation, position, strength, sensed, age}; at most 32 perceivers and 8 records each. Null without an engine.PerceptionSensor."})),
                 ("telemetry_omitted", json!({"type":"array","items":{"type":"string"}})),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
@@ -238,11 +240,13 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
     let acoustics = telemetry("acoustics", &snapshot["acoustics"]);
     let behavior_trees = telemetry("behavior_trees", &snapshot["behavior_trees"]);
     let state_trees = telemetry("state_trees", &snapshot["state_trees"]);
+    let perception = telemetry("perception", &snapshot["perception"]);
     json!({
         "upscaler": upscaler, "frame_generation": frame_generation,
         "localization": localization, "ui_render": ui_render,
         "render_pipeline": render_pipeline, "ray_tracing": ray_tracing,
         "acoustics": acoustics, "behavior_trees": behavior_trees, "state_trees": state_trees,
+        "perception": perception,
         "profile": profile, "profile_frames_truncated": profile_frames_truncated,
         "network": network, "input_devices": input_devices, "telemetry_omitted": telemetry_omitted,
         "event_trace":event_trace, "event_count":report["event_trace"]["count"].as_u64().unwrap_or(0),
