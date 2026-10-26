@@ -74,14 +74,8 @@ impl Active {
     fn failure(&self) -> Option<AudioError> {
         match self {
             Self::Clip(_) => None,
-            Self::File(v) => match v.status() {
-                Ok(s) => s.error,
-                Err(e) => Some(e),
-            },
-            Self::Graph(v) => match v.status() {
-                Ok(s) => s.error,
-                Err(e) => Some(e),
-            },
+            Self::File(v) => v.failure(),
+            Self::Graph(v) => v.failure(),
         }
     }
     fn voice(&self) -> VoiceHandle {
@@ -98,11 +92,16 @@ struct Source {
     active: Option<Active>,
     failure: Option<AudioError>,
 }
-fn stop_active(control: &AudioControl, active: &mut Option<Active>) {
-    if let Some(value) = active.take() {
-        control.stop(value.voice());
-        drop(value);
-    }
+fn stop_active(control: &AudioControl, active: &mut Option<Active>) -> Option<AudioError> {
+    let mut value = active.take()?;
+    control.stop(value.voice());
+    let joined = match &mut value {
+        Active::Clip(_) => Ok(()),
+        Active::File(worker) => worker.cancel(),
+        Active::Graph(worker) => worker.stop(),
+    };
+    // Both worker types retain queue errors through cancellation; read after joining.
+    value.failure().or_else(|| joined.err())
 }
 fn queue_valid(frames: usize) -> Result<()> {
     if (2..=65_536).contains(&frames) {
@@ -258,7 +257,7 @@ impl AudioSources {
         let source = self.sources.get_mut(&handle).ok_or_else(missing)?;
         match action {
             SourceAction::Play => {
-                stop_active(&self.control, &mut source.active);
+                let _ = stop_active(&self.control, &mut source.active);
                 source.failure = None;
                 source.active = Some(match &source.prepared {
                     Prepared::Clip(clip) => {
@@ -292,13 +291,16 @@ impl AudioSources {
                     self.control.resume(active.voice());
                 }
             }
-            SourceAction::Stop => stop_active(&self.control, &mut source.active),
+            SourceAction::Stop => {
+                source.failure = stop_active(&self.control, &mut source.active)
+                    .or_else(|| source.failure.take());
+            }
         }
         Ok(())
     }
     pub fn remove(&mut self, handle: SourceHandle) -> bool {
         if let Some(mut source) = self.sources.remove(&handle) {
-            stop_active(&self.control, &mut source.active);
+            let _ = stop_active(&self.control, &mut source.active);
             self.observers
                 .retain(|_, observer| observer.source != handle);
             true
@@ -331,12 +333,8 @@ impl AudioSources {
                 .as_ref()
                 .is_some_and(|a| self.control.voice_state(a.voice()) == VoiceState::Stopped)
             {
-                source.failure = source
-                    .active
-                    .as_ref()
-                    .and_then(Active::failure)
+                source.failure = stop_active(&self.control, &mut source.active)
                     .or_else(|| source.failure.take());
-                stop_active(&self.control, &mut source.active);
             }
         }
     }
@@ -439,7 +437,7 @@ impl AudioSources {
     }
     pub fn clear(&mut self) {
         for source in self.sources.values_mut() {
-            stop_active(&self.control, &mut source.active);
+            let _ = stop_active(&self.control, &mut source.active);
         }
         self.sources.clear();
         self.observers.clear();
@@ -461,4 +459,143 @@ fn validate_event(event: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod failure_race_tests {
+    use super::*;
+    use std::{
+        sync::{
+            atomic::Ordering,
+            mpsc::{self, SyncSender},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+    struct Resume(Option<SyncSender<()>>);
+    impl Resume {
+        fn release(mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.try_send(());
+            }
+        }
+    }
+    struct Fixture(std::path::PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    #[test]
+    fn refresh_retains_decoder_and_dsp_errors_published_before_worker_status() {
+        for decoded in [false, true] {
+            let mut engine = crate::AudioEngine::offline(crate::AudioConfig {
+                sample_rate: if decoded { 44100 } else { 8000 },
+                max_voices: 1,
+            })
+            .unwrap();
+            let control = engine.control();
+            let mut sources = AudioSources::new(control.clone(), "race").unwrap();
+            let fixture = Fixture(std::env::temp_dir().join(format!(
+                "audio-failure-race-{}-{}.mp3",
+                std::process::id(),
+                allocate_handle().unwrap()
+            )));
+            let source = if decoded {
+                let bytes = include_bytes!("../tests/fixtures/tone.mp3");
+                std::fs::write(&fixture.0, &bytes[..bytes.len() - 20]).unwrap();
+                sources
+                    .create_stream(
+                        &fixture.0,
+                        PlayOptions::default(),
+                        SourceStreamConfig {
+                            queue_frames: 4,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap()
+            } else {
+                let document=engine_graph::GraphDocument::from_json(br#"{"version":1,"kind":"audio","nodes":[{"id":"osc","node_type":"oscillator","params":{"frequency":4000}},{"id":"out","node_type":"output"}],"edges":[{"from":{"node":"osc","port":"signal"},"to":{"node":"out","port":"left"}},{"from":{"node":"osc","port":"signal"},"to":{"node":"out","port":"right"}}]}"#).unwrap();
+                sources
+                    .create_procedural(
+                        crate::graph::compile(&document).unwrap(),
+                        PlayOptions::default(),
+                        ProceduralSourceConfig::default(),
+                    )
+                    .unwrap()
+            };
+            let (published, resume) = crate::stream::pause_next_stream_failure();
+            sources.control(source, SourceAction::Play).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match published.try_recv() {
+                    Ok(()) => break,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "producer never reached failure publication barrier"
+                        );
+                        engine.mix(&mut [0.; 64]).unwrap();
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(e) => panic!("failure barrier disconnected: {e}"),
+                }
+            }
+            // The queue is failed, but neither worker has published Failed status yet.
+            let cancellation = match sources.sources[&source].active.as_ref().unwrap() {
+                Active::File(worker) => {
+                    assert!(worker.status().unwrap().error.is_none());
+                    worker.cancellation()
+                }
+                Active::Graph(worker) => {
+                    assert!(worker.status().unwrap().error.is_none());
+                    worker.cancellation()
+                }
+                Active::Clip(_) => unreachable!(),
+            };
+            engine.mix(&mut [0.; 64]).unwrap();
+            assert_eq!(control.voice_count(), 0);
+            thread::scope(|scope| {
+                // Release on unwind as well, so a failed assertion cannot deadlock join.
+                let resume = Resume(Some(resume));
+                let refresh = scope.spawn(move || {
+                    sources.refresh();
+                    sources
+                });
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !cancellation.load(Ordering::Acquire) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "refresh did not cancel/join the producer"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+                assert!(
+                    !refresh.is_finished(),
+                    "producer must still be paused before status publication"
+                );
+                // Joining is in refresh, never in the mixer callback path.
+                engine.mix(&mut [0.; 64]).unwrap();
+                assert!(!refresh.is_finished());
+                resume.release();
+                let sources = refresh.join().unwrap();
+                assert!(sources.voice(source).is_none());
+                assert_eq!(
+                    sources.failure(source).unwrap().code,
+                    if decoded {
+                        "audio.decode.truncated"
+                    } else {
+                        "audio.graph.frequency"
+                    }
+                );
+            });
+        }
+    }
 }

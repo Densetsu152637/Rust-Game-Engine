@@ -37,6 +37,7 @@ struct Commands {
 }
 /// Owns a producer thread and normal streamed voice. Dropping it stops and joins both.
 pub struct ProceduralStream {
+    observer: crate::stream::StreamObserver,
     program: Arc<CompiledGraph>,
     control: AudioControl,
     voice: VoiceHandle,
@@ -85,6 +86,7 @@ impl ProceduralStream {
             },
             options,
         )?;
+        let observer = writer.observer();
         let commands = Arc::new(Mutex::new(Commands {
             changes: [None; MAX_PARAMETERS],
             reset: None,
@@ -256,6 +258,7 @@ impl ProceduralStream {
             }
         };
         Ok(Self {
+            observer,
             program,
             control,
             voice,
@@ -264,6 +267,14 @@ impl ProceduralStream {
             stop,
             worker: Some(worker),
         })
+    }
+    /// Durable queue failure, preserved after cancellation and mixer retirement.
+    pub fn failure(&self) -> Option<AudioError> {
+        self.observer.failure()
+    }
+    #[cfg(test)]
+    pub(crate) fn cancellation(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.stop.clone()
     }
     pub fn voice(&self) -> VoiceHandle {
         self.voice

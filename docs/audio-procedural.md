@@ -158,3 +158,16 @@ failure; prepare/restart errors also return directly. Project synchronization
 surfaces worker failures as coded runtime errors and follows normal runtime
 teardown, preventing malformed streaming input from silently appearing as a
 normal stopped source.
+
+### Failure lifetime
+
+Both producer wrappers retain a read-only queue observer independently of mixer
+voice lifetime. `DecodedStream::failure()` and `ProceduralStream::failure()` read
+that generation-scoped terminal diagnostic even when cancellation later changes
+worker status. Source refresh cancels/joins outside the callback, then collects
+the durable queue error (or join failure) before dropping the worker. It does not
+rely on the worker having reached its later status publication. Seek/reset clear
+queue errors through the existing generation fence; stale failures cannot poison
+a replacement epoch. The unit regression pauses each producer after queue failure
+but before status publication, retires the mixer voice, and checks refresh/join
+retains the error while offline mixing continues independently.

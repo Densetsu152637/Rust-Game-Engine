@@ -346,6 +346,17 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
                     fields.push((component, "navmesh", navmesh));
                 }
             }
+            for field in ["clip", "graph"] {
+                if let Some(id) = c
+                    .custom
+                    .get("engine.AudioEmitter")
+                    .and_then(|v| v.data.get(field))
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                {
+                    fields.push(("engine.AudioEmitter", field, id));
+                }
+            }
             for agent in ["engine.BehaviorTreeAgent", "engine.StateTreeAgent"] {
                 for field in ["graph", "navmesh"] {
                     if let Some(id) = c

@@ -203,3 +203,9 @@ cleanup use the same controller as resident clips. Queue capacity is limited to
 `audio.source.loop` before file probing/producer allocation. Call `refresh` outside
 the callback to reclaim workers whose voices finished; project synchronization
 performs that cleanup. Authored selection is described in audio-procedural.md.
+
+Producer cancellation status does not erase a terminal queue diagnostic.
+`DecodedStream::failure()` retains access after mixer retirement/cancellation;
+source-controller cleanup reads it after joining the worker. Queue failure and
+worker status publication may occur at different times, so status alone is not
+the diagnostic lifetime contract.
