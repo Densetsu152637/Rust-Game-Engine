@@ -2,17 +2,20 @@
 //!
 //! * [`blackboard`]: typed key/value store with change notifications.
 //! * [`behavior_tree`]: the `behavior_tree` graph kind, compiler and executor.
+//! * [`env_query`]: EQS-like environment queries (generators, tests, scoring).
 //! * [`perception`]: sight, hearing and damage stimuli with per-perceiver memory.
+//! * [`smart_object`]: slots agents claim, occupy and release.
 //! * [`state_tree`]: the `state_tree` graph kind, compiler and executor.
 //! * [`rng`]: the deterministic generator every AI decision must use.
 //!
-//! Environment queries join as a sibling module. Every
-//! runtime is a pure function of authored data, its inputs and `dt`; games embed it
+//! Every runtime is a pure function of authored data, its inputs and `dt`; games embed it
 //! through a host trait (see `engine-project` for the ECS binding).
 pub mod behavior_tree;
 pub mod blackboard;
+pub mod env_query;
 pub mod perception;
 pub mod rng;
+pub mod smart_object;
 pub mod state_tree;
 
 pub use blackboard::{BbValue, Blackboard, BlackboardError};

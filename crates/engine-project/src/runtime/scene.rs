@@ -55,6 +55,13 @@ pub struct RuntimeSnapshot {
     /// without an `engine.PerceptionSensor`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub perception: Option<crate::ai::PerceptionStatus>,
+    /// Environment query service: templates, queries in flight and the most recent
+    /// results; absent without templates or queries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_queries: Option<crate::ai::env_query::EnvQueryStatus>,
+    /// Smart object slots and who holds them; absent without smart objects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smart_objects: Option<crate::ai::smart_object::SmartObjectStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -224,6 +231,8 @@ impl Runtime {
             behavior_trees: crate::ai::status(self.app.world()),
             state_trees: crate::ai::state_tree_status(self.app.world()),
             perception: crate::ai::perception_status(self.app.world()),
+            env_queries: crate::ai::env_query_status(self.app.world()),
+            smart_objects: crate::ai::smart_object_status(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self
