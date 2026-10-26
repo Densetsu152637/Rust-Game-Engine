@@ -63,8 +63,10 @@ fn fixture(animated: bool) -> tempfile::TempDir {
         json!({"id":"director","name":"Director","components":{"custom":{"engine.SequencePlayer":{"version":1,"data":{"bindings":[target],"timeline":{"version":1,"duration":2,"tracks":[{"binding":0,"property":"translation","channel":{"keys":[{"time":0,"value":[0,0,0]},{"time":2,"value":[4,0,0]}]}}]}}}}}}),
     ];
     if animated {
-        entities.push(json!({"id":"animator","name":"Animator","components":{"custom":{"engine.AnimationGraphPlayer":{"version":1,"data":{"graph":"graph","bindings":["bone","mesh"]}}}}}));
+        entities.push(json!({"id":"animator","name":"Animator","components":{"Transform":{"position":[0,0,0]},"custom":{"engine.AnimationGraphPlayer":{"version":1,"data":{"graph":"graph","bindings":["bone","mesh"]}}}}}));
     }
+    // An active 3D camera routes the retained deformed mesh into frame.meshes.
+    entities.push(json!({"id":"camera","name":"Camera","components":{"Transform":{"position":[0,0,4]},"Camera3D":{}}}));
     write(
         dir.path().join("scene.json"),
         json!({"schema":1,"scene_id":"scene","entities":entities}),
