@@ -240,6 +240,7 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
             let model = engine_project::model_import::load_model(&file)?;
             json!({"version":model.version,"nodes":model.scene.nodes.len(),"meshes":model.scene.meshes.len(),
                 "materials":model.scene.materials.len(),"images":model.scene.images.len(),"skins":model.scene.skins.len(),
+                "morph_primitives":model.scene.morphs.primitives.len(),"morph_targets":model.scene.morphs.primitives.iter().map(|m|m.targets.len()).sum::<usize>(),
                 "clips":model.scene.clips.len(),"fingerprint":blake3::Hash::from(model.scene.fingerprint.0).to_hex().to_string()})
         }
         "graph" => {
@@ -323,13 +324,15 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
             {
                 fields.push(("engine.AnimationPlayer", "clip", clip));
             }
-            if let Some(model) = c
-                .custom
-                .get("engine.SkinBinding")
-                .and_then(|v| v.data.get("model"))
-                .and_then(Value::as_str)
-            {
-                fields.push(("engine.SkinBinding", "model", model));
+            for component in ["engine.SkinBinding", "engine.MorphWeights"] {
+                if let Some(model) = c
+                    .custom
+                    .get(component)
+                    .and_then(|v| v.data.get("model"))
+                    .and_then(Value::as_str)
+                {
+                    fields.push((component, "model", model));
+                }
             }
             for component in [
                 "engine.NavigationAgent",

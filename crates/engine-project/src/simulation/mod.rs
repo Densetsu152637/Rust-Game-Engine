@@ -9,6 +9,7 @@ pub use animation_graph::AnimationGraphPlayer;
 mod crowds;
 mod descriptors;
 mod imported;
+mod morph;
 mod navigation;
 mod navmesh;
 pub mod physics;
@@ -19,6 +20,7 @@ pub use animation::{
 };
 pub use descriptors::component_descriptors;
 pub use imported::{imported_clip, imported_skeleton, skin_palette};
+pub use morph::{EvaluatedMorphWeights, MorphPlayer, MorphWeights};
 pub use navmesh::*;
 pub use physics::{
     BodyMaterial, CombineRule, CompoundPart2D, CompoundPart3D, Motion, NamedMaterial,
@@ -34,6 +36,8 @@ fn mapped(error: impl std::fmt::Display) -> Error {
 }
 pub fn register_components(app: &mut engine_core::EngineApp) -> Result<()> {
     crate::register_component::<SkinBinding>(app, "engine.SkinBinding", 1)?;
+    crate::register_component::<MorphWeights>(app, "engine.MorphWeights", 1)?;
+    crate::register_component::<MorphPlayer>(app, "engine.MorphPlayer", 1)?;
     physics::register_components(app)?;
     crate::register_component::<AnimationPlayer>(app, "engine.AnimationPlayer", 1)?;
     crate::register_component::<AnimationGraphPlayer>(app, "engine.AnimationGraphPlayer", 1)?;
@@ -132,6 +136,8 @@ fn validate(world: &World) -> Result<()> {
             || animation.is_some()
             || graph.is_some()
             || e.contains::<SkinBinding>()
+            || e.contains::<MorphWeights>()
+            || e.contains::<MorphPlayer>()
         {
             if !enabled {
                 return Err(invalid(
@@ -141,6 +147,9 @@ fn validate(world: &World) -> Result<()> {
             if !e.contains::<Transform>() {
                 return Err(invalid("Simulation components require Transform"));
             }
+        }
+        if e.contains::<MorphPlayer>() && !e.contains::<MorphWeights>() {
+            return Err(invalid("MorphPlayer requires MorphWeights"));
         }
         if body2.is_some() && body3.is_some()
             || (body2.is_some() || body3.is_some()) && e.contains::<crate::Collider2D>()
@@ -197,6 +206,7 @@ pub fn prepare(world: &mut World) -> Result<()> {
         services.navigation.sync(world)?;
         services.crowds.sync(world)?;
         services.physics.sync(world)?;
+        morph::step(world, 0.)?;
         services.skins.sync(world)?;
         services.skins.evaluate(world)
     })();
@@ -219,6 +229,7 @@ pub fn step(world: &mut World, dt: f32) -> Result<()> {
         services.crowds.step(world, dt)?;
         services.physics.sync(world)?;
         services.physics.step(world, dt)?;
+        morph::step(world, dt)?;
         services.skins.sync(world)?;
         services.skins.evaluate(world)
     })();

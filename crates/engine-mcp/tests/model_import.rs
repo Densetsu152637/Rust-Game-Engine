@@ -90,3 +90,25 @@ fn mcp_import_preserves_weight_channels_and_exposes_live_prefab_controls() {
         0
     );
 }
+
+#[test]
+fn mcp_model_info_reports_morph_counts_and_model_reference_use() {
+    let temp = fixture();
+    fixture::write_morph_source(temp.path());
+    let result = write(
+        temp.path(),
+        "asset_import_model",
+        json!({"source":"source/model.gltf","prefix":"morph"}),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    let info = data(temp.path(), "asset_info", json!({"asset":"morph:model"}));
+    assert_eq!(info["details"]["morph_primitives"], 1);
+    assert_eq!(info["details"]["morph_targets"], 1);
+    assert!(
+        info["used_by"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["component"] == "engine.MorphWeights" && entry["field"] == "model")
+    );
+}

@@ -389,3 +389,30 @@ fn morph_model_rebinding_evicts_unused_cache_entry_before_capacity_check() {
             < 1e-5
     );
 }
+
+#[test]
+fn morph_components_require_enabled_simulation_transform_and_weight_binding() {
+    use engine_project::{
+        Transform,
+        simulation::{self, MorphPlayer, MorphWeights},
+    };
+    let mut world = World::new();
+    let owner = world
+        .spawn((Transform::default(), MorphPlayer::default()))
+        .id();
+    assert!(simulation::prepare(&mut world).is_err());
+    simulation::install(&mut world, Some(Default::default())).unwrap();
+    assert!(simulation::prepare(&mut world).is_err());
+    world
+        .entity_mut(owner)
+        .insert(MorphWeights::default())
+        .remove::<Transform>();
+    assert!(simulation::prepare(&mut world).is_err());
+    let catalog = engine_project::ComponentCatalog::new(vec![]).unwrap();
+    assert!(
+        catalog.0["engine.MorphPlayer"]
+            .requires
+            .iter()
+            .any(|r| r == "engine.MorphWeights")
+    );
+}
