@@ -145,7 +145,7 @@ impl Tensor {
                 )
             })?;
         let mut out = vec![0.0; pixels * 3];
-        for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        for (index, pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {
             for channel in 0..3 {
                 out[channel * pixels + index] = pixel[channel] as f32 / 255.0;
             }
@@ -207,14 +207,41 @@ impl Tensor {
                 format!("unsupported output type {:?}", tensor.datum_type()),
             )
         };
-        let convert = |e: tract_onnx::prelude::TractError| {
-            MlError::new("ml.tensor.convert", e.to_string())
-        };
+        let convert =
+            |e: tract_onnx::prelude::TractError| MlError::new("ml.tensor.convert", e.to_string());
         let data = match DType::from_tract(tensor.datum_type()).ok_or_else(unsupported)? {
-            DType::F32 => TensorData::F32(tensor.as_slice::<f32>().map_err(convert)?.to_vec()),
-            DType::I64 => TensorData::I64(tensor.as_slice::<i64>().map_err(convert)?.to_vec()),
-            DType::I32 => TensorData::I32(tensor.as_slice::<i32>().map_err(convert)?.to_vec()),
-            DType::U8 => TensorData::U8(tensor.as_slice::<u8>().map_err(convert)?.to_vec()),
+            DType::F32 => TensorData::F32(
+                tensor
+                    .to_plain_array_view::<f32>()
+                    .map_err(convert)?
+                    .iter()
+                    .copied()
+                    .collect(),
+            ),
+            DType::I64 => TensorData::I64(
+                tensor
+                    .to_plain_array_view::<i64>()
+                    .map_err(convert)?
+                    .iter()
+                    .copied()
+                    .collect(),
+            ),
+            DType::I32 => TensorData::I32(
+                tensor
+                    .to_plain_array_view::<i32>()
+                    .map_err(convert)?
+                    .iter()
+                    .copied()
+                    .collect(),
+            ),
+            DType::U8 => TensorData::U8(
+                tensor
+                    .to_plain_array_view::<u8>()
+                    .map_err(convert)?
+                    .iter()
+                    .copied()
+                    .collect(),
+            ),
         };
         // Model outputs may legitimately contain NaN/inf; keep them rather than failing.
         Ok(Self { shape, data })
@@ -269,7 +296,11 @@ mod tests {
         assert_eq!(json, r#"{"shape":[1,1],"dtype":"f32","values":[1.5]}"#);
         let back: Tensor = serde_json::from_str(&json).unwrap();
         assert_eq!(back, tensor);
-        assert!(serde_json::from_str::<Tensor>(r#"{"shape":[1],"dtype":"f64","values":[1]}"#).is_err());
-        assert!(serde_json::from_str::<Tensor>(r#"{"shape":[2],"dtype":"f32","values":[1]}"#).is_err());
+        assert!(
+            serde_json::from_str::<Tensor>(r#"{"shape":[1],"dtype":"f64","values":[1]}"#).is_err()
+        );
+        assert!(
+            serde_json::from_str::<Tensor>(r#"{"shape":[2],"dtype":"f32","values":[1]}"#).is_err()
+        );
     }
 }

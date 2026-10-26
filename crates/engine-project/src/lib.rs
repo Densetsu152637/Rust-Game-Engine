@@ -7,6 +7,8 @@ pub mod document;
 pub mod events;
 pub mod gameplay2d;
 pub mod input;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ml;
 pub mod model_import;
 pub mod networking;
 pub mod persistence;

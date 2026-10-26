@@ -23,3 +23,6 @@ glam.workspace = true
 [dev-dependencies]
 tempfile = "3"
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "crypto"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+engine-ml = { path = "../engine-ml" }
