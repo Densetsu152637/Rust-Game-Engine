@@ -210,6 +210,9 @@ fn low_roughness_and_grazing_match_actual_shader_regularization() {
         (0.00005, 0.1),
         (0.05, 0.1),
         (0.9, 0.1),
+        (0.000001, 0.045),
+        (0.001, 0.075),
+        (0.05, 0.115),
     ] {
         let coarse = brdf_reference(f64::from(nv), f64::from(roughness), 512);
         let fine = brdf_reference(f64::from(nv), f64::from(roughness), 1024);
