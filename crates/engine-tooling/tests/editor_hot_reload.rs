@@ -106,7 +106,14 @@ fn actual_editor_reload_uses_latest_snapshot_and_retains_game_on_compile_failure
         .with_target_dir(scratch.join("native-target"));
     host.start(project(&manifest, 3.0)).unwrap();
     assert_eq!(settled(&mut host), PlayStatus::Running);
-    wait_until(|| read_events().contains("1:start:3:"));
+    wait_until(|| {
+        assert_eq!(
+            host.poll().unwrap(),
+            PlayStatus::Running,
+            "game exited before first startup marker"
+        );
+        read_events().contains("1:start:3:")
+    });
     fs::write(game.join("src/lib.rs"), "invalid Rust").unwrap();
     host.reload(project(&manifest, 9.0)).unwrap();
     assert!(
@@ -117,7 +124,14 @@ fn actual_editor_reload_uses_latest_snapshot_and_retains_game_on_compile_failure
     fs::write(game.join("src/lib.rs"), source(&events, 2)).unwrap();
     host.reload(project(&manifest, 7.0)).unwrap();
     assert_eq!(settled(&mut host), PlayStatus::Running);
-    wait_until(|| read_events().contains("2:start:7:"));
+    wait_until(|| {
+        assert_eq!(
+            host.poll().unwrap(),
+            PlayStatus::Running,
+            "replacement exited before startup marker"
+        );
+        read_events().contains("2:start:7:")
+    });
     host.stop().unwrap();
     let observed = read_events();
     let lines: Vec<_> = observed.lines().collect();

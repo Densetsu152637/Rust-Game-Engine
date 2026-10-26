@@ -1478,3 +1478,66 @@ fn a_symlinked_root_is_refused() {
     let s = PersistenceStore::new(PersistenceOptions::new(link, "game".into())).unwrap();
     expect_code(s.save("slot", n(1), None), "persistence.path.link");
 }
+
+#[test]
+fn canonical_roots_round_trip_saves_and_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    #[cfg(windows)]
+    assert!(
+        matches!(root.components().next(), Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_)))
+    );
+    let s = store(&root);
+    s.save("slot", n(7), None).unwrap();
+    s.save_settings(n(9), None).unwrap();
+    assert_eq!(level(&s, "slot"), 7);
+    assert_eq!(s.load_settings(None).unwrap(), n(9));
+}
+
+#[cfg(windows)]
+#[test]
+fn ordinary_absolute_disk_roots_round_trip_saves_and_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::path::absolute(dir.path()).unwrap();
+    assert!(
+        matches!(root.components().next(), Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_)))
+    );
+    let s = store(&root);
+    s.save("slot", n(3), None).unwrap();
+    s.save_settings(n(5), None).unwrap();
+    assert_eq!(level(&s, "slot"), 3);
+    assert_eq!(s.load_settings(None).unwrap(), n(5));
+}
+
+#[cfg(windows)]
+#[test]
+fn junction_roots_and_ancestors_are_refused_for_ordinary_and_verbatim_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("outside");
+    fs::create_dir(&destination).unwrap();
+    let link = dir.path().join("junction");
+    // Junctions exercise reparse-point refusal without optional symlink privilege.
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "junction creation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let canonical_parent = fs::canonicalize(dir.path()).unwrap();
+    for parent in [dir.path().to_path_buf(), canonical_parent] {
+        for suffix in ["junction", "junction/new/player-data"] {
+            let root = parent.join(suffix);
+            expect_code(
+                store(&root).save("slot", n(1), None),
+                "persistence.path.link",
+            );
+        }
+    }
+    assert!(fs::read_dir(&destination).unwrap().next().is_none());
+    fs::remove_dir(&link).unwrap();
+}

@@ -74,7 +74,9 @@ root; player data never belongs inside a packaged project.
   (including temporary, backup and lock files) are rejected. On macOS, the system
   aliases `/var` and `/tmp` are resolved only when their actual link targets are
   `/private/var` and `/private/tmp`, respectively. Every component of the resolved
-  root is then checked; arbitrary links below these aliases remain rejected,
+  root is then checked; Windows accepts ordinary absolute and canonical verbatim
+  disk roots while checking the complete root and every descendant for links and
+  junctions. Arbitrary links below these aliases remain rejected,
   including when the requested data root does not yet exist. This confines authored
   content in a trusted user-data directory; it is not a defense against another
   process swapping directory entries.

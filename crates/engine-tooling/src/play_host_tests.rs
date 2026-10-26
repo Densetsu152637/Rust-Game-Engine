@@ -244,6 +244,26 @@ fn exited_old_game_is_not_reported_as_preserved_after_compile_failure() {
 }
 
 #[test]
+fn exited_ready_candidate_is_rejected_before_old_game_teardown() {
+    let fixture = Fixture::new();
+    let mut host = fixture.start();
+    let old = host.active.as_ref().unwrap().id();
+    fixture.source("pub fn version()->u32 {2}");
+    fixture.queue(&mut host);
+    let worker = host.worker.take().unwrap();
+    let mut candidate = worker.join().unwrap().unwrap();
+    candidate.stop().unwrap();
+    assert!(
+        matches!(host.activate(candidate), PlayStatus::ReloadFailed {ref message} if message.contains("exited after readiness"))
+    );
+    assert_eq!(host.active.as_ref().unwrap().id(), old);
+    assert_eq!(host.poll().unwrap(), PlayStatus::Running);
+    assert_eq!(fixture.events(), "1:start\n");
+    host.stop().unwrap();
+    assert_eq!(fixture.events(), "1:start\n1:stop\n");
+}
+
+#[test]
 fn activation_failure_after_teardown_reports_stopped_and_reaps_candidate() {
     let fixture = Fixture::new();
     let mut host = fixture.start();
@@ -251,11 +271,98 @@ fn activation_failure_after_teardown_reports_stopped_and_reaps_candidate() {
     fixture.queue(&mut host);
     let worker = host.worker.take().unwrap();
     let mut candidate = worker.join().unwrap().unwrap();
-    // Reap the real candidate before activation so its start channel is closed.
-    candidate.stop().unwrap();
+    // Retain the actual pipe externally so the prepared process stays alive
+    // through the liveness check and old teardown, without a timing race.
+    let start_pipe = candidate.take_start_pipe_for_test().unwrap();
+    assert!(candidate.try_wait().unwrap().is_none());
     assert!(
         matches!(host.activate(candidate), PlayStatus::Stopped {success: false, ref message} if message.contains("activation failed"))
     );
+    drop(start_pipe);
     assert!(host.active.is_none());
     assert_eq!(fixture.events(), "1:start\n1:stop\n");
+}
+
+#[test]
+fn old_failure_survives_pending_polls_then_cancel_or_rejected_replacement() {
+    for cancel_replacement in [true, false] {
+        let mut fixture = Fixture::new();
+        fixture.request.main_source = fixture.request.main_source.replace(
+            "writeln!(file,\"{version}:stop\").unwrap(); file.flush().unwrap();",
+            "writeln!(file,\"{version}:stop\").unwrap(); file.flush().unwrap(); std::process::exit(7);",
+        );
+        let mut host = fixture.start();
+        assert!(!host.active.as_mut().unwrap().stop().unwrap().success);
+        let (release, wait) = std::sync::mpsc::channel();
+        let cancel = host.cancel.clone();
+        host.reloading = true;
+        host.worker = Some(thread::spawn(move || {
+            while !cancel.load(Ordering::Acquire) {
+                if wait.recv_timeout(Duration::from_millis(10)).is_ok() {
+                    return Err(anyhow!("candidate rejected"));
+                }
+            }
+            Err(anyhow!(CANCELLED))
+        }));
+        assert_eq!(host.poll().unwrap(), PlayStatus::Compiling);
+        assert_eq!(host.poll().unwrap(), PlayStatus::Compiling);
+        if cancel_replacement {
+            host.cancel_reload().unwrap();
+        } else {
+            release.send(()).unwrap();
+        }
+        assert!(
+            matches!(settled(&mut host), PlayStatus::Stopped {success:false,ref message} if message.contains("Some(7)"))
+        );
+        assert!(matches!(
+            host.poll().unwrap(),
+            PlayStatus::Stopped { success: false, .. }
+        ));
+    }
+}
+
+#[test]
+fn hanging_identity_probes_are_cancelled_by_reload_cancel_stop_and_drop() {
+    for hang_cargo in [false, true] {
+        for action in ["cancel", "stop", "drop"] {
+            let fixture = Fixture::new();
+            let mut host = Some(fixture.start());
+            let executable =
+                crate::compiler::test_support::build_hanging_probe(fixture.root.path());
+            let mut compiler = compiler();
+            if hang_cargo {
+                compiler.cargo = executable.clone();
+            } else {
+                compiler.rustc = executable.clone();
+            }
+            let request = fixture.request.clone();
+            let current = host.as_mut().unwrap();
+            current.reloading = true;
+            let cancel = current.cancel.clone();
+            current.worker = Some(thread::spawn(move || {
+                compiler.compile(&request, &cancel)?;
+                Err(anyhow!("hanging probe unexpectedly completed"))
+            }));
+            wait_until(|| executable.with_extension("child").is_file());
+            let started = Instant::now();
+            match action {
+                "cancel" => {
+                    host.as_mut().unwrap().cancel_reload().unwrap();
+                    assert_eq!(host.as_mut().unwrap().poll().unwrap(), PlayStatus::Running);
+                    assert_eq!(fixture.events(), "1:start\n");
+                }
+                "stop" => host.as_mut().unwrap().stop().unwrap(),
+                "drop" => drop(host.take()),
+                _ => unreachable!(),
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "{action} did not cancel the toolchain probe"
+            );
+            if action == "cancel" {
+                host.as_mut().unwrap().stop().unwrap();
+            }
+            assert_eq!(fixture.events(), "1:start\n1:stop\n");
+        }
+    }
 }

@@ -1,12 +1,13 @@
 //! Cargo and toolchain invocation for generated workspaces.
 
 use super::native::{NativeCompiler, PreparedGeneration};
-use super::process::{CompilerOutput, run_compiler};
+use super::process::{CompilerOutput, run_compiler, run_compiler_with_timeout};
 use super::{BuildFailure, CompileRequest, failure, io_error};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 impl NativeCompiler {
     pub(super) fn run_cargo(
@@ -63,22 +64,27 @@ impl NativeCompiler {
             })
     }
 
-    pub(super) fn identity(&self, neutral: &Path) -> Result<String, BuildFailure> {
+    pub(super) fn identity(
+        &self,
+        neutral: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<String, BuildFailure> {
         let mut identity = String::new();
         for (program, argument) in [(&self.rustc, "-vV"), (&self.cargo, "--version")] {
-            let output = Command::new(program)
-                .arg(argument)
-                .current_dir(neutral)
-                .output()
-                .map_err(io_error)?;
+            if cancel.load(Ordering::Acquire) {
+                return Err(super::cancelled());
+            }
+            let mut command = Command::new(program);
+            command.arg(argument).current_dir(neutral);
+            let output = run_compiler_with_timeout(command, cancel, Duration::from_secs(5))?;
+            if output.cancelled {
+                return Err(super::cancelled());
+            }
             if !output.status.success() {
-                return Err(failure(
-                    "compiler.toolchain",
-                    String::from_utf8_lossy(&output.stderr),
-                ));
+                return Err(failure("compiler.toolchain", &output.stderr));
             }
             identity.push_str(&program.to_string_lossy());
-            identity.push_str(&String::from_utf8_lossy(&output.stdout));
+            identity.push_str(&output.stdout);
         }
         Ok(identity)
     }
@@ -101,4 +107,27 @@ pub(super) fn cargo_home() -> Option<PathBuf> {
                 .map(|home| PathBuf::from(home).join(".cargo"))
         })
         .and_then(|path| path.canonicalize().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn identity_probe_deadline_reaps_hanging_toolchain_and_descendant() {
+        let scratch =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/editor-hotreload");
+        fs::create_dir_all(&scratch).unwrap();
+        let root = tempfile::tempdir_in(scratch).unwrap();
+        let executable = super::super::test_support::build_hanging_probe(root.path());
+        let compiler = NativeCompiler::new(env!("CARGO"), &executable);
+        let started = std::time::Instant::now();
+        let error = compiler
+            .identity(root.path(), &AtomicBool::new(false))
+            .unwrap_err();
+        assert_eq!(error.code, "compiler.timeout");
+        assert!(started.elapsed() < Duration::from_secs(8));
+        assert!(executable.with_extension("child").is_file());
+        // Returning from the owned output drain proves the descendant's
+        // inherited pipes were released as well as the probe leader being reaped.
+    }
 }

@@ -26,6 +26,7 @@ pub struct NativePlayHost {
     mode: PlayMode,
     target_dir: Option<PathBuf>,
     reloading: bool,
+    terminal: Option<PlayStatus>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayMode {
@@ -46,6 +47,7 @@ impl NativePlayHost {
             mode: PlayMode::Visible,
             target_dir: std::env::var_os("ENGINE_NATIVE_TARGET_DIR").map(PathBuf::from),
             reloading: false,
+            terminal: None,
         }
     }
     pub fn with_mode(mode: PlayMode) -> Self {
@@ -103,6 +105,12 @@ impl NativePlayHost {
         Ok(())
     }
 
+    fn stopped(&mut self, success: bool, message: String) -> PlayStatus {
+        let status = PlayStatus::Stopped { success, message };
+        self.terminal = Some(status.clone());
+        status
+    }
+
     fn candidate_failed(&mut self, error: engine_core::anyhow::Error) -> PlayStatus {
         self.reloading = false;
         let message = describe(&error);
@@ -111,15 +119,31 @@ impl NativePlayHost {
                 message: format!("Reload rejected; previous game continues: {message}"),
             }
         } else {
-            PlayStatus::Stopped {
-                success: is_cancellation(&error),
-                message,
-            }
+            let (previous_success, message) = match &self.terminal {
+                Some(PlayStatus::Stopped {
+                    success,
+                    message: previous,
+                }) => (*success, format!("{previous}; replacement: {message}")),
+                _ => (true, message),
+            };
+            self.stopped(previous_success && is_cancellation(&error), message)
         }
     }
 
     fn activate(&mut self, mut candidate: RunningGeneration) -> PlayStatus {
         self.reloading = false;
+        // Readiness was observed in the worker. A candidate may have exited
+        // while waiting for the editor to poll; reject a known-dead candidate
+        // before old-game teardown. It can still fail after this check.
+        match candidate.try_wait() {
+            Ok(None) => {}
+            Ok(Some(exit)) => {
+                return self.candidate_failed(anyhow!(
+                    "Candidate exited after readiness before activation (exit {:?}); replacement not activated", exit.code
+                ));
+            }
+            Err(error) => return self.candidate_failed(error.into()),
+        }
         if let Some(mut old) = self.active.take() {
             let teardown = old.stop();
             match teardown {
@@ -136,20 +160,18 @@ impl NativePlayHost {
                             format!("Previous game teardown failed; candidate not started: {error}")
                         }
                     };
-                    return PlayStatus::Stopped {
-                        success: false,
-                        message,
-                    };
+                    return self.stopped(false, message);
                 }
             }
         }
         if let Err(error) = candidate.start() {
-            return PlayStatus::Stopped {
-                success: false,
-                message: format!("Candidate activation failed; no game remains active: {error}"),
-            };
+            return self.stopped(
+                false,
+                format!("Candidate activation failed; no game remains active: {error}"),
+            );
         }
         self.active = Some(candidate);
+        self.terminal = None;
         PlayStatus::Running
     }
 }
@@ -188,6 +210,7 @@ impl PlayHost for NativePlayHost {
             "Play is already active"
         );
         self.reloading = false;
+        self.terminal = None;
         self.prepare(project);
         Ok(())
     }
@@ -208,6 +231,7 @@ impl PlayHost for NativePlayHost {
     fn stop(&mut self) -> Result<()> {
         // Always release active even if joining the candidate reports a panic.
         let candidate_result = self.discard_candidate();
+        let had_active = self.active.is_some();
         let active_result = if let Some(mut running) = self.active.take() {
             running.stop().map_err(Into::into).and_then(|exit| {
                 ensure!(
@@ -224,21 +248,26 @@ impl PlayHost for NativePlayHost {
         } else {
             Ok(())
         };
-        candidate_result.and(active_result)
+        let result = candidate_result.and(active_result);
+        if let Err(error) = &result {
+            self.stopped(false, format!("{error:#}"));
+        } else if had_active || self.terminal.is_none() {
+            self.stopped(true, "Stopped".into());
+        }
+        result
     }
     fn poll(&mut self) -> Result<PlayStatus> {
         // Observe the old game even while compiling. If it exits, the explicitly
         // requested candidate may still complete, but failures cannot claim the
         // previous game is still running.
-        let mut previous_exit = None;
-        if let Some(running) = self.active.as_mut() {
-            if let Some(exit) = running.try_wait()? {
-                self.active.take();
-                previous_exit = Some(PlayStatus::Stopped {
-                    success: exit.success,
-                    message: format!("Native game exited with {:?}", exit.code),
-                });
-            }
+        if let Some(running) = self.active.as_mut()
+            && let Some(exit) = running.try_wait()?
+        {
+            self.active.take();
+            self.stopped(
+                exit.success,
+                format!("Native game exited with {:?}", exit.code),
+            );
         }
         if self
             .worker
@@ -267,7 +296,7 @@ impl PlayHost for NativePlayHost {
         if self.active.is_some() {
             return Ok(PlayStatus::Running);
         }
-        Ok(previous_exit.unwrap_or(PlayStatus::Stopped {
+        Ok(self.terminal.clone().unwrap_or(PlayStatus::Stopped {
             success: true,
             message: "Stopped".into(),
         }))
