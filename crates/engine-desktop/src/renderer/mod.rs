@@ -41,10 +41,12 @@ use engine_project::rendering3d::{
 };
 use engine_project::runtime::RenderFrame;
 use engine_render::{DrawCommand, RenderCommandBuffer, RenderTarget};
+#[cfg(any(feature = "dlss", test))]
+use engine_render_pipeline::Presentation;
 use engine_render_pipeline::{
     FeatureOverrides, GpuTexture, HostStages, HostUpscale, LightingReport, OutputTarget,
-    OverlayBatch, OverlayItem, PipelineFeatures, Presentation, PresentationInput, SceneFrame,
-    ScenePipeline, SceneTextures, Stage, ViewData, ViewId, ViewKind, ViewReport, Viewport, names,
+    OverlayBatch, OverlayItem, PipelineFeatures, PresentationInput, SceneFrame, ScenePipeline,
+    SceneTextures, Stage, ViewData, ViewId, ViewKind, ViewReport, Viewport, names,
 };
 use engine_render_post_effects::{
     DepthOfFieldFeature, MotionBlurFeature, PostEffects, SpatialAaFeature,

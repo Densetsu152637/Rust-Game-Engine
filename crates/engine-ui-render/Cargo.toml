@@ -17,6 +17,7 @@ wgpu = { workspace = true, features = ["std", "wgsl"] }
 
 [dev-dependencies]
 engine-desktop = { path = "../engine-desktop" }
+engine-render-wgpu = { path = "../engine-render-wgpu" }
 epaint_default_fonts = "=0.37.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 naga = { workspace = true, features = ["wgsl-in"] }
