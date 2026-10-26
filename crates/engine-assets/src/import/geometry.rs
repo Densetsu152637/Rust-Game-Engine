@@ -18,9 +18,6 @@ pub(super) fn import_meshes(
             if primitive.mode() != gltf::mesh::Mode::Triangles {
                 return Err(AssetError::Unsupported("non-triangle primitive".into()));
             }
-            if primitive.morph_targets().next().is_some() {
-                return Err(AssetError::Unsupported("morph targets".into()));
-            }
             let position = primitive
                 .get(&Semantic::Positions)
                 .ok_or_else(|| invalid("primitive missing positions"))?;
@@ -203,4 +200,122 @@ pub(super) fn validate_skin_vertices(
         }
     }
     Ok(())
+}
+
+pub(super) fn import_morphs(
+    document: &gltf::Document,
+    buffers: &[Vec<u8>],
+    limits: &ImportLimits,
+) -> Result<ImportedMorphs> {
+    let mut result = ImportedMorphs::default();
+    let mut elements = 0;
+    let mut target_total = 0;
+    for mesh in document.meshes() {
+        let mut target_count = None;
+        for primitive in mesh.primitives() {
+            let count = primitive.morph_targets().len();
+            if count > 256 || target_count.is_some_and(|n| n != count) {
+                return Err(invalid("mesh morph target count mismatch or exceeds 256"));
+            }
+            target_count = Some(count);
+            if mesh.weights().is_some_and(|w| w.len() != count) {
+                return Err(invalid("mesh morph weight count mismatch"));
+            }
+            add_budget(
+                &mut target_total,
+                count,
+                limits.max_entities,
+                "morph targets",
+            )?;
+            if count == 0 {
+                continue;
+            }
+            let vertex_count = primitive
+                .get(&Semantic::Positions)
+                .ok_or_else(|| invalid("missing positions"))?
+                .count();
+            for target in primitive.morph_targets() {
+                if target.positions().is_none()
+                    && target.normals().is_none()
+                    && target.tangents().is_none()
+                {
+                    return Err(invalid("empty morph target"));
+                }
+                for accessor in [target.positions(), target.normals(), target.tangents()]
+                    .into_iter()
+                    .flatten()
+                {
+                    add_budget(
+                        &mut elements,
+                        accessor.count(),
+                        limits.max_vertices,
+                        "morph delta elements",
+                    )?;
+                    if accessor.count() != vertex_count
+                        || accessor.data_type() != DataType::F32
+                        || accessor.dimensions() != Dimensions::Vec3
+                        || accessor.normalized()
+                    {
+                        return Err(invalid("invalid morph delta accessor"));
+                    }
+                }
+                if target.tangents().is_some() && primitive.get(&Semantic::Tangents).is_none() {
+                    return Err(invalid("morph tangent requires base tangents"));
+                }
+                if target.normals().is_some() && primitive.get(&Semantic::Normals).is_none() {
+                    return Err(invalid("morph normal requires base normals"));
+                }
+            }
+            let targets = primitive
+                .reader(|b| Some(buffers[b.index()].as_slice()))
+                .read_morph_targets()
+                .map(|(positions, normals, tangents)| {
+                    let positions = positions.map(|v| v.collect::<Vec<_>>());
+                    let normals = normals.map(|v| v.collect::<Vec<_>>());
+                    let tangents = tangents.map(|v| v.collect::<Vec<_>>());
+                    finite(
+                        positions
+                            .iter()
+                            .flatten()
+                            .flatten()
+                            .chain(normals.iter().flatten().flatten())
+                            .chain(tangents.iter().flatten().flatten())
+                            .copied(),
+                    )?;
+                    Ok(ImportedMorphTarget {
+                        positions,
+                        normals,
+                        tangents,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let weights = mesh
+                .weights()
+                .map_or_else(|| vec![0.; count], |v| v.to_vec());
+            if weights.len() != count {
+                return Err(invalid("mesh morph weight count mismatch"));
+            }
+            finite(weights.iter().copied())?;
+            result.primitives.push(ImportedMorphPrimitive {
+                mesh: mesh.index(),
+                primitive: primitive.index(),
+                weights,
+                targets,
+            });
+        }
+    }
+    for node in document.nodes() {
+        if let Some(weights) = node.weights() {
+            let count = node
+                .mesh()
+                .and_then(|m| m.primitives().next())
+                .map_or(0, |p| p.morph_targets().len());
+            if weights.len() != count || count == 0 {
+                return Err(invalid("node morph weight count mismatch"));
+            }
+            finite(weights.iter().copied())?;
+            result.node_weights.insert(node.index(), weights.to_vec());
+        }
+    }
+    Ok(result)
 }

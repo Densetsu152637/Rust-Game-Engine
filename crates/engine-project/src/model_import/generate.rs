@@ -78,7 +78,7 @@ pub(super) fn generate(
         assets: Vec::new(),
         bytes: 0,
     };
-    let mut warnings=vec!["Rendering uses metallic-roughness PBR, base-color and data textures, smooth normals and alpha blending. Tangent frames are reconstructed from UV derivatives. Emissive/occlusion maps, alpha masking and cubic animation remain preserved in the model asset.".into()];
+    let mut warnings=vec!["Rendering uses metallic-roughness PBR, base-color and data textures, smooth normals and alpha blending. Tangent frames are reconstructed from UV derivatives. Emissive/occlusion maps, alpha masking and cubic TRS animation remain preserved in the model asset.".into()];
     let node_entities: Vec<_> = (0..scene.nodes.len())
         .map(|i| format!("node:{i}"))
         .collect();
@@ -236,6 +236,25 @@ pub(super) fn generate(
                         "model":format!("{prefix}:model"),"mesh_node":node_index,"primitive":primitive_index,"bindings":node_entities
                     }}});
                 }
+                if scene
+                    .morphs
+                    .primitives
+                    .iter()
+                    .any(|m| m.mesh == mesh_index && m.primitive == primitive_index)
+                {
+                    if entity["components"].get("custom").is_none() {
+                        entity["components"]["custom"] = json!({});
+                    }
+                    entity["components"]["custom"]["engine.MorphWeights"] = json!({"version":1,"data":{"model":format!("{prefix}:model"),"mesh_node":node_index,"primitive":primitive_index,"weights":[]}});
+                    if let Some(clip) = scene.clips.iter().position(|c| {
+                        c.channels.iter().any(|c| {
+                            c.target_node == node_index
+                                && matches!(c.values, ChannelValues::Weights(_))
+                        })
+                    }) {
+                        entity["components"]["custom"]["engine.MorphPlayer"] = json!({"version":1,"data":{"clip":clip,"time":0.,"speed":1.,"looping":true,"playing":true}});
+                    }
+                }
                 entities.push(entity);
             }
         }
@@ -246,16 +265,19 @@ pub(super) fn generate(
         if scene.nodes.is_empty()
             || scene.nodes.len() > 4096
             || binding_bytes > 60 * 1024
-            || clip
-                .channels
-                .iter()
-                .any(|c| c.interpolation == Interpolation::CubicSpline)
+            || clip.channels.iter().any(|c| {
+                c.interpolation == Interpolation::CubicSpline
+                    && !matches!(c.values, ChannelValues::Weights(_))
+            })
         {
             skipped += 1;
             continue;
         }
         let mut tracks: BTreeMap<usize, Value> = BTreeMap::new();
         for channel in &clip.channels {
+            if matches!(channel.values, ChannelValues::Weights(_)) {
+                continue;
+            }
             let track = tracks
                 .entry(channel.target_node)
                 .or_insert_with(|| json!({"joint":channel.target_node}));
@@ -263,6 +285,7 @@ pub(super) fn generate(
                 ChannelValues::Translation(v) => ("translation", json!(v)),
                 ChannelValues::Rotation(v) => ("rotation", json!(v)),
                 ChannelValues::Scale(v) => ("scale", json!(v)),
+                ChannelValues::Weights(_) => continue,
             };
             track[property] = json!({"times":channel.times,"values":values,"interpolation":if channel.interpolation==Interpolation::Step {"step"} else {"linear"}});
         }

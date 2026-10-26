@@ -9,7 +9,7 @@ use std::{
 mod animation;
 mod geometry;
 
-pub const IMPORTER_VERSION: &str = "engine-gltf/2";
+pub const IMPORTER_VERSION: &str = "engine-gltf/3";
 #[derive(Clone, Debug)]
 pub struct ImportLimits {
     pub max_source_bytes: usize,
@@ -138,6 +138,7 @@ pub fn import_gltf(
     let fingerprint = fingerprint(&dependencies);
     Ok(ImportedScene {
         nodes,
+        morphs: geometry::import_morphs(document, &buffers, limits)?,
         scenes: document
             .scenes()
             .map(|s| s.nodes().map(|n| n.index()).collect())

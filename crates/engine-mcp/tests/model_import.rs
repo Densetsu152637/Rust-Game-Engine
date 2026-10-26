@@ -58,3 +58,35 @@ fn mcp_model_info_reports_generated_skin_binding_use() {
             .any(|entry| entry["component"] == "engine.SkinBinding" && entry["field"] == "model")
     );
 }
+
+#[test]
+fn mcp_import_preserves_weight_channels_and_exposes_live_prefab_controls() {
+    let temp = fixture();
+    fixture::write_morph_source(temp.path());
+    let result = write(
+        temp.path(),
+        "asset_import_model",
+        json!({"source":"source/model.gltf","prefix":"morph"}),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    let project = engine_project::Project::load(temp.path().join("project.json")).unwrap();
+    let model =
+        engine_project::model_import::load_model(&project.resolve_asset("morph:model").unwrap())
+            .unwrap();
+    assert_eq!(model.scene.morphs.primitives[0].targets.len(), 1);
+    let prefab =
+        engine_project::load_scene(&project.root, &project.assets["morph:prefab"].path).unwrap();
+    let primitive = prefab
+        .entities
+        .iter()
+        .find(|e| e.id == "node:1:primitive:0")
+        .unwrap();
+    assert_eq!(
+        primitive.components.custom["engine.MorphWeights"].data["model"],
+        "morph:model"
+    );
+    assert_eq!(
+        primitive.components.custom["engine.MorphPlayer"].data["clip"],
+        0
+    );
+}

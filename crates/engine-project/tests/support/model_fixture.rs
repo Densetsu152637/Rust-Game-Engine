@@ -96,3 +96,15 @@ pub fn write_skinned_source(root: &Path) {
     fs::write(path, source.to_string()).unwrap();
     fs::write(directory.join("geometry.bin"), bytes).unwrap();
 }
+
+/// A real external-buffer morph fixture used through project and MCP import paths.
+pub fn write_morph_source(root: &Path) {
+    write_source(root, false);
+    let path = root.join("source/model.gltf");
+    let mut source: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    source["meshes"][0]["primitives"][0]["targets"] = json!([{"POSITION":0}]);
+    source["meshes"][0]["weights"] = json!([0.5]);
+    source["nodes"][1]["weights"] = json!([0.25]);
+    source["animations"] = json!([{"samplers":[{"input":3,"output":3,"interpolation":"LINEAR"}],"channels":[{"sampler":0,"target":{"node":1,"path":"weights"}}]}]);
+    fs::write(path, source.to_string()).unwrap();
+}
