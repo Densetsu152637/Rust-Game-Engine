@@ -1923,6 +1923,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-render-hiz"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "engine-render-wgpu",
+ "pollster 0.4.0",
+ "wgpu",
+]
+
+[[package]]
 name = "engine-render-pipeline"
 version = "0.1.0"
 dependencies = [
