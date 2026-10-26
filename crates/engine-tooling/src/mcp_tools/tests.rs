@@ -161,7 +161,12 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
             "best_position":[1.0,0.0,2.0],"generated":24,"rejected":9,"cost":300,"steps":1}]},
         "smart_objects":{"objects":1,"slots":2,"free":1,"claimed":0,"occupied":1,
             "dropped_events":0,"listed":[{"entity":"bench","slots":[
-            {"name":"left","tags":["sit"],"state":"occupied","user":"guard"}]}]}
+            {"name":"left","tags":["sit"],"state":"occupied","user":"guard"}]}]},
+        "abilities":{"definitions":"abilities","actors":2,"active_effects":1,"active_abilities":0,
+            "pending_predictions":0,"dropped_events":0,"listed":[{"entity":"guard",
+            "attributes":[{"name":"Health","base":75.0,"current":75.0}],"tags":["Cooldown.Strike"],
+            "effects":[{"effect":"StrikeCooldown","stacks":1,"remaining":0.5,"predicted":false}],
+            "active":[],"granted":1}]}
     }});
     let summary = summarize(&report, None, 50);
     assert_eq!(summary["profile"]["frames"].as_array().unwrap().len(), 32);
@@ -215,7 +220,21 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         summary["smart_objects"]["listed"][0]["slots"][0]["user"],
         "guard"
     );
+    assert_eq!(
+        summary["abilities"]["listed"][0]["attributes"][0]["current"],
+        75.0
+    );
     assert_eq!(summary["telemetry_omitted"], json!([]));
+    let oversized_abilities = summarize(
+        &json!({"scene":{"abilities":{"listed":["x".repeat(65_536)]}}}),
+        None,
+        50,
+    );
+    assert!(oversized_abilities["abilities"].is_null());
+    assert_eq!(
+        oversized_abilities["telemetry_omitted"],
+        json!(["abilities"])
+    );
     let oversized_acoustics = summarize(
         &json!({"scene":{"acoustics":{"fallback_reason":"x".repeat(65_536)}}}),
         None,
@@ -293,6 +312,7 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     let absent = summarize(&json!({}), None, 50);
     assert!(absent["env_queries"].is_null() && absent["smart_objects"].is_null());
     assert!(absent["perception"].is_null());
+    assert!(absent["abilities"].is_null());
     assert!(absent["behavior_trees"].is_null());
     assert!(absent["state_trees"].is_null());
     assert!(absent["upscaler"].is_null());

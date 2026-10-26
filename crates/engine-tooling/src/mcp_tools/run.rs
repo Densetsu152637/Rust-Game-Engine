@@ -117,6 +117,8 @@ impl Tool for RunTool {
                     "Environment queries: {templates, running, finished_untaken, completed, failed, recent:[{querier, query, items, best_score, best_position, generated, rejected, cost, steps}]}; at most 8 recent queries. Null without query templates or queries."})),
                 ("smart_objects", json!({"type":["object","null"], "description":
                     "Smart objects: {objects, slots, free, claimed, occupied, listed:[{entity, slots:[{name, tags, state, user}]}], dropped_events}; at most 16 objects listed. Null without an engine.SmartObject."})),
+                ("abilities", json!({"type":["object","null"], "description":
+                    "Ability systems: {definitions, actors, active_effects, active_abilities, pending_predictions, dropped_events, listed:[{entity, attributes:[{name, base, current}], tags, effects:[{effect, stacks, remaining, predicted}], active, granted}]}; at most 16 actors, 16 attributes, tags and effects and 8 active abilities each. Null without an engine.AbilitySystem."})),
                 ("telemetry_omitted", json!({"type":"array","items":{"type":"string"}})),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
@@ -247,12 +249,14 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
     let perception = telemetry("perception", &snapshot["perception"]);
     let env_queries = telemetry("env_queries", &snapshot["env_queries"]);
     let smart_objects = telemetry("smart_objects", &snapshot["smart_objects"]);
+    let abilities = telemetry("abilities", &snapshot["abilities"]);
     json!({
         "upscaler": upscaler, "frame_generation": frame_generation,
         "localization": localization, "ui_render": ui_render,
         "render_pipeline": render_pipeline, "ray_tracing": ray_tracing,
         "acoustics": acoustics, "behavior_trees": behavior_trees, "state_trees": state_trees,
         "perception": perception, "env_queries": env_queries, "smart_objects": smart_objects,
+        "abilities": abilities,
         "profile": profile, "profile_frames_truncated": profile_frames_truncated,
         "network": network, "input_devices": input_devices, "telemetry_omitted": telemetry_omitted,
         "event_trace":event_trace, "event_count":report["event_trace"]["count"].as_u64().unwrap_or(0),

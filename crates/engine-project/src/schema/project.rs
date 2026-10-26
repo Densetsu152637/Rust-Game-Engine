@@ -49,6 +49,7 @@ impl Project {
                 "acoustics",
                 "lut",
                 "graph",
+                "gameplay",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -223,6 +224,9 @@ impl Project {
                     crate::acoustics::validate_document(&asset.id, &bytes)?;
                 }
                 "graph" => crate::graphs::validate_asset(self, &asset.id)?,
+                "gameplay" => {
+                    crate::gameplay::load_definitions(self, &asset.id)?;
+                }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;
                 }

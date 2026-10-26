@@ -110,6 +110,11 @@
   time-sliced execution), `engine.EnvironmentQueries`, `engine.SmartObject` slots with
   claim, occupy and release, and the built-in `engine.run_query` and
   `engine.use_smart_object` tree tasks.
+- [Gameplay abilities](gameplay-abilities.md): a GAS-style ability system
+  (`engine-gameplay`): attributes with aggregation and clamping, hierarchical tags,
+  instant, duration, infinite, periodic and stacking effects, abilities with costs,
+  cooldowns and tag rules, prediction keys, the `gameplay` asset, `engine.AbilitySystem`,
+  events, native API and the `engine.activate_ability` tree task.
 - [Physics library](../crates/engine-physics/README.md),
   [animation library](../crates/engine-animation/README.md), and
   [navigation library](../crates/engine-navigation/README.md): native APIs and limits.
