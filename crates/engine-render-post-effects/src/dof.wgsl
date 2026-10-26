@@ -16,6 +16,13 @@ fn clamp_output(pixel: vec2<i32>) -> vec2<i32> {
     return clamp(pixel, vec2<i32>(0), vec2<i32>(p.geometry.xy) - vec2<i32>(1));
 }
 
+fn hdr_at(pixel: vec2<i32>) -> vec4<f32> {
+    let uv = (vec2<f32>(clamp_output(pixel)) + vec2<f32>(0.5)) / p.geometry.xy;
+    let source_size = vec2<i32>(textureDimensions(hdr));
+    let source_pixel = min(vec2<i32>(uv * vec2<f32>(source_size)), source_size - vec2<i32>(1));
+    return textureLoad(hdr, source_pixel, 0);
+}
+
 fn depth_at(pixel: vec2<i32>) -> f32 {
     let uv = (vec2<f32>(clamp_output(pixel)) + vec2<f32>(0.5)) / p.geometry.xy;
     let coord = min(vec2<i32>(uv * p.geometry.zw), vec2<i32>(p.geometry.zw) - vec2<i32>(1));
@@ -31,7 +38,7 @@ fn view_distance(pixel: vec2<i32>) -> f32 {
 
 @fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(position.xy);
-    let center = textureLoad(hdr, pixel, 0);
+    let center = hdr_at(pixel);
     let center_distance = view_distance(pixel);
     let radius = min(abs(center_distance - p.focus.x) / p.focus.y, 1.0) * p.focus.z;
     if radius < 0.75 {
@@ -54,7 +61,7 @@ fn view_distance(pixel: vec2<i32>) -> f32 {
         // Reject foreground intrusion and background leakage at both sides
         // of a silhouette; the centre is always retained.
         if abs(view_distance(sample_pixel) - center_distance) <= p.focus.w {
-            sum += textureLoad(hdr, sample_pixel, 0);
+            sum += hdr_at(sample_pixel);
             weight += 1.0;
         }
     }

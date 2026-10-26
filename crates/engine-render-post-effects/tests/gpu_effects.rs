@@ -249,9 +249,24 @@ impl Rig {
         motion: bool,
         reset: bool,
     ) -> Result<HdrImage> {
+        self.frame_with_upscale(id, render, output, projection, dof, motion, reset, true)
+    }
+
+    fn frame_with_upscale(
+        &mut self,
+        id: ViewId,
+        render: [u32; 2],
+        output: [u32; 2],
+        projection: Mat4,
+        dof: bool,
+        motion: bool,
+        reset: bool,
+        upscale: bool,
+    ) -> Result<HdrImage> {
         let mut view = ViewData::new(id, Mat4::IDENTITY, projection, render, output)?;
         view.features.set(DOF_FEATURE, dof);
         view.features.set(MOTION_BLUR_FEATURE, motion);
+        view.features.set(names::UPSCALE, upscale);
         view.reset_history = reset;
         let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("test output"),
@@ -286,6 +301,78 @@ impl Rig {
         self.gpu.check_errors()?;
         self.scene.read_hdr(id)
     }
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn effects_expand_render_sized_hdr_when_upscale_is_disabled() -> Result<()> {
+    let mut rig = Rig::new()?;
+    let id = ViewId(30);
+    let projection = perspective(RENDER[0] as f32 / RENDER[1] as f32);
+    let focus = distance_for_depth(projection, 0.5);
+    let far = distance_for_depth(projection, 0.8);
+    rig.controls.set_dof(
+        id,
+        Some(DepthOfFieldSettings {
+            focus_distance: focus,
+            focus_range: (far - focus) * 0.25,
+            max_radius_pixels: 6.0,
+            edge_tolerance: (far - focus) * 0.2,
+        }),
+    )?;
+    rig.controls
+        .set_motion_blur(id, Some(MotionBlurSettings::default()))?;
+    let source =
+        rig.frame_with_upscale(id, RENDER, OUTPUT, projection, false, false, false, false)?;
+    assert_eq!(source.size, RENDER);
+    let dof = rig.frame_with_upscale(id, RENDER, OUTPUT, projection, true, false, false, false)?;
+    assert_eq!(dof.size, OUTPUT);
+    assert!(
+        dof.pixel(120, 27)[0] > 0.05,
+        "right side was cropped or black"
+    );
+    assert!(dof.pixel(32, 27)[1] > 0.95, "left foreground lost colour");
+    // Zero vectors and a camera reset still copy from the correct render-size
+    // texel into the output-size post destination.
+    rig.motion_mode.store(0, Ordering::Relaxed);
+    let zero = rig.frame_with_upscale(id, RENDER, OUTPUT, projection, false, true, false, false)?;
+    assert_eq!(zero.size, OUTPUT);
+    assert!(close(zero.pixel(120, 27), source.pixel(60, 18), 0.02));
+    rig.motion_mode.store(1, Ordering::Relaxed);
+    let cut = rig.frame_with_upscale(id, RENDER, OUTPUT, projection, false, true, true, false)?;
+    assert!(close(cut.pixel(120, 27), source.pixel(60, 18), 0.02));
+    let moving =
+        rig.frame_with_upscale(id, RENDER, OUTPUT, projection, false, true, false, false)?;
+    assert!(maximum_channel_change(&moving, &zero, 85, 110, 27, 0) > 0.1);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn bilinear_upscale_halo_is_not_attributed_to_dof_gather() -> Result<()> {
+    let mut rig = Rig::new()?;
+    let id = ViewId(31);
+    let projection = perspective(RENDER[0] as f32 / RENDER[1] as f32);
+    let focus = distance_for_depth(projection, 0.5);
+    let far = distance_for_depth(projection, 0.8);
+    rig.controls.set_dof(
+        id,
+        Some(DepthOfFieldSettings {
+            focus_distance: focus,
+            focus_range: (far - focus) * 0.25,
+            max_radius_pixels: 6.0,
+            edge_tolerance: (far - focus) * 0.2,
+        }),
+    )?;
+    let baseline = rig.frame(id, RENDER, OUTPUT, projection, false, false, false)?;
+    let effected = rig.frame(id, RENDER, OUTPUT, projection, true, false, false)?;
+    // Output x=63 samples between the green foreground texel 31 and red
+    // background texel 32 in the bilinear upscale. The centre is focused;
+    // DOF leaves that pre-existing red component unchanged.
+    assert!(baseline.pixel(63, 27)[0] > 0.1);
+    assert!(close(effected.pixel(63, 27), baseline.pixel(63, 27), 0.02));
+    assert!(effected.pixel(65, 27)[1] <= baseline.pixel(65, 27)[1] + 0.02);
+    Ok(())
 }
 
 fn perspective(aspect: f32) -> Mat4 {

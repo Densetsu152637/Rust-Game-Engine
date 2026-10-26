@@ -11,9 +11,11 @@ request a post destination. The host adapter for authored project components
 and editor controls is an integration task; this crate does not change those
 schemas.
 
-Both features read the current HDR colour at the output size and call
-`post_process_io()` for a distinct output-size destination. They run after
-the built-in `engine.post` if it is enabled, before tonemapping. The descriptor
+Both features read the current HDR colour, which may still be render sized if
+the upscale feature is disabled, and call `post_process_io()` for a distinct
+output-size destination. A render-sized source is mapped to output pixels by
+clamped nearest sampling. They run after the built-in `engine.post` if it is
+enabled, before tonemapping. The descriptor
 orders depth of field before motion blur when both run. Each feature works per
 view; there is no history texture. Motion blur declares `FeatureNeeds::motion`
 so the pipeline allocates and runs the native motion prepass.
@@ -32,9 +34,11 @@ rejected before requesting a post destination.
 The circle radius is `min(abs(distance - focus_distance) / focus_range, 1) *
 max_radius_pixels`. A 16-tap, two-ring gather blurs pixels with radius at least
 0.75 output pixels. Samples whose view-space Z differs from the centre by
-more than `edge_tolerance` are rejected, so a foreground silhouette does not
-mix its colour into a background centre or vice versa. The centre contributes
-unconditionally. The result is a bounded screen-space approximation, not a
+more than `edge_tolerance` are rejected to limit additional colour mixing
+across a depth edge. The centre contributes unconditionally. If the built-in
+bilinear upscale has already mixed foreground and background into that centre
+pixel, this pass cannot remove the existing halo. The result is a bounded
+screen-space approximation, not a
 physical lens model: foreground silhouettes remain relatively hard, no
 separate occluded colour layer exists, and highlights do not produce lens
 bokeh shapes.
@@ -51,8 +55,9 @@ centre to the render-size motion texture and multiplies the vector by
 `output_size / render_size` independently for X and Y. It then applies
 `shutter_scale` and clamps the path length to `max_radius_pixels`. Nine
 symmetric taps, including the centre, gather along that path. Depth separation
-beyond `edge_tolerance` rejects samples across silhouettes. Zero motion and
-`ViewData::reset_history` return the source pixel exactly. A camera cut must
+beyond `edge_tolerance` limits additional sampling across silhouettes; it
+cannot undo colour already mixed by an earlier upscale. Zero motion and
+`ViewData::reset_history` return the nearest mapped source pixel exactly. A camera cut must
 set `reset_history`; otherwise previous-frame camera motion remains eligible.
 
 `shutter_scale` is finite within 0..2, `max_radius_pixels` is finite within
