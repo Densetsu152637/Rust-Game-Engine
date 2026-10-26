@@ -41,7 +41,10 @@ impl GraphKinds {
 
 /// The kinds shipped with the engine. Append other domains' kinds here.
 fn build() -> GraphKinds {
-    let kinds = [engine_ai::behavior_tree::kind()];
+    let kinds = [
+        engine_ai::behavior_tree::kind(),
+        engine_ai::state_tree::kind(),
+    ];
     GraphKinds {
         kinds: kinds.into_iter().map(|k| (k.name.clone(), k)).collect(),
     }

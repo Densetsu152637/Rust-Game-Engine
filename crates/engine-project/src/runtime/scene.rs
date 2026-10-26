@@ -47,6 +47,10 @@ pub struct RuntimeSnapshot {
     /// without an `engine.BehaviorTreeAgent`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub behavior_trees: Option<crate::ai::BehaviorTreeStatus>,
+    /// State tree agents: active path, recent transitions and blackboard summary per
+    /// agent; absent without an `engine.StateTreeAgent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_trees: Option<crate::ai::StateTreeStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -214,6 +218,7 @@ impl Runtime {
             ui_render: self.ui_render_status(),
             acoustics: self.acoustics_status(),
             behavior_trees: crate::ai::status(self.app.world()),
+            state_trees: crate::ai::state_tree_status(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self

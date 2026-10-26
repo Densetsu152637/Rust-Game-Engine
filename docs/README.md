@@ -96,6 +96,10 @@
   runtime: composites, decorators with observer aborts, services, the typed blackboard,
   `engine.BehaviorTreeAgent`, navigation-driven `move_to`, native tasks, events,
   telemetry and limits.
+- [State trees](ai-state-trees.md): the `state_tree` graph kind: hierarchical states with
+  enter conditions, ordered tasks, prioritised and delayed transitions, evaluators,
+  `engine.StateTreeAgent`, navigation-driven `move_to`, native tasks and evaluators,
+  events, telemetry and limits.
 - [Physics library](../crates/engine-physics/README.md),
   [animation library](../crates/engine-animation/README.md), and
   [navigation library](../crates/engine-navigation/README.md): native APIs and limits.

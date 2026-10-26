@@ -73,7 +73,8 @@ pub enum LogEvent {
 #[derive(Clone, Copy, Debug)]
 enum LogTarget {
     State(usize),
-    Transition(usize),
+    /// The transition and the leaf state it entered.
+    Transition(usize, Option<usize>),
     Tree,
 }
 
@@ -96,6 +97,13 @@ pub struct TransitionRecord {
     pub trigger: &'static str,
 }
 
+/// One state entered or exited, in the order it happened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StateChange {
+    Entered(String),
+    Exited(String),
+}
+
 /// What one tick did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TickReport {
@@ -107,6 +115,8 @@ pub struct TickReport {
     pub exited: Vec<String>,
     /// State ids entered this tick, in order (parent before child).
     pub entered: Vec<String>,
+    /// Every enter and exit of the tick in the order it happened.
+    pub changes: Vec<StateChange>,
     /// Transition evaluation passes performed.
     pub passes: u32,
 }
@@ -425,6 +435,40 @@ impl StateTreeInstance {
             .collect()
     }
 
+    fn record(&self, entry: &LogEntry) -> LogRecord {
+        let tree = &*self.tree;
+        let (id, to) = match entry.target {
+            LogTarget::State(s) => (tree.states[s].id.clone(), None),
+            LogTarget::Transition(t, to) => (
+                tree.transitions[t].id.clone(),
+                to.map(|s| tree.states[s].id.clone()),
+            ),
+            LogTarget::Tree => (String::new(), None),
+        };
+        LogRecord {
+            tick: entry.tick,
+            event: entry.event,
+            id,
+            to,
+        }
+    }
+
+    /// The last `max` fired transitions, oldest first (a view of the bounded log,
+    /// so older ones may have been evicted).
+    pub fn recent_transitions(&self, max: usize) -> Vec<LogRecord> {
+        let mut recent: Vec<LogRecord> = self
+            .state
+            .log
+            .iter()
+            .rev()
+            .filter(|e| e.event == LogEvent::Transition)
+            .take(max)
+            .map(|e| self.record(e))
+            .collect();
+        recent.reverse();
+        recent
+    }
+
     /// Bounded debug view: phase, active path, per-state results and the recent
     /// transition log.
     pub fn debug(&self) -> StateTreeDebug {
@@ -440,20 +484,7 @@ impl StateTreeInstance {
                 result: rt.result,
             })
             .collect();
-        let log = self
-            .state
-            .log
-            .iter()
-            .map(|entry| LogRecord {
-                tick: entry.tick,
-                event: entry.event,
-                id: match entry.target {
-                    LogTarget::State(s) => tree.states[s].id.clone(),
-                    LogTarget::Transition(t) => tree.transitions[t].id.clone(),
-                    LogTarget::Tree => String::new(),
-                },
-            })
-            .collect();
+        let log = self.state.log.iter().map(|e| self.record(e)).collect();
         StateTreeDebug {
             ticks: self.state.ticks,
             time: self.state.time,
@@ -481,6 +512,9 @@ pub struct LogRecord {
     pub event: LogEvent,
     /// State id for enter/exit, transition id for transitions, empty for the tree.
     pub id: String,
+    /// For transitions: the leaf state entered (absent when the tree completed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
 }
 
 /// The bounded debug view of an agent.
@@ -682,6 +716,9 @@ impl Exec<'_> {
         }
         self.log(LogEvent::Entered, LogTarget::State(state));
         self.report.entered.push(def.id.clone());
+        self.report
+            .changes
+            .push(StateChange::Entered(def.id.clone()));
         for task in 0..def.tasks.len() {
             self.start_task(state, task);
         }
@@ -965,11 +1002,12 @@ impl Exec<'_> {
         let rt = &mut self.st.trans[t];
         rt.armed = false;
         rt.elapsed = 0.0;
-        self.log(LogEvent::Transition, LogTarget::Transition(t));
-        let to = match &plan {
-            Plan::Goto { enter, .. } => enter.last().map(|s| tree.states[*s].id.clone()),
+        let leaf = match &plan {
+            Plan::Goto { enter, .. } => enter.last().copied(),
             Plan::Finish(_) => None,
         };
+        self.log(LogEvent::Transition, LogTarget::Transition(t, leaf));
+        let to = leaf.map(|s| tree.states[s].id.clone());
         self.report.transitions.push(TransitionRecord {
             transition: def.id.clone(),
             from: tree.states[def.owner].id.clone(),
@@ -1039,6 +1077,9 @@ impl Exec<'_> {
             self.st.states[state].result = None;
             self.log(LogEvent::Exited, LogTarget::State(state));
             self.report.exited.push(def.id.clone());
+            self.report
+                .changes
+                .push(StateChange::Exited(def.id.clone()));
         }
     }
 

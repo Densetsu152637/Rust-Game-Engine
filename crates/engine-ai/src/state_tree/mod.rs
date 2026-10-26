@@ -17,8 +17,8 @@ pub mod kind;
 
 pub use compile::{Completion, Selection, StateTree, Trigger, compile, st_codes};
 pub use exec::{
-    LogEvent, LogRecord, MAX_LOG, MAX_PENDING_EVENTS, MAX_TRANSITIONS_PER_TICK, Phase, StateDebug,
-    StateTreeDebug, StateTreeInstance, TickReport, TransitionRecord,
+    LogEvent, LogRecord, MAX_LOG, MAX_PENDING_EVENTS, MAX_TRANSITIONS_PER_TICK, Phase, StateChange,
+    StateDebug, StateTreeDebug, StateTreeInstance, TickReport, TransitionRecord,
 };
 pub use host::StateTreeHost;
 pub use kind::{KIND, kind, node, port, shared_kind};
