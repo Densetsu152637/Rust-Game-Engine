@@ -31,7 +31,7 @@ fn real_opus_routes_to_ordinary_pcm_stream_and_offline_mixer() {
     let mut playback = VoicePlayback::new(audio.control(), 1200, 2).unwrap();
     let samples = tone();
     let mut mixed = Vec::new();
-    let mut max_source_frame = 0.;
+    let mut max_source_frame: f64 = 0.;
     for seq in 0..12 {
         let now = f64::from(seq) * 20.;
         let up = sender.encode_frame(&samples, None, seq == 11).unwrap();
