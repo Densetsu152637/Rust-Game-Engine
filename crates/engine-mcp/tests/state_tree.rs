@@ -65,6 +65,7 @@ fn state_trees_are_described_validated_and_edited_with_the_graph_tools() {
         kinds.contains(&"behavior_tree")
             && kinds.contains(&"state_tree")
             && kinds.contains(&"animation")
+            && kinds.contains(&"dialogue")
     );
     assert!(kinds.windows(2).all(|pair| pair[0] < pair[1]));
     let full = data(dir.path(), "graph_schema", json!({"kind":"state_tree"}));

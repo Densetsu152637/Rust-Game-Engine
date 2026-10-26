@@ -105,6 +105,7 @@ impl GraphCanvas {
                                 30.0 + (session.document().nodes.len() % 4) as f32 * 215.0,
                                 40.0,
                             ]),
+                            ports: None,
                         }],
                     );
                     if session.document().node(id.as_str()).is_some() {

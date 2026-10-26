@@ -599,6 +599,107 @@ fn extensible_nodes_accept_extra_ports() {
     assert!(validate(&document, &kind(), Strictness::Complete).is_empty());
 }
 
+#[test]
+fn edits_author_extensible_ports_and_preserve_declared_ports_atomically() {
+    let mut document = GraphDocument::new("test_flow");
+    let kind = kind();
+    let ordinary = edit(json!({"op":"add_node","id":"ordinary","node_type":"step"}));
+    assert!(
+        serde_json::to_value(&ordinary)
+            .unwrap()
+            .get("ports")
+            .is_none()
+    );
+    let declared = kind.registry.get("open").unwrap().declared_ports();
+    let mut ports = declared.clone();
+    ports.push(engine_graph::Port {
+        name: "value".into(),
+        direction: engine_graph::PortDirection::Out,
+        ty: PortType::Int,
+        multiple: true,
+    });
+    let add = edit(json!({"op":"add_node","id":"o","node_type":"open","ports":ports}));
+    assert_eq!(serde_json::to_value(&add).unwrap()["ports"], json!(ports));
+    apply_edit(&mut document, &add, &kind).unwrap();
+    assert_eq!(document.node("o").unwrap().ports, ports);
+    apply_edit(
+        &mut document,
+        &edit(json!({"op":"add_node","id":"fixed","node_type":"step"})),
+        &kind,
+    )
+    .unwrap();
+
+    let mut next = declared.clone();
+    next.push(engine_graph::Port {
+        name: "other".into(),
+        direction: engine_graph::PortDirection::In,
+        ty: PortType::String,
+        multiple: false,
+    });
+    apply_edit(
+        &mut document,
+        &edit(json!({"op":"set_ports","node":"o","ports":next})),
+        &kind,
+    )
+    .unwrap();
+    assert_eq!(document.node("o").unwrap().ports, next);
+
+    let attempts = [
+        (
+            json!({"op":"set_ports","node":"missing","ports":next}),
+            codes::EDIT_NODE_MISSING,
+        ),
+        (
+            json!({"op":"set_ports","node":"o","ports":[{"name":"other","direction":"in","type":"string"}]}),
+            codes::NODE_PORTS_MISMATCH,
+        ),
+        (
+            json!({"op":"set_ports","node":"o","ports":[]}),
+            codes::NODE_PORTS_MISMATCH,
+        ),
+        (
+            json!({"op":"set_ports","node":"o","ports":[{"name":"prev","direction":"out","type":"flow"}]}),
+            codes::NODE_PORTS_MISMATCH,
+        ),
+        (
+            json!({"op":"set_ports","node":"o","ports":[{"name":"prev","direction":"in","type":"flow"},{"name":"prev","direction":"in","type":"flow"}]}),
+            codes::PORT_DUPLICATE,
+        ),
+        (
+            json!({"op":"add_node","id":"fixed","node_type":"step","ports":[]}),
+            codes::NODE_PORTS_MISMATCH,
+        ),
+        (
+            json!({"op":"set_ports","node":"fixed","ports":[]}),
+            codes::NODE_PORTS_MISMATCH,
+        ),
+    ];
+    for (operation, code) in attempts {
+        let before = document.clone();
+        let errors = apply_edit(&mut document, &edit(operation), &kind).unwrap_err();
+        assert!(errors.iter().any(|d| d.code == code), "{errors:?}");
+        assert_eq!(document, before);
+    }
+    let mut too_many = declared;
+    for index in 0..64 {
+        too_many.push(engine_graph::Port {
+            name: format!("p{index}"),
+            direction: engine_graph::PortDirection::Out,
+            ty: PortType::Int,
+            multiple: false,
+        });
+    }
+    let before = document.clone();
+    let errors = apply_edit(
+        &mut document,
+        &edit(json!({"op":"set_ports","node":"o","ports":too_many})),
+        &kind,
+    )
+    .unwrap_err();
+    assert_eq!(errors[0].code, codes::LIMIT_PORTS);
+    assert_eq!(document, before);
+}
+
 fn edit(value: Value) -> GraphEdit {
     serde_json::from_value(value).expect("edit parses")
 }

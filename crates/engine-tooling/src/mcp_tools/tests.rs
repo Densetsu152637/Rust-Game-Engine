@@ -150,7 +150,28 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
             "enabled":true,"ticks":9,"phase":"running","last_finished":null,
             "active_path":["alert","chase"],
             "transitions":[{"tick":4,"event":"transition","id":"spot","to":"chase"}],
-            "blackboard":{"alarm":true}}]}
+            "blackboard":{"alarm":true}}]},
+        "perception":{"total":1,"stimuli":2,"rays_cast":1,"rays_deferred":0,"noises":0,
+            "dropped_events":0,"dropped_stimuli":0,"perceivers":[{"entity":"guard","team":1,
+            "known":1,"sensed":1,"records":[],"best":{"subject":"thief","sense":"sight",
+            "affiliation":"hostile","position":[0.0,0.0,-6.0],"strength":1.0,"sensed":true,
+            "age":0.0}}]},
+        "env_queries":{"templates":1,"running":0,"finished_untaken":0,"completed":2,"failed":0,
+            "recent":[{"querier":"guard","query":"flank","items":1,"best_score":0.8,
+            "best_position":[1.0,0.0,2.0],"generated":24,"rejected":9,"cost":300,"steps":1}]},
+        "smart_objects":{"objects":1,"slots":2,"free":1,"claimed":0,"occupied":1,
+            "dropped_events":0,"listed":[{"entity":"bench","slots":[
+            {"name":"left","tags":["sit"],"state":"occupied","user":"guard"}]}]},
+        "progression":{"dropped_events":0,"dropped_rewards":0,"dialogues":[],
+            "inventories":[{"entity":"hero","slots":16,"used":2,"weight":1.5,
+                "items":{"potion":3},"equipped":{}}],
+            "quest_logs":[{"entity":"hero","flags":[],"quests":[{"quest":"wolves",
+                "state":"active","stage":"hunt","objectives":[["kills",1,3]]}]}]},
+        "abilities":{"definitions":"abilities","actors":2,"active_effects":1,"active_abilities":0,
+            "pending_predictions":0,"dropped_events":0,"listed":[{"entity":"guard",
+            "attributes":[{"name":"Health","base":75.0,"current":75.0}],"tags":["Cooldown.Strike"],
+            "effects":[{"effect":"StrikeCooldown","stacks":1,"remaining":0.5,"predicted":false}],
+            "active":[],"granted":1}]}
     }});
     let summary = summarize(&report, None, 50);
     assert_eq!(summary["profile"]["frames"].as_array().unwrap().len(), 32);
@@ -194,7 +215,35 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         summary["state_trees"]["agents"][0]["transitions"][0]["to"],
         "chase"
     );
+    assert_eq!(
+        summary["perception"]["perceivers"][0]["best"]["subject"],
+        "thief"
+    );
+    assert_eq!(summary["perception"]["rays_cast"], 1);
+    assert_eq!(summary["env_queries"]["recent"][0]["query"], "flank");
+    assert_eq!(
+        summary["progression"]["inventories"][0]["items"]["potion"],
+        3
+    );
+    assert_eq!(
+        summary["smart_objects"]["listed"][0]["slots"][0]["user"],
+        "guard"
+    );
+    assert_eq!(
+        summary["abilities"]["listed"][0]["attributes"][0]["current"],
+        75.0
+    );
     assert_eq!(summary["telemetry_omitted"], json!([]));
+    let oversized_abilities = summarize(
+        &json!({"scene":{"abilities":{"listed":["x".repeat(65_536)]}}}),
+        None,
+        50,
+    );
+    assert!(oversized_abilities["abilities"].is_null());
+    assert_eq!(
+        oversized_abilities["telemetry_omitted"],
+        json!(["abilities"])
+    );
     let oversized_acoustics = summarize(
         &json!({"scene":{"acoustics":{"fallback_reason":"x".repeat(65_536)}}}),
         None,
@@ -249,7 +298,31 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         oversized_state_trees["telemetry_omitted"],
         json!(["state_trees"])
     );
+    let oversized_perception = summarize(
+        &json!({"scene":{"perception":{"perceivers":["x".repeat(65_536)]}}}),
+        None,
+        50,
+    );
+    assert!(oversized_perception["perception"].is_null());
+    assert_eq!(
+        oversized_perception["telemetry_omitted"],
+        json!(["perception"])
+    );
+    let oversized_queries = summarize(
+        &json!({"scene":{"env_queries":{"recent":["x".repeat(65_536)]}}}),
+        None,
+        50,
+    );
+    assert!(oversized_queries["env_queries"].is_null());
+    assert_eq!(
+        oversized_queries["telemetry_omitted"],
+        json!(["env_queries"])
+    );
     let absent = summarize(&json!({}), None, 50);
+    assert!(absent["env_queries"].is_null() && absent["smart_objects"].is_null());
+    assert!(absent["progression"].is_null());
+    assert!(absent["perception"].is_null());
+    assert!(absent["abilities"].is_null());
     assert!(absent["behavior_trees"].is_null());
     assert!(absent["state_trees"].is_null());
     assert!(absent["upscaler"].is_null());

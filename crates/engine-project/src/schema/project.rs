@@ -2,6 +2,15 @@ use super::*;
 
 impl Project {
     pub fn load(manifest: impl AsRef<Path>) -> Result<Self> {
+        let project = Self::load_for_graph_authoring(manifest)?;
+        project.validate()?;
+        Ok(project)
+    }
+
+    /// Loads bounded project context for graph inspection and repair. Asset validation
+    /// is deferred so an invalid graph does not hide its own diagnostics. This
+    /// context is for authoring tools only, never runtime or script execution.
+    pub fn load_for_graph_authoring(manifest: impl AsRef<Path>) -> Result<Self> {
         let manifest = fs::canonicalize(manifest)?;
         let root = manifest
             .parent()
@@ -56,6 +65,7 @@ impl Project {
                 "tilemap",
                 "terrain",
                 "foliage",
+                "gameplay",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -122,7 +132,6 @@ impl Project {
             input_bindings: bindings,
             scene,
         };
-        project.validate()?;
         Ok(project)
     }
     pub fn rust_manifest(&self) -> Result<PathBuf> {
@@ -286,6 +295,9 @@ impl Project {
                         None,
                     )
                     .map_err(|e| Error::new(e.code, e.message))?;
+                }
+                "gameplay" => {
+                    crate::gameplay::load_definitions(self, &asset.id)?;
                 }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;

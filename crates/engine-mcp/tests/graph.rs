@@ -65,7 +65,14 @@ fn graph_schema_lists_kinds_and_describes_node_types() {
         tree["node_types"][0].get("ports").is_none(),
         "the overview is brief"
     );
-    assert_eq!(overview["edit_operations"].as_array().unwrap().len(), 10);
+    assert_eq!(overview["edit_operations"].as_array().unwrap().len(), 11);
+    assert!(
+        overview["edit_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op["op"] == "set_ports")
+    );
     assert!(
         overview["diagnostic_codes"]
             .as_array()
@@ -139,6 +146,7 @@ fn graph_validate_reports_coded_diagnostics_for_inline_documents_assets_and_file
     let result = data(dir.path(), "graph_validate", json!({"document":valid}));
     assert_eq!(result["ok"], true, "{result}");
     assert_eq!(result["valid"], true);
+    assert_eq!(result["project_context_loaded"], true);
     assert_eq!(result["kind"], "behavior_tree");
     assert_eq!(
         (result["nodes"].as_u64(), result["edges"].as_u64()),
@@ -192,6 +200,7 @@ fn graph_validate_reports_coded_diagnostics_for_inline_documents_assets_and_file
     assert_eq!(broken["ok"], true);
     assert_eq!(broken["valid"], false);
     assert_eq!(codes(&broken), ["graph.document.malformed"]);
+    assert_eq!(broken["project_context_loaded"], true);
     assert_eq!(broken["diagnostics"][0]["file"], "assets/patrol.graph.json");
 
     // Exactly one source; unknown assets fail properly.
@@ -225,6 +234,42 @@ fn graph_validate_reports_coded_diagnostics_for_inline_documents_assets_and_file
         json!({"document":{"version":1,"kind":"nope"}}),
     );
     assert_eq!(codes(&unknown_kind), ["graph.kind.unknown"]);
+}
+
+#[test]
+fn graph_validation_keeps_kind_rules_when_project_context_is_unavailable() {
+    let dir = fixture();
+    let document = json!({"version":1,"kind":"behavior_tree","nodes":[
+        {"id":"root","node_type":"root"},{"id":"wait","node_type":"wait"}],
+        "edges":[{"from":{"node":"root","port":"child"},"to":{"node":"wait","port":"parent"}}]});
+    let manifest_path = dir.path().join("project.json");
+    let original = fs::read(&manifest_path).unwrap();
+
+    fs::write(&manifest_path, "{broken").unwrap();
+    assert!(engine_project::Project::load_for_graph_authoring(&manifest_path).is_err());
+    let result = data(dir.path(), "graph_validate", json!({"document":document}));
+    assert_eq!(result["valid"], true, "{result}");
+    assert_eq!(result["project_context_loaded"], false);
+
+    let mut manifest: Value = serde_json::from_slice(&original).unwrap();
+    manifest["componentSchemas"] = json!("assets/catalog.json");
+    fs::write(dir.path().join("assets/catalog.json"), "{broken").unwrap();
+    fs::write(&manifest_path, manifest.to_string()).unwrap();
+    assert!(engine_project::Project::load_for_graph_authoring(&manifest_path).is_err());
+    let result = data(dir.path(), "graph_validate", json!({"document":document}));
+    assert_eq!(result["valid"], true, "{result}");
+    assert_eq!(result["project_context_loaded"], false);
+
+    manifest.as_object_mut().unwrap().remove("componentSchemas");
+    manifest["assets"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":"escape","kind":"graph","path":"../outside.json"}));
+    fs::write(&manifest_path, manifest.to_string()).unwrap();
+    assert!(engine_project::Project::load_for_graph_authoring(&manifest_path).is_err());
+    let result = data(dir.path(), "graph_validate", json!({"document":document}));
+    assert_eq!(result["valid"], true, "{result}");
+    assert_eq!(result["project_context_loaded"], false);
 }
 
 #[test]

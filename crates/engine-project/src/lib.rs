@@ -9,6 +9,7 @@ pub mod catalog;
 pub mod content;
 pub mod document;
 pub mod events;
+pub mod gameplay;
 pub mod gameplay2d;
 pub mod graphs;
 pub mod input;

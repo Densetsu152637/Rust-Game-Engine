@@ -1,9 +1,9 @@
 # Graph documents and graph kinds
 
-Behavior trees, state trees, visual scripts and the animation, audio and material
+Behavior trees, state trees and the animation, audio and material
 graphs of other domains share one data model, the `engine-graph` crate. A graph is a
 project asset of kind `graph`: one JSON document whose `kind` field selects the graph
-kind (`animation`, `behavior_tree`, `material` and `state_tree` today) that gives its nodes meaning. One generic
+kind (`animation`, `audio`, `behavior_tree`, `dialogue`, `material` and `state_tree` today) that gives its nodes meaning. One generic
 node-graph editor widget, one validator and one set of MCP tools therefore serve every
 graph domain.
 
@@ -12,6 +12,8 @@ types and runtimes: `engine-ai` defines the `behavior_tree` and `state_tree` kin
 compiles them ([Behavior trees](ai-behavior-trees.md), [State trees](ai-state-trees.md));
 `engine-animation` defines the [animation pose graph](animation-graph.md) kind;
 `engine-material-graph` defines the [material graph](material-graph.md) kind;
+`engine-gameplay` defines the `dialogue` kind
+([Inventory, quests and dialogue](gameplay-inventory-quests-dialogue.md));
 `engine-project` keeps the registry of kinds and binds graph assets to the project and
 runtime.
 
@@ -53,7 +55,10 @@ only itself. `multiple` says whether more than one edge may attach to the port.
 `ports` may be omitted on a node: the registry's declaration of the node type is then
 its port list. When present it must equal the declaration (extra ports are allowed
 only for node types marked `extensible`). `graph_edit`'s `add_node` writes the ports
-out so a document is self-describing for editors.
+out so a document is self-describing for editors. `add_node` may specify `ports`
+for an extensible type, and `set_ports` replaces that node's full port list. Both
+require every declared port to remain unchanged, including its direction, type and
+`multiple` setting. Port names must be unique and a node may have at most 64 ports.
 
 **Edge order.** The edges leaving one port are ordered by their position in `edges`.
 Domains use that order as child order (priority order for a behavior tree selector),
@@ -79,6 +84,11 @@ A `GraphKind` declares:
   (`ParamDef`);
 - an optional semantic `check`, run after every generic rule passes (a behavior tree
   compiles the document here, so compiler problems surface as diagnostics).
+
+`engine-project::graphs` may register a pure `ProjectCheck` alongside a kind.
+It runs after complete kind validation succeeds, with the parsed `Project` and
+document; it can check project bindings without running guest code. Structural
+validation does not run project checks.
 
 A `ParamDef` has a `name`, a type, `required`, a `default`, bounds and a
 description. Parameter types: `bool`, `int`, `float` (with `min`/`max`), `string`
@@ -133,12 +143,13 @@ full validation.
 
 | `op` | Fields | Effect |
 | --- | --- | --- |
-| `add_node` | `id`, `node_type`, `params`, `position` | Adds a node with the type's declared ports. |
+| `add_node` | `id`, `node_type`, `params`, `position`, `ports` | Adds a node with the type's declared ports, or an authored port list for an extensible type. |
 | `remove_node` | `id` | Removes the node and every edge attached to it. |
 | `connect` | `from`, `to`, `index` | Adds an edge; `index` is the position among the edges already leaving `from` (child order); omitted means last. |
 | `disconnect` | `from`, `to` | Removes one edge. |
 | `set_param` | `node`, `name`, `value` | Sets one parameter; `null` removes it so the default applies. |
 | `set_position` | `node`, `position` | Moves the node on the canvas (`null` clears). |
+| `set_ports` | `node`, `ports` | Replaces an extensible node's full port list; declared ports must remain unchanged. |
 | `add_variable` / `set_variable` | `variable` | Declares / replaces a variable. |
 | `remove_variable` | `name` | Removes a variable (rejected while a parameter references it). |
 | `set_metadata` | `key`, `value` | Sets an entry; `null` removes it. |
@@ -148,7 +159,7 @@ Operations are JSON objects: `{"op":"connect","from":{"node":"seq","port":"child
 ## Project integration
 
 - Assets of kind `graph` are validated at `Project::load` at the `complete` level with
-  the kind named by the document. Code: `engine_project::graphs`
+  the kind named by the document, followed by any registered project check. Code: `engine_project::graphs`
   (`load_graph`, `validate_document`, `kinds`).
 - A project whose graph asset is invalid does not load, like any other asset kind.
   That is why `graph_edit` writes only complete graphs.
@@ -169,6 +180,7 @@ Operations are JSON objects: `{"op":"connect","from":{"node":"seq","port":"child
    executable form. Use `GraphIndex` for ordered edge lookups and
    `NodeTypeDef::effective_params` to read parameters with defaults applied.
 3. Register the kind by adding it to the array in `engine_project::graphs::build`.
+   Supply a `ProjectCheck` there if the kind needs project bindings checked.
    `graph_schema`, `graph_validate`, `graph_edit` and project validation then handle it
    with no further change. The editor widget lists palettes from the same registry.
 4. Test with the negative-case pattern in `crates/engine-graph/tests/graph.rs`: one
@@ -182,13 +194,14 @@ None executes game code. See also the [tool reference](mcp.md#read-tools).
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `graph_schema` | `kind`, `node_type` (optional) | Without arguments: every kind briefly (flags, limits, node type names and categories). With `kind`: that kind's node types in full (ports with direction, type, `multiple`, `required`; parameters with type, default, `min`/`max`, `choices`; category; description), optionally one `node_type`. Always includes the `edit_operations` and the `diagnostic_codes`. |
-| `graph_validate` | exactly one of `asset`, `path`, `document`; `level` (`complete`/`structure`) | `valid`, `kind`, counts and `diagnostics` (`code`, `severity`, `file`, `path`, `message`). Validation problems are data (`ok:true`); a file read through `asset` or `path` also returns its `revision`. Works on a graph whose asset is currently invalid (the asset is resolved through `project.json` without loading the project). |
+| `graph_validate` | exactly one of `asset`, `path`, `document`; `level` (`complete`/`structure`) | `valid`, `kind`, counts, `project_context_loaded` and `diagnostics` (`code`, `severity`, `file`, `path`, `message`). Validation problems are data (`ok:true`); a file read through `asset` or `path` also returns its `revision`. Works on a graph whose asset is currently invalid (the asset is resolved through `project.json` without full project validation). |
 | `graph_edit` | `asset` or `path`; `kind` (new files); `expected_revision`; `edits` (1-1024 operations) | Applies the batch atomically and writes the document. Returns `path`, `created`, `applied`, the new `revision`, `previous_revision`, counts and, for a new file, the `asset` entry to add to `project.json`. |
 
 `graph_edit` rules:
 
 - The final document must pass **complete** validation, otherwise nothing is written;
-  the failure code is the first diagnostic's code, `details.op_index` names the failing
+  this includes a registered project check when bounded project context can be loaded.
+  The failure code is the first diagnostic's code, `details.op_index` names the failing
   operation (null when the batch is fine operation by operation but the result is
   incomplete) and `diagnostics` lists them all.
 - An existing graph needs `expected_revision` (`hash_required` if missing,
@@ -200,5 +213,12 @@ None executes game code. See also the [tool reference](mcp.md#read-tools).
 - Writes are atomic (temporary file, flush, rename) and confined to the project like
   every write tool.
 - Registering a new file is separate: add the returned `asset` entry to `project.json`.
+
+For graph inspection and edits, the MCP tools parse bounded project manifest,
+catalog and scene data without the final all-assets validation that would reject
+an invalid graph before it can be repaired. When this context is unavailable,
+`graph_validate` reports kind diagnostics only (`project_context_loaded: false`).
+Project checks run only on complete, kind-valid documents and never execute scripts
+or native game code.
 
 Focused validation: `cargo test -p engine-graph`, `cargo test -p engine-mcp --test graph`.

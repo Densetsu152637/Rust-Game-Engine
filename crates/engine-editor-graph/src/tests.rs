@@ -21,6 +21,7 @@ fn add(id: &str, position: [f32; 2]) -> GraphEdit {
         node_type: "pass".into(),
         params: Default::default(),
         position: Some(position),
+        ports: None,
     }
 }
 fn session() -> GraphSession {
@@ -262,6 +263,7 @@ fn incompatible_ports_reject_connection_without_consuming_undo() {
                 node_type: "boolean".into(),
                 params: Default::default(),
                 position: None,
+                ports: None,
             },
         ])
         .unwrap();

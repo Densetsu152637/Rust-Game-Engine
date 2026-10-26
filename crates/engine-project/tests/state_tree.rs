@@ -849,6 +849,7 @@ fn the_component_is_listed_with_a_schema_and_defaults() {
         kinds.contains(&"behavior_tree")
             && kinds.contains(&"state_tree")
             && kinds.contains(&"animation")
+            && kinds.contains(&"dialogue")
     );
     assert!(kinds.windows(2).all(|pair| pair[0] < pair[1]));
 }

@@ -109,6 +109,25 @@
   enter conditions, ordered tasks, prioritised and delayed transitions, evaluators,
   `engine.StateTreeAgent`, navigation-driven `move_to`, native tasks and evaluators,
   events, telemetry and limits.
+- [AI perception](ai-perception.md): sight cones with physics occlusion and a ray budget,
+  hearing with an attenuation hook, damage stimuli, team filtering, decaying memory,
+  `engine.PerceptionSensor` and friends, blackboard keys for tree agents, events and
+  telemetry.
+- [Environment queries and smart objects](ai-environment-queries.md): EQS-like queries
+  (circle, grid, perceived-actor and smart-object generators; distance, facing, path,
+  reachability, line-of-sight and blackboard tests; normalised weighted scoring;
+  time-sliced execution), `engine.EnvironmentQueries`, `engine.SmartObject` slots with
+  claim, occupy and release, and the built-in `engine.run_query` and
+  `engine.use_smart_object` tree tasks.
+- [Gameplay abilities](gameplay-abilities.md): a GAS-style ability system
+  (`engine-gameplay`): attributes with aggregation and clamping, hierarchical tags,
+  instant, duration, infinite, periodic and stacking effects, abilities with costs,
+  cooldowns and tag rules, prediction keys, the `gameplay` asset, `engine.AbilitySystem`,
+  events, native API and the `engine.activate_ability` tree task.
+- [Inventory, quests and dialogue](gameplay-inventory-quests-dialogue.md): item definitions,
+  atomic slot containers with weight limits and equipment, staged quests fed by events, flags
+  and inventory contents with rewards, the `dialogue` graph kind and conversations,
+  `engine.Inventory`, `engine.QuestLog`, `engine.DialogueParticipant`, events and telemetry.
 - [Physics library](../crates/engine-physics/README.md),
   [animation library](../crates/engine-animation/README.md), and
   [navigation library](../crates/engine-navigation/README.md): native APIs and limits.
