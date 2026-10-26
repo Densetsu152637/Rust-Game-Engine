@@ -398,6 +398,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.PhysicsSettings",
         "engine.QuestLog",
         "engine.Ragdoll",
+        "engine.ScriptGraph",
         "engine.SkinBinding",
         "engine.SmartObject",
         "engine.SoftBody",

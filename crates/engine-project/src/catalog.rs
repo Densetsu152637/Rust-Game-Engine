@@ -52,6 +52,7 @@ impl ComponentCatalog {
             ])
             .chain(crate::acoustics::descriptors())
             .chain(crate::ai::descriptors())
+            .chain(crate::scripting::descriptors())
             .chain(crate::networking::descriptors())
             .chain(descriptors)
         {
@@ -375,6 +376,36 @@ pub(crate) fn hydrate(
         }
     }
     Ok(())
+}
+/// Writes one component's data: through its native adapter, or into the dynamic
+/// storage of a data-only component. The value is validated against the catalog.
+pub(crate) fn write_component(
+    world: &mut World,
+    entity: Entity,
+    name: &str,
+    value: CustomValue,
+) -> Result<()> {
+    let project = world
+        .get_resource::<crate::runtime::ProjectResource>()
+        .ok_or_else(|| invalid("Runtime project unavailable"))?
+        .0
+        .clone();
+    project.component_catalog.validate(name, &value)?;
+    if project.component_catalog.0[name].data_only {
+        world
+            .entity_mut(entity)
+            .get_mut::<DynamicComponents>()
+            .ok_or_else(|| invalid(format!("Entity has no dynamic storage for {name}")))?
+            .0
+            .insert(name.to_owned(), value);
+        return Ok(());
+    }
+    let adapter = world
+        .get_resource::<ComponentRegistry>()
+        .and_then(|r| r.0.get(name))
+        .copied()
+        .ok_or_else(|| invalid(format!("No native adapter for {name}")))?;
+    (adapter.insert)(world, entity, &value.data)
 }
 pub(crate) fn snapshot(world: &World, entity: Entity) -> Result<BTreeMap<String, CustomValue>> {
     let mut values = world

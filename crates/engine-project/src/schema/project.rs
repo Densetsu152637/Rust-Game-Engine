@@ -2,6 +2,14 @@ use super::*;
 
 impl Project {
     pub fn load(manifest: impl AsRef<Path>) -> Result<Self> {
+        let project = Self::load_unvalidated(manifest)?;
+        project.validate()?;
+        Ok(project)
+    }
+    /// Parses the manifest, startup scene, component catalog and script function
+    /// declarations but does not validate the project's assets. For tools that must
+    /// read a project while one of its assets is still invalid.
+    pub fn load_unvalidated(manifest: impl AsRef<Path>) -> Result<Self> {
         let manifest = fs::canonicalize(manifest)?;
         let root = manifest
             .parent()
@@ -105,6 +113,14 @@ impl Project {
             } else {
                 crate::catalog::ComponentCatalog::new(Vec::new())?
             },
+            script_functions: if let Some(path) = &raw.script_functions {
+                crate::scripting::parse_declarations(&read_bounded(
+                    &confined_file(&root, path)?,
+                    crate::scripting::MAX_FUNCTIONS_BYTES,
+                )?)?
+            } else {
+                Vec::new()
+            },
             schema: 1,
             name: raw.name,
             root,
@@ -116,7 +132,6 @@ impl Project {
             input_bindings: bindings,
             scene,
         };
-        project.validate()?;
         Ok(project)
     }
     pub fn rust_manifest(&self) -> Result<PathBuf> {
@@ -200,6 +215,7 @@ impl Project {
         crate::acoustics::validate_scene(self, scene)?;
         crate::networking::validate_scene(scene)?;
         crate::ai::validate_scene(self, scene)?;
+        crate::scripting::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.

@@ -89,6 +89,7 @@ impl Runtime {
         crate::world_text::register(&mut app)?;
         crate::networking::register(&mut app)?;
         crate::acoustics::register(&mut app)?;
+        crate::scripting::register(&mut app)?;
         crate::ai::register(&mut app)?;
         crate::simulation::install(app.world_mut(), simulation)?;
         app.world_mut().insert_resource(RuntimeLog::default());
@@ -244,6 +245,7 @@ impl Runtime {
         self.validate_event_bindings()?;
         crate::networking::validate(self.app.world())?;
         crate::simulation::prepare(self.app.world_mut())?;
+        crate::scripting::prepare(self.app.world_mut())?;
         crate::ai::prepare(self.app.world_mut())?;
         crate::transforms::refresh_world_transforms(self.app.world_mut())?;
         self.sync_collision()?;
@@ -334,6 +336,7 @@ impl Runtime {
         self.app
             .tick_with_post_update(dt, |world| {
                 crate::networking::validate(world)?;
+                crate::scripting::step(world, dt)?;
                 crate::ai::step(world, dt)?;
                 crate::simulation::step(world, dt)?;
                 crate::networking::after_step(world, tick)?;
@@ -382,6 +385,12 @@ impl Runtime {
         self.elapsed += dt as f64;
         Ok(())
     }
+    /// Recompiles the `script_graph` asset `id` from disk. On success every
+    /// instance of it restarts fresh at the next tick boundary; on failure the
+    /// last good program keeps running and the error is returned.
+    pub fn reload_script_asset(&mut self, id: &str) -> Result<()> {
+        crate::scripting::reload_asset(self.app.world_mut(), id)
+    }
     pub fn run_headless(&mut self, ticks: u64, dt: f32) -> Result<()> {
         let result = (|| {
             for _ in 0..ticks {
@@ -398,6 +407,7 @@ impl Runtime {
         }
         let mut error = None;
         crate::networking::shutdown(self.app.world_mut());
+        crate::scripting::shutdown(self.app.world_mut());
         crate::ai::shutdown(self.app.world_mut());
         for script in std::mem::take(&mut self.scripts).into_iter().rev() {
             if let Err(e) = destroy_script(self.app.world_mut(), script)

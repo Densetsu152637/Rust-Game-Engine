@@ -20,6 +20,7 @@ engine-animation = { path = "../engine-animation" }
 engine-navigation = { path = "../engine-navigation" }
 engine-graph = { path = "../engine-graph" }
 engine-ai = { path = "../engine-ai" }
+engine-script = { path = "../engine-script" }
 engine-gameplay = { path = "../engine-gameplay" }
 engine-locale = { path = "../engine-locale" }
 engine-text = { path = "../engine-text" }

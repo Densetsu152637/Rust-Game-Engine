@@ -58,9 +58,11 @@ fn build() -> GraphKinds {
         engine_ai::behavior_tree::kind(),
         engine_ai::state_tree::kind(),
         engine_gameplay::dialogue::kind(),
+        engine_script::graph::kind(),
     ];
     // Project-aware checks, by kind name: `(kind, check)`.
-    let project_checks: [(&str, ProjectCheck); 0] = [];
+    let project_checks: [(&str, ProjectCheck); 1] =
+        [(engine_script::graph::KIND, crate::scripting::project_check)];
     GraphKinds {
         kinds: kinds.into_iter().map(|k| (k.name.clone(), k)).collect(),
         project_checks: project_checks

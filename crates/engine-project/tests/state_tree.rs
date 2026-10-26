@@ -845,5 +845,8 @@ fn the_component_is_listed_with_a_schema_and_defaults() {
     assert_eq!(descriptor.schema["required"], json!(["graph"]));
     // The graph kind is registered next to behavior_tree.
     let kinds: Vec<&str> = engine_project::graphs::kinds().names().collect();
-    assert_eq!(kinds, ["behavior_tree", "dialogue", "state_tree"]);
+    assert_eq!(
+        kinds,
+        ["behavior_tree", "dialogue", "script_graph", "state_tree"]
+    );
 }

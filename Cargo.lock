@@ -1737,6 +1737,7 @@ dependencies = [
  "engine-net-voice",
  "engine-network",
  "engine-physics",
+ "engine-script",
  "engine-text",
  "engine-xpbd",
  "epaint_default_fonts",

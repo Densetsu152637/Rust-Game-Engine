@@ -61,7 +61,10 @@ fn state_trees_are_described_validated_and_edited_with_the_graph_tools() {
         .iter()
         .map(|k| k["name"].as_str().unwrap())
         .collect();
-    assert_eq!(kinds, ["behavior_tree", "dialogue", "state_tree"]);
+    assert_eq!(
+        kinds,
+        ["behavior_tree", "dialogue", "script_graph", "state_tree"]
+    );
     let full = data(dir.path(), "graph_schema", json!({"kind":"state_tree"}));
     assert_eq!(full["ok"], true, "{full}");
     let types: Vec<&str> = full["kinds"][0]["node_types"]
