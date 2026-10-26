@@ -47,6 +47,21 @@ fn stripes() -> Arc<Mesh> {
     })
 }
 
+fn diagonal() -> Arc<Mesh> {
+    Arc::new(Mesh {
+        normals: vec![],
+        vertices: [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0]]
+            .into_iter()
+            .map(|position| Vertex {
+                position,
+                uv: [0.0; 2],
+                color: [1.0, 0.0, 0.0, 1.0],
+            })
+            .collect(),
+        indices: vec![0, 1, 2],
+    })
+}
+
 fn frame(camera: Camera3D, camera_x: f32, size: [u32; 2], mesh: Arc<Mesh>) -> SceneRenderFrame {
     let mut frame = SceneRenderFrame::from(RenderFrame {
         camera: Camera2D {
@@ -112,9 +127,102 @@ fn headless_preview_lists_the_camera_effect_descriptors() {
         .iter()
         .find(|feature| feature.name == MOTION_BLUR_FEATURE)
         .unwrap();
+    let spatial = status
+        .features
+        .iter()
+        .find(|feature| feature.name == SPATIAL_AA_FEATURE)
+        .unwrap();
     assert!(dof.enabled && dof.source == "view_override");
     assert!(!motion.enabled);
+    assert!(!spatial.enabled);
     assert!(status.unknown_overrides.is_empty());
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn authored_spatial_aa_changes_diagonal_and_clears_on_disable_resize() -> Result<()> {
+    let gpu = GpuContext::headless_with_options(&WgpuOptions::default())?;
+    let mut target = OffscreenTarget::new(&gpu, 65, 43)?;
+    let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default())?;
+    let mesh = diagonal();
+    let base = Camera3D::default();
+    let baseline = render(
+        &mut renderer,
+        &target,
+        &frame(base.clone(), 0.0, [65, 43], mesh.clone()),
+    )?;
+    let enabled = Camera3D {
+        spatial_aa: Some(SpatialAa3D::default()),
+        ..base.clone()
+    };
+    let aa = render(
+        &mut renderer,
+        &target,
+        &frame(enabled.clone(), 0.0, [65, 43], mesh.clone()),
+    )?;
+    assert!(
+        renderer
+            .pipeline_status()
+            .features
+            .iter()
+            .any(|feature| feature.name == SPATIAL_AA_FEATURE
+                && feature.enabled
+                && feature.activity == "ran")
+    );
+    assert!(
+        baseline
+            .chunks_exact(4)
+            .zip(aa.chunks_exact(4))
+            .map(|(a, b)| a[0].abs_diff(b[0]))
+            .max()
+            .unwrap_or(0)
+            > 2,
+        "authored AA did not affect diagonal pixels"
+    );
+
+    let removed = render(
+        &mut renderer,
+        &target,
+        &frame(base.clone(), 0.0, [65, 43], mesh.clone()),
+    )?;
+    assert_eq!(removed, baseline, "removed settings leaked into next frame");
+    let mut disabled = enabled.clone();
+    disabled
+        .render_features
+        .insert(SPATIAL_AA_FEATURE.into(), false);
+    assert_eq!(
+        render(
+            &mut renderer,
+            &target,
+            &frame(disabled, 0.0, [65, 43], mesh.clone())
+        )?,
+        baseline
+    );
+    assert_eq!(
+        render(
+            &mut renderer,
+            &target,
+            &frame(enabled.clone(), 0.0, [65, 43], mesh.clone())
+        )?,
+        aa,
+        "re-enabled settings did not restore result"
+    );
+
+    renderer.resize(67, 45)?;
+    target = OffscreenTarget::new(&renderer.gpu, 67, 45)?;
+    let resized_plain = render(
+        &mut renderer,
+        &target,
+        &frame(base, 0.0, [67, 45], mesh.clone()),
+    )?;
+    let resized_aa = render(&mut renderer, &target, &frame(enabled, 0.0, [67, 45], mesh))?;
+    assert!(
+        resized_plain
+            .chunks_exact(4)
+            .zip(resized_aa.chunks_exact(4))
+            .any(|(a, b)| a[0].abs_diff(b[0]) > 2)
+    );
+    Ok(())
 }
 
 #[test]

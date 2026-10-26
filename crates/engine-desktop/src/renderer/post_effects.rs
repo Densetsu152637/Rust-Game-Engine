@@ -1,9 +1,13 @@
 //! Map validated camera effect settings into the native per-view controls.
 
 use anyhow::{Context, Result};
-use engine_project::rendering3d::{DEPTH_OF_FIELD_FEATURE, MOTION_BLUR_FEATURE, SceneRenderFrame};
+use engine_project::rendering3d::{
+    DEPTH_OF_FIELD_FEATURE, MOTION_BLUR_FEATURE, SPATIAL_AA_FEATURE, SceneRenderFrame,
+};
 use engine_render_pipeline::{FeatureOverrides, ViewData};
-use engine_render_post_effects::{DepthOfFieldSettings, MotionBlurSettings, PostEffects};
+use engine_render_post_effects::{
+    DepthOfFieldSettings, MotionBlurSettings, PostEffects, SpatialAaSettings,
+};
 
 pub(super) fn prepare(
     controls: &PostEffects,
@@ -40,5 +44,13 @@ pub(super) fn prepare(
     // leave controls from the previous camera/frame behind at this ViewId.
     controls.set_dof(view.id, dof)?;
     controls.set_motion_blur(view.id, motion)?;
+    let spatial_aa = camera
+        .spatial_aa
+        .filter(|_| view.features.get(SPATIAL_AA_FEATURE) != Some(false))
+        .map(|settings| SpatialAaSettings {
+            edge_threshold: settings.edge_threshold,
+            strength: settings.strength,
+        });
+    controls.set_spatial_aa(view.id, spatial_aa)?;
     Ok(())
 }

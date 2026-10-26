@@ -25,15 +25,18 @@ fn project_with_camera(camera: serde_json::Value) -> (tempfile::TempDir, Project
 fn authored_effects_validate_load_extract_and_snapshot() {
     let (_dir, project) = project_with_camera(json!({
         "depth_of_field":{"focus_distance":2.5,"focus_range":0.75,"max_radius_pixels":9.0,"edge_tolerance":0.2},
-        "motion_blur":{"shutter_scale":0.8,"max_radius_pixels":12.0,"edge_tolerance":0.4}
+        "motion_blur":{"shutter_scale":0.8,"max_radius_pixels":12.0,"edge_tolerance":0.4},
+        "spatial_aa":{"edge_threshold":0.08,"strength":0.6}
     }));
     let mut runtime = Runtime::new(project).unwrap();
     let frame = runtime.extract_scene_frame().unwrap();
     let camera = frame.camera3d.unwrap().camera;
     assert_eq!(camera.depth_of_field.unwrap().focus_distance, 2.5);
     assert_eq!(camera.motion_blur.unwrap().shutter_scale, 0.8);
+    assert_eq!(camera.spatial_aa.unwrap().strength, 0.6);
     assert!(camera.effective_render_features()[DEPTH_OF_FIELD_FEATURE]);
     assert!(camera.effective_render_features()[MOTION_BLUR_FEATURE]);
+    assert!(camera.effective_render_features()[SPATIAL_AA_FEATURE]);
     let snapshot = runtime.try_snapshot().unwrap();
     let saved = snapshot.scene.entities[0]
         .components
@@ -42,6 +45,7 @@ fn authored_effects_validate_load_extract_and_snapshot() {
         .unwrap();
     assert_eq!(saved.depth_of_field, camera.depth_of_field);
     assert_eq!(saved.motion_blur, camera.motion_blur);
+    assert_eq!(saved.spatial_aa, camera.spatial_aa);
     let roundtrip: Camera3D = serde_json::from_value(serde_json::to_value(saved).unwrap()).unwrap();
     assert_eq!(&roundtrip, saved);
 }
@@ -49,7 +53,11 @@ fn authored_effects_validate_load_extract_and_snapshot() {
 #[test]
 fn optional_settings_default_off_and_explicit_feature_disables() {
     let camera = Camera3D::default();
-    assert!(camera.depth_of_field.is_none() && camera.motion_blur.is_none());
+    assert!(
+        camera.depth_of_field.is_none()
+            && camera.motion_blur.is_none()
+            && camera.spatial_aa.is_none()
+    );
     assert!(
         !camera
             .effective_render_features()
@@ -58,6 +66,7 @@ fn optional_settings_default_off_and_explicit_feature_disables() {
     let mut camera = Camera3D {
         depth_of_field: Some(DepthOfField3D::default()),
         motion_blur: Some(MotionBlur3D::default()),
+        spatial_aa: Some(SpatialAa3D::default()),
         ..Default::default()
     };
     camera
@@ -65,8 +74,13 @@ fn optional_settings_default_off_and_explicit_feature_disables() {
         .insert(DEPTH_OF_FIELD_FEATURE.into(), false);
     assert!(!camera.effective_render_features()[DEPTH_OF_FIELD_FEATURE]);
     assert!(camera.effective_render_features()[MOTION_BLUR_FEATURE]);
+    camera
+        .render_features
+        .insert(SPATIAL_AA_FEATURE.into(), false);
+    assert!(!camera.effective_render_features()[SPATIAL_AA_FEATURE]);
     camera.depth_of_field = None;
     camera.motion_blur = None;
+    camera.spatial_aa = None;
     assert!(!camera.effective_render_features()[DEPTH_OF_FIELD_FEATURE]);
     assert!(
         !camera
@@ -82,6 +96,8 @@ fn invalid_effects_fail_before_gpu_and_schema_is_closed() {
         json!({"depth_of_field":{"max_radius_pixels":25.0}}),
         json!({"motion_blur":{"shutter_scale":2.1}}),
         json!({"motion_blur":{"edge_tolerance":-0.1}}),
+        json!({"spatial_aa":{"edge_threshold":-0.1}}),
+        json!({"spatial_aa":{"strength":1.1}}),
     ] {
         let camera: Camera3D = serde_json::from_value(bad).unwrap();
         assert!(camera.validate().is_err());
@@ -89,6 +105,7 @@ fn invalid_effects_fail_before_gpu_and_schema_is_closed() {
     for bad in [
         json!({"depth_of_field":{"unknown":1}}),
         json!({"motion_blur":{"unknown":1}}),
+        json!({"spatial_aa":{"unknown":1}}),
     ] {
         assert!(serde_json::from_value::<Camera3D>(bad).is_err());
     }
@@ -108,6 +125,14 @@ fn invalid_effects_fail_before_gpu_and_schema_is_closed() {
         .validate()
         .is_err()
     );
+    assert!(
+        SpatialAa3D {
+            strength: f32::NAN,
+            ..Default::default()
+        }
+        .validate()
+        .is_err()
+    );
     let doc = engine_project::schema::component_docs()
         .into_iter()
         .find(|d| d.name == "Camera3D")
@@ -116,6 +141,7 @@ fn invalid_effects_fail_before_gpu_and_schema_is_closed() {
     for (field, bounds) in [
         ("depth_of_field", "focus_distance"),
         ("motion_blur", "shutter_scale"),
+        ("spatial_aa", "strength"),
     ] {
         let shape = &props[field]["oneOf"][0];
         assert_eq!(shape["additionalProperties"], false);

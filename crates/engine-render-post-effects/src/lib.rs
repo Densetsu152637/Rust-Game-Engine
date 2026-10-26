@@ -37,8 +37,39 @@ fn inverse_projection(view: &engine_render_pipeline::ViewData) -> Result<[[f32; 
 
 pub const DOF_FEATURE: &str = "effects.dof";
 pub const MOTION_BLUR_FEATURE: &str = "effects.motion_blur";
+pub const SPATIAL_AA_FEATURE: &str = "effects.spatial_aa";
 pub const MAX_BLUR_RADIUS_PIXELS: f32 = 24.0;
 pub const MAX_SHUTTER_SCALE: f32 = 2.0;
+
+/// Relative local luma threshold and fraction of the edge-directed blend.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpatialAaSettings {
+    pub edge_threshold: f32,
+    pub strength: f32,
+}
+
+impl Default for SpatialAaSettings {
+    fn default() -> Self {
+        Self {
+            edge_threshold: 0.12,
+            strength: 0.75,
+        }
+    }
+}
+
+impl SpatialAaSettings {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.edge_threshold.is_finite() && (0.0..=1.0).contains(&self.edge_threshold),
+            "spatial AA edge threshold must be 0..=1"
+        );
+        ensure!(
+            self.strength.is_finite() && (0.0..=1.0).contains(&self.strength),
+            "spatial AA strength must be 0..=1"
+        );
+        Ok(())
+    }
+}
 
 /// Focus is a positive distance in view-space units. A pixel at the focus
 /// distance is sharp; pixels `focus_range` or more away reach maximum radius.
@@ -129,6 +160,7 @@ impl MotionBlurSettings {
 struct ViewSettings {
     dof: HashMap<ViewId, DepthOfFieldSettings>,
     motion: HashMap<ViewId, MotionBlurSettings>,
+    spatial_aa: HashMap<ViewId, SpatialAaSettings>,
 }
 
 /// Cloneable host handle. Absence of per-view settings makes the feature a
@@ -137,6 +169,31 @@ struct ViewSettings {
 pub struct PostEffects(Arc<RwLock<ViewSettings>>);
 
 impl PostEffects {
+    pub fn set_spatial_aa(&self, view: ViewId, settings: Option<SpatialAaSettings>) -> Result<()> {
+        if let Some(settings) = settings {
+            settings.validate()?;
+        }
+        let mut views = self
+            .0
+            .write()
+            .map_err(|_| anyhow::anyhow!("post effects lock poisoned"))?;
+        if let Some(settings) = settings {
+            views.spatial_aa.insert(view, settings);
+        } else {
+            views.spatial_aa.remove(&view);
+        }
+        Ok(())
+    }
+
+    pub fn spatial_aa(&self, view: ViewId) -> Result<Option<SpatialAaSettings>> {
+        Ok(self
+            .0
+            .read()
+            .map_err(|_| anyhow::anyhow!("post effects lock poisoned"))?
+            .spatial_aa
+            .get(&view)
+            .copied())
+    }
     pub fn set_dof(&self, view: ViewId, settings: Option<DepthOfFieldSettings>) -> Result<()> {
         if let Some(settings) = settings {
             settings.validate()?;
@@ -208,6 +265,55 @@ struct MotionUniform {
     inverse_projection: [[f32; 4]; 4],
     geometry: [f32; 4],
     blur: [f32; 4], // shutter, radius, edge tolerance, reset
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SpatialAaUniform {
+    geometry: [f32; 4], // output width/height, threshold, strength
+}
+
+fn prepare_color_fullscreen(setup: &FeatureSetup<'_>) -> Fullscreen {
+    let device = &setup.gpu.device;
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("spatial AA"),
+        entries: &[texture_entry(0, false), uniform_entry(1)],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("spatial AA"),
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("spatial AA"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("spatial_aa.wgsl").into()),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("spatial AA"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: engine_render_pipeline::HDR_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    Fullscreen { layout, pipeline }
 }
 
 fn texture_entry(binding: u32, depth: bool) -> wgpu::BindGroupLayoutEntry {
@@ -528,12 +634,100 @@ impl PipelineFeature for MotionBlurFeature {
     }
 }
 
+/// Bounded edge-directed spatial filtering of current HDR color only.
+pub struct SpatialAaFeature {
+    controls: PostEffects,
+    gpu: Option<Fullscreen>,
+}
+
+impl SpatialAaFeature {
+    pub fn new(controls: PostEffects) -> Self {
+        Self {
+            controls,
+            gpu: None,
+        }
+    }
+}
+
+impl PipelineFeature for SpatialAaFeature {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new(SPATIAL_AA_FEATURE, Stage::PostProcess)
+            .after("engine.post")
+            .after(MOTION_BLUR_FEATURE)
+            .disabled_by_default()
+    }
+
+    fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
+        self.gpu = Some(prepare_color_fullscreen(setup));
+        Ok(())
+    }
+
+    fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
+        let Some(settings) = self.controls.spatial_aa(ctx.view.id)? else {
+            return Ok(());
+        };
+        settings.validate()?;
+        if settings.strength == 0.0 {
+            return Ok(());
+        }
+        let gpu = self.gpu.as_ref().context("spatial AA not prepared")?;
+        let device = &ctx.gpu.device;
+        let params = SpatialAaUniform {
+            geometry: [
+                ctx.view.output_size[0] as f32,
+                ctx.view.output_size[1] as f32,
+                settings.edge_threshold,
+                settings.strength,
+            ],
+        };
+        let uniform = make_uniform(
+            device,
+            &ctx.gpu.queue,
+            "spatial AA params",
+            bytemuck::bytes_of(&params),
+        );
+        let (source, destination) = ctx.post_process_io()?;
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("spatial AA"),
+            layout: &gpu.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: uniform.as_entire_binding(),
+                },
+            ],
+        });
+        draw(ctx, "spatial AA", &gpu.pipeline, &bind, &destination);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn rejects_nonfinite_and_out_of_range_settings() {
+        assert!(
+            SpatialAaSettings {
+                edge_threshold: f32::NAN,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            SpatialAaSettings {
+                strength: 1.1,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
         assert!(
             DepthOfFieldSettings {
                 focus_distance: f32::NAN,
@@ -592,5 +786,12 @@ mod tests {
         assert!(controls.dof(a).unwrap().is_some());
         controls.set_dof(a, None).unwrap();
         assert!(controls.dof(a).unwrap().is_none());
+        controls
+            .set_spatial_aa(a, Some(SpatialAaSettings::default()))
+            .unwrap();
+        assert!(controls.spatial_aa(a).unwrap().is_some());
+        assert!(controls.spatial_aa(b).unwrap().is_none());
+        controls.set_spatial_aa(a, None).unwrap();
+        assert!(controls.spatial_aa(a).unwrap().is_none());
     }
 }

@@ -34,6 +34,25 @@ struct Pixel { @location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32 }
 }
 "#;
 
+// An analytically defined step edge and a separate two-pixel stripe. The
+// reference coverage is integrated on the CPU, independent of the AA kernel.
+const AA_SCENE_SHADER: &str = r#"
+@vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
+    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+}
+struct Pixel { @location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32 }
+@fragment fn fs_main(@builtin(position) p: vec4<f32>) -> Pixel {
+    var out: Pixel;
+    let diagonal = p.x >= 0.63 * p.y + 17.37;
+    let detail = p.x >= 7.0 && p.x < 9.0 && p.y < 8.0;
+    let sliver = p.x >= 4.4 && p.x < 5.2 && p.y >= 10.0 && p.y < 15.0;
+    out.color = vec4<f32>(select(0.0, 1.0, diagonal || detail || sliver), 0.0, 0.0, 0.375);
+    out.depth = 0.5;
+    return out;
+}
+"#;
+
 const MOTION_SHADER: &str = r#"
 @group(0) @binding(0) var<uniform> mode: vec4<f32>;
 @vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -95,17 +114,37 @@ fn pipeline(
     })
 }
 
-#[derive(Default)]
-struct SceneProducer(Option<wgpu::RenderPipeline>);
+struct SceneProducer {
+    pipeline: Option<wgpu::RenderPipeline>,
+    aa_pipeline: Option<wgpu::RenderPipeline>,
+    aa_mode: Arc<AtomicU32>,
+}
+
+impl SceneProducer {
+    fn new(aa_mode: Arc<AtomicU32>) -> Self {
+        Self {
+            pipeline: None,
+            aa_pipeline: None,
+            aa_mode,
+        }
+    }
+}
 
 impl PipelineFeature for SceneProducer {
     fn descriptor(&self) -> FeatureDescriptor {
         FeatureDescriptor::new("test.scene", Stage::Opaque)
     }
     fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
-        self.0 = Some(pipeline(
+        self.pipeline = Some(pipeline(
             &setup.gpu.device,
             SCENE_SHADER,
+            HDR_FORMAT,
+            true,
+            None,
+        ));
+        self.aa_pipeline = Some(pipeline(
+            &setup.gpu.device,
+            AA_SCENE_SHADER,
             HDR_FORMAT,
             true,
             None,
@@ -114,7 +153,12 @@ impl PipelineFeature for SceneProducer {
     }
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
         let mut pass = ctx.scene_pass("test scene depth and colour")?;
-        pass.set_pipeline(self.0.as_ref().context("scene pipeline")?);
+        let selected = if self.aa_mode.load(Ordering::Relaxed) == 0 {
+            &self.pipeline
+        } else {
+            &self.aa_pipeline
+        };
+        pass.set_pipeline(selected.as_ref().context("scene pipeline")?);
         pass.draw(0..3, 0..1);
         Ok(())
     }
@@ -218,6 +262,7 @@ struct Rig {
     scene: ScenePipeline,
     controls: PostEffects,
     motion_mode: Arc<AtomicU32>,
+    aa_mode: Arc<AtomicU32>,
 }
 
 impl Rig {
@@ -227,15 +272,18 @@ impl Rig {
         let mut scene = ScenePipeline::new(gpu.clone())?;
         let controls = PostEffects::default();
         let motion_mode = Arc::new(AtomicU32::new(0));
+        let aa_mode = Arc::new(AtomicU32::new(0));
         scene.register(MotionProducer::new(motion_mode.clone()))?;
-        scene.register(SceneProducer::default())?;
+        scene.register(SceneProducer::new(aa_mode.clone()))?;
         scene.register(DepthOfFieldFeature::new(controls.clone()))?;
         scene.register(MotionBlurFeature::new(controls.clone()))?;
+        scene.register(SpatialAaFeature::new(controls.clone()))?;
         Ok(Self {
             gpu,
             scene,
             controls,
             motion_mode,
+            aa_mode,
         })
     }
 
@@ -266,6 +314,8 @@ impl Rig {
         let mut view = ViewData::new(id, Mat4::IDENTITY, projection, render, output)?;
         view.features.set(DOF_FEATURE, dof);
         view.features.set(MOTION_BLUR_FEATURE, motion);
+        view.features
+            .set(SPATIAL_AA_FEATURE, self.controls.spatial_aa(id)?.is_some());
         view.features.set(names::UPSCALE, upscale);
         view.reset_history = reset;
         let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -301,6 +351,104 @@ impl Rig {
         self.gpu.check_errors()?;
         self.scene.read_hdr(id)
     }
+}
+
+fn diagonal_coverage(x: u32, y: u32) -> f32 {
+    let mut covered = 0;
+    for sy in 0..16 {
+        for sx in 0..16 {
+            let fx = x as f32 + (sx as f32 + 0.5) / 16.0;
+            let fy = y as f32 + (sy as f32 + 0.5) / 16.0;
+            covered += u32::from(fx >= 0.63 * fy + 17.37);
+        }
+    }
+    covered as f32 / 256.0
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn spatial_aa_tracks_supersampled_diagonal_without_erasing_detail() -> Result<()> {
+    let mut rig = Rig::new()?;
+    rig.aa_mode.store(1, Ordering::Relaxed);
+    let id = ViewId(41);
+    let size = [65, 43];
+    let projection = perspective(size[0] as f32 / size[1] as f32);
+    let plain = rig.frame(id, size, size, projection, false, false, false)?;
+    rig.controls
+        .set_spatial_aa(id, Some(SpatialAaSettings::default()))?;
+    let aa = rig.frame(id, size, size, projection, false, false, false)?;
+    let mut plain_error = 0.0;
+    let mut aa_error = 0.0;
+    for y in 9..40 {
+        for x in 10..55 {
+            let truth = diagonal_coverage(x, y);
+            plain_error += (plain.pixel(x, y)[0] - truth).powi(2);
+            aa_error += (aa.pixel(x, y)[0] - truth).powi(2);
+            assert!((aa.pixel(x, y)[3] - plain.pixel(x, y)[3]).abs() < 0.002);
+        }
+    }
+    assert!(
+        aa_error < plain_error,
+        "edge filter did not approach independent supersampled coverage: {aa_error} >= {plain_error}"
+    );
+    assert!(
+        close(aa.pixel(2, 20), plain.pixel(2, 20), 0.002),
+        "flat background changed"
+    );
+    assert!(
+        close(aa.pixel(58, 20), plain.pixel(58, 20), 0.002),
+        "flat foreground changed"
+    );
+    assert!(
+        aa.pixel(7, 3)[0] > 0.8 && aa.pixel(8, 3)[0] > 0.8,
+        "two-pixel detail erased"
+    );
+    assert!(aa.pixel(4, 12)[0] > 0.5, "sampled subpixel sliver erased");
+
+    let other = rig.frame(ViewId(42), size, size, projection, false, false, false)?;
+    assert!(
+        close(other.pixel(28, 17), plain.pixel(28, 17), 0.002),
+        "per-view settings leaked"
+    );
+    rig.controls.set_spatial_aa(id, None)?;
+    let disabled = rig.frame(id, size, size, projection, false, false, false)?;
+    assert!(close(disabled.pixel(28, 17), plain.pixel(28, 17), 0.002));
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn spatial_aa_handles_odd_and_single_pixel_sizes_without_upscale() -> Result<()> {
+    let mut rig = Rig::new()?;
+    rig.aa_mode.store(1, Ordering::Relaxed);
+    let id = ViewId(43);
+    rig.controls
+        .set_spatial_aa(id, Some(SpatialAaSettings::default()))?;
+    for (render, output) in [([31, 17], [63, 35]), ([1, 17], [3, 35]), ([31, 1], [63, 3])] {
+        let image = rig.frame_with_upscale(
+            id,
+            render,
+            output,
+            perspective(render[0] as f32 / render[1] as f32),
+            false,
+            false,
+            false,
+            false,
+        )?;
+        assert_eq!(image.size, output);
+        for y in 0..output[1] {
+            for x in 0..output[0] {
+                assert!(image.pixel(x, y).iter().all(|value| value.is_finite()));
+            }
+        }
+        if render[0] > 1 && render[1] > 1 {
+            assert!(
+                image.pixel(output[0] - 2, output[1] / 2)[0] > 0.8,
+                "right edge was cropped or black"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[test]
