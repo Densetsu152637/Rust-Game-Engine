@@ -294,13 +294,22 @@ impl ProceduralStream {
     }
     /// Clears queued PCM with a fresh epoch, then restores defaults, phase/seeds and DSP state.
     pub fn reset(&mut self) -> Result<StreamGeneration> {
+        self.reset_with_parameters(&[])
+    }
+    /// Atomically resets state and applies overrides before the first new-generation sample.
+    /// Invalid overrides leave the current epoch and queued PCM unchanged.
+    pub fn reset_with_parameters(
+        &mut self,
+        values: &[ParameterUpdate<'_>],
+    ) -> Result<StreamGeneration> {
         self.live()?;
+        let changes = updates(&self.program, values)?;
         let mut commands = self
             .commands
             .lock()
             .map_err(|_| error("audio.graph.worker", "Control mailbox poisoned"))?;
         let generation = self.control.seek_stream(self.voice, 0)?;
-        commands.changes.fill(None);
+        commands.changes = changes;
         commands.reset = Some(generation);
         commands.finish = false;
         publish(&self.status, ProceduralState::Running, generation, 0, None);

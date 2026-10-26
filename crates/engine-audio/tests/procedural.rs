@@ -320,9 +320,8 @@ fn producer_stream_pause_reset_updates_eof_clock_and_teardown() {
             }])
             .unwrap();
     }
-    let generation = stream.reset().unwrap();
-    stream
-        .set_parameters(&[ParameterUpdate {
+    let generation = stream
+        .reset_with_parameters(&[ParameterUpdate {
             name: "value",
             value: 0.5,
             ramp_frames: 0,
@@ -346,6 +345,11 @@ fn producer_stream_pause_reset_updates_eof_clock_and_teardown() {
     let mut audible_frames = 0;
     for _ in 0..100 {
         e.mix(&mut output).unwrap();
+        for frame in output.as_chunks::<2>().0 {
+            if *frame != [0.; 2] {
+                assert_eq!(*frame, [0.5; 2], "stale/reset-default PCM escaped");
+            }
+        }
         audible_frames += output
             .as_chunks::<2>()
             .0
@@ -482,4 +486,213 @@ fn immediate_reset_then_stop_reports_terminal_new_epoch() {
     assert_eq!(status.generation, generation);
     assert_eq!(status.state, ProceduralState::Stopped);
     assert_eq!(e.voice_count(), 0);
+}
+
+#[test]
+fn rapid_atomic_resets_publish_only_latest_epoch_pcm() {
+    let mut d = base(node("p", "parameter", &[]));
+    d.nodes[0].params.insert("variable".into(), "value".into());
+    d.variables.push(GraphVariable {
+        name: "value".into(),
+        ty: PortType::Float,
+        default: Some(0.25.into()),
+        description: String::new(),
+    });
+    let mut e = AudioEngine::offline(AudioConfig {
+        sample_rate: 8000,
+        max_voices: 8,
+    })
+    .unwrap();
+    let mut stream = ProceduralStream::spawn(
+        graph::compile(&d).unwrap(),
+        e.control(),
+        PlayOptions::default(),
+        4,
+        None,
+    )
+    .unwrap();
+    until(|| stream.status().unwrap().state == ProceduralState::Backpressure);
+    assert!(e.pause(stream.voice()));
+    let mut generation = engine_audio::StreamGeneration(0);
+    for at in 1..=16 {
+        generation = stream
+            .reset_with_parameters(&[ParameterUpdate {
+                name: "value",
+                value: at as f32 / 32.,
+                ramp_frames: 0,
+            }])
+            .unwrap();
+    }
+    assert!(
+        stream
+            .reset_with_parameters(&[ParameterUpdate {
+                name: "value",
+                value: f32::NAN,
+                ramp_frames: 0
+            }])
+            .is_err()
+    );
+    assert_eq!(
+        e.stream_snapshot(stream.voice())
+            .unwrap()
+            .unwrap()
+            .generation,
+        generation
+    );
+    until(|| {
+        e.stream_snapshot(stream.voice())
+            .unwrap()
+            .unwrap()
+            .queued_frames
+            == 4
+    });
+    assert_eq!(stream.status().unwrap().generation, generation);
+    assert!(e.resume(stream.voice()));
+    let mut count = 0;
+    for _ in 0..100 {
+        let mut out = [0.; 8];
+        e.mix(&mut out).unwrap();
+        for frame in out.as_chunks::<2>().0 {
+            if *frame != [0.; 2] {
+                assert_eq!(*frame, [0.5; 2], "earlier reset epoch leaked PCM");
+                count += 1;
+            }
+        }
+        if count >= 16 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(count >= 16);
+    let snapshot = e.stream_snapshot(stream.voice()).unwrap().unwrap();
+    assert_eq!(snapshot.generation, generation);
+    assert_eq!(snapshot.source_frame, count as f64);
+    stream.stop().unwrap();
+}
+#[test]
+fn zero_duration_adsr_stages_transition_without_extra_samples() {
+    let mut d = base(node(
+        "env",
+        "adsr",
+        &[
+            ("attack", 0.),
+            ("decay", 0.),
+            ("sustain", 0.4),
+            ("release", 0.),
+        ],
+    ));
+    parameter(&mut d, "gate", "gate", 1.);
+    edge(&mut d, "gate", "env", "gate");
+    let mut i = instance(&d);
+    let mut out = [[0.; 2]; 4];
+    i.render(&mut out).unwrap();
+    assert_eq!(out, [[0.4; 2]; 4]);
+    i.set_parameters(&[ParameterUpdate {
+        name: "gate",
+        value: 0.,
+        ramp_frames: 0,
+    }])
+    .unwrap();
+    i.render(&mut out).unwrap();
+    assert_eq!(out, [[0.; 2]; 4]);
+    i.set_parameters(&[ParameterUpdate {
+        name: "gate",
+        value: 1.,
+        ramp_frames: 0,
+    }])
+    .unwrap();
+    i.render(&mut out).unwrap();
+    assert_eq!(out, [[0.4; 2]; 4]);
+}
+#[test]
+fn triangle_saw_and_square_generate_expected_periodic_pcm() {
+    for (wave, expected) in [
+        ("triangle", [-1., -0.5, 0., 0.5, 1., 0.5, 0., -0.5]),
+        ("saw", [-1., -0.75, -0.5, -0.25, 0., 0.25, 0.5, 0.75]),
+        ("square", [1., 1., 1., 1., -1., -1., -1., -1.]),
+    ] {
+        let mut source = node("osc", "oscillator", &[("frequency", 1000.)]);
+        source.params.insert("waveform".into(), wave.into());
+        let mut i = instance(&base(source));
+        let mut out = [[0.; 2]; 16];
+        i.render(&mut out).unwrap();
+        for (at, frame) in out.iter().enumerate() {
+            assert_eq!(*frame, [expected[at % 8]; 2], "{wave} sample {at}");
+        }
+    }
+}
+
+#[test]
+fn invalid_atomic_reset_leaves_epoch_queue_controls_and_dsp_continuity_untouched() {
+    let mut d = base(node("gain", "gain", &[]));
+    d.nodes
+        .push(node("osc", "oscillator", &[("frequency", 997.)]));
+    parameter(&mut d, "amp", "amplitude", 0.5);
+    edge(&mut d, "osc", "gain", "input");
+    edge(&mut d, "amp", "gain", "gain");
+    let program = graph::compile(&d).unwrap();
+    let mut reference = GraphInstance::new(program.clone(), 8000).unwrap();
+    let mut expected = [[0.; 2]; 260];
+    reference.render(&mut expected).unwrap();
+    let mut e = AudioEngine::offline(AudioConfig {
+        sample_rate: 8000,
+        max_voices: 8,
+    })
+    .unwrap();
+    let mut stream =
+        ProceduralStream::spawn(program, e.control(), PlayOptions::default(), 4, None).unwrap();
+    until(|| stream.status().unwrap().state == ProceduralState::Backpressure);
+    assert!(e.pause(stream.voice()));
+    let before = e.stream_snapshot(stream.voice()).unwrap().unwrap();
+    let generated = stream.status().unwrap().generated_frames;
+    assert!(
+        stream
+            .reset_with_parameters(&[
+                ParameterUpdate {
+                    name: "amplitude",
+                    value: 1.,
+                    ramp_frames: 0
+                },
+                ParameterUpdate {
+                    name: "unknown",
+                    value: 1.,
+                    ramp_frames: 0
+                }
+            ])
+            .is_err()
+    );
+    let after = e.stream_snapshot(stream.voice()).unwrap().unwrap();
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.source_frame, before.source_frame);
+    assert_eq!(after.queued_frames, before.queued_frames);
+    assert_eq!(after.state, before.state);
+    assert_eq!(stream.status().unwrap().generated_frames, generated);
+    assert!(e.resume(stream.voice()));
+    let mut actual = vec![];
+    for _ in 0..2000 {
+        let before = e
+            .stream_snapshot(stream.voice())
+            .unwrap()
+            .unwrap()
+            .source_frame;
+        let mut out = [0.; 2];
+        e.mix(&mut out).unwrap();
+        let after = e
+            .stream_snapshot(stream.voice())
+            .unwrap()
+            .unwrap()
+            .source_frame;
+        if after > before {
+            actual.push(out);
+        }
+        if actual.len() == expected.len() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        actual, expected,
+        "invalid reset changed parameters, pending PCM, or the next oscillator block"
+    );
+    stream.stop().unwrap();
 }

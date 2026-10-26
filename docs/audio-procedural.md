@@ -64,7 +64,11 @@ can fill the queue and park.
 
 `reset()` clears queued old PCM via `seek_stream`, publishes a new source epoch,
 and restores DSP/default parameters on the producer. Pending old updates are
-cleared; updates posted after reset apply to its new generation. Stale producer
+cleared; updates posted after reset apply to its new generation. For deterministic
+initial controls, `reset_with_parameters(batch)` validates and publishes reset plus
+overrides atomically, applying them before its first generated sample. Invalid
+batches leave the old epoch/queued PCM intact. Separate reset and update calls can
+allow a default-valued producer block between them. Stale producer
 writes and status reports cannot overwrite the new epoch. Reset preserves the
 voice's pause state. `finish()` flushes any already-generated pending block and
 closes input; optional `duration_frames` closes input at that exact generated
