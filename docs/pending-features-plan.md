@@ -1,7 +1,8 @@
 # Pending engine features
 
 Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
-Initial plan commit: `7d614e9`.
+Initial plan commit: `7d614e9`. Current local integration: `ebc765c` (not yet
+published; final integrated checks remain pending).
 
 This is the implementation record for the pending-feature request. Existing
 spatial audio, first-round rendering, physics, UI and networking are the baseline.
@@ -70,6 +71,9 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   submitted-device-frame counter is not a per-source presentation clock.
 - Acceptance: deterministic offline mixed output and clock/seek/backpressure
   tests; codec fixtures and malformed input limits; device checks separately.
+- Outcome: bounded streaming/clock milestone accepted at `dc061859`, integrated
+  as `d6823dc`; 326 audio tests, fmt and scoped Clippy passed. Compressed decoding
+  is a separate in-progress slice using Symphonia 0.6.1; not yet validated.
 
 ### 4. Animation graph, blend spaces, IK and retargeting
 
@@ -119,6 +123,15 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Acceptance: XR lifecycle/graphics review and tests; real model fixture
   inference; loopback service behavior; decoded video textures plus audio-driven
   frame/caption scheduling, seek/pause/EOF and malformed-input tests.
+- Outcomes: existing-server work accepted at `099a88`, integrated as `ebc765c`;
+  fixed late authentication/expired-request admission before dispatch. Its 119
+  tests (including five real QUIC/TLS CLI tests), fmt and scoped Clippy passed.
+  XR review found five defects and a sixth image-operation retry defect; fixes
+  are under independent source review and await execution checks. ML initial
+  inference tests pass, but further boundary and project-adapter checks remain.
+  Video implementation uses an explicit FFmpeg executable backend with a shared
+  audio/caption clock; frame resampling and dependency requirements must be
+  documented and tested before acceptance.
 
 ### 8. Remaining animation/editor/audio integrations
 
@@ -165,16 +178,18 @@ external worktrees are not cleanup targets.
 
 | Host name | Base | Assigned purpose | State |
 | --- | --- | --- | --- |
-| world-completion | `5ada8a3` | Unused managed creation; archive when ready | creating |
-| gameplay-completion | `834c047` | Unused managed creation; archive when ready | creating |
-| audio-foundation | `91b961c` | Unused managed creation; archive when ready | creating |
-| animation-features | `834c047` | Unused managed creation; archive when ready | creating |
+| world-completion | `5ada8a3` | Unused; host cannot verify ownership for attachment | retained pending host recovery |
+| gameplay-completion | `834c047` | Unused managed creation; registration incomplete | retained pending host recovery |
+| audio-foundation | `91b961c` | Unused managed creation; registration incomplete | retained pending host recovery |
+| animation-features | `834c047` | Unused managed creation; registration incomplete | retained pending host recovery |
 | codex-audio-streams | `91b961c` | Audio source/clock; `codex/audio-streams` | active |
 | codex-animation-graph | `834c047` | Graph/blends; `codex/animation-graph` | active |
-| codex-render-contracts | `91b961c` | Shared shadows; `codex/render-contracts` | creating |
+| codex-render-contracts | `91b961c` | Shared shadows; `codex/render-contracts` | active |
 | parity-editor-scene | `9e4a063` | Resume scene WIP; existing `claude/parity-editor-scene` | active, retain |
 | parity-platform-services-ml | `609ccb2` | Complete ML; existing `claude/parity-platform-services-ml` | active, retain |
-| parity-platform-services-services | `7d614e9` | Existing server; existing `claude/parity-platform-services-services` | active, retain |
+| parity-platform-services-services | `7d614e9` | Existing server; existing `claude/parity-platform-services-services` | integrated, retained for existing owner |
+| parity-platform-services-xr | `daa2888` | Reviewed repairs; existing `claude/parity-platform-services-xr` | active, retain |
+| parity-platform-services-video | `dc061859` | Video/audio/caption integration; existing `claude/parity-platform-services-video` | active, retain |
 
 Manual and reused paths are `D:/Git-Worktrees/Rust-Game-Engine/<name>`; managed
 paths are `D:/Git-Worktrees/<name>/Rust-Game-Engine`. Root creates task branches,
@@ -182,6 +197,10 @@ accepts handoffs, integrates and retires task-created checkouts. Reused paused
 worktrees are preserved for their existing owners. Every worker reports exact
 tested SHA, logs, residuals and stopped processes.
 
-Baseline evidence: fmt and workspace Clippy passed on `91b961c`; workspace tests
-are running. The only root change during those tests is this plan. Logs live in
-`target/task-baseline`. These checks do not validate pending feature branches.
+Baseline evidence: fmt and workspace Clippy passed on `91b961c`. The workspace
+test compilation was interrupted after concurrent builds exhausted Windows
+virtual memory (OS error 1455); no passing workspace-test claim is made. Logs live
+in `target/task-baseline`. The required suite will run on the integrated revision.
+All heavy validation now uses one root-scheduled build slot with `-j1`; source
+work remains parallel within the eight-worker limit. Branch test results do not
+replace final integration checks.
