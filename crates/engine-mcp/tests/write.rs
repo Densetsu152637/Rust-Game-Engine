@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 16] = [
+const WRITE_TOOLS: [&str; 17] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -37,6 +37,7 @@ const WRITE_TOOLS: [&str; 16] = [
     "ui_edit",
     "network_settings_set",
     "graph_edit",
+    "editor_settings_update",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -90,16 +91,17 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 41);
+    assert_eq!(names.len(), 43);
     // Registration order: the 12 original read tools, the 8 original write
     // tools, the navigation pair (bake writes, query only reads), the
     // acoustics tools (inspect and query read, bake writes), the physics pair
     // (both read), then the locale tools (three reads, three writes), then the
     // UI authoring tools (inspect and preview read, edit writes), then the
     // networking tools (inspect reads, settings_set writes), then the graph
-    // tools (schema and validate read, edit writes).
+    // tools (schema and validate read, edit writes), then persisted editor
+    // settings (get reads, update writes).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 25);
+    assert_eq!(read_only_names.len(), 26);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -116,6 +118,10 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(names[37], "network_settings_set");
     assert_eq!(names[38..40], read_only_names[23..25]);
     assert_eq!(names[40], "graph_edit");
+    assert_eq!(names[41], "editor_settings_get");
+    assert_eq!(names[42], "editor_settings_update");
+    assert_eq!(read_only_names[25], "editor_settings_get");
+    assert_eq!(WRITE_TOOLS[16], "editor_settings_update");
     assert_eq!(read_only_names[23], "graph_schema");
     assert_eq!(read_only_names[24], "graph_validate");
     assert_eq!(WRITE_TOOLS[15], "graph_edit");

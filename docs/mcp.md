@@ -45,7 +45,7 @@ clients take the same `command` and `args`.
 
 | Level | Flag | Tools | What it can do |
 | --- | --- | --- | --- |
-| Read | always on | 25 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
+| Read | always on | 26 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
 | Write | `--allow-write` | `entity_create`, `entity_update`, `entity_delete`, `component_set`, `component_remove`, `file_write` | Change scenes and text files inside the project root. |
 | Exec | `--allow-exec` | `project_build`, `project_run_headless`, `render_screenshot` | Compile and run the project's native game code. |
 
@@ -481,3 +481,12 @@ is not required for this ephemeral run input. The result includes `event_trace`,
 `event_count` and `event_trace_truncated`, covering actual deliveries across the
 run rather than only the final tick. See [scheduled events](scheduled-events.md)
 for bounds, stable-ID resolution, atomic enqueue and CLI usage.
+
+## Persisted editor settings
+
+`editor_settings_get` reads validated project-root `editor.json`, returning defaults
+without writing when missing. `editor_settings_update` requires write access and a
+partial `patch`; existing files require `expected_revision` from Get. Both tools
+reuse the native settings validator, bounded confined reads and atomic publication.
+They do not refresh a running editor cache. See [Editor settings](editor-settings.md)
+for merge rules, revision failures and writer coordination.

@@ -59,7 +59,7 @@ fn a_server_can_be_reused_for_many_connections() {
             .serve(Cursor::new(request.into_bytes()), &mut out)
             .unwrap();
         let response: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 25);
+        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 26);
     }
     let names: Vec<_> = server
         .registry()
@@ -85,7 +85,7 @@ fn access_flags_are_independent() {
             .definitions()
             .count()
     };
-    assert_eq!(count(ServerConfig::new()), 25);
+    assert_eq!(count(ServerConfig::new()), 26);
     let access = |config: ServerConfig, name: &str| {
         Server::new(dir.path(), config)
             .unwrap()
@@ -174,7 +174,7 @@ fn access_flags_are_independent() {
         access(ServerConfig::new().allow_write(true), "graph_edit"),
         Some(AccessLevel::Write)
     );
-    assert_eq!(count(ServerConfig::new().allow_write(true)), 41);
+    assert_eq!(count(ServerConfig::new().allow_write(true)), 43);
     for (config, exposed) in [
         (ServerConfig::new(), false),
         (ServerConfig::new().allow_exec(true), false),
@@ -192,12 +192,12 @@ fn access_flags_are_independent() {
     }
     assert_eq!(
         count(ServerConfig::new().allow_exec(true)),
-        25,
+        26,
         "exec tools come from providers"
     );
     assert_eq!(
         count(ServerConfig::new().allow_write(true).allow_write(false)),
-        25
+        26
     );
 }
 

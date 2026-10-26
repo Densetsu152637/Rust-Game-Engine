@@ -1668,6 +1668,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "engine-editor-settings",
  "engine-graph",
  "engine-project",
  "epaint_default_fonts",
