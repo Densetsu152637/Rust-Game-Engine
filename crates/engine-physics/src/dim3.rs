@@ -1,6 +1,6 @@
 //! Three-dimensional world: XYZ meters and normalized XYZW quaternions.
 use rapier::math::Pose;
-use rapier::parry::shape::HeightFieldFlags;
+use rapier::parry::shape::{HeightField, HeightFieldCellStatus, HeightFieldFlags};
 use rapier::parry::utils::Array2;
 use rapier::prelude::*;
 use rapier3d as rapier;
@@ -116,12 +116,15 @@ pub enum Shape {
     },
     /// Fixed or kinematic bodies only. `heights` is row-major: `rows` samples along Z, each
     /// with `columns` samples along X. The grid spans `scale[0]` x `scale[2]` meters centred on
-    /// the body origin and every height is multiplied by `scale[1]`.
+    /// the body origin and every height is multiplied by `scale[1]`. `holes` is empty or one
+    /// flag per cell, row-major over `(rows - 1) x (columns - 1)` cells; a flagged cell has
+    /// both triangles removed, so nothing collides through it.
     HeightField {
         rows: usize,
         columns: usize,
         heights: Vec<f32>,
         scale: Position,
+        holes: Vec<bool>,
     },
     /// Rigid convex parts (no meshes, heightfields or nested compounds), 1..=64.
     Compound {
@@ -175,6 +178,7 @@ impl Shape {
                 columns,
                 heights,
                 scale,
+                holes,
             } => {
                 if *rows < 2
                     || *columns < 2
@@ -191,11 +195,22 @@ impl Shape {
                 for (index, height) in heights.iter().enumerate() {
                     data[index / columns + index % columns * rows] = *height;
                 }
-                Ok(SharedShape::heightfield_with_flags(
+                let cells = (rows - 1) * (columns - 1);
+                if !holes.is_empty() && holes.len() != cells {
+                    return Err(Error("heightfield holes need one flag per cell or none"));
+                }
+                let mut field = HeightField::with_flags(
                     Array2::new(*rows, *columns, data),
                     vector(*scale),
                     HeightFieldFlags::FIX_INTERNAL_EDGES,
-                ))
+                );
+                let removed = HeightFieldCellStatus::LEFT_TRIANGLE_REMOVED
+                    | HeightFieldCellStatus::RIGHT_TRIANGLE_REMOVED;
+                for (cell, _) in holes.iter().enumerate().filter(|(_, hole)| **hole) {
+                    // Cell (i, j): row i along Z, column j along X.
+                    field.set_cell_status(cell / (columns - 1), cell % (columns - 1), removed);
+                }
+                Ok(SharedShape::new(field))
             }
             Self::Compound { parts } => {
                 if parts.is_empty() || parts.len() > crate::MAX_COMPOUND_PARTS {

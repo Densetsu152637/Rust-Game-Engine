@@ -19,12 +19,14 @@ engine-acoustics-gpu = { path = "../engine-acoustics-gpu" }
 engine-core = { path = "../engine-core" }
 engine-audio = { path = "../engine-audio" }
 engine-dlss = { path = "../engine-dlss", optional = true }
+engine-physics-render = { path = "../engine-physics-render" }
 engine-project = { path = "../engine-project" }
 engine-render = { path = "../engine-render" }
 engine-render-pipeline = { path = "../engine-render-pipeline" }
 engine-render-rt = { path = "../engine-render-rt" }
 engine-render-wgpu = { path = "../engine-render-wgpu" }
 engine-ui-render = { path = "../engine-ui-render" }
+engine-world-render = { path = "../engine-world-render" }
 gilrs = "=0.11.2"
 glam.workspace = true
 pollster = "0.4"
@@ -43,6 +45,8 @@ system-clipboard = ["dep:arboard"]
 dlss = ["dep:engine-dlss", "engine-dlss/ngx-vulkan"]
 
 [dev-dependencies]
+# Terrain assets for the default render feature tests (workspace crate).
+engine-terrain = { path = "../engine-terrain" }
 # Test fonts for the TrueType text GPU test (already used by other crates).
 epaint_default_fonts = "=0.37.0"
 image = { version = "0.25", default-features = false, features = ["png"] }

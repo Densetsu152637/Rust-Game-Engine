@@ -3,9 +3,12 @@
 Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
 Initial plan commit: `7d614e9`. Main contains accepted audio/server changes through
 `ebc765c`. Larger branches are assembled in `codex/pending-integration`, currently
-`164b9ed` with reviewed XR, animation graph/IK, ML, scene editing, shared shadows,
-compressed audio decoding and video support. Nothing has been published this session;
-final integrated checks remain pending.
+`8afd976`. Validated milestones include XR, animation graph/IK/morphs, ML, scene
+editing/hot reload, shared shadows, compressed decoding and video. The branch also
+contains source-reviewed retargeting, procedural/authored audio, voice, sequencer,
+UI presentation, material graphs, editor graphs/settings and physics-audio work
+for combined validation. Those source-only milestones remain unaccepted until
+execution checks pass. Nothing has been published; final checks remain pending.
 
 This is the implementation record for the pending-feature request. Existing
 spatial audio, first-round rendering, physics, UI and networking are the baseline.
@@ -43,12 +46,17 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Status: in progress.
 - Objective: finish batch B and final checks for tilemaps, PCG, streaming,
   terrain, foliage, water and large-world coordinates.
-- Existing revisions: parent `5ada8a3`; unchecked batch B `38d687f`.
+- Handoff revision: 255035b, including checked batch B 38d687f.
 - Owned paths: existing World manager's worktrees and World feature crates/docs.
 - Acceptance: project PCG/streaming/tilemap regression tests, MCP tilemap tests,
   relevant GPU tests, and required integrated checks.
-- Handoff: request/consume completed commits; historical 4,679-test evidence is
-  not validation of batch B or the eventual combined revision.
+- Handoff: request/consume completed commits; the manager reported 4,705 passing workspace tests and three build-timeout failures
+  whose isolated suite passed 14/14; that branch-only evidence is
+  not validation of the merged revision. World is now integrated into local main;
+  merged-revision workspace, MCP/tooling and GPU gates remain pending. Networking
+  and World registrations are both retained; recomputed CLI tool totals are
+  read 31, write 62, exec 34, write+exec 65. The Claude manager retains cleanup
+  of its own worktree/branches after main ancestry is confirmed.
 
 ### 2. AI-gameplay completion (external owner)
 
@@ -78,7 +86,10 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   as `d6823dc`; 326 audio tests, fmt and scoped Clippy passed. Compressed decoding
   milestone `7b5fddd` uses Symphonia 0.6.1 for WAV/FLAC/Vorbis/MP3 and is integrated
   as `b41c636`. Its 335 tests, scoped strict Clippy and fmt passed after independent
-  review fixes. Authored streamed/procedural emitters remain a separate slice.
+  review fixes. Authored streamed/procedural sources are source-reviewed at
+  `5cdf40c`, including durable worker failures and shared emitter integration;
+  native audio execution passed 355 tests (two hardware/cost tests ignored) at
+  integrated revision `775fb33`; project runtime checks remain in progress.
 
 ### 4. Animation graph, blend spaces, IK and retargeting
 
@@ -93,8 +104,11 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Outcome: graph/blend milestone `71cc1c4` accepted after independent source
   review, 125 focused tests, fmt and scoped Clippy. IK `a70064d` is accepted and
   integrated as `164b9ed`: 141 focused tests, scoped strict Clippy and fmt passed,
-  including the reviewed initial-control repair. Retargeting design is in progress.
-  The graph milestone and committed AI foundation
+  including the reviewed initial-control repair. Retargeting `ee8192d` passed
+  source review and is assembled for validation. The first combined compile found
+  a stale joint-field reference; `9839386` corrects it to the target loop index.
+  All 28 native animation tests, including retargeting, pass at `775fb33`;
+  project retargeting checks remain in progress. The graph milestone and committed AI foundation
   are assembled at `b62ef9e`; the external manager retains remaining AI work.
 
 ### 5. Editor scene recovery and graph authoring
@@ -110,7 +124,10 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   transforms, cancelled/stale gestures, graph persistence and validation.
 - Outcome: scene `7d215a7` accepted and integrated as `f52cf2f`; 113 tests, scoped
   strict Clippy and fmt passed after picker review fixes. Generic graph canvas and
-  actual editor shell wiring are preserved at `a71dafb5`, not yet compiled/tested.
+  actual editor shell wiring plus typed MCP settings are source-reviewed at
+  `bea8c12` and assembled for combined validation. All six native graph-editor
+  tests pass at `7fc0c85`, including real egui palette, drag, wiring, delete and
+  undo gestures. Combined shell and MCP settings tests remain pending.
 
 ### 6. Render integration seams
 
@@ -126,7 +143,8 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Outcome: shared-shadow API `0aba854` integrated as `f56981d`; 42 CPU and 17 real
   Vulkan tests, scoped strict Clippy and fmt passed. Terrain/foliage adoption is
   still pending the World handoff. Ordered overlays, Composite ping-pong and late
-  UI replay across generated frames remain unvalidated source work.
+  UI replay across generated frames are source-reviewed at `ca609ef`, including
+  lazy RT registration and disabled-hook repairs; execution remains pending.
 
 ### 7. Platform services
 
@@ -159,7 +177,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 8. Remaining animation/editor/audio integrations
 
-- Status: in progress (hot reload validation, morph integration, sequencer and procedural graph source); other slices remain pending and
+- Status: in progress (hot reload and morph accepted; native audio, voice and sequencer tests pass); runtime integration checks remain and
   depend on relevant earlier stages.
 - Objective: morph import/animation/deformation, cinematics timeline/sequencer,
   editor hot reload/tooling, procedural audio graph, microphone/voice codec,
@@ -172,19 +190,42 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   successful and failed reloads; graph PCM; codec/capture lifecycle and voice
   loopback; collision-driven audio and collider acoustic geometry behavior.
 - Handoff: hot reload prepares a candidate while the old game runs, then activates
-  through the existing generation barrier. Tooling and editor controls are
-  preserved at `3bd8d64`; focused validation owns the sole heavy build slot.
-  Morph import and weight playback feed a single geometry-deformation writer
-  before skinning; source `f8165ad` is undergoing shared registration after IK.
-  Sequencer source is preserved at `7b96bb9` and remains unbuilt. It must run before
+  through the existing generation barrier. Hot reload `60cb571` is accepted:
+  final checks passed 10 lifecycle cases, identity deadline and inherited-pipe
+  regressions, actual engine reload acceptance, strict Clippy and fmt. It also
+  repairs canonical Windows private-save paths; five older symlink cases lacked
+  privileges, while real junction rejection passed. Build artifacts retain the
+  existing explicit-cleanup policy. Morph `93cf862` is accepted and integrated as
+  `8d9b88b`: 51 focused tests and strict Clippy/fmt passed, including actual morph
+  deformation before skinning and graph/IK compatibility.
+  Sequencer source is assembled at `d422209`; seven native tests pass at `7fc0c85`. It runs before
   simulation and native scrubbing must immediately refresh skin deformation.
-  Procedural audio source `bfae437` passed source critique; actual DSP/producer
-  tests and authored integration remain pending. These source checkpoints are
+  Procedural audio `5cdf40c` passed source critique and all 355 audio native tests,
+  including DSP/producer failure tests. Authored runtime validation remains pending. These source checkpoints are
   incomplete milestones, not accepted features.
+- New source decisions: atomic procedural reset controls are source-reviewed at
+  `9f7a312`. Extend the existing AudioEmitter/AudioSources lifecycle for resident
+  compressed clips, file streams and graphs; do not create a second emitter.
+  A separate engine-voice-audio bridge owns explicit CPAL capture, fixed-profile
+  Opus and existing network receiver-to-PCM playback. Capture construction is
+  device-free; hardware tests remain opt-in and separate from synthetic ingress.
+  Voice source `a9f68cb` includes reviewed capture recovery, encoder-state purge,
+  drained-speaker cleanup and mute bounds. Verified portable CMake and existing
+  MSVC built and linked native Opus successfully. Nine voice tests pass at
+  `7fc0c85`, including actual codec-to-mixer playback, PLC, capture conversion and
+  lifecycle behavior. The microphone test remains ignored.
+  Sequencer shared integration is source-reviewed at `d422209`, including early
+  scheduling, immediate deformation refresh and startup/transition cleanup;
+  native compilation and tests pass; project runtime tests remain in progress.
+  Physics/audio source `d705f174` passed review: accepted targeted 3D contact events
+  reach audio after pose synchronization; optional box-collider acoustic geometry
+  honors mask/material/mobility and removal. Other collider-only shapes are
+  explicitly unsupported; existing rendered-model geometry remains available.
 
 ### 9. Rendering round two
 
-- Status: pending; depends on stage 6 and relevant World/material contracts.
+- Status: in progress (material graph native tests pass; Hi-Z kernel source underway); remaining effects depend on
+  stage 6 and relevant World/material contracts.
 - Objective: IBL/probes/lightmaps; SSR/DOF/motion blur; AA/vendor-neutral upscale;
   atmosphere/fog/clouds/decals/GPU particles; Hi-Z with LOD; HDR display output;
   material graph; 2D lighting/tilemap rendering.
@@ -194,6 +235,68 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Acceptance: per-feature GPU readbacks showing output differences and resource
   lifetime/resize behavior, CPU input validation, integration tests; HDR display
   presentation remains separate from encoding/math checks.
+- First independent slice: engine-material-graph compiles shared engine-graph
+  documents to the existing Mesh/Sprite material shader contract. Reuse the
+  existing shader field for authored graph assets. Root serializes graph registry
+  and runtime material adapters. The compiler must validate one output sink with
+  reverse reachability, not GraphKind's forward single-root rule.
+  Source `725e545` and its mesh/sprite authored adapters passed review; six native
+  tests pass at `7fc0c85`. Authored runtime and four real GPU tests remain pending. Distinct graph-color/physical-control regressions
+  cover the reviewed unlit-color repair.
+- Shared pipeline prerequisites: one owner must add render-size scene-colour
+  ping-pong after opaque/sky and before transparents, adapt every later consumer
+  including DLSS, and define per-view temporal success/abort/reset/forget hooks.
+  Existing Prepass screen lighting cannot provide same-frame SSR. Shaded normal,
+  roughness and F0 need real producers before SSR; RT currently reconstructs
+  positions and uses a zero roughness input.
+- Shared-seam design checkpoint (source `8afd976`, implementation pending): add
+  an ordered `OpaqueEffects` stage between Sky and Transparent, with one lazy
+  render-size HDR scratch texture. `scene_color()` is authoritative for every
+  later attachment, host upscale input, native upscale and readback. Each effect
+  obtains distinct source/destination once and writes the full image.
+  Commit camera, staged mesh models and participating feature histories together
+  after scene encoding/submission through Tonemap, before Overlay/Composite.
+  Aborted scene attempts discard pending CPU histories and reset the next attempt;
+  late presentation failure retains the committed scene. Add CPU-only reset,
+  finish and forget callbacks, unique per-view evaluation IDs, and adapt existing
+  RT denoiser/auto-exposure/SR/FG bookkeeping. A submission is not GPU completion.
+  Test noncommuting color passes followed by transparency on every upscale route,
+  aborted-frame camera/model consistency, and late-UI retries without repeating
+  scene evaluation or advancing FG twice. One owner edits all shared seam files.
+- Independent source preparation underway: `codex/render-hiz` owns a conservative
+  forward-Z MAX pyramid and bounded rectangle queries only. Odd-sized mip levels
+  must cover every source texel; invalid/uncertain queries stay visible. Actual
+  LOD visibility consumption remains pending. `codex/render-post-effects` owns
+  native depth-of-field and motion-blur features on existing output-size post I/O;
+  authored settings and real GPU validation follow native source handoff.
+- Dependency order after those prerequisites:
+  1. IBL uses prefiltered specular cubemaps, diffuse SH and a BRDF LUT; local
+     probes add bounded deterministic selection/blending. Validate constant
+     environment response, roughness, orientation and volume transitions.
+  2. Lightmaps add real secondary UVs and per-instance atlas transforms, with
+     explicit probe-diffuse replacement/addition. Test separate atlas regions on
+     shared geometry. Supplied baked-data consumption does not establish baking.
+  3. SSR uses current opaque colour/depth/material data, bounded tracing and IBL
+     misses; define RT-versus-SSR selection. DOF and motion blur can use existing
+     output-size post I/O, with depth-aware taps and correct motion scaling.
+  4. Spatial AA precedes a native WGSL temporal resolve/upscaler. One owner supplies
+     jitter and one Upscale winner runs; test disocclusion, cuts, size changes,
+     re-enable and mode switching. Do not label a native algorithm as FSR/XeSS.
+  5. Atmosphere, fog and clouds are separate executable scattering/extinction/
+     volume-rendering slices; GPU tests must show sun, density, depth and wind
+     effects. Decals use depth-projected volumes and explicit material response.
+  6. GPU particle simulation runs once per scene tick, not once per view or FG
+     presentation. Read back state/counts against a seeded CPU reference before
+     accepting rendered output and bounded overflow behavior.
+  7. Wire real LOD selection/hysteresis into submission, then current-frame Hi-Z
+     max-depth mips and actual visibility/indirect draw consumption. A visibility
+     buffer without skipped draws is incomplete; camera culling keeps shadows.
+  8. HDR requires OS/backend display colour-space support and compatible output,
+     UI paper-white and FG encoding; float intermediates alone are insufficient.
+  9. Reuse World's committed tile chunk geometry/Draw contract from `255035b`:
+     16x16 chunks, y-up local positions, v-down oriented atlas UVs, stable chunk
+     identity/revision and layer opacity. Add real lit sprite/tile shaders and
+     bounded 2D light inputs while preserving sprite interleaving and UI rules.
 
 ### 10. Final integration, review and publication
 
@@ -202,7 +305,10 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   resolve cross-stream conflicts, align docs and publish validated work.
 - Acceptance: goals above, required repository reviews/CI, clean owned changes,
   explicit hardware limitations and reconciliation of every task worktree.
-- Outcome: not yet established. No incomplete stage is considered merged.
+- Outcome: not yet established. Source-only assembly in the isolated integration
+  branch does not count as an accepted feature or final merge. Combined native
+  checks use one root-owned build slot and the populated morph-validation cache;
+  required project, editor, MCP, GPU and final workspace/example gates follow.
 
 ## Session worktree record
 
@@ -221,10 +327,13 @@ external worktrees are not cleanup targets.
 | codex-animation-graph | `834c047` | Graph/blends; `codex/animation-graph` | active |
 | codex-render-contracts | `91b961c` | Shared shadows; `codex/render-contracts` | active |
 | codex-pending-integration | `697e36f` | Root integration and final checks; `codex/pending-integration` | active |
+| codex-material-graph | `2ebdfcd` | Material compiler; `codex/material-graph` | active |
+| codex-voice-audio | `2ebdfcd` | Capture/Opus/playback bridge; `codex/voice-audio` | active |
+| codex-physics-audio | `5cdf40c` | 3D contacts/collider acoustics; `codex/physics-audio` | preserved at `d705f174`, validation pending |
 | parity-editor-scene | `9e4a063` | Resume scene WIP; existing `claude/parity-editor-scene` | integrated, retained for existing owner |
-| parity-editor-hotreload | `319c7df` | Runtime generation replacement; existing `claude/parity-editor-hotreload` | active, retain |
+| parity-editor-hotreload | `319c7df` | Runtime generation replacement; existing `claude/parity-editor-hotreload` | integrated, retained for existing owner |
 | parity-editor-graph | `b62ef9e` | Reusable graph authoring; existing `claude/parity-editor-graph` | active, retain |
-| parity-animation-morph | `b62ef9e` | Morph import/playback/deformation; existing `claude/parity-animation-morph` | active, retain |
+| parity-animation-morph | `b62ef9e` | Morph import/playback/deformation; existing `claude/parity-animation-morph` | integrated, retained; root combined build uses declared cache |
 | parity-animation-cinematics | `f52cf2f` | Timeline source; existing `claude/parity-animation-cinematics` | preserved at `7b96bb9`, retain |
 | parity-platform-services-ml | `609ccb2` | Complete ML; existing `claude/parity-platform-services-ml` | integrated, retained for existing owner |
 | parity-platform-services-services | `7d614e9` | Existing server; existing `claude/parity-platform-services-services` | integrated, retained for existing owner |

@@ -1,0 +1,15 @@
+[package]
+name = "engine-foliage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Foliage and vegetation data model: types, spatial-cell instance storage, deterministic scatter over a PCG surface, brush painting, LOD bands with hysteresis and impostors, and the wind sway model."
+
+[dependencies]
+engine-pcg = { path = "../engine-pcg" }
+glam.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

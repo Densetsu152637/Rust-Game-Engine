@@ -140,6 +140,8 @@ fn screenshot_on(
     runtime.set_audio(audio.control())?;
     engine_desktop::configure_acoustics(&mut runtime, true, arguments.acoustics_backend)?;
     engine_desktop::install_default_ui_features(runtime.app_mut())?;
+    // The image is rendered on the GPU: the same default render features as a window.
+    engine_desktop::install_default_render_features(runtime.app_mut())?;
     runtime.start()?;
     let mut event_trace = engine_project::EventTrace::default();
     let result = (|| -> Result<serde_json::Value> {

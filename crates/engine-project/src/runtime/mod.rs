@@ -93,7 +93,9 @@ impl Runtime {
         crate::acoustics::register(&mut app)?;
         crate::xr::register(&mut app)?;
         crate::ai::register(&mut app)?;
+        crate::world::register_components(&mut app)?;
         crate::simulation::install(app.world_mut(), simulation)?;
+        crate::world::install(app.world_mut())?;
         app.world_mut().insert_resource(RuntimeLog::default());
         app.world_mut().insert_resource(EntityLookup::default());
         app.world_mut().insert_resource(ActionFrame::default());
@@ -345,11 +347,13 @@ impl Runtime {
         self.app
             .tick_with_post_update(dt, |world| {
                 crate::networking::validate(world)?;
+                crate::world::pre_simulation(world, dt)?;
                 crate::ai::step(world, dt)?;
                 crate::sequencer::step(world, dt)?;
                 crate::simulation::step(world, dt)?;
                 crate::networking::after_step(world, tick)?;
                 crate::transforms::refresh_world_transforms(world)?;
+                crate::world::post_transforms(world, dt)?;
                 Ok(())
             })
             .map_err(|e| Error::new("runtime.update", e.to_string()))?;
