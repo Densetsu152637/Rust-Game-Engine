@@ -1726,6 +1726,7 @@ dependencies = [
  "engine-core",
  "engine-destruction",
  "engine-fluids",
+ "engine-gameplay",
  "engine-graph",
  "engine-locale",
  "engine-navigation",

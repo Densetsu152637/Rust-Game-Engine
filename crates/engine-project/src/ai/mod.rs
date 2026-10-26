@@ -12,8 +12,11 @@
 //! * [`env_query`] and [`smart_object`]: environment queries, smart object slots and
 //!   the built-in `engine.run_query` / `engine.use_smart_object` tree tasks.
 //!
+//! * [`crate::gameplay`]: the ability system service and the built-in
+//!   `engine.activate_ability` / `engine.wait_ability_end` tree tasks.
+//!
 //! The services run immediately before `simulation::step` (perception, smart
-//! objects and queries first, then behavior trees, then state trees),
+//! objects, queries and abilities first, then behavior trees, then state trees),
 //! so a `move_to` task that sets the entity's `engine.NavigationAgent` target is
 //! routed in the same tick. See `docs/ai-behavior-trees.md` and
 //! `docs/ai-state-trees.md`.
@@ -63,6 +66,7 @@ pub fn descriptors() -> Vec<crate::ComponentDescriptor> {
     all.extend(perception::descriptors());
     all.push(env_query::descriptor());
     all.push(smart_object::descriptor());
+    all.push(crate::gameplay::descriptor());
     all
 }
 
@@ -74,6 +78,7 @@ pub fn register(app: &mut EngineApp) -> Result<()> {
     perception::register(app)?;
     smart_object::register(app)?;
     env_query::register(app)?;
+    crate::gameplay::register(app)?;
     // Built-in tree tasks under reserved names.
     for (name, factory) in [
         (
@@ -81,6 +86,14 @@ pub fn register(app: &mut EngineApp) -> Result<()> {
             tasks::run_query_factory as TaskFactory<World>,
         ),
         (tasks::USE_SMART_OBJECT, tasks::use_smart_object_factory),
+        (
+            crate::gameplay::tasks::ACTIVATE_ABILITY,
+            crate::gameplay::tasks::activate_ability_factory,
+        ),
+        (
+            crate::gameplay::tasks::WAIT_ABILITY_END,
+            crate::gameplay::tasks::wait_ability_end_factory,
+        ),
     ] {
         app.world_mut()
             .resource_mut::<BehaviorTrees>()
@@ -97,6 +110,7 @@ pub fn register(app: &mut EngineApp) -> Result<()> {
 pub fn prepare(world: &mut World) -> Result<()> {
     perception::prepare(world)?;
     smart_object::prepare(world)?;
+    crate::gameplay::prepare(world)?;
     runtime::prepare(world)?;
     state_tree::prepare(world)
 }
@@ -107,6 +121,7 @@ pub fn step(world: &mut World, dt: f32) -> Result<()> {
     perception::step(world, dt)?;
     smart_object::step(world, dt)?;
     env_query::step(world)?;
+    crate::gameplay::step(world, dt)?;
     runtime::step(world, dt)?;
     state_tree::step(world, dt)
 }
@@ -116,6 +131,7 @@ pub fn step(world: &mut World, dt: f32) -> Result<()> {
 pub fn shutdown(world: &mut World) {
     runtime::shutdown(world);
     state_tree::shutdown(world);
+    crate::gameplay::shutdown(world);
 }
 
 /// Registers a native task or service under `name` for `native_task`,
@@ -150,6 +166,7 @@ pub fn validate_scene(project: &Project, scene: &Scene) -> Result<()> {
     validate_behavior_trees(project, scene)?;
     state_tree::validate_scene(project, scene)?;
     perception::validate_scene(project, scene)?;
+    crate::gameplay::validate_scene(project, scene)?;
     validate_queries_and_objects(project, scene)
 }
 

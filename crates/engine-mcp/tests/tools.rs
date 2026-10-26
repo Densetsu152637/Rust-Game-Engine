@@ -357,6 +357,7 @@ fn component_schema_lists_all_components_and_rules() {
         .collect();
     let mut expected = engine_mcp::COMPONENT_NAMES.to_vec();
     expected.extend([
+        "engine.AbilitySystem",
         "engine.AccessibilitySettings",
         "engine.AcousticEnvironment",
         "engine.AcousticGeometry",
