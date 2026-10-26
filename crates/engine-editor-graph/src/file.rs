@@ -23,7 +23,17 @@ impl std::fmt::Display for FileError {
             Self::Conflict => f.write_str("Graph changed on disk; reopen before saving"),
             Self::ReadOnly => f.write_str("Graph is read only"),
             Self::TooLarge => f.write_str("Graph exceeds 4 MiB"),
-            Self::Diagnostics(d) => write!(f, "Graph has {} validation errors", d.len()),
+            Self::Diagnostics(d) => match d.first() {
+                Some(first) => write!(
+                    f,
+                    "{} {}: {} ({} diagnostics)",
+                    first.code,
+                    first.path,
+                    first.message,
+                    d.len()
+                ),
+                None => f.write_str("Graph validation failed"),
+            },
         }
     }
 }
@@ -42,6 +52,35 @@ pub struct GraphFile {
     baseline: Option<Vec<u8>>,
 }
 impl GraphFile {
+    /// Open a project graph using the same builtin registry as project validation and MCP.
+    pub fn open_registered(
+        root: &Path,
+        relative: &Path,
+    ) -> Result<(Self, GraphSession), FileError> {
+        let root = fs::canonicalize(root)?;
+        let path = resolve(&root, relative)?;
+        let bytes = read(&path)?;
+        let document =
+            GraphDocument::from_json(&bytes).map_err(|d| FileError::Diagnostics(vec![d]))?;
+        let kind = engine_project::graphs::kinds()
+            .get(&document.kind)
+            .ok_or_else(|| {
+                FileError::Diagnostics(vec![GraphDiagnostic::new(
+                    "graph.kind.unknown",
+                    "/kind",
+                    format!("Unknown graph kind {}", document.kind),
+                )])
+            })?;
+        let session = GraphSession::new(document, kind.clone()).map_err(FileError::Diagnostics)?;
+        Ok((
+            Self {
+                root,
+                relative: relative.to_owned(),
+                baseline: Some(bytes),
+            },
+            session,
+        ))
+    }
     pub fn open(
         root: &Path,
         relative: &Path,

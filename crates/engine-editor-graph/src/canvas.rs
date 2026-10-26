@@ -32,6 +32,7 @@ impl GraphCanvas {
     pub fn cancel_gesture(&mut self) {
         self.drag = None;
         self.wire = None;
+        self.param_text.clear();
     }
     fn commit(&mut self, session: &mut GraphSession, edits: &[GraphEdit]) {
         self.error = session.apply(edits).err().unwrap_or_default();

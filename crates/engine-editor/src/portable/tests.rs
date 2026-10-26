@@ -1,5 +1,5 @@
 use super::*;
-struct Host;
+pub(super) struct Host;
 impl PlayHost for Host {
     fn start(&mut self, _: engine_project::Project) -> Result<()> {
         Ok(())
@@ -17,7 +17,7 @@ impl PlayHost for Host {
         Ok(crate::PlayStatus::Running)
     }
 }
-fn fixture() -> tempfile::TempDir {
+pub(super) fn fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("scene.json"),r#"{"schema":1,"scene_id":"scene","entities":[{"id":"object","name":"Object","components":{"Transform":{"position":[0,0,0]}}}]}"#).unwrap();
     std::fs::write(

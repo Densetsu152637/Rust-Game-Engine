@@ -23,6 +23,7 @@ pub fn run(manifest: &Path, host: Box<dyn PlayHost>) -> Result<()> {
 }
 
 mod gizmo;
+mod graph;
 mod panels;
 mod picking;
 mod selection;
@@ -33,6 +34,8 @@ pub use viewport::ViewNavigation;
 
 struct PortableEditor {
     controller: EditorController,
+    graph: Option<graph::GraphTab>,
+    graph_view: bool,
     navigation: ViewNavigation,
     runtime: Option<Runtime>,
     preview_camera: Option<engine_core::bevy_ecs::entity::Entity>,
@@ -69,6 +72,8 @@ impl PortableEditor {
         };
         Self {
             controller,
+            graph: None,
+            graph_view: false,
             navigation: Default::default(),
             runtime: None,
             preview_camera: None,
@@ -243,7 +248,7 @@ impl eframe::App for PortableEditor {
             self.dirty_preview = true;
         }
         if ctx.input(|i| i.viewport().close_requested()) && !self.close_approved {
-            if self.controller.is_dirty() {
+            if self.controller.is_dirty() || self.graph_is_dirty() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.confirm_close = true;
             } else if let Err(error) = self.controller.close(false) {
@@ -270,21 +275,28 @@ impl eframe::App for PortableEditor {
         egui::Panel::left("hierarchy")
             .default_size(210.0)
             .show(ui, |ui| self.hierarchy(ui));
-        egui::Panel::right("inspector")
-            .default_size(300.0)
-            .show(ui, |ui| self.inspector(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.viewport(ui));
+        if !self.graph_view {
+            egui::Panel::right("inspector")
+                .default_size(300.0)
+                .show(ui, |ui| self.inspector(ui));
+        }
+        egui::CentralPanel::default().show(ui, |ui| {
+            if self.graph_view {
+                self.graph_panel(ui);
+            } else {
+                self.viewport(ui);
+            }
+        });
         if self.confirm_close {
-            egui::Window::new("Unsaved scene")
+            egui::Window::new("Unsaved changes")
                 .collapsible(false)
                 .resizable(false)
                 .show(&ctx, |ui| {
-                    ui.label("Save changes before closing?");
+                    ui.label("Save scene and graph changes before closing?");
                     ui.horizontal(|ui| {
                         if ui.button("Save and close").clicked() {
                             let r = self
-                                .controller
-                                .save()
+                                .save_all_documents()
                                 .and_then(|()| self.controller.close(false));
                             let success = r.is_ok();
                             self.report(r);

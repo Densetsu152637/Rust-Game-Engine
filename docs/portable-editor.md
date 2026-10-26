@@ -41,3 +41,13 @@ bounded CPU raster limits, transform limitations and verification coverage.
 Invalid preview data leaves the last successful image visible with diagnostics.
 Closing a dirty document prompts Save, Discard or Cancel. Changes are validated
 through the document model before they reach disk.
+
+The **Graph** view opens project graph assets through **Open graph <asset id>** in
+Assets. Its shared canvas supports registered behavior tree, state tree and
+animation schemas, node/port editing, undo/redo, complete diagnostics and
+revision-protected Save. Scene and graph changes remain independent; toolbar
+Save/Undo/Redo target the active view. Unsaved graph edits survive switching back
+to Scene and participate in the application close prompt. Graph view also exports
+incomplete work to a separate unregistered draft file. Save a graph before
+Play/Reload game to use its latest authored graph data. See
+[Native graph editor](editor-graph.md) for controls and limits.

@@ -74,29 +74,40 @@ session's saved baseline untouched. The host must not register this incomplete
 draft as an active graph asset. Normal Save never writes an incomplete active
 asset. The host may reopen a draft explicitly to continue editing.
 
-## Shell adapter
+## Editor shell
 
-Add a path dependency on `engine-editor-graph` to the editor shell. Retain a graph
-tab containing `GraphSession`, `GraphCanvas` and `GraphFile`. For each project
-catalog asset whose kind is `graph`, expose an **Open graph** action. Select its
-schema by parsing the bounded document kind and looking it up in the project kind
-registry, then call `GraphFile::open`. Show the tab with `canvas.show`; route its
-Save action to `GraphFile::save` and display failures without closing the tab.
-A new graph action selects a kind from the registry and a project-relative target;
-`GraphFile::create` does not register a catalog entry automatically.
+Launch `engine editor <manifest>`. In **Assets**, click **Open graph <asset id>**
+for a project graph asset. The shell uses `GraphFile::open_registered` for bounded
+parsing and builtin kind lookup, then opens the **Graph** view. The **Scene** and
+**Graph** toolbar selectors retain both documents independently. Save, Undo and
+Redo target the selected view. The graph canvas also exposes its own history
+buttons and full diagnostics. Scene preview lighting and play/reload controls keep
+their existing behavior; unsaved graph changes are not part of play snapshots.
+Save the graph asset before playing or reloading to use its latest document.
 
-The independent crate is a library milestone; it becomes a reachable editor
-feature only when this adapter is wired into the shell. The canvas does not own
-scene/play/hot-reload transitions, filesystem dialogs, project manifest writes,
-runtime stepping, graph evaluation previews, clipboard copy/paste, multi-selection,
-zoom, extensible-port schema editing or automatic layout. Future material and
-procedural domains can reuse it by supplying their registered GraphKind.
+Only one graph tab is retained. Opening another graph refuses to discard modified
+work. **Close graph** offers save, explicit discard, or continued editing. Closing
+the application includes dirty graph work in its existing save/discard/cancel
+prompt; Save and close saves the graph first and then the scene. A failed graph
+save keeps the application open. In the graph view, **Export incomplete draft**
+accepts a separate new project-relative JSON path. Export leaves the active graph
+dirty and does not register the draft in the project asset catalog.
+
+The library's `GraphFile::create` API supports host-managed new graph assets;
+this shell opens existing catalog assets and does not author project manifest
+entries or expose a new-asset dialog. Scene/play/hot-reload transitions and file
+selection belong to the shell. Runtime stepping, evaluation previews, clipboard
+copy/paste, multi-selection, zoom, extensible-port schema editing and automatic
+layout are not implemented. Future material and procedural domains can reuse the
+canvas by registering their GraphKind.
 
 ## Validation
 
 Focused tests cover shared atomic rollback and read-only history, save/reopen with
 layout, external-write conflicts, separate draft policy and confinement, all
 shipped kind registries and compiler diagnostics, and real egui pointer input for
-palette creation, node drag, connection, deletion and single-gesture undo.
+palette creation, node drag, connection, deletion and single-gesture undo. The
+editor shell adds a real asset-button input test that reaches the canvas, exports
+a separate draft, saves/reopens layout and verifies the scene remains unchanged.
 Run `cargo test -p engine-editor-graph -j1` and
 `cargo clippy -p engine-editor-graph --all-targets -j1 -- -D warnings`.
