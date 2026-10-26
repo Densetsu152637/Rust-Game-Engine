@@ -132,6 +132,7 @@ such passes are now `Overlay`-stage features.
 | `view_bind_group`, `layouts` | `engine::view` group 0 and the shared layouts (in `Shadow` the atlas binding is a 1x1 placeholder) |
 | `world` | the extracted ECS world (read only), when the host supplies it |
 | `hdr()`, `depth()`, `normals()`, `motion()`, `screen_lighting()` | frame textures (see below) |
+| `shadow_views()`, `shadow_pass(label, index)` | allocated shared-atlas tiles and a depth-only Load pass (Shadow only; see below) |
 | `scene_pass(label)` | render pass over HDR + depth (load/store), scene stages only |
 | `post_process_io()` | `(source, destination)`; the destination becomes current (PostProcess) |
 | `upscale_io()` | `(render HDR, output-size destination)` (Upscale) |
@@ -140,6 +141,32 @@ such passes are now `Overlay`-stage features.
 
 Output and overlay features receive any target format (`output().format`); build
 pipelines per format on first use.
+
+### Shared shadow writers
+
+A Shadow-stage feature can add geometry to the same atlas sampled by built-in
+materials. `ctx.shadow_views()?` returns `ShadowRenderView` entries in
+`engine_shadows` order: `index`, submitted `LightList` index (`light_index`),
+uploaded light slot (`light_slot`, directional lights first), `light_kind`,
+`view_index` (cascade, spot 0 or cube face +X/-X/+Y/-Y/+Z/-Z), atlas `layer`,
+`x`, `y`, `size`, and the exact `ShadowView` projection (`view.clip_from_world`,
+near/far, cascade split and texel scale). These are per-frame allocations;
+features must not cache indices or rectangles across frames.
+
+`ctx.shadow_pass(label, index)?` opens a depth-only Load/Store pass, sets the
+tile viewport and scissor, and binds group 0 with the placeholder atlas. The
+feature sets its own depth pipeline (target `DEPTH_FORMAT`), other bindings and
+caster geometry, transforming positions with that tile's projection. Keep the
+helper's viewport/scissor; the pipeline owns atlas allocation and clearing.
+Do not sample the real atlas while writing it.
+
+Before the first Shadow-stage feature, the pipeline clears each used layer to
+1 exactly once. Built-in and custom passes then load it. Features may order
+themselves before or after `engine.shadows` without erasing other casters.
+Both APIs reject calls outside Shadow, and the pass rejects unallocated indices.
+Disabling `engine.shadows` remains the global shadow master switch: no views are
+allocated and receivers are unshadowed. To replace built-in casters, keep that
+node enabled and set the relevant meshes' `cast_shadows` to false.
 
 ## Per-view data
 
@@ -438,6 +465,13 @@ Commands (GPU tests on the RTX 5080, Vulkan, `--test-threads=1`):
   two eye views with measured parallax; optional device features reported
   exactly as the adapter supports them and external-device adoption; motion
   vectors (opposite to object motion, within 1 px) and normals on request.
+- Shared shadow writers (2026-10-26): the package's 42 unit tests and the
+  `gpu_lights` / `gpu_pipeline` suites (17 real GPU tests) pass on Vulkan /
+  RTX 5080. External and built-in casters preserve each other's shadows in
+  both feature orders. Readback covers nine distinct tiles on three atlas
+  layers, directional cascade/point-face/spot metadata, stale-depth clearing,
+  the global disabled master leaving atlas depth untouched, and invalid-index
+  / wrong-stage rejection.
 - `cargo test -p engine-desktop --test render_features -- --ignored`: an
   authored `Camera3D.render_features` edit (through the `component_set` edit
   operation) removes the mesh from the image and the status reports it;

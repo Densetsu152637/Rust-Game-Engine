@@ -924,3 +924,435 @@ fn shadow_atlas_overflow_is_reported_and_shadows_still_render() -> Result<()> {
     assert!(lighting.overflow[0].contains("shadow atlas"));
     Ok(())
 }
+
+/// External geometry uses only the public shadow contract. Each allocated
+/// view receives a separate immutable matrix, avoiding queue-write aliasing
+/// between passes in one submission.
+struct ExtensionCaster {
+    before: bool,
+    mesh: Arc<GpuMesh>,
+    model: Mat4,
+    prepared: Option<(wgpu::BindGroupLayout, wgpu::RenderPipeline)>,
+}
+impl PipelineFeature for ExtensionCaster {
+    fn descriptor(&self) -> FeatureDescriptor {
+        let descriptor = FeatureDescriptor::new("test.shadow.caster", Stage::Shadow);
+        if self.before {
+            descriptor.before(names::SHADOWS)
+        } else {
+            descriptor.after(names::SHADOWS)
+        }
+    }
+    fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
+        self.prepared = Some(shadow_writer_pipeline(setup, false)?);
+        Ok(())
+    }
+    fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
+        use wgpu::util::DeviceExt;
+        let (layout, pipeline) = self.prepared.as_ref().unwrap();
+        for tile in ctx.shadow_views()?.to_vec() {
+            let matrix = tile.view.clip_from_world * self.model;
+            let buffer = ctx
+                .gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("external caster matrix"),
+                    contents: bytemuck::cast_slice(&matrix.to_cols_array()),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            let group = writer_group(&ctx.gpu.device, layout, &buffer);
+            let mut pass = ctx.shadow_pass("external caster", tile.index as usize)?;
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(1, &group, &[]);
+            self.mesh.draw(&mut pass, 0..1);
+        }
+        assert!(
+            ctx.shadow_pass("unallocated", ctx.shadow_views()?.len())
+                .is_err()
+        );
+        Ok(())
+    }
+}
+
+fn writer_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("test shadow writer"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    })
+}
+
+fn shadow_writer_pipeline(
+    setup: &FeatureSetup<'_>,
+    fullscreen: bool,
+) -> Result<(wgpu::BindGroupLayout, wgpu::RenderPipeline)> {
+    let device = &setup.gpu.device;
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("test shadow writer parameters"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let source = if fullscreen {
+        "#import engine::view\n@group(1) @binding(0) var<uniform> value: vec4<f32>;
+         @vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+             let p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+             return vec4<f32>(p[i], value.x, 1.0);
+         }"
+    } else {
+        "#import engine::view\n@group(1) @binding(0) var<uniform> matrix: mat4x4<f32>;
+         @vertex fn vs_main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> { return matrix * vec4<f32>(position, 1.0); }"
+    };
+    let source = setup.composer.compose(source)?;
+    validate_wgsl(&source)?;
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("test shadow writer"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("test shadow writer"),
+        bind_group_layouts: &[Some(&setup.layouts.view), Some(&layout)],
+        immediate_size: 0,
+    });
+    let buffers = if fullscreen {
+        vec![]
+    } else {
+        vec![Some(ENGINE_VERTEX_LAYOUT)]
+    };
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("test shadow writer"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &buffers,
+        },
+        primitive: wgpu::PrimitiveState {
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: None,
+        multiview_mask: None,
+        cache: None,
+    });
+    Ok((layout, pipeline))
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn extension_and_builtin_shadow_casters_preserve_each_other_in_both_orders() -> Result<()> {
+    let gpu = gpu()?;
+    let floor = floor_mesh(&gpu, 20.0);
+    let plate = floor_mesh(&gpu, 0.55);
+    let visibility = visibility_wgsl();
+    let view = top_view([256, 256], Vec3::ZERO, 10.0, 10.0);
+    let toward = Vec3::new(0.0, 1.0, 0.8).normalize();
+    let lights = LightList {
+        lights: vec![
+            Light::directional(-toward, Vec3::ONE, 1.0).with_shadow(ShadowSettings {
+                resolution: 512,
+                filter: ShadowFilter::Hard,
+                cascades: CascadeSettings {
+                    count: 1,
+                    max_distance: 20.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        ],
+    };
+    let meshes = [
+        draw("floor", &floor, Mat4::IDENTITY, Some(&visibility)),
+        draw(
+            "builtin",
+            &plate,
+            Mat4::from_translation(Vec3::new(2.0, 2.0, 0.0)),
+            Some(&visibility),
+        ),
+    ];
+    let sample = |image: &HdrImage, x: f32| {
+        let (px, py) = pixel_of(&view, Vec3::new(x, 0.0, -1.6));
+        image.pixel(px, py)[0]
+    };
+    for before in [true, false] {
+        let mut pipeline = ScenePipeline::new(gpu.clone())?;
+        pipeline.register(ExtensionCaster {
+            before,
+            mesh: plate.clone(),
+            model: Mat4::from_translation(Vec3::new(-2.0, 2.0, 0.0)),
+            prepared: None,
+        })?;
+        let (both, _) = render(&mut pipeline, &view, &meshes, &lights)?;
+        assert!(
+            sample(&both, -2.0) < 0.1,
+            "extension shadows built-in receiver, before={before}"
+        );
+        assert!(
+            sample(&both, 2.0) < 0.1,
+            "built-in shadow survives, before={before}"
+        );
+        let mut only_builtin = view.clone();
+        only_builtin.features.set("test.shadow.caster", false);
+        let (cleared, _) = render(&mut pipeline, &only_builtin, &meshes, &lights)?;
+        assert!(
+            sample(&cleared, -2.0) > 0.99,
+            "previous external shadow was cleared"
+        );
+        assert!(sample(&cleared, 2.0) < 0.1);
+        let mut disabled = view.clone();
+        disabled.features.set(names::SHADOWS, false);
+        let (unshadowed, report) = render(&mut pipeline, &disabled, &meshes, &lights)?;
+        assert!(sample(&unshadowed, -2.0) > 0.99 && sample(&unshadowed, 2.0) > 0.99);
+        assert_eq!(report.lighting.shadow_views, 0);
+    }
+    gpu.check_errors()?;
+    Ok(())
+}
+
+struct TileWriter {
+    odd: bool,
+    seen: Arc<std::sync::Mutex<Vec<ShadowRenderView>>>,
+    prepared: Option<(wgpu::BindGroupLayout, wgpu::RenderPipeline)>,
+}
+impl PipelineFeature for TileWriter {
+    fn descriptor(&self) -> FeatureDescriptor {
+        let descriptor = FeatureDescriptor::new(
+            if self.odd {
+                "test.shadow.odd"
+            } else {
+                "test.shadow.even"
+            },
+            Stage::Shadow,
+        );
+        if self.odd {
+            descriptor.after(names::SHADOWS)
+        } else {
+            descriptor.before(names::SHADOWS)
+        }
+    }
+    fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
+        self.prepared = Some(shadow_writer_pipeline(setup, true)?);
+        Ok(())
+    }
+    fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
+        use wgpu::util::DeviceExt;
+        let views = ctx.shadow_views()?.to_vec();
+        *self.seen.lock().unwrap() = views.clone();
+        assert!(ctx.shadow_pass("unallocated", views.len()).is_err());
+        let (layout, pipeline) = self.prepared.as_ref().unwrap();
+        for tile in views.into_iter().filter(|v| (v.index % 2 == 1) == self.odd) {
+            let value = [0.1 + tile.index as f32 * 0.05, 0.0, 0.0, 0.0];
+            let buffer = ctx
+                .gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("tile depth"),
+                    contents: bytemuck::cast_slice(&value),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            let group = writer_group(&ctx.gpu.device, layout, &buffer);
+            let mut pass = ctx.shadow_pass("tile writer", tile.index as usize)?;
+            // Deliberately expand only the viewport to exercise the helper's
+            // scissor independently: this triangle would cover the whole page.
+            pass.set_viewport(0.0, 0.0, 512.0, 512.0, 0.0, 1.0);
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(1, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        Ok(())
+    }
+}
+
+struct WrongStageProbe;
+impl PipelineFeature for WrongStageProbe {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new("test.shadow.wrong_stage", Stage::Opaque)
+    }
+    fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
+        assert!(
+            ctx.shadow_views()
+                .unwrap_err()
+                .to_string()
+                .contains("shadow stage")
+        );
+        assert!(
+            ctx.shadow_pass("wrong stage", 0)
+                .unwrap_err()
+                .to_string()
+                .contains("shadow stage")
+        );
+        Ok(())
+    }
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn shared_shadow_tiles_and_light_metadata_are_isolated_and_reset_each_frame() -> Result<()> {
+    let gpu = gpu()?;
+    let mut pipeline = ScenePipeline::new(gpu.clone())?;
+    pipeline.set_shadow_atlas(ShadowAtlasConfig {
+        page_size: 512,
+        max_pages: 3,
+    })?;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    for odd in [false, true] {
+        pipeline.register(TileWriter {
+            odd,
+            seen: seen.clone(),
+            prepared: None,
+        })?;
+    }
+    pipeline.register(WrongStageProbe)?;
+    let view = top_view([144, 32], Vec3::ZERO, 10.0, 4.0);
+    let shadow = ShadowSettings {
+        resolution: 256,
+        filter: ShadowFilter::Hard,
+        cascades: CascadeSettings {
+            count: 2,
+            max_distance: 20.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // Submitted order differs from uploaded order: directionals move first.
+    let lights = LightList {
+        lights: vec![
+            Light::point(Vec3::new(0.0, 3.0, 0.0), Vec3::ONE, 1.0, 20.0).with_shadow(shadow),
+            Light::directional(Vec3::NEG_Y, Vec3::ONE, 1.0).with_shadow(shadow),
+            Light::spot(
+                Vec3::new(0.0, 3.0, 0.0),
+                Vec3::NEG_Y,
+                Vec3::ONE,
+                1.0,
+                20.0,
+                0.3,
+                0.6,
+            )
+            .with_shadow(shadow),
+        ],
+    };
+    render(&mut pipeline, &view, &[], &lights)?;
+    let tiles = seen.lock().unwrap().clone();
+    assert_eq!(tiles.len(), 9);
+    assert!(tiles.iter().any(|tile| tile.layer == 2));
+    for (index, tile) in tiles.iter().enumerate() {
+        assert_eq!(tile.index as usize, index);
+        assert_eq!(tile.size, 256);
+        assert!(tile.x + tile.size <= 512 && tile.y + tile.size <= 512);
+        assert!(tile.view.clip_from_world.is_finite());
+        let (source, slot, face) = match tile.light_kind {
+            LightKind::Directional => (1, 0, tile.view_index),
+            LightKind::Point => (0, 1, tile.view_index),
+            LightKind::Spot => (2, 2, 0),
+            LightKind::Area => panic!("not submitted"),
+        };
+        assert_eq!(
+            (tile.light_index, tile.light_slot, tile.view_index),
+            (source, slot, face)
+        );
+    }
+    assert_eq!(
+        tiles
+            .iter()
+            .filter(|v| v.light_kind == LightKind::Point)
+            .map(|v| v.view_index)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3, 4, 5]
+    );
+    let expressions = tiles
+        .iter()
+        .map(|v| {
+            format!(
+                "textureLoad(engine_shadow_atlas, vec2<i32>({}, {}), {}i, 0)",
+                v.x + v.size / 2,
+                v.y + v.size / 2,
+                v.layer
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let prefix = IRRADIANCE_WGSL
+        .split("    let n = normalize(input.normal);")
+        .next()
+        .unwrap();
+    let shader = format!(
+        "{prefix}    let depths = array<f32, 9>({expressions});\n    return vec4<f32>(depths[min(u32(input.position.x) / 16u, 8u)], 0.0, 0.0, 1.0);\n}}\n"
+    );
+    let floor = floor_mesh(&gpu, 20.0);
+    let mut receiver = draw("atlas reader", &floor, Mat4::IDENTITY, Some(&shader));
+    receiver.params.cast_shadows = false;
+    let (image, _) = render(
+        &mut pipeline,
+        &view,
+        std::slice::from_ref(&receiver),
+        &lights,
+    )?;
+    for tile in &tiles {
+        let value = image.pixel(tile.index * 16 + 8, 16)[0];
+        assert!(
+            (value - (0.1 + tile.index as f32 * 0.05)).abs() < 0.001,
+            "tile {}: {value}",
+            tile.index
+        );
+    }
+    let mut even_only = view.clone();
+    even_only.features.set("test.shadow.odd", false);
+    let (cleared, _) = render(
+        &mut pipeline,
+        &even_only,
+        std::slice::from_ref(&receiver),
+        &lights,
+    )?;
+    for tile in &tiles {
+        let expected = if tile.index % 2 == 0 {
+            0.1 + tile.index as f32 * 0.05
+        } else {
+            1.0
+        };
+        assert!((cleared.pixel(tile.index * 16 + 8, 16)[0] - expected).abs() < 0.001);
+    }
+    let mut disabled = view.clone();
+    disabled.features.set(names::SHADOWS, false);
+    let (untouched, _) = render(
+        &mut pipeline,
+        &disabled,
+        std::slice::from_ref(&receiver),
+        &lights,
+    )?;
+    for tile in &tiles {
+        assert_eq!(
+            untouched.pixel(tile.index * 16 + 8, 16),
+            cleared.pixel(tile.index * 16 + 8, 16),
+            "disabled master must neither clear nor write the atlas"
+        );
+    }
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "master switch leaves no writable views"
+    );
+    gpu.check_errors()?;
+    Ok(())
+}

@@ -131,6 +131,22 @@ to the camera); a light whose views do not fit the remaining texels, or would
 exceed `MAX_SHADOWS` (256) views, renders without shadows and the status says
 why. Pages are allocated on demand and kept (grow-only) per view.
 
+### Custom caster features
+
+Shadow-stage features write into the shared atlas through
+`FeatureContext::shadow_views` and `shadow_pass`; see the
+[writer contract](rendering-architecture.md#shared-shadow-writers). A custom
+caster therefore shadows ordinary engine meshes, and ordinary casters can
+shadow its receivers when they use `engine_light_visibility`.
+
+Core clears every used atlas layer once before any Shadow feature. Every writer
+loads/stores its assigned tile and preserves its viewport/scissor, whether it
+runs before or after `engine.shadows`. Metadata identifies the original submitted
+light, uploaded slot, cascade/cube face and exact projection. Features cannot
+allocate or repack the atlas. `engine.shadows = false` disables allocations for
+all writers; a replacement caster keeps that master enabled and opts built-in
+meshes out with `cast_shadows = false`.
+
 ## Clustering
 
 `engine.lights.clusters` (Prepare stage, enabled by default) builds a 16 x 9 x
@@ -264,6 +280,14 @@ cascades replace the fixed volume). `ambient` stays; `exposure` is new.
 | PCSS (spot 6 m up, 0.3 m source) | 10-90% penumbra 0.031, 0.086, 0.188 m for blockers 0.5, 1, 2 m above the receiver; PCF stays 0.031 m |
 | Atlas overflow | 4 point lights x 6 x 256^2 in one 1024^2 page: 2 shadowed, 2 dropped with a reason |
 
+Shared-writer validation on 2026-10-26 (same adapter/backend): all 11
+`gpu_lights` tests pass, including external casters shadowing native mesh
+receivers before and after the built-in writer. The atlas test reads nine
+distinct tile depths across three layers (two directional cascades, six point
+faces, one spot), checks the helper scissor independently of its viewport,
+checks stale tiles clear, and confirms disabling the master makes no atlas
+writes. The six `gpu_pipeline` regression tests also pass.
+
 ## Limits
 
 - No image-based lighting; the ambient term is a constant unless the ray-traced GI,
@@ -279,5 +303,7 @@ cascades replace the fixed volume). `ambient` stays; `exposure` is new.
 - Each view (camera, editor viewport, XR eye) owns its own atlas pages.
 - Transparent meshes do not cast shadows; custom vertex displacement is not
   replayed in shadow passes.
-- Render features in the Shadow stage see a placeholder atlas and do not get
-  the atlas rectangles of the built-in shadow views.
+- Render features in the Shadow stage bind a placeholder atlas to avoid
+  sampling the depth attachment they write. Shared writer helpers expose only
+  allocated tiles; custom casters must implement their own displacement and
+  alpha-cutout behaviour consistently with their colour pass.

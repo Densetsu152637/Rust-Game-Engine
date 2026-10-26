@@ -79,6 +79,7 @@ pub struct FeatureContext<'a> {
     pub layouts: &'a PipelineLayouts,
     /// The extracted ECS world, when the host supplies one. Read only.
     pub world: Option<&'a World>,
+    pub(crate) shadows: Option<&'a crate::lighting::ViewLighting>,
     pub(crate) io: &'a mut FrameIo,
     pub(crate) stats: &'a mut DrawStats,
     pub(crate) name: &'a str,
@@ -113,6 +114,60 @@ impl<'a> FeatureContext<'a> {
             self.stage.name()
         );
         Ok(())
+    }
+
+    /// Allocated shared shadow-atlas views, in `engine_shadows` order.
+    /// Shadow stage only. `engine.shadows` is the master switch: disabling it
+    /// yields an empty slice, including for custom writers. For replacement
+    /// casters keep it enabled and disable individual meshes' `cast_shadows`.
+    pub fn shadow_views(&self) -> Result<&[crate::ShadowRenderView]> {
+        ensure!(
+            self.stage == Stage::Shadow,
+            "{}: shadow_views is for the shadow stage",
+            self.name
+        );
+        Ok(self
+            .shadows
+            .map_or(&[], |lighting| lighting.draws.as_slice()))
+    }
+
+    /// Begin a depth-only pass loading an allocated shadow tile. The pipeline
+    /// has already cleared its layer once. Sets the tile viewport/scissor and
+    /// binds group 0 with the placeholder atlas so sampling cannot alias the
+    /// depth attachment. Use `shadow_views()[index].view.clip_from_world` (or
+    /// `engine_shadows[index].clip_from_world`) for caster positions.
+    ///
+    /// Shadow stage only; rejects unallocated indices. Keep the supplied
+    /// viewport/scissor and Load/Store semantics when adding custom casters.
+    pub fn shadow_pass(&mut self, label: &str, index: usize) -> Result<wgpu::RenderPass<'static>> {
+        let view = *self.shadow_views()?.get(index).ok_or_else(|| {
+            anyhow::anyhow!("{}: shadow view index {index} is not allocated", self.name)
+        })?;
+        let lighting = self
+            .shadows
+            .ok_or_else(|| anyhow::anyhow!("{}: no shadow atlas", self.name))?;
+        let target = &lighting.atlas().layer_views[view.layer as usize];
+        let mut pass = self
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: target,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            })
+            .forget_lifetime();
+        let size = view.size as f32;
+        pass.set_viewport(view.x as f32, view.y as f32, size, size, 0.0, 1.0);
+        pass.set_scissor_rect(view.x, view.y, view.size, view.size);
+        pass.set_bind_group(0, self.view_bind_group, &[]);
+        Ok(pass)
     }
 
     /// HDR scene colour (`Rgba16Float`, render size).

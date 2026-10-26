@@ -10,7 +10,7 @@ use crate::lights::{
 };
 use crate::shader::{CLUSTERS_WGSL, ShaderComposer};
 use crate::shadows::{
-    ShadowAtlasConfig, cascade_splits, cascade_view, cube_views, pack_atlas,
+    ShadowAtlasConfig, ShadowRenderView, cascade_splits, cascade_view, cube_views, pack_atlas,
     projection_depth_range, spot_view,
 };
 use crate::targets::DEPTH_FORMAT;
@@ -114,24 +114,13 @@ impl LightingReport {
     }
 }
 
-/// One shadow view to render: atlas layer, texel rectangle and the
-/// `EngineShadow` index the caster pass reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ShadowDraw {
-    pub layer: u32,
-    pub x: u32,
-    pub y: u32,
-    pub size: u32,
-    pub index: u32,
-}
-
 /// The CPU result of planning a view's lights.
 #[derive(Clone, Debug)]
 pub(crate) struct LightPlan {
     pub lights: Vec<GpuLight>,
     pub directional: u32,
     pub shadows: Vec<GpuShadow>,
-    pub draws: Vec<ShadowDraw>,
+    pub draws: Vec<ShadowRenderView>,
     pub pages: u32,
     pub header: [u8; CLUSTER_HEADER_BYTES as usize],
     pub report: LightingReport,
@@ -352,11 +341,16 @@ pub(crate) fn plan_lights(frame: &LightingFrame<'_>) -> Result<LightPlan> {
             let light = &lights[order[*slot]];
             let settings = light.shadow.expect("admitted lights have shadows");
             gpu[*slot].shadow_index = shadows.len() as i32;
-            for view in views {
+            for (view_index, view) in views.iter().enumerate() {
                 let atlas_slot = slots[next];
                 next += 1;
                 pages = pages.max(atlas_slot.page + 1);
-                draws.push(ShadowDraw {
+                draws.push(ShadowRenderView {
+                    light_index: order[*slot],
+                    light_slot: *slot as u32,
+                    light_kind: light.kind(),
+                    view_index: view_index as u32,
+                    view: *view,
                     layer: atlas_slot.page,
                     x: atlas_slot.x,
                     y: atlas_slot.y,
@@ -725,7 +719,7 @@ pub(crate) struct ViewLighting {
     screen: [wgpu::TextureView; 4],
     screen_texture: Option<wgpu::Texture>,
     /// Shadow views of this frame.
-    pub draws: Vec<ShadowDraw>,
+    pub draws: Vec<ShadowRenderView>,
     /// Whether the cluster pass runs this frame.
     pub dispatch: bool,
     stats_seen: Option<ClusterStats>,
@@ -959,6 +953,28 @@ impl ViewLighting {
         self.report = plan.report;
         self.report.cluster_stats = self.stats_seen;
         Ok(plan.lights.len() as u32)
+    }
+
+    /// Clear once before any Shadow-stage writer, regardless of feature order.
+    pub fn clear_shadows(&self, encoder: &mut wgpu::CommandEncoder) {
+        for (layer, target) in self.atlas.layer_views.iter().enumerate() {
+            if !self.draws.iter().any(|draw| draw.layer == layer as u32) {
+                continue;
+            }
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("engine clear shadow atlas layer"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: target,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+        }
     }
 
     /// Start mapping the cluster readback encoded this frame (call after the
@@ -1337,11 +1353,35 @@ mod tests {
         assert!(splits.windows(2).all(|w| w[0] < w[1]));
         assert!((splits[3] - 100.0).abs() < 1e-3);
         assert_eq!(plan.draws.len(), 5);
+        for (index, draw) in plan.draws.iter().enumerate() {
+            assert_eq!(draw.index as usize, index);
+            assert_eq!(
+                draw.view.clip_from_world.to_cols_array_2d(),
+                plan.shadows[index].clip_from_world
+            );
+            assert_eq!(draw.light_kind, lights.lights[draw.light_index].kind());
+            assert_eq!(
+                plan.lights[draw.light_slot as usize].kind,
+                draw.light_kind as u32
+            );
+        }
+        assert_eq!(
+            plan.draws
+                .iter()
+                .take(4)
+                .map(|v| v.view_index)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(plan.draws[4].light_index, 2);
+        assert_eq!(plan.draws[4].view_index, 0);
+
         let mut disabled = frame(&view, &lights);
         disabled.shadows = false;
         let plan = plan_lights(&disabled).unwrap();
         assert!(plan.lights.iter().all(|l| l.shadow_index == -1));
         assert!(!plan.report.shadows_enabled);
+        assert!(plan.draws.is_empty());
     }
 
     #[test]

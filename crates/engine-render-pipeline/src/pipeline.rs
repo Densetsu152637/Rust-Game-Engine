@@ -965,6 +965,9 @@ fn run_stage(
     resolved: &mut ResolvedFeatures,
     stats: &mut DrawStats,
 ) -> Result<()> {
+    if stage == Stage::Shadow {
+        run.state.lighting.clear_shadows(encoder);
+    }
     let order: Vec<usize> = run.registry.ordered().to_vec();
     for index in order {
         let registered = &run.registry.features[index];
@@ -1004,6 +1007,7 @@ fn run_stage(
                     },
                     layouts: run.layouts,
                     world: run.frame.world,
+                    shadows: Some(&run.state.lighting),
                     io,
                     stats,
                     name: &name,
@@ -1079,7 +1083,7 @@ fn run_builtin(
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view: target,
                         depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
+                            load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         }),
                         stencil_ops: None,
@@ -1238,6 +1242,7 @@ fn run_overlay(
                     view_bind_group,
                     layouts,
                     world,
+                    shadows: None,
                     io,
                     stats,
                     name: &name,
