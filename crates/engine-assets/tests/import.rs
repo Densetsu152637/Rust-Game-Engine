@@ -426,3 +426,97 @@ fn rejects_dependencies_inside_protected_metadata_or_build_directories() {
         ));
     }
 }
+
+fn morph_fixture(cubic: bool) -> (Value, Vec<u8>) {
+    let (mut document, mut bytes) = fixture();
+    let deltas = append_f32(&mut bytes, &[2., 0., 0., 2., 0., 0., 2., 0., 0.]);
+    let values = append_f32(
+        &mut bytes,
+        if cubic {
+            &[0., -1., 4., 0., 2., 0.]
+        } else {
+            &[-1., 2.]
+        },
+    );
+    let view = document["bufferViews"].as_array().unwrap().len();
+    for (offset, length) in [deltas, values] {
+        document["bufferViews"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"buffer":0,"byteOffset":offset,"byteLength":length}));
+    }
+    let accessor = document["accessors"].as_array().unwrap().len();
+    document["accessors"].as_array_mut().unwrap().extend([
+        json!({"bufferView":view,"componentType":5126,"count":3,"type":"VEC3","min":[2,0,0],"max":[2,0,0]}),
+        json!({"bufferView":view+1,"componentType":5126,"count":if cubic {6} else {2},"type":"SCALAR"})]);
+    document["meshes"][0]["primitives"][0]["targets"] =
+        json!([{"POSITION":accessor,"TANGENT":accessor}]);
+    document["meshes"][0]["weights"] = json!([0.25]);
+    document["nodes"][0]["weights"] = json!([0.75]);
+    document["animations"] = json!([{"samplers":[{"input":9,"output":accessor+1,"interpolation":if cubic {"CUBICSPLINE"} else {"LINEAR"}}],"channels":[{"sampler":0,"target":{"node":0,"path":"weights"}}]}]);
+    document["buffers"][0]["byteLength"] = json!(bytes.len());
+    (document, bytes)
+}
+#[test]
+fn morph_glb_imports_defaults_deltas_and_cubic_weight_channels() {
+    for cubic in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (document, bytes) = morph_fixture(cubic);
+        write_glb(dir.path(), &document, &bytes);
+        let scene = import(dir.path()).unwrap();
+        assert_eq!(
+            scene.morphs.primitives[0].targets[0]
+                .positions
+                .as_ref()
+                .unwrap()[0],
+            [2., 0., 0.]
+        );
+        assert_eq!(
+            scene.morphs.primitives[0].targets[0]
+                .tangents
+                .as_ref()
+                .unwrap()[0],
+            [2., 0., 0.]
+        );
+        assert_eq!(scene.morphs.primitives[0].weights, vec![0.25]);
+        assert_eq!(scene.morphs.node_weights[&0], vec![0.75]);
+        let ChannelValues::Weights(values) = &scene.clips[0].channels[0].values else {
+            panic!("weights")
+        };
+        assert_eq!(values.len(), if cubic { 6 } else { 2 });
+        scene.validate_morphs().unwrap();
+    }
+}
+#[test]
+fn morph_rejects_mismatched_defaults_duplicate_channels_and_delta_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let (document, bytes) = morph_fixture(false);
+    let mut bad = document.clone();
+    bad["nodes"][0]["weights"] = json!([0., 1.]);
+    write_glb(dir.path(), &bad, &bytes);
+    assert!(import(dir.path()).is_err());
+    let mut bad = document.clone();
+    let channel = bad["animations"][0]["channels"][0].clone();
+    bad["animations"][0]["channels"]
+        .as_array_mut()
+        .unwrap()
+        .push(channel);
+    write_glb(dir.path(), &bad, &bytes);
+    assert!(import(dir.path()).is_err());
+    write_glb(dir.path(), &document, &bytes);
+    let mut both = document.clone();
+    both["meshes"][0]["primitives"][0]["targets"][0]["NORMAL"] =
+        both["meshes"][0]["primitives"][0]["targets"][0]["POSITION"].clone();
+    write_glb(dir.path(), &both, &bytes);
+    let limits = ImportLimits {
+        max_vertices: 3,
+        ..Default::default()
+    };
+    assert!(import_gltf(dir.path(), Path::new("model.glb"), &limits).is_err());
+    write_glb(dir.path(), &document, &bytes);
+    let limits = ImportLimits {
+        max_animation_keys: 3,
+        ..Default::default()
+    };
+    assert!(import_gltf(dir.path(), Path::new("model.glb"), &limits).is_err());
+}

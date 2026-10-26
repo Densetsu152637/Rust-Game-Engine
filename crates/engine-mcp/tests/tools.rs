@@ -376,6 +376,8 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.Destructible3D",
         "engine.FluidVolume",
         "engine.Formation",
+        "engine.MorphPlayer",
+        "engine.MorphWeights",
         "engine.NavigationAgent",
         "engine.NavigationObstacle",
         "engine.NetworkHitboxes",

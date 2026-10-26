@@ -66,9 +66,7 @@ pub(super) fn import_clips(
                 Property::Translation => 0,
                 Property::Rotation => 1,
                 Property::Scale => 2,
-                Property::MorphTargetWeights => {
-                    return Err(AssetError::Unsupported("morph animation".into()));
-                }
+                Property::MorphTargetWeights => 3,
             };
             let target_node = channel.target().node().index();
             if !targets.insert((target_node, property_key)) {
@@ -82,7 +80,22 @@ pub(super) fn import_clips(
             {
                 return Err(invalid("invalid animation time format"));
             }
-            let expected = if property == Property::Rotation {
+            let width = if property == Property::MorphTargetWeights {
+                channel
+                    .target()
+                    .node()
+                    .mesh()
+                    .and_then(|m| m.primitives().next())
+                    .map_or(0, |p| p.morph_targets().len())
+            } else {
+                1
+            };
+            if width == 0 || width > 256 {
+                return Err(invalid("invalid morph animation target"));
+            }
+            let expected = if property == Property::MorphTargetWeights {
+                Dimensions::Scalar
+            } else if property == Property::Rotation {
                 Dimensions::Vec4
             } else {
                 Dimensions::Vec3
@@ -109,8 +122,21 @@ pub(super) fn import_clips(
             } else {
                 1
             };
-            if input.count().checked_mul(multiplier) != Some(output.count()) {
+            if input
+                .count()
+                .checked_mul(multiplier)
+                .and_then(|n| n.checked_mul(width))
+                != Some(output.count())
+            {
                 return Err(invalid("animation key/value count mismatch"));
+            }
+            if property == Property::MorphTargetWeights {
+                add_budget(
+                    &mut key_count,
+                    output.count(),
+                    limits.max_animation_keys,
+                    "morph animation values",
+                )?;
             }
             let reader = channel.reader(|buffer| Some(buffers[buffer.index()].as_slice()));
             let times: Vec<f32> = reader
@@ -135,11 +161,12 @@ pub(super) fn import_clips(
                     ChannelValues::Rotation(values.into_f32().collect())
                 }
                 ReadOutputs::Scales(values) => ChannelValues::Scale(values.collect()),
-                ReadOutputs::MorphTargetWeights(_) => {
-                    return Err(AssetError::Unsupported("morph animation".into()));
+                ReadOutputs::MorphTargetWeights(values) => {
+                    ChannelValues::Weights(values.into_f32().collect())
                 }
             };
             match &values {
+                ChannelValues::Weights(values) => finite(values.iter().copied())?,
                 ChannelValues::Translation(values) | ChannelValues::Scale(values) => {
                     finite(values.iter().flatten().copied())?
                 }

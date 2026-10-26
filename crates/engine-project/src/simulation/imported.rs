@@ -42,6 +42,9 @@ pub fn imported_clip(scene: &ImportedScene, index: usize) -> Result<ClipDocument
     }
     let mut tracks = BTreeMap::<usize, ClipTrack>::new();
     for channel in &source.channels {
+        if matches!(channel.values, ChannelValues::Weights(_)) {
+            continue;
+        }
         let interpolation = match channel.interpolation {
             Interpolation::Step => Sampling::Step,
             Interpolation::Linear => Sampling::Linear,
@@ -61,6 +64,7 @@ pub fn imported_clip(scene: &ImportedScene, index: usize) -> Result<ClipDocument
             scale: None,
         });
         let duplicate = match &channel.values {
+            ChannelValues::Weights(_) => continue,
             ChannelValues::Translation(values) => track
                 .translation
                 .replace(VectorChannel {
