@@ -2,6 +2,7 @@
 //! Native game systems register directly on [`engine_core::EngineApp`].
 pub mod accessibility;
 pub mod acoustics;
+pub mod ai;
 pub mod audio;
 pub mod captions;
 pub mod catalog;
@@ -9,6 +10,7 @@ pub mod content;
 pub mod document;
 pub mod events;
 pub mod gameplay2d;
+pub mod graphs;
 pub mod input;
 pub mod lights;
 pub mod localization;

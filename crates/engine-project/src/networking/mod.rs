@@ -65,7 +65,9 @@ const POSE_WRITERS: &[&str] = &[
     "engine.PhysicsBody2D",
     "engine.PhysicsBody3D",
     "engine.AnimationPlayer",
+    "engine.AnimationGraphPlayer",
     "engine.NavigationAgent",
+    "engine.CrowdAgent",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

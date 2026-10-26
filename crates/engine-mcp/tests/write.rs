@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 15] = [
+const WRITE_TOOLS: [&str; 16] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -36,6 +36,7 @@ const WRITE_TOOLS: [&str; 15] = [
     "locale_add_locale",
     "ui_edit",
     "network_settings_set",
+    "graph_edit",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -89,15 +90,16 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 38);
+    assert_eq!(names.len(), 41);
     // Registration order: the 12 original read tools, the 8 original write
     // tools, the navigation pair (bake writes, query only reads), the
     // acoustics tools (inspect and query read, bake writes), the physics pair
     // (both read), then the locale tools (three reads, three writes), then the
     // UI authoring tools (inspect and preview read, edit writes), then the
-    // networking tools (inspect reads, settings_set writes).
+    // networking tools (inspect reads, settings_set writes), then the graph
+    // tools (schema and validate read, edit writes).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 23);
+    assert_eq!(read_only_names.len(), 25);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -112,6 +114,11 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(names[33..35], read_only_names[20..22]);
     assert_eq!(names[36], "network_inspect");
     assert_eq!(names[37], "network_settings_set");
+    assert_eq!(names[38..40], read_only_names[23..25]);
+    assert_eq!(names[40], "graph_edit");
+    assert_eq!(read_only_names[23], "graph_schema");
+    assert_eq!(read_only_names[24], "graph_validate");
+    assert_eq!(WRITE_TOOLS[15], "graph_edit");
     assert_eq!(read_only_names[22], "network_inspect");
     assert_eq!(WRITE_TOOLS[14], "network_settings_set");
     assert_eq!(names[35], "ui_edit");
@@ -155,6 +162,7 @@ fn write_tool_annotations_are_accurate() {
     expect("file_write", true, true);
     expect("asset_import_model", false, false);
     expect("ui_edit", true, false);
+    expect("graph_edit", true, false);
     for tool in tools
         .iter()
         .filter(|t| t["annotations"]["readOnlyHint"] == true)

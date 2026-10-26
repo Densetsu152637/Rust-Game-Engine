@@ -4,6 +4,9 @@ use bevy_ecs::prelude::*;
 use glam::{Mat4, Quat, Vec3};
 use std::collections::{BTreeMap, BTreeSet};
 mod animation;
+mod animation_graph;
+pub use animation_graph::AnimationGraphPlayer;
+mod crowds;
 mod descriptors;
 mod imported;
 mod navigation;
@@ -33,12 +36,19 @@ pub fn register_components(app: &mut engine_core::EngineApp) -> Result<()> {
     crate::register_component::<SkinBinding>(app, "engine.SkinBinding", 1)?;
     physics::register_components(app)?;
     crate::register_component::<AnimationPlayer>(app, "engine.AnimationPlayer", 1)?;
-    crate::register_component::<NavigationAgent>(app, "engine.NavigationAgent", 1)
+    crate::register_component::<AnimationGraphPlayer>(app, "engine.AnimationGraphPlayer", 1)?;
+    crate::register_component::<NavigationAgent>(app, "engine.NavigationAgent", 1)?;
+    crate::register_component::<CrowdAgent>(app, "engine.CrowdAgent", 1)?;
+    crate::register_component::<Formation>(app, "engine.Formation", 1)?;
+    crate::register_component::<NavigationObstacle>(app, "engine.NavigationObstacle", 1)?;
+    crate::register_component::<OffMeshLink>(app, "engine.OffMeshLink", 1)
 }
 #[derive(Resource)]
 struct Services {
     physics: physics::Physics,
     animations: animation::Animations,
+    graph_animations: animation_graph::GraphAnimations,
+    crowds: crowds::Crowds,
     navigation: navigation::Navigation,
     skins: skinning::Skins,
 }
@@ -49,6 +59,8 @@ pub fn install(world: &mut World, config: Option<SimulationConfig>) -> Result<()
         Some(Services {
             physics: physics::Physics::new(config)?,
             animations: Default::default(),
+            graph_animations: Default::default(),
+            crowds: Default::default(),
             navigation: Default::default(),
             skins: Default::default(),
         })
@@ -79,10 +91,46 @@ fn validate(world: &World) -> Result<()> {
         let body3 = e.get::<PhysicsBody3D>();
         let nav = e.get::<NavigationAgent>();
         let animation = e.get::<AnimationPlayer>();
+        let graph = e.get::<AnimationGraphPlayer>();
+        let crowd = e.contains::<CrowdAgent>();
+        if crowd
+            || e.contains::<NavigationObstacle>()
+            || e.contains::<OffMeshLink>()
+            || e.contains::<Formation>()
+        {
+            if !enabled {
+                return Err(invalid(
+                    "Simulation services disabled for an active component",
+                ));
+            }
+            if !e.contains::<Transform>() {
+                return Err(invalid("Simulation components require Transform"));
+            }
+        }
+        if crowd
+            && (nav.is_some()
+                || e.contains::<physics::CharacterController2D>()
+                || e.contains::<physics::CharacterController3D>())
+        {
+            return Err(invalid(
+                "A crowd agent cannot share an entity with a navigation agent or character controller",
+            ));
+        }
+        if crowd
+            && body2
+                .map(|b| b.motion)
+                .or(body3.map(|b| b.motion))
+                .is_some_and(|m| m != Motion::Kinematic)
+        {
+            return Err(invalid(
+                "Crowd agents can drive only kinematic physics bodies",
+            ));
+        }
         if body2.is_some()
             || body3.is_some()
             || nav.is_some()
             || animation.is_some()
+            || graph.is_some()
             || e.contains::<SkinBinding>()
         {
             if !enabled {
@@ -111,22 +159,28 @@ fn validate(world: &World) -> Result<()> {
                 "Navigation can drive only kinematic physics bodies",
             ));
         }
+        let mut animation_targets = Vec::new();
         if let Some(player) = animation {
-            for target in animation::bindings(world, e.id(), player)? {
-                if !animated.insert(target) {
-                    return Err(invalid("Multiple animations write the same entity"));
-                }
-                if animated.len() > 65536 {
-                    return Err(invalid("Animation world binding budget exceeded"));
-                }
-                if world.get::<PhysicsBody2D>(target).is_some()
-                    || world.get::<PhysicsBody3D>(target).is_some()
-                    || world.get::<NavigationAgent>(target).is_some()
-                {
-                    return Err(invalid(
-                        "Animation target already has a physics or navigation pose authority",
-                    ));
-                }
+            animation_targets.extend(animation::bindings(world, e.id(), player)?);
+        }
+        if let Some(player) = graph {
+            animation_targets.extend(animation_graph::bindings(world, e.id(), player)?);
+        }
+        for target in animation_targets {
+            if !animated.insert(target) {
+                return Err(invalid("Multiple animations write the same entity"));
+            }
+            if animated.len() > 65536 {
+                return Err(invalid("Animation world binding budget exceeded"));
+            }
+            if world.get::<PhysicsBody2D>(target).is_some()
+                || world.get::<PhysicsBody3D>(target).is_some()
+                || world.get::<NavigationAgent>(target).is_some()
+                || world.get::<CrowdAgent>(target).is_some()
+            {
+                return Err(invalid(
+                    "Animation target already has a physics or navigation pose authority",
+                ));
             }
         }
     }
@@ -139,7 +193,9 @@ pub fn prepare(world: &mut World) -> Result<()> {
     };
     let result = (|| {
         services.animations.sync(world)?;
+        services.graph_animations.sync(world)?;
         services.navigation.sync(world)?;
+        services.crowds.sync(world)?;
         services.physics.sync(world)?;
         services.skins.sync(world)?;
         services.skins.evaluate(world)
@@ -154,9 +210,13 @@ pub fn step(world: &mut World, dt: f32) -> Result<()> {
     };
     let result = (|| {
         services.animations.sync(world)?;
+        services.graph_animations.sync(world)?;
         services.navigation.sync(world)?;
+        services.crowds.sync(world)?;
         services.animations.step(world, dt)?;
+        services.graph_animations.step(world, dt)?;
         services.navigation.step(world, dt)?;
+        services.crowds.step(world, dt)?;
         services.physics.sync(world)?;
         services.physics.step(world, dt)?;
         services.skins.sync(world)?;

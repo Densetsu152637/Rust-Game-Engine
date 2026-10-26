@@ -125,6 +125,9 @@ rebake changed geometry and reset/reload the scene to use it. Native transform
 writes must respect navigation pose ownership or request a repath. Existing
 kinematic-only physics sharing and parent-transform conversion still apply.
 
+Crowd steering, runtime obstacle carving, off-mesh links and formations are documented in
+[Crowds, carving and off-mesh links](ai-crowds.md).
+
 ## MCP authoring
 
 With write access, `navigation_bake` accepts `meshes` (asset IDs), `output`

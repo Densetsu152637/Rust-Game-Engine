@@ -90,6 +90,7 @@ impl Runtime {
         crate::networking::register(&mut app)?;
         crate::acoustics::register(&mut app)?;
         crate::xr::register(&mut app)?;
+        crate::ai::register(&mut app)?;
         crate::simulation::install(app.world_mut(), simulation)?;
         app.world_mut().insert_resource(RuntimeLog::default());
         app.world_mut().insert_resource(EntityLookup::default());
@@ -244,6 +245,7 @@ impl Runtime {
         self.validate_event_bindings()?;
         crate::networking::validate(self.app.world())?;
         crate::simulation::prepare(self.app.world_mut())?;
+        crate::ai::prepare(self.app.world_mut())?;
         crate::transforms::refresh_world_transforms(self.app.world_mut())?;
         self.sync_collision()?;
         if let Err(error) = self.start_acoustics() {
@@ -333,6 +335,7 @@ impl Runtime {
         self.app
             .tick_with_post_update(dt, |world| {
                 crate::networking::validate(world)?;
+                crate::ai::step(world, dt)?;
                 crate::simulation::step(world, dt)?;
                 crate::networking::after_step(world, tick)?;
                 crate::transforms::refresh_world_transforms(world)?;
@@ -396,6 +399,7 @@ impl Runtime {
         }
         let mut error = None;
         crate::networking::shutdown(self.app.world_mut());
+        crate::ai::shutdown(self.app.world_mut());
         for script in std::mem::take(&mut self.scripts).into_iter().rev() {
             if let Err(e) = destroy_script(self.app.world_mut(), script)
                 && error.is_none()

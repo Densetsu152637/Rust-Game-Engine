@@ -1410,11 +1410,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-ai"
+version = "0.1.0"
+dependencies = [
+ "engine-graph",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-animation"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "engine-graph",
  "glam 0.34.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1530,6 +1542,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-graph"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-locale"
 version = "0.1.0"
 dependencies = [
@@ -1554,6 +1574,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "engine-graph",
  "engine-project",
  "epaint_default_fonts",
  "regex",
@@ -1692,12 +1713,14 @@ dependencies = [
  "bevy_ecs",
  "blake3",
  "engine-acoustics",
+ "engine-ai",
  "engine-animation",
  "engine-assets",
  "engine-audio",
  "engine-core",
  "engine-destruction",
  "engine-fluids",
+ "engine-graph",
  "engine-locale",
  "engine-navigation",
  "engine-net-predict",

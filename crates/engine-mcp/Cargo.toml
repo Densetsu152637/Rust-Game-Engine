@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+engine-graph = { path = "../engine-graph" }
 engine-project = { path = "../engine-project" }
 base64.workspace = true
 blake3 = "1"

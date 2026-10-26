@@ -48,6 +48,7 @@ impl Project {
                 "navigation",
                 "acoustics",
                 "lut",
+                "graph",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -197,6 +198,7 @@ impl Project {
         }
         crate::acoustics::validate_scene(self, scene)?;
         crate::networking::validate_scene(scene)?;
+        crate::ai::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.
@@ -220,6 +222,7 @@ impl Project {
                         read_bounded(&file, crate::acoustics::MAX_BAKED_DOCUMENT_BYTES as u64)?;
                     crate::acoustics::validate_document(&asset.id, &bytes)?;
                 }
+                "graph" => crate::graphs::validate_asset(self, &asset.id)?,
                 "mesh" => {
                     crate::content::load_mesh(&file)?;
                 }
