@@ -68,6 +68,8 @@
 - [PC VR (OpenXR)](xr.md): `engine-xr` runtime discovery and honest status,
   session lifecycle, controller actions and `XR:` bindings, tracking, haptics,
   Vulkan swapchains and the `engine.XrSettings` component.
+- [Machine learning](ml.md): bounded ONNX model admission, CPU inference, asynchronous
+  jobs and optional native ECS services.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
   fingerprints, ownership and reload behavior.
 - [Authored simulation](simulation.md): 2D/3D rigid bodies, animation and navigation
@@ -190,6 +192,6 @@
   access levels and limits.
 
 - [Animation pose graphs](animation-graph.md): validated pose DAGs, state
-  transitions, 1D/2D blend spaces, project bindings and CPU skin deformation.
+  transitions, 1D/2D blend spaces, two-bone IK, project bindings and CPU skin deformation.
 
 Per-crate details are in `crates/*/README.md`.

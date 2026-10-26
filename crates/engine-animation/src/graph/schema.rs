@@ -52,6 +52,26 @@ pub fn kind() -> GraphKind {
                 .param(param("triangles", ParamType::Json)),
         )
         .with(
+            source("ik_two_bone")
+                .port(PortDef::input("input", pose()).required())
+                .param(param("root", ParamType::Int).range(0., 4095.))
+                .param(param("mid", ParamType::Int).range(0., 4095.))
+                .param(param("end", ParamType::Int).range(0., 4095.))
+                .param(param("target", ParamType::Variable).variable_types(&[PortType::Vec3]))
+                .param(param("pole", ParamType::Variable).variable_types(&[PortType::Vec3]))
+                .param(param("weight", ParamType::Variable).variable_types(&[PortType::Float]))
+                .param(
+                    ParamDef::new("min_bend", ParamType::Float)
+                        .range(0., std::f64::consts::PI)
+                        .default_value(json!(0.)),
+                )
+                .param(
+                    ParamDef::new("max_bend", ParamType::Float)
+                        .range(0., std::f64::consts::PI)
+                        .default_value(json!(std::f64::consts::PI)),
+                ),
+        )
+        .with(
             source("state_machine")
                 .port(PortDef::input("states", pose()).multiple().required())
                 .param(param("states", ParamType::Json))
@@ -60,7 +80,7 @@ pub fn kind() -> GraphKind {
         );
     GraphKind::new(
         "animation",
-        "Validated pose graphs and blend spaces",
+        "Validated pose graphs, blend spaces and two-bone IK",
         registry,
     )
     .limits(GraphLimits {
@@ -68,7 +88,7 @@ pub fn kind() -> GraphKind {
         max_edges: 1024,
         max_variables: 64,
     })
-    .variable_types(&[PortType::Bool, PortType::Float])
+    .variable_types(&[PortType::Bool, PortType::Float, PortType::Vec3])
     .check(check)
 }
 fn check(document: &GraphDocument) -> Vec<GraphDiagnostic> {

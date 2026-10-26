@@ -52,6 +52,10 @@ impl Skeleton {
             order,
         })
     }
+    /// Parent indices in the same complete node order as local poses.
+    pub fn parents(&self) -> &[Option<usize>] {
+        &self.parents
+    }
     pub fn joint_count(&self) -> usize {
         self.parents.len()
     }

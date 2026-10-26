@@ -14,6 +14,7 @@ engine-core = { path = "../engine-core" }
 engine-destruction = { path = "../engine-destruction" }
 engine-fluids = { path = "../engine-fluids" }
 engine-audio = { path = "../engine-audio" }
+engine-video = { path = "../engine-video" }
 engine-acoustics = { path = "../engine-acoustics" }
 engine-physics = { path = "../engine-physics" }
 engine-animation = { path = "../engine-animation" }
@@ -40,3 +41,6 @@ tempfile = "3"
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "crypto"] }
 # Test fonts (already used by engine-text tests).
 epaint_default_fonts = { version = "=0.37.0", features = ["monochrome_emoji_fonts"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+engine-ml = { path = "../engine-ml" }

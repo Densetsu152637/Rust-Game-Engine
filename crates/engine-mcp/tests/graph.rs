@@ -522,6 +522,7 @@ fn animation_palette_uses_shared_graph_schema() {
         "blend1d",
         "blend2d",
         "state_machine",
+        "ik_two_bone",
         "output",
     ] {
         assert!(types.iter().any(|node| node["name"] == name));

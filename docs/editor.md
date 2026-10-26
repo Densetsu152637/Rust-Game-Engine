@@ -6,7 +6,9 @@ or `engine_editor::run(project_manifest, play_host)`.
 
 The window provides save, undo/redo, hierarchy selection, transform controls,
 validated entity/component JSON editing, an asset list, diagnostics, play/stop,
-and a real GPU scene preview with 2D/3D navigation and translation gestures.
+and a real GPU scene preview with 2D/3D navigation, multi-object transform
+gestures, geometry picking, snapping, grid and camera bookmarks.
+See [Scene view editing](editor-scene.md) for transactional gestures and settings.
 See [Portable editor](portable-editor.md) for controls and current limits.
 The legacy Windows controls remain available through `native_smoke` for existing
 structural regression tests; they are not the default authoring window.
