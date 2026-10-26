@@ -7,7 +7,9 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
+    io::{Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 /// File name of the settings document inside the project root.
@@ -245,9 +247,15 @@ impl EditorSettings {
                 "{SETTINGS_FILE} exceeds {MAX_DOCUMENT_BYTES} bytes"
             )),
             Ok(_) => {
-                let bytes = std::fs::read(&path).map_err(|error| {
-                    SettingsError(format!("cannot read {}: {error}", path.display()))
-                })?;
+                let bytes = std::fs::File::open(&path)
+                    .and_then(|file| {
+                        let mut bytes = Vec::new();
+                        file.take(MAX_DOCUMENT_BYTES + 1).read_to_end(&mut bytes)?;
+                        Ok(bytes)
+                    })
+                    .map_err(|error| {
+                        SettingsError(format!("cannot read {}: {error}", path.display()))
+                    })?;
                 Self::parse(&bytes)
             }
         }
@@ -256,8 +264,8 @@ impl EditorSettings {
     /// Serializes to the canonical pretty form.
     pub fn to_json(&self) -> Result<String> {
         self.validate()?;
-        let mut text = serde_json::to_string_pretty(self)
-            .map_err(|error| SettingsError(error.to_string()))?;
+        let mut text =
+            serde_json::to_string_pretty(self).map_err(|error| SettingsError(error.to_string()))?;
         text.push('\n');
         Ok(text)
     }
@@ -267,10 +275,28 @@ impl EditorSettings {
     pub fn save(&self, root: &Path) -> Result<()> {
         let text = self.to_json()?;
         let path = Self::path(root);
-        let temporary = root.join(format!("{SETTINGS_FILE}.tmp"));
-        std::fs::write(&temporary, text).map_err(|error| {
-            SettingsError(format!("cannot write {}: {error}", temporary.display()))
-        })?;
+        static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+        let temporary = root.join(format!(
+            ".{SETTINGS_FILE}.{}.{}.tmp",
+            std::process::id(),
+            NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed)
+        ));
+        // create_new never overwrites another writer's file or an orphaned temp.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| {
+                SettingsError(format!("cannot create {}: {error}", temporary.display()))
+            })?;
+        let result = file
+            .write_all(text.as_bytes())
+            .and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&temporary);
+            return fail(format!("cannot write {}: {error}", temporary.display()));
+        }
         std::fs::rename(&temporary, &path).map_err(|error| {
             let _ = std::fs::remove_file(&temporary);
             SettingsError(format!("cannot replace {}: {error}", path.display()))
@@ -422,6 +448,31 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_saves_use_independent_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let other_writer = dir.path().join("editor.json.tmp");
+        std::fs::write(&other_writer, "other writer").unwrap();
+        std::thread::scope(|scope| {
+            for step in [1.0, 2.0, 3.0, 4.0] {
+                let root = dir.path();
+                scope.spawn(move || {
+                    let mut settings = EditorSettings::default();
+                    settings.snapping.translate_step = step;
+                    settings.save(root).unwrap();
+                });
+            }
+        });
+        EditorSettings::load(dir.path())
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(other_writer).unwrap(),
+            "other writer"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+    #[test]
     fn save_load_round_trip_and_missing_file_defaults() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
@@ -433,7 +484,11 @@ mod tests {
         settings.save_bookmark(bookmark("hero")).unwrap();
         settings.save(dir.path()).unwrap();
         assert_eq!(EditorSettings::load(dir.path()).unwrap(), settings);
-        std::fs::write(EditorSettings::path(dir.path()), b"{\"schema\":1,\"bad\":0}").unwrap();
+        std::fs::write(
+            EditorSettings::path(dir.path()),
+            b"{\"schema\":1,\"bad\":0}",
+        )
+        .unwrap();
         assert!(EditorSettings::load(dir.path()).is_err());
     }
 }

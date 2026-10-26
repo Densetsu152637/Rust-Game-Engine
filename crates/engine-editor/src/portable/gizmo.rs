@@ -136,7 +136,7 @@ enum Start {
     Screen(Pos2),
     Parameter(f32),
     Point(Vec3),
-    Angle(f32),
+    Angle,
 }
 
 /// An active drag on one handle.
@@ -179,7 +179,7 @@ impl Gesture {
             Handle::Ring(i) => {
                 let hit = plane_hit(basis.pivot, basis.axes[i], ray)?;
                 let angle = ring_angle(&basis, i, hit);
-                (Start::Angle(angle), angle)
+                (Start::Angle, angle)
             }
         };
         Some(Self {
@@ -233,7 +233,7 @@ impl Gesture {
                 let now = plane_hit(basis.pivot, basis.axes[i], ray)?;
                 Some(Delta::Translate(self.snap_vector(now - start, snapping)))
             }
-            (Handle::Ring(i), Start::Angle(_)) => {
+            (Handle::Ring(i), Start::Angle) => {
                 let hit = plane_hit(basis.pivot, basis.axes[i], ray)?;
                 let angle = ring_angle(&basis, i, hit);
                 self.accumulated += wrap_angle(angle - self.last_angle);
@@ -276,9 +276,7 @@ impl Gesture {
 fn ring_angle(basis: &Basis, index: usize, hit: Vec3) -> f32 {
     let (j, k) = plane_axes(index);
     let offset = hit - basis.pivot;
-    offset
-        .dot(basis.axes[k])
-        .atan2(offset.dot(basis.axes[j]))
+    offset.dot(basis.axes[k]).atan2(offset.dot(basis.axes[j]))
 }
 
 /// Applies a gesture result to every start state, returning the new local
@@ -303,8 +301,21 @@ fn inverse_or_identity(matrix: &Mat4) -> Mat4 {
     }
 }
 
-fn apply_one(delta: &Delta, pivot: Vec3, start: &EntityStart, three_dimensional: bool) -> Transform {
+fn apply_one(
+    delta: &Delta,
+    pivot: Vec3,
+    start: &EntityStart,
+    three_dimensional: bool,
+) -> Transform {
     let mut transform = start.local.clone();
+    let unchanged = match delta {
+        Delta::Translate(vector) => *vector == Vec3::ZERO,
+        Delta::Rotate { radians, .. } => *radians == 0.0,
+        Delta::Scale { factor, .. } => *factor == 1.0,
+    };
+    if unchanged {
+        return transform;
+    }
     let parent_inverse = inverse_or_identity(&start.parent_world);
     let world_position = start.world.w_axis.truncate();
     // World displacement of the origin, converted to a local displacement so an
@@ -316,7 +327,10 @@ fn apply_one(delta: &Delta, pivot: Vec3, start: &EntityStart, three_dimensional:
                 + pivot
                 - world_position
         }
-        Delta::Scale { axis: Some(axis), factor } => {
+        Delta::Scale {
+            axis: Some(axis),
+            factor,
+        } => {
             let axis = axis.normalize_or(Vec3::X);
             axis * ((factor - 1.0) * (world_position - pivot).dot(axis))
         }
@@ -453,15 +467,18 @@ fn parts(mode: GizmoMode, basis: &Basis, view: &ViewMath) -> Vec<Part> {
             });
         }
         GizmoMode::Rotate => {
-            let rings: &[usize] = if view.three_dimensional { &[0, 1, 2] } else { &[2] };
+            let rings: &[usize] = if view.three_dimensional {
+                &[0, 1, 2]
+            } else {
+                &[2]
+            };
             for &i in rings {
                 let (j, k) = plane_axes(i);
                 let radius = length * 0.85;
                 let points: Vec<Vec3> = (0..=RING_SEGMENTS)
                     .map(|step| {
                         let angle = step as f32 / RING_SEGMENTS as f32 * std::f32::consts::TAU;
-                        pivot
-                            + (basis.axes[j] * angle.cos() + basis.axes[k] * angle.sin()) * radius
+                        pivot + (basis.axes[j] * angle.cos() + basis.axes[k] * angle.sin()) * radius
                     })
                     .collect();
                 let segments = points
@@ -543,8 +560,13 @@ pub fn draw(
     active: Option<Handle>,
 ) {
     for part in parts(mode, basis, view) {
-        let highlighted = active == Some(part.handle) || (active.is_none() && hovered == Some(part.handle));
-        let color = if highlighted { Color32::YELLOW } else { part.color };
+        let highlighted =
+            active == Some(part.handle) || (active.is_none() && hovered == Some(part.handle));
+        let color = if highlighted {
+            Color32::YELLOW
+        } else {
+            part.color
+        };
         let width = if highlighted { 4.0 } else { 2.5 };
         for [a, b] in &part.segments {
             painter.line_segment([*a, *b], Stroke::new(width, color));
@@ -561,7 +583,11 @@ pub fn draw(
         }
         if let Some(tip) = part.tip {
             if mode == GizmoMode::Scale {
-                painter.rect_filled(egui::Rect::from_center_size(tip, egui::vec2(9.0, 9.0)), 0.0, color);
+                painter.rect_filled(
+                    egui::Rect::from_center_size(tip, egui::vec2(9.0, 9.0)),
+                    0.0,
+                    color,
+                );
             } else {
                 painter.circle_filled(tip, 4.5, color);
             }
@@ -571,7 +597,7 @@ pub fn draw(
 
 #[cfg(test)]
 mod tests {
-    use super::super::viewport::{ViewNavigation, ViewMath};
+    use super::super::viewport::{ViewMath, ViewNavigation};
     use super::*;
 
     fn rect() -> egui::Rect {
@@ -595,11 +621,8 @@ mod tests {
             rotation: rotation.to_array(),
             scale: [1.0; 3],
         };
-        let local_matrix = Mat4::from_scale_rotation_translation(
-            Vec3::ONE,
-            rotation,
-            Vec3::from_array(position),
-        );
+        let local_matrix =
+            Mat4::from_scale_rotation_translation(Vec3::ONE, rotation, Vec3::from_array(position));
         EntityStart {
             id: "e".into(),
             local,
@@ -642,20 +665,64 @@ mod tests {
         let tip = view.project(Vec3::new(5.0, 0.0, 0.0)).unwrap();
         let mut gesture = begin(&view, Handle::Axis(0), GizmoMode::Translate, basis, tip);
         // 40 px at 16 px/unit = 2.5 units; y motion is constrained away.
-        let Delta::Translate(vector) = drag(&view, &mut gesture, tip + egui::vec2(40.0, 25.0), &snapping(false)) else {
+        let Delta::Translate(vector) = drag(
+            &view,
+            &mut gesture,
+            tip + egui::vec2(40.0, 25.0),
+            &snapping(false),
+        ) else {
             panic!()
         };
-        assert!((vector - Vec3::new(2.5, 0.0, 0.0)).length() < 1e-4, "{vector}");
-        let Delta::Translate(vector) = drag(&view, &mut gesture, tip + egui::vec2(36.0, 0.0), &snapping(true)) else {
+        assert!(
+            (vector - Vec3::new(2.5, 0.0, 0.0)).length() < 1e-4,
+            "{vector}"
+        );
+        let Delta::Translate(vector) = drag(
+            &view,
+            &mut gesture,
+            tip + egui::vec2(35.0, 0.0),
+            &snapping(true),
+        ) else {
             panic!()
         };
         assert!((vector.x - 2.0).abs() < 1e-4 && vector.y == 0.0, "{vector}");
+        // A positive half step rounds up: 36/16 = 2.25 -> 2.5.
+        let Delta::Translate(vector) = drag(
+            &view,
+            &mut gesture,
+            tip + egui::vec2(36.0, 0.0),
+            &snapping(true),
+        ) else {
+            panic!()
+        };
+        assert!((vector.x - 2.5).abs() < 1e-4);
     }
 
     #[test]
     fn plane_translate_moves_in_the_plane_and_snaps_each_axis() {
+        let edge_on = ViewMath::new(
+            &ViewNavigation {
+                three_dimensional: true,
+                ..Default::default()
+            },
+            rect(),
+        )
+        .unwrap();
+        let press = edge_on.project(Vec3::new(0.3, 0.0, 0.3)).unwrap();
+        assert!(
+            Gesture::begin(
+                Handle::Plane(1),
+                GizmoMode::Translate,
+                Basis::world(Vec3::ZERO),
+                &edge_on.ray(press),
+                press,
+                &edge_on
+            )
+            .is_none()
+        );
         let nav = ViewNavigation {
             three_dimensional: true,
+            pitch: -0.4,
             ..Default::default()
         };
         let view = ViewMath::new(&nav, rect()).unwrap();
@@ -663,10 +730,14 @@ mod tests {
         let start = view.project(Vec3::new(0.3, 0.0, 0.3)).unwrap();
         let mut gesture = begin(&view, Handle::Plane(1), GizmoMode::Translate, basis, start);
         let goal = view.project(Vec3::new(1.3, 0.0, -0.7)).unwrap();
-        let Delta::Translate(v) = drag(&view, &mut gesture, goal, &snapping(false)) else { panic!() };
+        let Delta::Translate(v) = drag(&view, &mut gesture, goal, &snapping(false)) else {
+            panic!()
+        };
         assert!((v - Vec3::new(1.0, 0.0, -1.0)).length() < 1e-3, "{v}");
         let goal = view.project(Vec3::new(1.2, 0.0, -0.3)).unwrap();
-        let Delta::Translate(v) = drag(&view, &mut gesture, goal, &snapping(true)) else { panic!() };
+        let Delta::Translate(v) = drag(&view, &mut gesture, goal, &snapping(true)) else {
+            panic!()
+        };
         assert!((v - Vec3::new(1.0, 0.0, -0.5)).length() < 1e-3, "{v}");
     }
 
@@ -677,12 +748,31 @@ mod tests {
         let start = view.project(Vec3::new(4.0, 0.0, 0.0)).unwrap();
         let mut gesture = begin(&view, Handle::Ring(2), GizmoMode::Rotate, basis, start);
         // 40 degrees counter-clockwise about +Z.
-        let to = view.project(Vec3::new(4.0 * 40f32.to_radians().cos(), 4.0 * 40f32.to_radians().sin(), 0.0)).unwrap();
-        let Delta::Rotate { axis, radians } = drag(&view, &mut gesture, to, &snapping(false)) else { panic!() };
+        let to = view
+            .project(Vec3::new(
+                4.0 * 40f32.to_radians().cos(),
+                4.0 * 40f32.to_radians().sin(),
+                0.0,
+            ))
+            .unwrap();
+        let Delta::Rotate { axis, radians } = drag(&view, &mut gesture, to, &snapping(false))
+        else {
+            panic!()
+        };
         assert_eq!(axis, Vec3::Z);
-        assert!((radians.to_degrees() - 40.0).abs() < 1e-2, "{}", radians.to_degrees());
-        let Delta::Rotate { radians, .. } = drag(&view, &mut gesture, to, &snapping(true)) else { panic!() };
-        assert!((radians.to_degrees() - 45.0).abs() < 1e-2, "{}", radians.to_degrees());
+        assert!(
+            (radians.to_degrees() - 40.0).abs() < 1e-2,
+            "{}",
+            radians.to_degrees()
+        );
+        let Delta::Rotate { radians, .. } = drag(&view, &mut gesture, to, &snapping(true)) else {
+            panic!()
+        };
+        assert!(
+            (radians.to_degrees() - 45.0).abs() < 1e-2,
+            "{}",
+            radians.to_degrees()
+        );
     }
 
     #[test]
@@ -692,14 +782,35 @@ mod tests {
         let length = GIZMO_PIXELS / 16.0;
         let tip = view.project(Vec3::new(length, 0.0, 0.0)).unwrap();
         let mut gesture = begin(&view, Handle::Axis(0), GizmoMode::Scale, basis, tip);
-        let Delta::Scale { axis, factor } = drag(&view, &mut gesture, tip + egui::vec2(45.0, 0.0), &snapping(false)) else { panic!() };
+        let Delta::Scale { axis, factor } = drag(
+            &view,
+            &mut gesture,
+            tip + egui::vec2(45.0, 0.0),
+            &snapping(false),
+        ) else {
+            panic!()
+        };
         assert_eq!(axis, Some(Vec3::X));
         assert!((factor - 1.5).abs() < 1e-4, "{factor}");
-        let Delta::Scale { factor, .. } = drag(&view, &mut gesture, tip + egui::vec2(40.0, 0.0), &snapping(true)) else { panic!() };
+        let Delta::Scale { factor, .. } = drag(
+            &view,
+            &mut gesture,
+            tip + egui::vec2(40.0, 0.0),
+            &snapping(true),
+        ) else {
+            panic!()
+        };
         assert!((factor - 1.5).abs() < 1e-4, "{factor}");
         let centre = Pos2::new(320.0, 180.0);
         let mut uniform = begin(&view, Handle::Uniform, GizmoMode::Scale, basis, centre);
-        let Delta::Scale { axis, factor } = drag(&view, &mut uniform, centre + egui::vec2(100.0, 0.0), &snapping(true)) else { panic!() };
+        let Delta::Scale { axis, factor } = drag(
+            &view,
+            &mut uniform,
+            centre + egui::vec2(100.0, 0.0),
+            &snapping(true),
+        ) else {
+            panic!()
+        };
         assert_eq!(axis, None);
         assert!((factor - 1.5).abs() < 1e-4, "{factor}");
     }
@@ -709,28 +820,112 @@ mod tests {
         let view = view2d();
         let basis = Basis::world(Vec3::ZERO);
         let centre = Pos2::new(320.0, 180.0);
-        assert_eq!(hit_test(GizmoMode::Translate, &basis, &view, centre), Some(Handle::Free));
-        assert_eq!(hit_test(GizmoMode::Scale, &basis, &view, centre), Some(Handle::Uniform));
-        assert_eq!(hit_test(GizmoMode::Translate, &basis, &view, centre + egui::vec2(60.0, 2.0)), Some(Handle::Axis(0)));
-        assert_eq!(hit_test(GizmoMode::Translate, &basis, &view, centre + egui::vec2(40.0, -40.0)), Some(Handle::Plane(2)));
-        assert_eq!(hit_test(GizmoMode::Translate, &basis, &view, centre + egui::vec2(-200.0, 100.0)), None);
+        assert_eq!(
+            hit_test(GizmoMode::Translate, &basis, &view, centre),
+            Some(Handle::Free)
+        );
+        assert_eq!(
+            hit_test(GizmoMode::Scale, &basis, &view, centre),
+            Some(Handle::Uniform)
+        );
+        assert_eq!(
+            hit_test(
+                GizmoMode::Translate,
+                &basis,
+                &view,
+                centre + egui::vec2(60.0, 2.0)
+            ),
+            Some(Handle::Axis(0))
+        );
+        assert_eq!(
+            hit_test(
+                GizmoMode::Translate,
+                &basis,
+                &view,
+                centre + egui::vec2(40.0, -40.0)
+            ),
+            Some(Handle::Plane(2))
+        );
+        assert_eq!(
+            hit_test(
+                GizmoMode::Translate,
+                &basis,
+                &view,
+                centre + egui::vec2(-200.0, 100.0)
+            ),
+            None
+        );
         let ring = GIZMO_PIXELS * 0.85;
-        assert_eq!(hit_test(GizmoMode::Rotate, &basis, &view, centre + egui::vec2(ring, 0.0)), Some(Handle::Ring(2)));
+        assert_eq!(
+            hit_test(
+                GizmoMode::Rotate,
+                &basis,
+                &view,
+                centre + egui::vec2(ring, 0.0)
+            ),
+            Some(Handle::Ring(2))
+        );
     }
 
+    #[test]
+    fn snapped_noop_preserves_authored_transform_bits() {
+        let mut entity = start([2.0, 3.0, 0.0], Quat::IDENTITY, Mat4::IDENTITY);
+        entity.local.rotation = [0.0, 0.0, 0.6, 0.79999];
+        for delta in [
+            Delta::Translate(Vec3::ZERO),
+            Delta::Rotate {
+                axis: Vec3::Z,
+                radians: 0.0,
+            },
+            Delta::Scale {
+                axis: None,
+                factor: 1.0,
+            },
+        ] {
+            assert_eq!(
+                apply(&delta, Vec3::ZERO, &[entity.clone()], false),
+                vec![entity.local.clone()]
+            );
+        }
+    }
     #[test]
     fn world_vs_local_translate_on_a_rotated_parent() {
         let parent = Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
         let child = start([1.0, 0.0, 0.0], Quat::IDENTITY, parent);
         // World +2 X is local -2 Y under a 90 degree parent.
-        let world = apply(&Delta::Translate(Vec3::new(2.0, 0.0, 0.0)), child.world.w_axis.truncate(), std::slice::from_ref(&child), false);
-        assert!((Vec3::from_array(world[0].position) - Vec3::new(1.0, -2.0, 0.0)).length() < 1e-5, "{:?}", world[0].position);
+        let world = apply(
+            &Delta::Translate(Vec3::new(2.0, 0.0, 0.0)),
+            child.world.w_axis.truncate(),
+            std::slice::from_ref(&child),
+            false,
+        );
+        assert!(
+            (Vec3::from_array(world[0].position) - Vec3::new(1.0, -2.0, 0.0)).length() < 1e-5,
+            "{:?}",
+            world[0].position
+        );
         // Local X of the child points along world +Y.
-        let basis = Basis::new(GizmoSpace::Local, child.world.w_axis.truncate(), Some(&child.world));
+        let basis = Basis::new(
+            GizmoSpace::Local,
+            child.world.w_axis.truncate(),
+            Some(&child.world),
+        );
         assert!((basis.axes[0] - Vec3::Y).length() < 1e-5);
-        let local = apply(&Delta::Translate(basis.axes[0] * 2.0), basis.pivot, std::slice::from_ref(&child), false);
-        assert!((Vec3::from_array(local[0].position) - Vec3::new(3.0, 0.0, 0.0)).length() < 1e-5, "{:?}", local[0].position);
-        assert_eq!(Basis::new(GizmoSpace::World, Vec3::ZERO, Some(&child.world)).axes[0], Vec3::X);
+        let local = apply(
+            &Delta::Translate(basis.axes[0] * 2.0),
+            basis.pivot,
+            std::slice::from_ref(&child),
+            false,
+        );
+        assert!(
+            (Vec3::from_array(local[0].position) - Vec3::new(3.0, 0.0, 0.0)).length() < 1e-5,
+            "{:?}",
+            local[0].position
+        );
+        assert_eq!(
+            Basis::new(GizmoSpace::World, Vec3::ZERO, Some(&child.world)).axes[0],
+            Vec3::X
+        );
     }
 
     #[test]
@@ -738,24 +933,67 @@ mod tests {
         let parent = Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
         let child = start([0.0; 3], Quat::IDENTITY, parent);
         // A world-Z turn commutes with the parent's Z rotation.
-        let turned = apply(&Delta::Rotate { axis: Vec3::Z, radians: std::f32::consts::FRAC_PI_2 }, Vec3::ZERO, std::slice::from_ref(&child), true);
+        let turned = apply(
+            &Delta::Rotate {
+                axis: Vec3::Z,
+                radians: std::f32::consts::FRAC_PI_2,
+            },
+            Vec3::ZERO,
+            std::slice::from_ref(&child),
+            true,
+        );
         let expected = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
         assert!(Quat::from_array(turned[0].rotation).angle_between(expected) < 1e-5);
         // A world-X scale on a child whose local Y lies along world X scales local Y.
-        let scaled = apply(&Delta::Scale { axis: Some(Vec3::X), factor: 2.0 }, Vec3::ZERO, std::slice::from_ref(&child), true);
+        let scaled = apply(
+            &Delta::Scale {
+                axis: Some(Vec3::X),
+                factor: 2.0,
+            },
+            Vec3::ZERO,
+            std::slice::from_ref(&child),
+            true,
+        );
         assert_eq!(scaled[0].scale, [1.0, 2.0, 1.0]);
-        let uniform = apply(&Delta::Scale { axis: None, factor: 3.0 }, Vec3::ZERO, std::slice::from_ref(&child), false);
+        let uniform = apply(
+            &Delta::Scale {
+                axis: None,
+                factor: 3.0,
+            },
+            Vec3::ZERO,
+            std::slice::from_ref(&child),
+            false,
+        );
         assert_eq!(uniform[0].scale, [3.0, 3.0, 1.0]);
     }
 
     #[test]
     fn multi_selection_rotates_and_scales_about_the_pivot() {
         let a = start([1.0, 0.0, 0.0], Quat::IDENTITY, Mat4::IDENTITY);
-        let b = EntityStart { id: "b".into(), ..start([-1.0, 0.0, 0.0], Quat::IDENTITY, Mat4::IDENTITY) };
-        let turned = apply(&Delta::Rotate { axis: Vec3::Z, radians: std::f32::consts::FRAC_PI_2 }, Vec3::ZERO, &[a.clone(), b.clone()], true);
+        let b = EntityStart {
+            id: "b".into(),
+            ..start([-1.0, 0.0, 0.0], Quat::IDENTITY, Mat4::IDENTITY)
+        };
+        let turned = apply(
+            &Delta::Rotate {
+                axis: Vec3::Z,
+                radians: std::f32::consts::FRAC_PI_2,
+            },
+            Vec3::ZERO,
+            &[a.clone(), b.clone()],
+            true,
+        );
         assert!((Vec3::from_array(turned[0].position) - Vec3::Y).length() < 1e-5);
         assert!((Vec3::from_array(turned[1].position) + Vec3::Y).length() < 1e-5);
-        let scaled = apply(&Delta::Scale { axis: None, factor: 2.0 }, Vec3::ZERO, &[a, b], true);
+        let scaled = apply(
+            &Delta::Scale {
+                axis: None,
+                factor: 2.0,
+            },
+            Vec3::ZERO,
+            &[a, b],
+            true,
+        );
         assert_eq!(scaled[0].position, [2.0, 0.0, 0.0]);
         assert_eq!(scaled[1].position, [-2.0, 0.0, 0.0]);
     }
@@ -768,8 +1006,17 @@ mod tests {
         let mut gesture = begin(&view, Handle::Ring(2), GizmoMode::Rotate, basis, start);
         let mut last = 0.0;
         for degrees in [60.0f32, 120.0, 180.0, 240.0] {
-            let to = view.project(Vec3::new(4.0 * degrees.to_radians().cos(), 4.0 * degrees.to_radians().sin(), 0.0)).unwrap();
-            let Delta::Rotate { radians, .. } = drag(&view, &mut gesture, to, &snapping(false)) else { panic!() };
+            let to = view
+                .project(Vec3::new(
+                    4.0 * degrees.to_radians().cos(),
+                    4.0 * degrees.to_radians().sin(),
+                    0.0,
+                ))
+                .unwrap();
+            let Delta::Rotate { radians, .. } = drag(&view, &mut gesture, to, &snapping(false))
+            else {
+                panic!()
+            };
             last = radians.to_degrees();
         }
         assert!((last - 240.0).abs() < 0.1, "{last}");

@@ -148,7 +148,7 @@ impl ViewMath {
             up,
         })
     }
-    fn to_screen(&self, ndc_x: f32, ndc_y: f32) -> egui::Pos2 {
+    fn screen_point(&self, ndc_x: f32, ndc_y: f32) -> egui::Pos2 {
         egui::pos2(
             self.rect.center().x + ndc_x * self.rect.width() * 0.5,
             self.rect.center().y - ndc_y * self.rect.height() * 0.5,
@@ -162,7 +162,7 @@ impl ViewMath {
         if !clip.is_finite() || clip.w <= 1e-6 {
             return None;
         }
-        Some(self.to_screen(clip.x / clip.w, clip.y / clip.w))
+        Some(self.screen_point(clip.x / clip.w, clip.y / clip.w))
     }
     /// Projects a segment, clipping it to the camera's front half-space.
     pub fn project_segment(&self, a: Vec3, b: Vec3) -> Option<[egui::Pos2; 2]> {
@@ -177,8 +177,8 @@ impl ViewMath {
             cb = cb.lerp(ca, (EPS - cb.w) / (ca.w - cb.w));
         }
         Some([
-            self.to_screen(ca.x / ca.w, ca.y / ca.w),
-            self.to_screen(cb.x / cb.w, cb.y / cb.w),
+            self.screen_point(ca.x / ca.w, ca.y / ca.w),
+            self.screen_point(cb.x / cb.w, cb.y / cb.w),
         ])
     }
     /// World-space ray through a screen position.
@@ -236,16 +236,15 @@ pub fn draw_grid(painter: &egui::Painter, view: &ViewMath, center: Vec3, spacing
     while spacing / pixel < 8.0 && spacing < 1.0e6 {
         spacing *= 2.0;
     }
-    let (reach, plane_axis) = if view.three_dimensional {
-        (20.0 * spacing, 2)
+    let reach = if view.three_dimensional {
+        20.0 * spacing
     } else {
         let half = view.rect.width().max(view.rect.height()) * 0.5 * pixel;
-        (half.min(200.0 * spacing), 2)
+        half.min(200.0 * spacing)
     };
     let steps = (reach / spacing).ceil().clamp(1.0, 200.0) as i32;
     let snap = |value: f32| (value / spacing).round() * spacing;
     let origin = Vec3::new(snap(center.x), snap(center.y), snap(center.z));
-    let _ = plane_axis;
     // 3D lies in XZ at y = 0; 2D lies in XY at z = 0.
     let (a_axis, b_axis) = if view.three_dimensional {
         (Vec3::X, Vec3::Z)
@@ -275,10 +274,9 @@ pub fn draw_grid(painter: &egui::Painter, view: &ViewMath, center: Vec3, spacing
             } else {
                 egui::Color32::from_rgba_unmultiplied(200, 200, 200, 38)
             };
-            if let Some([p, q]) = view.project_segment(
-                line_origin - along * extent,
-                line_origin + along * extent,
-            ) {
+            if let Some([p, q]) =
+                view.project_segment(line_origin - along * extent, line_origin + along * extent)
+            {
                 painter.line_segment([p, q], egui::Stroke::new(1.0, color));
             }
         }
@@ -290,10 +288,6 @@ impl PortableEditor {
         ViewMath::new(&self.navigation, rect)
     }
 
-    pub(super) fn project(&self, position: [f32; 3], rect: egui::Rect) -> Option<egui::Pos2> {
-        self.view_math(rect)?.project(Vec3::from_array(position))
-    }
-
     pub(super) fn viewport(&mut self, ui: &mut egui::Ui) {
         ui.label(
             "Right drag: orbit · Middle drag: pan · Wheel: zoom · Left click: select (Ctrl toggle, Shift add) · Left drag: gizmo handle or box select · W/E/R: move/rotate/scale",
@@ -302,6 +296,7 @@ impl PortableEditor {
             let result = self.rebuild(ui.ctx());
             if let Err(error) = result {
                 self.error = format!("{error:#}");
+                self.picker = Default::default();
                 self.dirty_preview = false;
             }
         }
@@ -317,7 +312,27 @@ impl PortableEditor {
             ui.add(egui::Image::new((image.id(), size)).sense(egui::Sense::click_and_drag()));
         let rect = response.rect;
         self.viewport_rect = Some(rect);
+        if ui.input(|i| {
+            i.key_pressed(egui::Key::Escape)
+                || !i.focused
+                || i.raw
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::PointerGone))
+        }) {
+            self.cancel_interaction();
+        }
         self.viewport_shortcuts(ui, &response);
+        if !matches!(self.interaction, Interaction::None)
+            && response.hovered()
+            && ui.input(|i| {
+                i.smooth_scroll_delta.y != 0.0
+                    || i.pointer.button_down(egui::PointerButton::Middle)
+                    || i.pointer.button_down(egui::PointerButton::Secondary)
+            })
+        {
+            self.cancel_interaction();
+        }
         self.navigate(ui, &response, rect);
         self.interact(ui, &response, rect);
         self.paint_overlay(ui, rect);
@@ -341,6 +356,7 @@ impl PortableEditor {
             (r, GizmoMode::Scale),
         ] {
             if pressed && self.settings.gizmo.mode != mode {
+                self.cancel_interaction();
                 self.settings.gizmo.mode = mode;
                 self.settings_dirty = true;
             }
@@ -440,14 +456,9 @@ impl PortableEditor {
                 .document()
                 .map(|d| d.revision().to_owned())
                 .unwrap_or_default();
-            if let Some(gesture) = Gesture::begin(
-                handle,
-                self.settings.gizmo.mode,
-                basis,
-                &ray,
-                press,
-                view,
-            ) {
+            if let Some(gesture) =
+                Gesture::begin(handle, self.settings.gizmo.mode, basis, &ray, press, view)
+            {
                 self.interaction = Interaction::Gizmo(GizmoDrag {
                     gesture,
                     starts,
@@ -630,7 +641,7 @@ impl PortableEditor {
 }
 
 /// An in-flight gizmo gesture and the entity state it started from.
-pub struct GizmoDrag {
+pub(super) struct GizmoDrag {
     pub gesture: Gesture,
     pub starts: Vec<gizmo::EntityStart>,
     pub revision: String,
@@ -639,7 +650,7 @@ pub struct GizmoDrag {
 
 /// What the primary mouse button is currently doing in the viewport.
 #[derive(Default)]
-pub enum Interaction {
+pub(super) enum Interaction {
     #[default]
     None,
     Gizmo(GizmoDrag),
