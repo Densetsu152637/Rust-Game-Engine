@@ -107,8 +107,8 @@ across the world. Model and palette indices, weights and matrices are validated;
 bad bindings fail before rendering. Scene changes must call `simulation::reset`
 after hydration so retained entities rebuild from their new scene poses.
 Native animation supplies crossfades, CPU skinning and authored
-[pose graphs, state machines and blend spaces](animation-graph.md). Inverse
-kinematics, retargeting and morph animation remain separate features.
+[pose graphs, state machines, blend spaces and two-bone IK](animation-graph.md).
+Retargeting and morph animation remain separate features.
 
 ## Navigation and ownership
 
