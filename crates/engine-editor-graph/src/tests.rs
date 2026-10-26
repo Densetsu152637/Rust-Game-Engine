@@ -119,16 +119,16 @@ impl Harness {
     }
     fn frame(&mut self, events: Vec<Event>) -> egui::FullOutput {
         self.time += 0.02;
-        self.ctx.run_pass(
+        self.ctx.run_ui(
             RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 900.0))),
                 events,
                 time: Some(self.time),
                 ..Default::default()
             },
-            |ctx| {
+            |ui| {
                 egui::CentralPanel::default()
-                    .show(ctx, |ui| self.canvas.show(ui, &mut self.session));
+                    .show(ui, |ui| self.canvas.show(ui, &mut self.session));
             },
         )
     }
