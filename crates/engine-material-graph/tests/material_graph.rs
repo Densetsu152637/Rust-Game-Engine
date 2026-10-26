@@ -149,3 +149,18 @@ fn no_raw_shader_text_or_user_bindings_are_accepted() {
             .any(|e| e.code == "graph.param.unknown")
     );
 }
+
+#[test]
+fn unlit_path_uses_graph_base_color_instead_of_builtin_sample() {
+    let compiled = compile_material(&graph()).unwrap();
+    assert!(
+        compiled
+            .source
+            .contains("select(shaded, graph_base_color, material.options.x > 0.5)")
+    );
+    assert!(
+        !compiled
+            .source
+            .contains("select(shaded, color.rgb, material.options.x > 0.5)")
+    );
+}

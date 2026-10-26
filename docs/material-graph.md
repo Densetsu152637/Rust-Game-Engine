@@ -15,7 +15,7 @@ stable-path diagnostics. Pass `&source` to
 `MaterialTarget::Sprite` before use. The compiler owns no GPU resources or
 binding declarations. The source imports `engine::material` and uses the
 existing texture, tint, metallic, roughness, normal map, lighting, and shadow
-contract. Meshes retain the built-in lighting path. Sprites remain unlit.
+contract. Meshes retain the built-in lighting path. Both unlit meshes and sprites use the graph base color directly. Sprites remain unlit.
 
 | Node | Inputs | Outputs | Parameters |
 | --- | --- | --- | --- |

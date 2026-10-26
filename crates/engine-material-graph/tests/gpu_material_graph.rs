@@ -11,6 +11,7 @@ use engine_render_pipeline::{
 };
 use engine_render_wgpu::{GpuContext, WgpuOptions};
 use glam::Mat4;
+use serde_json::json;
 use std::collections::BTreeMap;
 use wgpu::util::DeviceExt;
 
@@ -47,11 +48,92 @@ fn graph() -> GraphDocument {
     doc
 }
 
-fn quad(gpu: &GpuContext) -> Result<std::sync::Arc<GpuMesh>> {
+fn override_graph(physical: bool) -> GraphDocument {
+    let mut doc = GraphDocument::new("material");
+    let mut nodes = vec![
+        (
+            "red",
+            "vec3",
+            BTreeMap::from([("value".to_owned(), json!([0.8, 0.1, 0.2]))]),
+        ),
+        (
+            "opacity",
+            "scalar",
+            BTreeMap::from([("value".to_owned(), json!(0.35))]),
+        ),
+    ];
+    if physical {
+        nodes.extend([
+            (
+                "metal",
+                "scalar",
+                BTreeMap::from([("value".to_owned(), json!(0.85))]),
+            ),
+            (
+                "rough",
+                "scalar",
+                BTreeMap::from([("value".to_owned(), json!(0.15))]),
+            ),
+        ]);
+    }
+    nodes.push(("out", "material_output", BTreeMap::new()));
+    doc.nodes = nodes
+        .into_iter()
+        .map(|(id, kind, params)| GraphNode {
+            id: id.into(),
+            node_type: kind.to_owned(),
+            ports: vec![],
+            params,
+            position: None,
+        })
+        .collect();
+    let mut edges = vec![("red", "base_color"), ("opacity", "alpha")];
+    if physical {
+        edges.extend([("metal", "metallic"), ("rough", "roughness")]);
+    }
+    doc.edges = edges
+        .into_iter()
+        .map(|(from, to)| GraphEdge {
+            from: PortRef::new(from, "value"),
+            to: PortRef::new("out", to),
+        })
+        .collect();
+    doc
+}
+
+fn reference_override(physical: bool) -> String {
+    let mut source = LIT_WGSL
+        .replace(
+            "surface.albedo = color.rgb;",
+            "surface.albedo = vec3<f32>(0.8, 0.1, 0.2);",
+        )
+        .replace(
+            "select(shaded, color.rgb, material.options.x > 0.5)",
+            "select(shaded, vec3<f32>(0.8, 0.1, 0.2), material.options.x > 0.5)",
+        )
+        .replace(
+            "return vec4<f32>(result, color.a);",
+            "return vec4<f32>(result, 0.35);",
+        );
+    if physical {
+        source = source
+            .replace(
+                "surface.metallic = material.options.y * select(1.0, mr.b, maps.z > 0.5);",
+                "surface.metallic = 0.85;",
+            )
+            .replace(
+                "surface.roughness = material.options.z * select(1.0, mr.g, maps.z > 0.5);",
+                "surface.roughness = 0.15;",
+            );
+    }
+    source
+}
+
+fn quad(gpu: &GpuContext, vertex_color: [f32; 4]) -> Result<std::sync::Arc<GpuMesh>> {
     let v = |x, y, u, vv| EngineVertex {
         position: [x, y, 0.0],
         uv: [u, vv],
-        color: [1.0; 4],
+        color: vertex_color,
         normal: [0.0, 0.0, 1.0],
     };
     GpuMesh::from_engine_vertices(
@@ -92,7 +174,7 @@ fn texture_layout(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn draw_sprite(gpu: &GpuContext, source: &str) -> Result<[u8; 4]> {
+fn draw_sprite(gpu: &GpuContext, source: &str, vertex_color: [f32; 4]) -> Result<[u8; 4]> {
     const SIZE: u32 = 32;
     let device = &gpu.device;
     let composed = compose_material(source, MaterialTarget::Sprite)?;
@@ -246,7 +328,7 @@ fn draw_sprite(gpu: &GpuContext, source: &str) -> Result<[u8; 4]> {
         view_formats: &[],
     });
     let output_view = output.create_view(&Default::default());
-    let mesh = quad(gpu)?;
+    let mesh = quad(gpu, vertex_color)?;
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("sprite graph"),
     });
@@ -280,8 +362,8 @@ fn draw_sprite(gpu: &GpuContext, source: &str) -> Result<[u8; 4]> {
 fn sprite_graph_matches_handwritten_material_pixels_including_alpha() -> Result<()> {
     let gpu = GpuContext::headless_with_options(&WgpuOptions::default())?;
     let source = compile_material(&graph()).unwrap().source;
-    let graph_pixel = draw_sprite(&gpu, &source)?;
-    let reference_pixel = draw_sprite(&gpu, LIT_WGSL)?;
+    let graph_pixel = draw_sprite(&gpu, &source, [1.0; 4])?;
+    let reference_pixel = draw_sprite(&gpu, LIT_WGSL, [1.0; 4])?;
     for (actual, expected) in graph_pixel.into_iter().zip(reference_pixel) {
         assert!(
             actual.abs_diff(expected) <= 1,
@@ -295,18 +377,20 @@ fn sprite_graph_matches_handwritten_material_pixels_including_alpha() -> Result<
     Ok(())
 }
 
-#[test]
-#[ignore = "requires a native GPU adapter"]
-fn mesh_graph_matches_handwritten_material_hdr_pixels() -> Result<()> {
+fn draw_mesh(
+    gpu: &GpuContext,
+    source: &str,
+    unlit: bool,
+    vertex_color: [f32; 4],
+) -> Result<[f32; 4]> {
     use engine_render_pipeline::{
-        LightList, MaterialParams, NoHost, OutputTarget, SceneFrame, SceneMesh, ScenePipeline,
-        ViewData, ViewId, Viewport,
+        Light, LightList, MaterialParams, NoHost, OutputTarget, SceneFrame, SceneMesh,
+        ScenePipeline, ViewData, ViewId, Viewport,
     };
     use glam::Vec3;
 
-    let gpu = GpuContext::headless_with_options(&WgpuOptions::default())?;
     let mut pipeline = ScenePipeline::new(gpu.clone())?;
-    let mesh = quad(&gpu)?;
+    let mesh = quad(gpu, vertex_color)?;
     let image = GpuTexture::rgba8(
         &gpu.device,
         &gpu.queue,
@@ -337,37 +421,117 @@ fn mesh_graph_matches_handwritten_material_hdr_pixels() -> Result<()> {
     let projection =
         glam::camera::rh::proj::directx::perspective(std::f32::consts::FRAC_PI_3, 1.0, 0.1, 100.0);
     let view = ViewData::new(ViewId::MAIN, Mat4::IDENTITY, projection, [32, 32], [32, 32])?;
+    let draw = SceneMesh {
+        id: "material graph mesh",
+        mesh,
+        world_from_local: Mat4::from_translation(Vec3::new(0.0, 0.0, -2.0)),
+        shader: Some(source),
+        params: MaterialParams {
+            tint: [0.5, 0.75, 1.0, 0.8],
+            unlit,
+            metallic: 0.05,
+            roughness: 0.8,
+            ..Default::default()
+        },
+        base_color: Some(image),
+        metallic_roughness: None,
+        normal_map: None,
+    };
+    let lights = LightList {
+        lights: vec![Light::directional(Vec3::NEG_Z, Vec3::ONE, 10.0)],
+    };
+    pipeline.render_view(
+        &SceneFrame {
+            view: &view,
+            meshes: &[draw],
+            lights: &lights,
+            world: None,
+        },
+        &target,
+        &mut NoHost,
+    )?;
+    Ok(pipeline.read_scene_hdr(ViewId::MAIN)?.pixel(16, 16))
+}
+
+fn assert_hdr_close(actual: [f32; 4], expected: [f32; 4]) {
+    for (a, b) in actual.into_iter().zip(expected) {
+        assert!((a - b).abs() <= 0.005, "{actual:?} versus {expected:?}");
+    }
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn mesh_default_graph_matches_handwritten_material_hdr_pixels() -> Result<()> {
+    let gpu = GpuContext::headless_with_options(&WgpuOptions::default())?;
     let graph_source = compile_material(&graph()).unwrap().source;
-    let mut pixels = Vec::new();
-    for source in [&graph_source[..], LIT_WGSL] {
-        let draw = SceneMesh {
-            id: "material graph mesh",
-            mesh: mesh.clone(),
-            world_from_local: Mat4::from_translation(Vec3::new(0.0, 0.0, -2.0)),
-            shader: Some(source),
-            params: MaterialParams {
-                tint: [0.5, 0.75, 1.0, 0.8],
-                unlit: true,
-                ..Default::default()
-            },
-            base_color: Some(image.clone()),
-            metallic_roughness: None,
-            normal_map: None,
-        };
-        pipeline.render_view(
-            &SceneFrame {
-                view: &view,
-                meshes: &[draw],
-                lights: &LightList::default(),
-                world: None,
-            },
-            &target,
-            &mut NoHost,
-        )?;
-        pixels.push(pipeline.read_scene_hdr(ViewId::MAIN)?.pixel(16, 16));
+    for unlit in [true, false] {
+        assert_hdr_close(
+            draw_mesh(&gpu, &graph_source, unlit, [1.0; 4])?,
+            draw_mesh(&gpu, LIT_WGSL, unlit, [1.0; 4])?,
+        );
     }
-    for (actual, expected) in pixels[0].into_iter().zip(pixels[1]) {
-        assert!((actual - expected).abs() <= 0.002, "{pixels:?}");
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn mesh_graph_override_controls_unlit_color_and_lit_physical_response() -> Result<()> {
+    let gpu = GpuContext::headless_with_options(&WgpuOptions::default())?;
+    let base_source = compile_material(&override_graph(false)).unwrap().source;
+    let physical_source = compile_material(&override_graph(true)).unwrap().source;
+
+    let unlit = draw_mesh(&gpu, &base_source, true, [0.7, 0.3, 0.9, 0.6])?;
+    assert_hdr_close(
+        unlit,
+        draw_mesh(&gpu, &reference_override(false), true, [0.7, 0.3, 0.9, 0.6])?,
+    );
+    let builtin = draw_mesh(&gpu, LIT_WGSL, true, [0.7, 0.3, 0.9, 0.6])?;
+    assert!(
+        (unlit[0] - builtin[0]).abs() > 0.1,
+        "graph base color ignored: {unlit:?} versus {builtin:?}"
+    );
+    assert!(
+        (unlit[3] - 0.35).abs() <= 0.01,
+        "graph alpha ignored: {unlit:?}"
+    );
+
+    let lit = draw_mesh(&gpu, &physical_source, false, [0.7, 0.3, 0.9, 0.6])?;
+    assert_hdr_close(
+        lit,
+        draw_mesh(&gpu, &reference_override(true), false, [0.7, 0.3, 0.9, 0.6])?,
+    );
+    let base_only = draw_mesh(&gpu, &base_source, false, [0.7, 0.3, 0.9, 0.6])?;
+    assert!(
+        lit[..3]
+            .iter()
+            .zip(&base_only[..3])
+            .any(|(a, b)| (a - b).abs() > 0.01),
+        "metallic and roughness overrides had no visible effect: {lit:?} versus {base_only:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn sprite_graph_override_changes_color_and_alpha_against_handwritten_reference() -> Result<()> {
+    let gpu = GpuContext::headless_with_options(&WgpuOptions::default())?;
+    let graph_source = compile_material(&override_graph(false)).unwrap().source;
+    let graph_pixel = draw_sprite(&gpu, &graph_source, [0.7, 0.3, 0.9, 0.6])?;
+    let reference_pixel = draw_sprite(&gpu, &reference_override(false), [0.7, 0.3, 0.9, 0.6])?;
+    let builtin_pixel = draw_sprite(&gpu, LIT_WGSL, [0.7, 0.3, 0.9, 0.6])?;
+    for (actual, expected) in graph_pixel.into_iter().zip(reference_pixel) {
+        assert!(
+            actual.abs_diff(expected) <= 1,
+            "{graph_pixel:?} versus {reference_pixel:?}"
+        );
     }
+    assert!(
+        graph_pixel[0].abs_diff(builtin_pixel[0]) > 20,
+        "graph override was ignored: {graph_pixel:?} versus {builtin_pixel:?}"
+    );
+    assert!(
+        (graph_pixel[3] as i16 - 89).abs() <= 2,
+        "graph alpha: {graph_pixel:?}"
+    );
     Ok(())
 }

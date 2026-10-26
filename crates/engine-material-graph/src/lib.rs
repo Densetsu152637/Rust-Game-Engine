@@ -229,6 +229,7 @@ fn compile_checked(document: &GraphDocument) -> Result<String, Vec<GraphDiagnost
         "    let derivative_normal = cross(dpdx(input.world), dpdy(input.world));",
         "    let mr = textureSample(metallic_roughness_map, image_sampler, input.uv);",
         "surface.albedo = color.rgb;",
+        "select(shaded, color.rgb, material.options.x > 0.5)",
         "surface.metallic = material.options.y * select(1.0, mr.b, maps.z > 0.5);",
         "surface.roughness = material.options.z * select(1.0, mr.g, maps.z > 0.5);",
         "return vec4<f32>(result, color.a);",
@@ -249,6 +250,7 @@ fn compile_checked(document: &GraphDocument) -> Result<String, Vec<GraphDiagnost
         &format!("    let mr = textureSample(metallic_roughness_map, image_sampler, input.uv);\n{outputs}"),
     ).replace("struct Output {", &format!("{SAFE_FUNCTIONS}struct Output {{"))
      .replace("surface.albedo = color.rgb;", "surface.albedo = graph_base_color;")
+     .replace("select(shaded, color.rgb, material.options.x > 0.5)", "select(shaded, graph_base_color, material.options.x > 0.5)")
      .replace("surface.metallic = material.options.y * select(1.0, mr.b, maps.z > 0.5);", "surface.metallic = graph_metallic;")
      .replace("surface.roughness = material.options.z * select(1.0, mr.g, maps.z > 0.5);", "surface.roughness = graph_roughness;")
      .replace("return vec4<f32>(result, color.a);", "return vec4<f32>(result, graph_alpha);");
