@@ -1,0 +1,14 @@
+[package]
+name = "engine-sequencer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+engine-animation = { path = "../engine-animation" }
+glam.workspace = true
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
