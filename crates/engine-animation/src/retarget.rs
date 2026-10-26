@@ -309,7 +309,7 @@ impl RetargetMap {
                     .target_parent
                     .map_or(Quat::IDENTITY, |p| target_rotations[p])
                     * relative;
-                target_pose[joint.target].rotation = (parent.conjugate() * global).normalize();
+                target_pose[i].rotation = (parent.conjugate() * global).normalize();
             }
             target_pose[i].validate()?;
             target_rotations[i] = (parent * target_pose[i].rotation).normalize();
