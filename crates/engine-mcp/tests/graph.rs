@@ -523,6 +523,7 @@ fn animation_palette_uses_shared_graph_schema() {
         "blend2d",
         "state_machine",
         "ik_two_bone",
+        "retarget_clip",
         "output",
     ] {
         assert!(types.iter().any(|node| node["name"] == name));

@@ -1,6 +1,8 @@
-use super::Graph;
 use super::compile::{Node, valid_parameter};
-use crate::{Clip, ClipEvent, LocalPose, Skeleton, Vec3, blend_poses, ik::TwoBone};
+use super::{Graph, GraphRigs};
+use crate::{
+    Clip, ClipEvent, LocalPose, Skeleton, Vec3, blend_poses, ik::TwoBone, retarget::RetargetMap,
+};
 use anyhow::{Result, ensure};
 use serde_json::Value;
 use std::{
@@ -33,6 +35,7 @@ pub struct GraphPlayer {
     rest: Vec<LocalPose>,
     skeleton: Option<Arc<Skeleton>>,
     solvers: Vec<Option<TwoBone>>,
+    retargeters: Vec<Option<RetargetMap>>,
     clips: BTreeMap<String, Arc<Clip>>,
     parameters: BTreeMap<String, Value>,
     states: Vec<State>,
@@ -55,9 +58,9 @@ impl GraphPlayer {
     ) -> Result<Self> {
         ensure!(
             !graph.requires_skeleton(),
-            "IK graph requires an explicit Skeleton"
+            "Graph requires an explicit Skeleton"
         );
-        Self::bound(graph, rest, clips, None, parameters)
+        Self::bound(graph, rest, clips, None, parameters, None)
     }
     /// Binds the complete validated hierarchy and its local rest pose for IK nodes.
     pub fn with_skeleton(
@@ -72,6 +75,24 @@ impl GraphPlayer {
             clips,
             Some(skeleton),
             parameters,
+            None,
+        )
+    }
+    /// Binds explicit target/source rig IDs without changing the established IK constructor.
+    pub fn with_rigs(
+        graph: Arc<Graph>,
+        rigs: GraphRigs,
+        clips: BTreeMap<String, Arc<Clip>>,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<Self> {
+        let target = rigs.target.clone();
+        Self::bound(
+            graph,
+            target.rest_pose().to_vec(),
+            clips,
+            Some(target),
+            parameters,
+            Some(rigs),
         )
     }
     fn bound(
@@ -80,6 +101,7 @@ impl GraphPlayer {
         clips: BTreeMap<String, Arc<Clip>>,
         skeleton: Option<Arc<Skeleton>>,
         parameters: &BTreeMap<String, Value>,
+        rigs: Option<GraphRigs>,
     ) -> Result<Self> {
         ensure!(
             !rest.is_empty() && rest.len() <= 4096 && graph.nodes.len() * rest.len() <= 262144,
@@ -89,13 +111,25 @@ impl GraphPlayer {
             pose.validate()?;
         }
         for id in graph.clip_ids() {
-            ensure!(
-                clips
-                    .get(id)
-                    .is_some_and(|clip| clip.joint_count() == rest.len()),
-                "missing clip or joint count differs: {id}"
-            );
+            ensure!(clips.contains_key(id), "missing animation clip {id}");
         }
+        for node in &graph.nodes {
+            if let Node::Clip { id, .. } = node {
+                ensure!(
+                    clips[id].joint_count() == rest.len(),
+                    "target clip joint count differs: {id}"
+                );
+            }
+        }
+        let retargeters = if let Some(rigs) = rigs {
+            graph.bind_retargets(&rigs, &clips)?
+        } else {
+            ensure!(
+                graph.retargets().next().is_none(),
+                "Retarget graph requires named rig bindings"
+            );
+            vec![None; graph.nodes.len()]
+        };
         let solvers = graph
             .nodes
             .iter()
@@ -129,6 +163,7 @@ impl GraphPlayer {
             rest,
             skeleton,
             solvers,
+            retargeters,
             clips,
             states,
         };
@@ -193,15 +228,30 @@ impl GraphPlayer {
                     poses[*input].clone()
                 }
                 Node::Clip { id, speed, looping } => {
-                    let clip = &self.clips[id];
-                    let next = states[i].time + dt * speed;
-                    ensure!(next.is_finite(), "animation clip clock overflow");
-                    let pose = clip.sample(next, *looping, &self.rest)?;
-                    states[i].time = if *looping {
-                        next.rem_euclid(clip.duration())
-                    } else {
-                        next.min(clip.duration())
-                    };
+                    let pose = sample(
+                        &self.clips[id],
+                        &mut states[i],
+                        dt,
+                        *speed,
+                        *looping,
+                        &self.rest,
+                    )?;
+                    contributing[i].insert(i);
+                    pose
+                }
+                Node::RetargetClip(spec) => {
+                    let map = self.retargeters[i]
+                        .as_ref()
+                        .expect("validated retarget binding");
+                    let source = sample(
+                        &self.clips[&spec.clip],
+                        &mut states[i],
+                        dt,
+                        spec.speed,
+                        spec.looping,
+                        map.source().rest_pose(),
+                    )?;
+                    let pose = map.apply(&source)?;
                     contributing[i].insert(i);
                     pose
                 }
@@ -311,18 +361,18 @@ impl GraphPlayer {
         }
         let mut events = Vec::new();
         for &i in &contributing[self.graph.output] {
-            if let Node::Clip { id, speed, looping } = &self.graph.nodes[i] {
+            if let Some((id, speed, looping)) = self.graph.nodes[i].playback() {
                 for event in self.clips[id].events_between(
                     self.states[i].time,
                     self.states[i].time + dt * speed,
-                    *looping,
+                    looping,
                 )? {
                     ensure!(
                         events.len() < 4096,
                         "animation graph event capacity exceeded"
                     );
                     events.push(GraphEvent {
-                        clip: id.clone(),
+                        clip: id.to_owned(),
                         event,
                     });
                 }
@@ -347,4 +397,23 @@ fn weighted_pose(poses: &[Vec<LocalPose>], inputs: &[(usize, f32)]) -> Result<Ve
         }
     }
     result.ok_or_else(|| anyhow::anyhow!("blend has no positive sample weight"))
+}
+
+fn sample(
+    clip: &Clip,
+    state: &mut State,
+    dt: f32,
+    speed: f32,
+    looping: bool,
+    rest: &[LocalPose],
+) -> Result<Vec<LocalPose>> {
+    let next = state.time + dt * speed;
+    ensure!(next.is_finite(), "animation clip clock overflow");
+    let pose = clip.sample(next, looping, rest)?;
+    state.time = if looping {
+        next.rem_euclid(clip.duration())
+    } else {
+        next.min(clip.duration())
+    };
+    Ok(pose)
 }

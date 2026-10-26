@@ -33,10 +33,12 @@ only incoming-clip events are emitted. The host owns their ECS/event routing.
 
 Limits: up to 4096 joints, one million keys per channel, and 4096 authored events
 per clip. No cubic-spline interpolation, morph-target animation, root-motion
-extraction, animation graph editor, retargeting, or GPU skinning is claimed.
+extraction, animation graph editor, or GPU skinning is claimed.
 Pose graphs, state transitions, 1D/2D blend spaces and rotation-only two-bone IK
 are described in
 [Animation pose graphs](../../docs/animation-graph.md).
+Explicit rest-relative rotation retargeting and local root translation are described
+in [Animation retargeting](../../docs/animation-retargeting.md).
 A glTF adapter must explicitly reject unsupported interpolation and preserve
 non-joint ancestor transforms when constructing skin palettes.
 

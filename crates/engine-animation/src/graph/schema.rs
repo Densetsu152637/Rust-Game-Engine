@@ -32,6 +32,19 @@ pub fn kind() -> GraphKind {
                 ),
         )
         .with(
+            source("retarget_clip")
+                .param(param("clip", ParamType::String).max_len(128))
+                .param(param("source_rig", ParamType::String).max_len(128))
+                .param(param("target_rig", ParamType::String).max_len(128))
+                .param(param("mapping", ParamType::Json))
+                .param(ParamDef::new("looping", ParamType::Bool).default_value(json!(true)))
+                .param(
+                    ParamDef::new("speed", ParamType::Float)
+                        .range(0., 100.)
+                        .default_value(json!(1.)),
+                ),
+        )
+        .with(
             source("blend")
                 .port(PortDef::input("a", pose()).required())
                 .port(PortDef::input("b", pose()).required())

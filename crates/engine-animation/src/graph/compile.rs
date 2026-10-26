@@ -1,4 +1,4 @@
-use super::{BlendSpace1D, BlendSpace2D};
+use super::{BlendSpace1D, BlendSpace2D, RetargetClip};
 use engine_graph::{GraphDiagnostic, GraphDocument, PortType, Strictness};
 use serde::Deserialize;
 use serde_json::Value;
@@ -12,6 +12,7 @@ pub(super) enum Node {
         speed: f32,
         looping: bool,
     },
+    RetargetClip(RetargetClip),
     Blend {
         a: usize,
         b: usize,
@@ -43,11 +44,18 @@ pub(super) enum Node {
     },
 }
 impl Node {
+    pub(super) fn playback(&self) -> Option<(&str, f32, bool)> {
+        match self {
+            Self::Clip { id, speed, looping } => Some((id, *speed, *looping)),
+            Self::RetargetClip(spec) => Some((&spec.clip, spec.speed, spec.looping)),
+            _ => None,
+        }
+    }
     pub fn inputs(&self) -> Vec<usize> {
         match self {
             Self::Output(i) => vec![*i],
             Self::Ik { input, .. } => vec![*input],
-            Self::Clip { .. } => vec![],
+            Self::Clip { .. } | Self::RetargetClip(_) => vec![],
             Self::Blend { a, b, .. } => vec![*a, *b],
             Self::One { inputs, .. } | Self::Two { inputs, .. } | Self::Machine { inputs, .. } => {
                 inputs.clone()
@@ -129,7 +137,7 @@ impl Graph {
     pub fn requires_skeleton(&self) -> bool {
         self.nodes
             .iter()
-            .any(|node| matches!(node, Node::Ik { .. }))
+            .any(|node| matches!(node, Node::Ik { .. } | Node::RetargetClip(_)))
     }
     pub fn clip_ids(&self) -> impl Iterator<Item = &str> {
         self.clips.iter().map(String::as_str)
@@ -246,6 +254,33 @@ pub(super) fn compile_semantics(document: &GraphDocument) -> Result<Graph, Graph
                     speed: parsed(&p, "speed", &path)?,
                     looping: parsed(&p, "looping", &path)?,
                 }
+            }
+            "retarget_clip" => {
+                let clip: String = parsed(&p, "clip", &path)?;
+                let source_rig: String = parsed(&p, "source_rig", &path)?;
+                let target_rig: String = parsed(&p, "target_rig", &path)?;
+                if [&clip, &source_rig, &target_rig]
+                    .iter()
+                    .any(|id| id.is_empty() || id.chars().any(char::is_control))
+                {
+                    return Err(problem(
+                        &path,
+                        "retarget asset identifier is empty or invalid",
+                    ));
+                }
+                let mapping: crate::retarget::RetargetDefinition = parsed(&p, "mapping", &path)?;
+                mapping
+                    .validate()
+                    .map_err(|e| problem(&path, e.to_string()))?;
+                clips.insert(clip.clone());
+                Node::RetargetClip(RetargetClip {
+                    clip,
+                    source_rig,
+                    target_rig,
+                    mapping,
+                    speed: parsed(&p, "speed", &path)?,
+                    looping: parsed(&p, "looping", &path)?,
+                })
             }
             "blend" => Node::Blend {
                 a: input("a")?,
@@ -388,6 +423,34 @@ pub(super) fn compile_semantics(document: &GraphDocument) -> Result<Graph, Graph
             _ => return Err(problem(&path, "unknown animation node")),
         });
     }
+    let sources = nodes
+        .iter()
+        .filter_map(|node| {
+            if let Node::RetargetClip(spec) = node {
+                Some(spec.source_rig.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<BTreeSet<_>>();
+    let targets = nodes
+        .iter()
+        .filter_map(|node| {
+            if let Node::RetargetClip(spec) = node {
+                Some(spec.target_rig.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<BTreeSet<_>>();
+    if sources.len() > 16 || targets.len() > 1 {
+        return Err(problem(
+            "/nodes",
+            "retarget graph requires at most 16 source rigs and one target rig",
+        ));
+    }
+    drop(sources);
+    drop(targets);
     fn visit(
         i: usize,
         nodes: &[Node],
