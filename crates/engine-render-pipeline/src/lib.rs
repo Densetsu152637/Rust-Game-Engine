@@ -40,6 +40,7 @@ pub mod readback;
 mod resources;
 pub mod shader;
 pub mod shadows;
+pub mod sprite_lighting;
 mod streams;
 mod targets;
 mod view;
