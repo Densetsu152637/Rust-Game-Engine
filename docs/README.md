@@ -174,6 +174,10 @@
   typed adapters, hierarchy, events, batches and prefabs shared with MCP.
 - [Scheduled events](scheduled-events.md): CLI/MCP event injection, callback
   delivery and bounded execution traces.
+- [Video playback](video.md): local FFmpeg decoding, streamed textures and shared
+  audio/video/caption timing, with explicit executable and presentation limits.
+- [Streamed audio](audio-streaming.md): bounded PCM sources, playback clock epochs,
+  compressed decoding, seek, cancellation and backpressure.
 - [Audio and persistence](desktop-services.md): the mixer, spatial sources, CPAL
   playback, durable saves and separate settings.
 - [Spatial audio and acoustics](acoustics.md): authored acoustic components,
