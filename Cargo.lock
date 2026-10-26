@@ -1423,7 +1423,10 @@ name = "engine-animation"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "engine-graph",
  "glam 0.34.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

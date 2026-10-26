@@ -186,4 +186,7 @@
 - [MCP server](mcp.md): the stdio protocol, read/write/exec tools, resources,
   access levels and limits.
 
+- [Animation pose graphs](animation-graph.md): validated pose DAGs, state
+  transitions, 1D/2D blend spaces, project bindings and CPU skin deformation.
+
 Per-crate details are in `crates/*/README.md`.

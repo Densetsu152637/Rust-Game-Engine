@@ -61,7 +61,12 @@ fn state_trees_are_described_validated_and_edited_with_the_graph_tools() {
         .iter()
         .map(|k| k["name"].as_str().unwrap())
         .collect();
-    assert_eq!(kinds, ["behavior_tree", "state_tree"]);
+    assert!(
+        kinds.contains(&"behavior_tree")
+            && kinds.contains(&"state_tree")
+            && kinds.contains(&"animation")
+    );
+    assert!(kinds.windows(2).all(|pair| pair[0] < pair[1]));
     let full = data(dir.path(), "graph_schema", json!({"kind":"state_tree"}));
     assert_eq!(full["ok"], true, "{full}");
     let types: Vec<&str> = full["kinds"][0]["node_types"]

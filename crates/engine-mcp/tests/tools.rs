@@ -363,6 +363,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.AcousticMaterial",
         "engine.AcousticSource",
         "engine.AcousticVolume",
+        "engine.AnimationGraphPlayer",
         "engine.AnimationPlayer",
         "engine.AudioEmitter",
         "engine.AudioListener",

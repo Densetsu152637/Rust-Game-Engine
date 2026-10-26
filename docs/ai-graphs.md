@@ -3,13 +3,14 @@
 Behavior trees, state trees, visual scripts and the animation, audio and material
 graphs of other domains share one data model, the `engine-graph` crate. A graph is a
 project asset of kind `graph`: one JSON document whose `kind` field selects the graph
-kind (`behavior_tree` and `state_tree` today) that gives its nodes meaning. One generic
+kind (`animation`, `behavior_tree` and `state_tree` today) that gives its nodes meaning. One generic
 node-graph editor widget, one validator and one set of MCP tools therefore serve every
 graph domain.
 
 `engine-graph` is a pure crate (serde and serde_json only). Domains own their node
 types and runtimes: `engine-ai` defines the `behavior_tree` and `state_tree` kinds and
 compiles them ([Behavior trees](ai-behavior-trees.md), [State trees](ai-state-trees.md));
+`engine-animation` defines the [animation pose graph](animation-graph.md) kind;
 `engine-project` keeps the registry of kinds and binds graph assets to the project and
 runtime.
 

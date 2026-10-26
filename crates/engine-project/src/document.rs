@@ -262,7 +262,10 @@ impl SceneDocument {
                         *follow = mapped.clone();
                     }
                     for (name, value) in &mut entity.components.custom {
-                        if name == "engine.AnimationPlayer" || name == "engine.SkinBinding" {
+                        if name == "engine.AnimationPlayer"
+                            || name == "engine.AnimationGraphPlayer"
+                            || name == "engine.SkinBinding"
+                        {
                             crate::simulation::remap_animation_bindings(&mut value.data, &ids);
                         }
                         if let Some(descriptor) = project.component_catalog.0.get(name) {

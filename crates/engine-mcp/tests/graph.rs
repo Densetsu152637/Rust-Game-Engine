@@ -509,3 +509,29 @@ fn graph_references_are_validated_when_components_are_set() {
     );
     assert_eq!(schema["components"][0]["example"]["data"]["enabled"], true);
 }
+
+#[test]
+fn animation_palette_uses_shared_graph_schema() {
+    let dir = fixture();
+    let schema = data(dir.path(), "graph_schema", json!({"kind":"animation"}));
+    assert_eq!(schema["ok"], true, "{schema}");
+    let types = schema["kinds"][0]["node_types"].as_array().unwrap();
+    for name in [
+        "clip",
+        "blend",
+        "blend1d",
+        "blend2d",
+        "state_machine",
+        "output",
+    ] {
+        assert!(types.iter().any(|node| node["name"] == name));
+    }
+    let blend = types.iter().find(|node| node["name"] == "blend").unwrap();
+    assert!(
+        blend["ports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|port| port["name"] == "a")
+    );
+}

@@ -106,8 +106,9 @@ file size, 64 models, 4096 bound nodes per mesh and one million deformed vertice
 across the world. Model and palette indices, weights and matrices are validated;
 bad bindings fail before rendering. Scene changes must call `simulation::reset`
 after hydration so retained entities rebuild from their new scene poses.
-Native animation supplies crossfades and CPU skinning; there is no authored state
-machine, inverse kinematics, retargeting or morph animation.
+Native animation supplies crossfades, CPU skinning and authored
+[pose graphs, state machines and blend spaces](animation-graph.md). Inverse
+kinematics, retargeting and morph animation remain separate features.
 
 ## Navigation and ownership
 
