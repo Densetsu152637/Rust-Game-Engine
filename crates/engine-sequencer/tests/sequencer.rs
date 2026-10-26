@@ -225,3 +225,26 @@ fn invalid_targets_times_and_values_are_rejected_before_playback() {
     });
     assert!(doc.compile(1).is_err());
 }
+#[test]
+fn signed_zero_markers_keep_author_order_at_loop_seams() {
+    let doc = Timeline {
+        events: vec![
+            Marker {
+                time: 0.0,
+                id: "first".into(),
+            },
+            Marker {
+                time: -0.0,
+                id: "second".into(),
+            },
+        ],
+        ..Default::default()
+    };
+    let mut p = Player::new(Arc::new(doc.compile(1).unwrap()));
+    p.set_looping(true);
+    p.play();
+    assert_eq!(ids(&p.advance(1.).unwrap()), ["first", "second"]);
+    p.set_speed(-1.).unwrap();
+    p.seek(0.5, SeekEvents::Silent).unwrap();
+    assert_eq!(ids(&p.advance(0.5).unwrap()), ["first", "second"]);
+}

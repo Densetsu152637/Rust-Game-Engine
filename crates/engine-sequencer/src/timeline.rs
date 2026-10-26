@@ -247,7 +247,13 @@ impl Timeline {
         );
         let mut document = self.clone();
         // Stable sort preserves author order for simultaneous events in both directions.
-        document.events.sort_by(|a, b| a.time.total_cmp(&b.time));
+        document.events.sort_by(|a, b| {
+            if a.time == b.time {
+                std::cmp::Ordering::Equal
+            } else {
+                a.time.total_cmp(&b.time)
+            }
+        });
         let clip = Clip::new(
             self.duration,
             bindings,
