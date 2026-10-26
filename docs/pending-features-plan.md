@@ -43,21 +43,22 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 1. World completion (external owner)
 
-- Status: in progress.
+- Status: done.
 - Objective: finish batch B and final checks for tilemaps, PCG, streaming,
   terrain, foliage, water and large-world coordinates.
-- Handoff revision: 255035b, including checked batch B 38d687f.
-- Owned paths: existing World manager's worktrees and World feature crates/docs.
-- Acceptance: project PCG/streaming/tilemap regression tests, MCP tilemap tests,
-  relevant GPU tests, and required integrated checks.
-- Handoff: request/consume completed commits; the manager reported 4,705 passing workspace tests and three build-timeout failures
-  whose isolated suite passed 14/14; that branch-only evidence is
-  not validation of the merged revision. World is now integrated into local main;
-  Merged main `598e395` passes formatting and strict workspace Clippy using an isolated build cache. The locked workspace test run is active; merged-revision MCP/tooling and GPU gates remain pending. Networking
-  and World registrations are both retained; recomputed CLI tool totals are
-  read 31, write 62, exec 34, write+exec 65. The Claude manager retains cleanup
-  of its own worktree/branches after main ancestry is confirmed.
-
+- Handoff revision: `255035b`, including checked batch B `38d687f`.
+- Outcome: integrated into clean local main `598e395`; the handoff is a verified
+  ancestor. Merged main passes formatting, strict workspace Clippy and the full
+  locked workspace suite: 5,015 passed, zero failed, 153 ignored. MCP execution
+  passes 14 runnable tests. Vulkan on the RTX 5080 passes all 11 World GPU tests
+  present in the source and the separate desktop default-render test. No World
+  renderer file differs from the handoff revision.
+- Networking and World registrations are both retained. Recomputed CLI totals:
+  read 31, write-enabled 62, exec 34, write+exec 65.
+- Cleanup: the Claude manager retains its worktree/branch retirement. Root has
+  reported the verified main ancestry. No push has occurred.
+- Followups: shared-shadow adoption is stage 6; the later combined branch still
+  needs its own execution gates. Deferred World limits remain documented.
 ### 2. AI-gameplay completion (external owner)
 
 - Status: in progress.
