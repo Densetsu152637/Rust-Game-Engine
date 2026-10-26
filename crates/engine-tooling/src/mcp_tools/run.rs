@@ -119,6 +119,8 @@ impl Tool for RunTool {
                     "Smart objects: {objects, slots, free, claimed, occupied, listed:[{entity, slots:[{name, tags, state, user}]}], dropped_events}; at most 16 objects listed. Null without an engine.SmartObject."})),
                 ("abilities", json!({"type":["object","null"], "description":
                     "Ability systems: {definitions, actors, active_effects, active_abilities, pending_predictions, dropped_events, listed:[{entity, attributes:[{name, base, current}], tags, effects:[{effect, stacks, remaining, predicted}], active, granted}]}; at most 16 actors, 16 attributes, tags and effects and 8 active abilities each. Null without an engine.AbilitySystem."})),
+                ("progression", json!({"type":["object","null"], "description":
+                    "Inventories, quest logs and conversations: {inventories:[{entity, slots, used, weight, items, equipped}], quest_logs:[{entity, quests:[{quest, state, stage, objectives}], flags}], dialogues:[{npc, player, waiting}], dropped_events, dropped_rewards}; at most 16 entities per kind. Null without engine.Inventory, engine.QuestLog or engine.DialogueParticipant."})),
                 ("telemetry_omitted", json!({"type":"array","items":{"type":"string"}})),
                 ("build", json!({"type": "object"})),
                 ("run_millis", json!({"type": "integer"})),
@@ -249,6 +251,7 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
     let perception = telemetry("perception", &snapshot["perception"]);
     let env_queries = telemetry("env_queries", &snapshot["env_queries"]);
     let smart_objects = telemetry("smart_objects", &snapshot["smart_objects"]);
+    let progression = telemetry("progression", &snapshot["progression"]);
     let abilities = telemetry("abilities", &snapshot["abilities"]);
     json!({
         "upscaler": upscaler, "frame_generation": frame_generation,
@@ -256,6 +259,7 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
         "render_pipeline": render_pipeline, "ray_tracing": ray_tracing,
         "acoustics": acoustics, "behavior_trees": behavior_trees, "state_trees": state_trees,
         "perception": perception, "env_queries": env_queries, "smart_objects": smart_objects,
+        "progression": progression,
         "abilities": abilities,
         "profile": profile, "profile_frames_truncated": profile_frames_truncated,
         "network": network, "input_devices": input_devices, "telemetry_omitted": telemetry_omitted,

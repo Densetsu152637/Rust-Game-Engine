@@ -162,6 +162,11 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         "smart_objects":{"objects":1,"slots":2,"free":1,"claimed":0,"occupied":1,
             "dropped_events":0,"listed":[{"entity":"bench","slots":[
             {"name":"left","tags":["sit"],"state":"occupied","user":"guard"}]}]},
+        "progression":{"dropped_events":0,"dropped_rewards":0,"dialogues":[],
+            "inventories":[{"entity":"hero","slots":16,"used":2,"weight":1.5,
+                "items":{"potion":3},"equipped":{}}],
+            "quest_logs":[{"entity":"hero","flags":[],"quests":[{"quest":"wolves",
+                "state":"active","stage":"hunt","objectives":[["kills",1,3]]}]}]},
         "abilities":{"definitions":"abilities","actors":2,"active_effects":1,"active_abilities":0,
             "pending_predictions":0,"dropped_events":0,"listed":[{"entity":"guard",
             "attributes":[{"name":"Health","base":75.0,"current":75.0}],"tags":["Cooldown.Strike"],
@@ -216,6 +221,10 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     );
     assert_eq!(summary["perception"]["rays_cast"], 1);
     assert_eq!(summary["env_queries"]["recent"][0]["query"], "flank");
+    assert_eq!(
+        summary["progression"]["inventories"][0]["items"]["potion"],
+        3
+    );
     assert_eq!(
         summary["smart_objects"]["listed"][0]["slots"][0]["user"],
         "guard"
@@ -311,6 +320,7 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
     );
     let absent = summarize(&json!({}), None, 50);
     assert!(absent["env_queries"].is_null() && absent["smart_objects"].is_null());
+    assert!(absent["progression"].is_null());
     assert!(absent["perception"].is_null());
     assert!(absent["abilities"].is_null());
     assert!(absent["behavior_trees"].is_null());

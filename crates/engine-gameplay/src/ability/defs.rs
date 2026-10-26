@@ -34,6 +34,10 @@ pub struct Definitions {
     pub attribute_sets: Vec<AttributeSetDef>,
     pub effects: Vec<EffectDef>,
     pub abilities: Vec<AbilityDef>,
+    /// Inventory item definitions (see `crate::inventory`).
+    pub items: Vec<crate::inventory::ItemDef>,
+    /// Quest definitions (see `crate::quest`).
+    pub quests: Vec<crate::quest::QuestDef>,
 }
 
 impl Default for Definitions {
@@ -43,6 +47,8 @@ impl Default for Definitions {
             attribute_sets: Vec::new(),
             effects: Vec::new(),
             abilities: Vec::new(),
+            items: Vec::new(),
+            quests: Vec::new(),
         }
     }
 }
@@ -512,6 +518,19 @@ impl Definitions {
                 "at most {MAX_ATTRIBUTE_SETS} attribute sets, {MAX_EFFECTS} effects and {MAX_ABILITIES} abilities"
             ));
         }
+        crate::inventory::validate_items(&self.items)?;
+        let effect_names: std::collections::BTreeSet<&str> =
+            self.effects.iter().map(|e| e.name.as_str()).collect();
+        let item_ids: std::collections::BTreeSet<&str> =
+            self.items.iter().map(|i| i.id.as_str()).collect();
+        for item in &self.items {
+            if let Some(effect) = &item.equip_effect
+                && !effect_names.contains(effect.as_str())
+            {
+                return Err(format!("item {}: unknown equip_effect {effect:?}", item.id));
+            }
+        }
+        crate::quest::validate_quests(&self.quests, &item_ids, &effect_names)?;
         let mut sets = BTreeMap::new();
         let mut attributes = BTreeMap::new();
         for (si, set) in self.attribute_sets.iter().enumerate() {

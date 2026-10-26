@@ -62,6 +62,10 @@ pub struct RuntimeSnapshot {
     /// Smart object slots and who holds them; absent without smart objects.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smart_objects: Option<crate::ai::smart_object::SmartObjectStatus>,
+    /// Inventories, quest logs and conversations; absent without `engine.Inventory`,
+    /// `engine.QuestLog` or `engine.DialogueParticipant`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progression: Option<crate::gameplay::progression::ProgressionStatus>,
     /// Ability systems: per-actor attributes, tags, effects and active abilities;
     /// absent without an `engine.AbilitySystem`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -237,6 +241,7 @@ impl Runtime {
             perception: crate::ai::perception_status(self.app.world()),
             env_queries: crate::ai::env_query_status(self.app.world()),
             smart_objects: crate::ai::smart_object_status(self.app.world()),
+            progression: crate::gameplay::progression::status(self.app.world()),
             abilities: crate::gameplay::status(self.app.world()),
             ticks: self.ticks,
             scene,

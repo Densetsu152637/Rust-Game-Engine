@@ -115,6 +115,10 @@
   instant, duration, infinite, periodic and stacking effects, abilities with costs,
   cooldowns and tag rules, prediction keys, the `gameplay` asset, `engine.AbilitySystem`,
   events, native API and the `engine.activate_ability` tree task.
+- [Inventory, quests and dialogue](gameplay-inventory-quests-dialogue.md): item definitions,
+  atomic slot containers with weight limits and equipment, staged quests fed by events, flags
+  and inventory contents with rewards, the `dialogue` graph kind and conversations,
+  `engine.Inventory`, `engine.QuestLog`, `engine.DialogueParticipant`, events and telemetry.
 - [Physics library](../crates/engine-physics/README.md),
   [animation library](../crates/engine-animation/README.md), and
   [navigation library](../crates/engine-navigation/README.md): native APIs and limits.
