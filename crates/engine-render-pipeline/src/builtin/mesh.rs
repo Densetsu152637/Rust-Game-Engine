@@ -2,12 +2,14 @@
 //! draws, the shadow, motion and normal passes of engine meshes.
 
 use crate::context::PipelineLayouts;
+use crate::indirect::{
+    INDIRECT_UNIFORM_BYTES, IndirectScene, MAX_INDIRECT_MATERIALS, MaterialArena,
+};
 use crate::instancing::{DrawStats, Grouping, group_keys};
 use crate::resources::{ENGINE_VERTEX_LAYOUT, GpuMesh, GpuTexture};
 use crate::scoped;
 use crate::shader::{
-    LIT_WGSL, MOTION_WGSL, MaterialTarget, NORMALS_WGSL, SHADOW_WGSL, ShaderComposer,
-    compose_material,
+    LIT_WGSL, MOTION_WGSL, NORMALS_WGSL, SHADOW_WGSL, ShaderComposer, compose_mesh_material,
 };
 use crate::targets::{DEPTH_FORMAT, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT};
 use anyhow::{Context, Result, ensure};
@@ -63,6 +65,14 @@ pub struct SceneMesh<'a> {
     pub normal_map: Option<Arc<GpuTexture>>,
 }
 
+pub(crate) struct MeshPreparation<'a, 'm> {
+    pub meshes: &'a [SceneMesh<'m>],
+    pub camera: glam::Vec3,
+    pub reset_history: bool,
+    pub indirect: Option<&'a IndirectScene>,
+    pub ambient: glam::Vec3,
+}
+
 /// `EngineInstance` (208 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -73,19 +83,22 @@ pub struct GpuInstance {
     pub params: [u32; 4],
 }
 
-/// Stride of one material's uniforms in the per-frame arena: `EngineMaterial`
-/// at 0, `maps` at 256 (both dynamic offsets).
-const MATERIAL_STRIDE: u64 = 512;
-
 struct Program {
     id: u64,
     opaque: wgpu::RenderPipeline,
     transparent: wgpu::RenderPipeline,
-    used: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct TextureKey([u64; 3]);
+struct TextureKey([u64; 6]);
+
+#[derive(PartialEq, Eq, Hash)]
+struct MaterialKey {
+    program: u64,
+    textures: TextureKey,
+    values: [u32; 12],
+    indirect: Option<Vec<u32>>,
+}
 
 struct Batch {
     mesh: Arc<GpuMesh>,
@@ -108,14 +121,23 @@ pub(crate) struct MeshViewState {
     opaque: Vec<Batch>,
     transparent: Vec<Batch>,
     pub draws: usize,
+    indirect: bool,
+}
+impl MeshViewState {
+    pub(crate) fn invalidate_material_bindings(&mut self) {
+        self.texture_groups.clear();
+        self.params = None;
+    }
 }
 
 /// Shared programs and pipelines of the mesh path.
 pub(crate) struct MeshRenderer {
     pipeline_layout: wgpu::PipelineLayout,
-    programs: HashMap<String, Program>,
+    indirect_pipeline_layout: Option<wgpu::PipelineLayout>,
+    uniform_alignment: u32,
+    black_cube: Option<wgpu::TextureView>,
+    programs: [HashMap<String, Program>; 2],
     next_program: u64,
-    frame: u64,
     shadow: wgpu::RenderPipeline,
     shadow_layout: wgpu::BindGroupLayout,
     shadow_index: (wgpu::Buffer, wgpu::BindGroup),
@@ -198,6 +220,18 @@ impl MeshRenderer {
                 Some(&layouts.instances),
             ],
             immediate_size: 0,
+        });
+        let indirect_pipeline_layout = layouts.indirect_material.as_ref().map(|indirect| {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("engine indirect material layout"),
+                bind_group_layouts: &[
+                    Some(&layouts.view),
+                    Some(&indirect.textures),
+                    Some(&indirect.params),
+                    Some(&layouts.instances),
+                ],
+                immediate_size: 0,
+            })
         });
         let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("engine shadow pass"),
@@ -293,9 +327,11 @@ impl MeshRenderer {
         let white = GpuTexture::rgba8(device, &gpu.queue, "engine white", [1, 1], &[255; 4])?;
         Ok(Self {
             pipeline_layout,
-            programs: HashMap::new(),
+            indirect_pipeline_layout,
+            uniform_alignment: device.limits().min_uniform_buffer_offset_alignment,
+            black_cube: None,
+            programs: std::array::from_fn(|_| HashMap::new()),
             next_program: 1,
-            frame: 0,
             shadow,
             shadow_layout,
             shadow_index: (index_buffer, index_group),
@@ -308,16 +344,20 @@ impl MeshRenderer {
 
     /// Compile (or reuse) the program of a material source. Invalid shaders
     /// fail here, before anything is submitted.
-    fn program(&mut self, gpu: &GpuContext, source: Option<&str>) -> Result<u64> {
+    fn program(&mut self, gpu: &GpuContext, source: Option<&str>, indirect: bool) -> Result<u64> {
         let key = source.unwrap_or(LIT_WGSL);
-        let frame = self.frame;
-        if let Some(program) = self.programs.get_mut(key) {
-            program.used = frame;
+        if let Some(program) = self.programs[indirect as usize].get_mut(key) {
             return Ok(program.id);
         }
-        let composed = compose_material(key, MaterialTarget::Mesh)?;
+        let composed = compose_mesh_material(key, indirect)?;
         let device = &gpu.device;
-        let layout = &self.pipeline_layout;
+        let layout = if indirect {
+            self.indirect_pipeline_layout
+                .as_ref()
+                .context("indirect material layout unavailable")?
+        } else {
+            &self.pipeline_layout
+        };
         let (opaque, transparent) = scoped(device, || {
             let module = module(device, "engine material", &composed);
             Ok((
@@ -342,26 +382,29 @@ impl MeshRenderer {
         .context("creating the material pipeline")?;
         let id = self.next_program;
         self.next_program += 1;
-        self.programs.insert(
+        self.programs[indirect as usize].insert(
             key.to_owned(),
             Program {
                 id,
                 opaque,
                 transparent,
-                used: frame,
             },
         );
         Ok(id)
     }
 
     fn pipeline(&self, program: u64, transparent: bool) -> Option<&wgpu::RenderPipeline> {
-        self.programs.values().find(|p| p.id == program).map(|p| {
-            if transparent {
-                &p.transparent
-            } else {
-                &p.opaque
-            }
-        })
+        self.programs
+            .iter()
+            .flat_map(|programs| programs.values())
+            .find(|p| p.id == program)
+            .map(|p| {
+                if transparent {
+                    &p.transparent
+                } else {
+                    &p.opaque
+                }
+            })
     }
 
     /// Validate every mesh, compile programs, sort, instance and upload one
@@ -372,17 +415,35 @@ impl MeshRenderer {
         gpu: &GpuContext,
         layouts: &PipelineLayouts,
         state: &mut MeshViewState,
-        meshes: &[SceneMesh<'_>],
-        camera: glam::Vec3,
-        reset_history: bool,
+        frame: MeshPreparation<'_, '_>,
     ) -> Result<()> {
+        let MeshPreparation {
+            meshes,
+            camera,
+            reset_history,
+            indirect,
+            ambient,
+        } = frame;
         ensure!(
             meshes.len() <= MAX_SCENE_MESHES,
             "at most {MAX_SCENE_MESHES} meshes per view"
         );
-        self.frame += 1;
+        let indirect_enabled = indirect.is_some();
+        ensure!(
+            !indirect_enabled || self.indirect_pipeline_layout.is_some(),
+            "indirect material layout unavailable"
+        );
+        if state.indirect != indirect_enabled {
+            state.invalidate_material_bindings();
+        }
+        state.indirect = indirect_enabled;
+        if indirect_enabled && self.black_cube.is_none() {
+            self.black_cube = Some(crate::indirect::black_cube(gpu));
+        }
+        let arena = MaterialArena::new(self.uniform_alignment, indirect_enabled);
         let mut ids = HashSet::with_capacity(meshes.len());
         let mut programs = Vec::with_capacity(meshes.len());
+        let mut sources = HashSet::new();
         for mesh in meshes {
             ensure!(
                 !mesh.id.is_empty() && ids.insert(mesh.id),
@@ -396,14 +457,22 @@ impl MeshRenderer {
                 mesh.id
             );
             validate_params(&mesh.params).with_context(|| format!("mesh {}", mesh.id))?;
+            sources.insert(mesh.shader.unwrap_or(LIT_WGSL));
+            ensure!(
+                !indirect_enabled || sources.len() <= MAX_INDIRECT_MATERIALS,
+                "indirect material shader budget exceeded"
+            );
+        }
+        // Prune only the current variant: alternating native/legacy views must
+        // not evict one another's compiled material pipelines every frame.
+        self.programs[indirect_enabled as usize]
+            .retain(|source, _| sources.contains(source.as_str()));
+        for mesh in meshes {
             programs.push(
-                self.program(gpu, mesh.shader)
+                self.program(gpu, mesh.shader, indirect_enabled)
                     .with_context(|| format!("material of mesh {}", mesh.id))?,
             );
         }
-        // Programs no draw referenced this frame are released.
-        let frame = self.frame;
-        self.programs.retain(|_, p| p.used == frame);
 
         // Draw order: opaque by id, then transparent back to front.
         let mut order: Vec<usize> = (0..meshes.len()).collect();
@@ -430,33 +499,69 @@ impl MeshRenderer {
         });
 
         // Distinct materials (program, textures, values) in first-use order.
-        let mut material_index: HashMap<(u64, TextureKey, [u32; 12]), u32> = HashMap::new();
+        let mut material_index: HashMap<MaterialKey, u32> = HashMap::new();
         let mut material_bytes: Vec<u8> = Vec::new();
+        let mut indirect_sources: HashMap<TextureKey, [Option<usize>; 2]> = HashMap::new();
         let mut keys = Vec::with_capacity(meshes.len());
         for &i in &order {
             let mesh = &meshes[i];
+            let resolved = indirect
+                .map(|scene| scene.resolve(mesh.world_from_local.w_axis.truncate(), ambient))
+                .transpose()?;
             let textures = TextureKey([
                 mesh.base_color.as_ref().map_or(0, |t| t.id()),
                 mesh.metallic_roughness.as_ref().map_or(0, |t| t.id()),
                 mesh.normal_map.as_ref().map_or(0, |t| t.id()),
+                resolved.as_ref().map_or(0, |r| r.key[0]),
+                resolved.as_ref().map_or(0, |r| r.key[1]),
+                resolved.as_ref().map_or(0, |r| r.key[2]),
             ]);
+            if let Some(value) = &resolved {
+                indirect_sources.insert(textures, value.environments);
+            }
             let (material, maps) = material_values(mesh);
             let mut bits = [0u32; 12];
             for (slot, value) in bits.iter_mut().zip(material.iter().chain(&maps)) {
                 *slot = value.to_bits();
             }
-            let next = material_index.len() as u32;
-            let index = *material_index
-                .entry((programs[i], textures, bits))
-                .or_insert_with(|| {
-                    let start = material_bytes.len();
-                    material_bytes.resize(start + MATERIAL_STRIDE as usize, 0);
-                    material_bytes[start..start + 32]
-                        .copy_from_slice(bytemuck::cast_slice(&material));
-                    material_bytes[start + 256..start + 272]
-                        .copy_from_slice(bytemuck::cast_slice(&maps));
-                    next
-                });
+            let indirect_bits = resolved.as_ref().map(|value| {
+                bytemuck::cast_slice::<_, f32>(std::slice::from_ref(&value.uniform))
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>()
+            });
+            let key = MaterialKey {
+                program: programs[i],
+                textures,
+                values: bits,
+                indirect: indirect_bits,
+            };
+            let index = if let Some(index) = material_index.get(&key) {
+                *index
+            } else {
+                ensure!(
+                    !indirect_enabled || material_index.len() < MAX_INDIRECT_MATERIALS,
+                    "at most {MAX_INDIRECT_MATERIALS} distinct indirect materials per view"
+                );
+                let index = material_index.len() as u32;
+                let start = material_bytes.len();
+                let end = start as u64 + arena.stride;
+                ensure!(
+                    end <= gpu.device.limits().max_buffer_size && end <= u64::from(u32::MAX),
+                    "material uniform arena exceeds device/dynamic-offset budget"
+                );
+                material_bytes.resize(end as usize, 0);
+                material_bytes[start..start + 32].copy_from_slice(bytemuck::cast_slice(&material));
+                let maps_at = start + arena.maps as usize;
+                material_bytes[maps_at..maps_at + 16].copy_from_slice(bytemuck::cast_slice(&maps));
+                if let Some(value) = &resolved {
+                    let at = start + arena.indirect as usize;
+                    material_bytes[at..at + INDIRECT_UNIFORM_BYTES as usize]
+                        .copy_from_slice(bytemuck::bytes_of(&value.uniform));
+                }
+                material_index.insert(key, index);
+                index
+            };
             keys.push((
                 mesh.mesh.id(),
                 u64::from(index),
@@ -552,14 +657,16 @@ impl MeshRenderer {
             gpu.queue.write_buffer(buffer, 0, bytes);
         }
         if material_bytes.is_empty() {
-            material_bytes.resize(MATERIAL_STRIDE as usize, 0);
+            material_bytes.resize(arena.stride as usize, 0);
         }
         if state
             .params
             .as_ref()
             .is_none_or(|(_, cap, _)| *cap < material_bytes.len() as u64)
         {
-            let capacity = (material_bytes.len() as u64).next_power_of_two();
+            let capacity = (material_bytes.len() as u64)
+                .next_power_of_two()
+                .min(device.limits().max_buffer_size);
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("engine material uniforms"),
                 size: capacity,
@@ -573,19 +680,33 @@ impl MeshRenderer {
                     size: wgpu::BufferSize::new(size),
                 })
             };
+            let mut entries = vec![
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: binding(32),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: binding(16),
+                },
+            ];
+            let layout = if indirect_enabled {
+                entries.push(wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: binding(INDIRECT_UNIFORM_BYTES),
+                });
+                &layouts
+                    .indirect_material
+                    .as_ref()
+                    .context("indirect layouts missing")?
+                    .params
+            } else {
+                &layouts.material_params
+            };
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("engine material uniforms"),
-                layout: &layouts.material_params,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: binding(32),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: binding(16),
-                    },
-                ],
+                layout,
+                entries: &entries,
             });
             state.params = Some((buffer, capacity, group));
         }
@@ -604,27 +725,62 @@ impl MeshRenderer {
             let base = mesh.base_color.as_ref().unwrap_or(white);
             let mr = mesh.metallic_roughness.as_ref().unwrap_or(white);
             let normal = mesh.normal_map.as_ref().unwrap_or(white);
+            let mut entries = vec![
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&base.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&mr.linear_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&normal.linear_view),
+                },
+            ];
+            let layout = if let Some(scene) = indirect {
+                let environments = indirect_sources
+                    .get(&batch.textures)
+                    .context("resolved indirect textures missing")?;
+                let black = self.black_cube.as_ref().context("neutral cube missing")?;
+                let source = |slot: usize| {
+                    environments[slot].map_or(black, |i| &scene.resources().environments[i].view)
+                };
+                entries.extend([
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(source(0)),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(source(1)),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&scene.resources().brdf.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::Sampler(&scene.resources().sampler),
+                    },
+                ]);
+                &layouts
+                    .indirect_material
+                    .as_ref()
+                    .context("indirect layouts missing")?
+                    .textures
+            } else {
+                &layouts.material_textures
+            };
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("engine material textures"),
-                layout: &layouts.material_textures,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&base.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&mr.linear_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&normal.linear_view),
-                    },
-                ],
+                layout,
+                entries: &entries,
             });
             state.texture_groups.insert(batch.textures, group);
         }
@@ -656,9 +812,22 @@ impl MeshRenderer {
                 pass.set_pipeline(pipeline);
                 current = Some(batch.program);
             }
-            let offset = u64::from(batch.material) * MATERIAL_STRIDE;
+            let arena = MaterialArena::new(self.uniform_alignment, state.indirect);
+            let offset = u64::from(batch.material) * arena.stride;
             pass.set_bind_group(1, &state.texture_groups[&batch.textures], &[]);
-            pass.set_bind_group(2, params, &[offset as u32, (offset + 256) as u32]);
+            if state.indirect {
+                pass.set_bind_group(
+                    2,
+                    params,
+                    &[
+                        offset as u32,
+                        (offset + arena.indirect) as u32,
+                        (offset + arena.maps) as u32,
+                    ],
+                );
+            } else {
+                pass.set_bind_group(2, params, &[offset as u32, (offset + arena.maps) as u32]);
+            }
             batch.mesh.draw(pass, batch.instances.clone());
             stats.draw_calls += 1;
             stats.instances += batch.instances.len();

@@ -20,6 +20,8 @@ pub struct PipelineLayouts {
     pub material_textures: wgpu::BindGroupLayout,
     /// `engine::material` uniforms (group 2, dynamic offsets).
     pub material_params: wgpu::BindGroupLayout,
+    /// Optional native IBL layouts; legacy feature/sprite layouts stay unchanged.
+    pub indirect_material: Option<crate::indirect::IndirectMaterialLayouts>,
 }
 
 /// Passed to [`crate::PipelineFeature::prepare`] once per device.

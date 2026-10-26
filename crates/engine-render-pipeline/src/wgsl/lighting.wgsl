@@ -383,14 +383,14 @@ fn engine_direct_lighting(surface: EngineSurface, world: vec3<f32>, v: vec3<f32>
 // surfaces at or below the reflection roughness cutoff (Schlick Fresnel with
 // roughness, faded towards the cutoff). With the neutral screen-lighting
 // placeholders this is albedo x (1 - metallic) x ambient.
-fn engine_indirect_lighting(surface: EngineSurface, v: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
+fn engine_resolve_indirect_lighting(surface: EngineSurface, v: vec3<f32>, frag: vec2<f32>, base_diffuse: vec3<f32>, base_specular: vec3<f32>) -> vec3<f32> {
     let ao = engine_screen_ao_at(frag).x;
     let gi = engine_screen_indirect_at(frag);
-    var incident = engine_ambient();
+    var diffuse = base_diffuse;
     if gi.a >= 0.5 {
-        incident = gi.rgb;
+        diffuse = surface.albedo * (1.0 - surface.metallic) * gi.rgb;
     }
-    var result = surface.albedo * (1.0 - surface.metallic) * incident * ao;
+    var specular = base_specular;
     let reflection = engine_screen_reflection_at(frag);
     if reflection.a >= 0.0 && surface.roughness <= reflection.a {
         let n_dot_v = clamp(dot(surface.normal, v), 0.0, 1.0);
@@ -401,7 +401,13 @@ fn engine_indirect_lighting(surface: EngineSurface, v: vec3<f32>, frag: vec2<f32
         if reflection.a > 0.0 {
             fade = 1.0 - surface.roughness / reflection.a;
         }
-        result += reflection.rgb * fresnel * fade;
+        specular = mix(base_specular, reflection.rgb * fresnel, fade);
     }
-    return result;
+    return diffuse * ao + specular;
+}
+
+// Generic ambient/screen helper retained for feature and custom shader users.
+fn engine_indirect_lighting(surface: EngineSurface, v: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
+    return engine_resolve_indirect_lighting(surface, v, frag,
+        surface.albedo * (1.0-surface.metallic) * engine_ambient(), vec3<f32>(0.0));
 }

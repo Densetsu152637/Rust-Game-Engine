@@ -2,6 +2,8 @@ use super::{BrdfLut, DiffusePolynomial, EnvironmentData, IndirectBudget, Radianc
 use crate::post::lut::f32_to_f16_bits;
 use anyhow::{Result, ensure};
 use engine_render_wgpu::GpuContext;
+use std::sync::atomic::{AtomicU64, Ordering};
+static NEXT_RESOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
@@ -35,6 +37,7 @@ pub struct GpuRadianceImage {
 
 #[derive(Debug)]
 pub struct GpuEnvironment {
+    id: u64,
     /// Six D2 layers in +X,-X,+Y,-Y,+Z,-Z order, with a complete mip chain.
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -43,6 +46,7 @@ pub struct GpuEnvironment {
 
 #[derive(Debug)]
 pub struct GpuBrdfLut {
+    id: u64,
     /// R=A, G=B, B=0, A=1. Coordinates: x=NdotV, y=roughness.
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -52,6 +56,7 @@ pub struct GpuBrdfLut {
 /// resize; rebuild only when source data changes. There is no implicit cache,
 /// camera exposure, material binding, or temporal state here.
 pub struct GpuIndirectResources {
+    device: wgpu::Device,
     pub environments: Vec<GpuEnvironment>,
     pub lightmaps: Vec<GpuRadianceImage>,
     pub brdf: GpuBrdfLut,
@@ -60,6 +65,9 @@ pub struct GpuIndirectResources {
 }
 
 impl GpuIndirectResources {
+    pub(crate) fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
     /// Validate the ENTIRE set before creating or uploading anything. Successful
     /// return means resources/uploads were issued, not that GPU work completed.
     /// Readback or the host's normal error handling establishes that separately.
@@ -120,6 +128,7 @@ impl GpuIndirectResources {
                     ..Default::default()
                 });
                 GpuEnvironment {
+                    id: NEXT_RESOURCE_ID.fetch_add(1, Ordering::Relaxed),
                     texture,
                     view,
                     diffuse: data.diffuse().clone(),
@@ -171,9 +180,14 @@ impl GpuIndirectResources {
         });
         gpu.check_errors()?;
         Ok(Self {
+            device: gpu.device.clone(),
             environments,
             lightmaps,
-            brdf: GpuBrdfLut { texture, view },
+            brdf: GpuBrdfLut {
+                id: NEXT_RESOURCE_ID.fetch_add(1, Ordering::Relaxed),
+                texture,
+                view,
+            },
             sampler,
             budget,
         })
@@ -235,4 +249,15 @@ fn write(
             depth_or_array_layers: 1,
         },
     );
+}
+
+impl GpuEnvironment {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+impl GpuBrdfLut {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
 }

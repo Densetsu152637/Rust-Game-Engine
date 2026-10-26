@@ -108,3 +108,7 @@ fn engine_light_contribution_screen(light: EngineLight, surface: EngineSurface, 
 fn engine_indirect_lighting(surface: EngineSurface, v: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
     return surface.albedo * (1.0 - surface.metallic) * engine_ambient();
 }
+
+fn engine_material_indirect_lighting(surface: EngineSurface, v: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
+    return engine_indirect_lighting(surface, v, frag);
+}
