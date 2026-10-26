@@ -199,6 +199,13 @@ pub fn run_with_wgpu_backends(
     if let Some(path) = &options.user_data {
         runtime.set_user_data_root(path.clone())?;
     }
+    // Default world and physics render features, merged with the game's own;
+    // headless runs only list them in the preview status.
+    if options.headless {
+        crate::defaults::register_headless_defaults(runtime.app_mut())?;
+    } else {
+        crate::install_default_render_features(runtime.app_mut())?;
+    }
     let audio = if options.headless {
         AudioEngine::offline(AudioConfig::default())?
     } else {

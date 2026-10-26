@@ -203,7 +203,8 @@ impl Default for PhysicsBody2D {
 /// As [`PhysicsBody2D`], plus `cylinder` (`radius`, `half_height`, Y axis) and a 3D
 /// heightfield of `heightfield_rows` x `heightfield_columns` row-major `heights` (rows along
 /// Z, columns along X) spanning `heightfield_scale[0]` x `heightfield_scale[2]` meters with
-/// heights multiplied by `heightfield_scale[1]`.
+/// heights multiplied by `heightfield_scale[1]`. `heightfield_holes` lists removed cells,
+/// row-major over `(heightfield_rows - 1) x (heightfield_columns - 1)`.
 #[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PhysicsBody3D {
@@ -219,6 +220,8 @@ pub struct PhysicsBody3D {
     pub heightfield_rows: u32,
     pub heightfield_columns: u32,
     pub heightfield_scale: [f32; 3],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub heightfield_holes: Vec<u32>,
     pub parts: Vec<CompoundPart3D>,
     pub velocity: [f32; 3],
     pub angular_velocity: [f32; 3],
@@ -240,6 +243,7 @@ impl Default for PhysicsBody3D {
             heightfield_rows: 0,
             heightfield_columns: 0,
             heightfield_scale: [1.; 3],
+            heightfield_holes: vec![],
             parts: vec![],
             velocity: [0.; 3],
             angular_velocity: [0.; 3],

@@ -1,0 +1,14 @@
+[package]
+name = "engine-pcg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Deterministic procedural content generation: noise, point graphs and instance spawning"
+
+[dependencies]
+glam.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

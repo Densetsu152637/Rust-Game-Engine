@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_status_flags_a_request_no_3d_frame_has_run() {
+    fn filter_status_flags_a_request_before_final_presentation() {
         let queue = UiGpuQueue::default();
         queue.mark_registered(UiGpuFeature::ColorFilter);
         queue.set_ready(UiGpuFeature::ColorFilter, true);
@@ -497,7 +497,7 @@ mod tests {
                 .state_of(UiGpuFeature::ColorFilter)
                 .1
                 .unwrap()
-                .contains("PostProcess")
+                .contains("no final presentation")
         );
         queue.report(UiGpuFeature::ColorFilter, UiFeatureReport::default());
         assert_eq!(

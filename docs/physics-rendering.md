@@ -5,9 +5,11 @@ extension API ([rendering architecture](rendering-architecture.md)): the physics
 view, cloth and soft-body surfaces, particle fluids and destruction fragments. It is five
 `PipelineFeature`s plus one extraction system. Besides the crate itself, `engine-project` carries
 the `FragmentRenderer` marker resource and two small conditions in scene extraction (see
-[Intact mesh of a fractured entity](#intact-mesh-of-a-fractured-entity)). `engine-desktop` does
-not install the features by default: a host calls `install_physics_extraction` and
-`register_physics_features` itself (default host wiring is a rendering-domain decision).
+[Intact mesh of a fractured entity](#intact-mesh-of-a-fractured-entity)). The desktop host
+installs them by default (`engine_desktop::install_default_render_features`: the extraction
+unless a `PhysicsRenderConfig` is already installed, the five features unless the game
+registered any of them); other hosts call `install_physics_extraction` and
+`register_physics_features` themselves.
 
 | Feature | Stage | Draws | Data |
 | --- | --- | --- | --- |

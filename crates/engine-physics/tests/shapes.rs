@@ -116,6 +116,7 @@ fn heightfield_3d_maps_rows_to_z_columns_to_x_and_supports_a_resting_ball() {
             columns: 3,
             heights,
             scale: [4., 1., 4.],
+            holes: vec![],
         },
     );
     let down = |world: &World3D, x: f32, z: f32| {
@@ -138,6 +139,7 @@ fn heightfield_3d_maps_rows_to_z_columns_to_x_and_supports_a_resting_ball() {
             columns: 4,
             heights: vec![0.25; 16],
             scale: [10., 1., 10.],
+            holes: vec![],
         },
     );
     dynamic3(
@@ -405,4 +407,61 @@ fn two_dimensional_hull_mesh_heightfield_and_compound_shapes() {
             )
             .is_err()
     );
+}
+
+#[test]
+fn heightfield_3d_holes_remove_exactly_the_flagged_cells() {
+    // 3 x 3 cells of 1 m over [-1.5, 1.5]^2 at height 0.5; the centre cell (row 1, column 1)
+    // and the corner cell (row 0, column 2: x in [0.5, 1.5], z in [-1.5, -0.5]) are holes.
+    let mut holes = vec![false; 9];
+    holes[4] = true;
+    holes[2] = true;
+    let mut world = World3D::new([0., -9.81, 0.], 8).unwrap();
+    fixed3(
+        &mut world,
+        1,
+        [0.; 3],
+        dim3::Shape::HeightField {
+            rows: 4,
+            columns: 4,
+            heights: vec![0.5; 16],
+            scale: [3., 1., 3.],
+            holes,
+        },
+    );
+    let hit = |x: f32, z: f32| {
+        world
+            .raycast([x, 5., z], [0., -1., 0.], 10., u32::MAX)
+            .unwrap()
+            .map(|h| 5. - h.distance)
+    };
+    assert_eq!(hit(0.0, 0.0), None, "centre hole");
+    assert_eq!(hit(1.0, -1.0), None, "corner hole");
+    for (x, z) in [
+        (-1.0, -1.0),
+        (0.0, -1.0),
+        (1.0, 1.0),
+        (-1.0, 0.0),
+        (1.0, 0.0),
+    ] {
+        let y = hit(x, z).expect("solid cell");
+        assert!((y - 0.5).abs() < 1e-4, "({x}, {z}) -> {y}");
+    }
+    let mut bad = World3D::new([0., -9.81, 0.], 8).unwrap();
+    let result = bad.insert(
+        1,
+        dim3::BodyDesc {
+            kind: BodyKind::Fixed,
+            ..Default::default()
+        },
+        dim3::Shape::HeightField {
+            rows: 4,
+            columns: 4,
+            heights: vec![0.5; 16],
+            scale: [3., 1., 3.],
+            holes: vec![true; 8],
+        },
+        Material::default(),
+    );
+    assert!(result.is_err());
 }

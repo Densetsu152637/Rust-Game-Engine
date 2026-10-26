@@ -182,12 +182,19 @@ fn default_server_is_read_only_and_lists_no_write_or_exec_tools() {
     );
     assert_eq!(session.code, 0, "{}", session.stderr);
     let names = tool_names(&session);
-    assert_eq!(names.len(), 25);
+    assert_eq!(names.len(), 34);
     assert!(names.contains(&"navigation_query".to_owned()));
     assert!(names.contains(&"physics_query".to_owned()));
     assert!(names.contains(&"physics_debug".to_owned()));
     assert!(names.contains(&"acoustics_inspect".to_owned()));
     assert!(names.contains(&"acoustics_query".to_owned()));
+    assert!(names.contains(&"tilemap_query".to_owned()));
+    assert!(names.contains(&"pcg_validate".to_owned()));
+    assert!(names.contains(&"streaming_info".to_owned()));
+    assert!(names.contains(&"terrain_info".to_owned()));
+    assert!(names.contains(&"foliage_info".to_owned()));
+    assert!(names.contains(&"water_sample".to_owned()));
+    assert!(names.contains(&"water_spectrum".to_owned()));
     for read in [
         "locale_list",
         "locale_messages",
@@ -204,6 +211,13 @@ fn default_server_is_read_only_and_lists_no_write_or_exec_tools() {
         "entity_create",
         "navigation_bake",
         "acoustics_bake",
+        "tilemap_paint",
+        "pcg_create",
+        "pcg_edit",
+        "pcg_run",
+        "streaming_partition",
+        "streaming_hlod",
+        "terrain_sculpt",
         "locale_set_message",
         "locale_remove_message",
         "locale_add_locale",
@@ -248,12 +262,27 @@ fn allow_write_adds_only_the_write_tools() {
         &[request(1, "tools/list", json!({}))],
     );
     let names = tool_names(&session);
-    assert_eq!(names.len(), 41);
+    assert_eq!(names.len(), 67);
     assert!(names.contains(&"graph_edit".to_owned()));
     assert!(names.contains(&"navigation_bake".to_owned()));
     assert!(names.contains(&"acoustics_bake".to_owned()));
+    for tool in [
+        "pcg_create",
+        "pcg_edit",
+        "pcg_validate",
+        "pcg_run",
+        "streaming_partition",
+        "streaming_hlod",
+        "streaming_info",
+    ] {
+        assert!(names.contains(&tool.to_owned()), "{tool}");
+    }
     assert!(names.contains(&"acoustics_inspect".to_owned()));
     assert!(names.contains(&"acoustics_query".to_owned()));
+    assert!(names.contains(&"tilemap_paint".to_owned()));
+    assert!(names.contains(&"terrain_navmesh".to_owned()));
+    assert!(names.contains(&"foliage_scatter".to_owned()));
+    assert!(names.contains(&"foliage_paint".to_owned()));
     assert!(names.contains(&"navigation_query".to_owned()));
     for locale in [
         "locale_list",
@@ -283,25 +312,25 @@ fn allow_exec_adds_the_execution_tools_with_accurate_metadata() {
         &[request(1, "tools/list", json!({}))],
     );
     let names = tool_names(&session);
-    assert_eq!(names.len(), 28, "no write tools without --allow-write");
-    assert_eq!(names[25..], EXEC_TOOLS);
+    assert_eq!(names.len(), 37, "no write tools without --allow-write");
+    assert_eq!(names[34..], EXEC_TOOLS);
     assert!(!names.contains(&"graph_edit".to_owned()));
     assert!(!names.contains(&"ui_edit".to_owned()));
     assert!(!names.contains(&"file_write".to_owned()));
     assert!(!names.contains(&"navigation_bake".to_owned()));
     assert!(!names.contains(&"acoustics_bake".to_owned()));
     let tools = session.responses[0]["result"]["tools"].as_array().unwrap();
-    for tool in &tools[25..] {
+    for tool in &tools[34..] {
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
         assert_eq!(tool["annotations"]["openWorldHint"], true);
         assert!(tool["description"].as_str().unwrap().len() > 100);
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert!(tool["outputSchema"].is_object());
     }
-    assert_eq!(tools[25]["annotations"]["destructiveHint"], false);
-    assert_eq!(tools[25]["annotations"]["idempotentHint"], true);
+    assert_eq!(tools[34]["annotations"]["destructiveHint"], false);
+    assert_eq!(tools[34]["annotations"]["idempotentHint"], true);
     assert_eq!(
-        tools[26]["annotations"]["destructiveHint"], true,
+        tools[35]["annotations"]["destructiveHint"], true,
         "runs arbitrary native code"
     );
 }
@@ -314,7 +343,7 @@ fn both_flags_list_everything() {
         &[],
         &[request(1, "tools/list", json!({}))],
     );
-    assert_eq!(tool_names(&session).len(), 44);
+    assert_eq!(tool_names(&session).len(), 70);
 }
 
 #[test]

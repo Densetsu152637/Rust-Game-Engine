@@ -25,11 +25,15 @@
 //! Games compile into the host executable and use this exact `wgpu` type universe.
 //! Register render features ([`render_pipeline::PipelineFeature`]) in a
 //! [`PipelineFeatures`] resource before launching the runner, or construct
-//! [`GpuRenderer`] directly for another host.
+//! [`GpuRenderer`] directly for another host. The runner adds the world and
+//! physics render features by default ([`install_default_render_features`]);
+//! they stay inert without matching components and can be disabled per camera
+//! with `Camera3D.render_features`.
 
 pub mod accessibility;
 mod backend;
 mod camera;
+mod defaults;
 mod dlss;
 mod input;
 mod interpolation;
@@ -41,6 +45,9 @@ mod window;
 
 pub use backend::*;
 pub use camera::*;
+pub use defaults::{
+    DefaultRenderFeatures, install_default_render_features, register_default_render_features,
+};
 pub use dlss::{
     DEFAULT_NGX_PROJECT_ID, DlssConfig, DlssRequest, NGX_LOG_DIR_ENV_VAR, NGX_RUNTIME_DIR_ENV_VAR,
     UpscalerDevice, build_unavailable_reason, fg_build_unavailable_reason, request_upscaler_gpu,
