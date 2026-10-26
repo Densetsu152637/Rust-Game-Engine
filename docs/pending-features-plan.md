@@ -181,10 +181,20 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   Procedural audio source `bfae437` passed source critique; actual DSP/producer
   tests and authored integration remain pending. These source checkpoints are
   incomplete milestones, not accepted features.
+- New source decisions: atomic procedural reset controls are source-reviewed at
+  `9f7a312`. Extend the existing AudioEmitter/AudioSources lifecycle for resident
+  compressed clips, file streams and graphs; do not create a second emitter.
+  A separate engine-voice-audio bridge owns explicit CPAL capture, fixed-profile
+  Opus and existing network receiver-to-PCM playback. Capture construction is
+  device-free; hardware tests remain opt-in and separate from synthetic ingress.
+  Sequencer shared integration is source-reviewed at `d422209`, including early
+  scheduling, immediate deformation refresh and startup/transition cleanup;
+  compilation and runtime tests remain unrun.
 
 ### 9. Rendering round two
 
-- Status: pending; depends on stage 6 and relevant World/material contracts.
+- Status: in progress (material graph source); remaining effects depend on
+  stage 6 and relevant World/material contracts.
 - Objective: IBL/probes/lightmaps; SSR/DOF/motion blur; AA/vendor-neutral upscale;
   atmosphere/fog/clouds/decals/GPU particles; Hi-Z with LOD; HDR display output;
   material graph; 2D lighting/tilemap rendering.
@@ -194,6 +204,45 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Acceptance: per-feature GPU readbacks showing output differences and resource
   lifetime/resize behavior, CPU input validation, integration tests; HDR display
   presentation remains separate from encoding/math checks.
+- First independent slice: engine-material-graph compiles shared engine-graph
+  documents to the existing Mesh/Sprite material shader contract. Reuse the
+  existing shader field for authored graph assets. Root serializes graph registry
+  and runtime material adapters. The compiler must validate one output sink with
+  reverse reachability, not GraphKind's forward single-root rule.
+- Shared pipeline prerequisites: one owner must add render-size scene-colour
+  ping-pong after opaque/sky and before transparents, adapt every later consumer
+  including DLSS, and define per-view temporal success/abort/reset/forget hooks.
+  Existing Prepass screen lighting cannot provide same-frame SSR. Shaded normal,
+  roughness and F0 need real producers before SSR; RT currently reconstructs
+  positions and uses a zero roughness input.
+- Dependency order after those prerequisites:
+  1. IBL uses prefiltered specular cubemaps, diffuse SH and a BRDF LUT; local
+     probes add bounded deterministic selection/blending. Validate constant
+     environment response, roughness, orientation and volume transitions.
+  2. Lightmaps add real secondary UVs and per-instance atlas transforms, with
+     explicit probe-diffuse replacement/addition. Test separate atlas regions on
+     shared geometry. Supplied baked-data consumption does not establish baking.
+  3. SSR uses current opaque colour/depth/material data, bounded tracing and IBL
+     misses; define RT-versus-SSR selection. DOF and motion blur can use existing
+     output-size post I/O, with depth-aware taps and correct motion scaling.
+  4. Spatial AA precedes a native WGSL temporal resolve/upscaler. One owner supplies
+     jitter and one Upscale winner runs; test disocclusion, cuts, size changes,
+     re-enable and mode switching. Do not label a native algorithm as FSR/XeSS.
+  5. Atmosphere, fog and clouds are separate executable scattering/extinction/
+     volume-rendering slices; GPU tests must show sun, density, depth and wind
+     effects. Decals use depth-projected volumes and explicit material response.
+  6. GPU particle simulation runs once per scene tick, not once per view or FG
+     presentation. Read back state/counts against a seeded CPU reference before
+     accepting rendered output and bounded overflow behavior.
+  7. Wire real LOD selection/hysteresis into submission, then current-frame Hi-Z
+     max-depth mips and actual visibility/indirect draw consumption. A visibility
+     buffer without skipped draws is incomplete; camera culling keeps shadows.
+  8. HDR requires OS/backend display colour-space support and compatible output,
+     UI paper-white and FG encoding; float intermediates alone are insufficient.
+  9. Reuse World's committed tile chunk geometry/Draw contract from `255035b`:
+     16x16 chunks, y-up local positions, v-down oriented atlas UVs, stable chunk
+     identity/revision and layer opacity. Add real lit sprite/tile shaders and
+     bounded 2D light inputs while preserving sprite interleaving and UI rules.
 
 ### 10. Final integration, review and publication
 
@@ -221,6 +270,8 @@ external worktrees are not cleanup targets.
 | codex-animation-graph | `834c047` | Graph/blends; `codex/animation-graph` | active |
 | codex-render-contracts | `91b961c` | Shared shadows; `codex/render-contracts` | active |
 | codex-pending-integration | `697e36f` | Root integration and final checks; `codex/pending-integration` | active |
+| codex-material-graph | `2ebdfcd` | Material compiler; `codex/material-graph` | active |
+| codex-voice-audio | `2ebdfcd` | Capture/Opus/playback bridge; `codex/voice-audio` | active |
 | parity-editor-scene | `9e4a063` | Resume scene WIP; existing `claude/parity-editor-scene` | integrated, retained for existing owner |
 | parity-editor-hotreload | `319c7df` | Runtime generation replacement; existing `claude/parity-editor-hotreload` | active, retain |
 | parity-editor-graph | `b62ef9e` | Reusable graph authoring; existing `claude/parity-editor-graph` | active, retain |
