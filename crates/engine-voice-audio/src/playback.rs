@@ -204,7 +204,7 @@ impl VoicePlayback {
                 .filter_map(|(&id, stream)| {
                     (stream.closing
                         && stream.len == 0
-                        && self.writer.snapshot().map_or(true, |s| {
+                        && stream.writer.snapshot().map_or(true, |s| {
                             matches!(
                                 s.state,
                                 StreamState::Drained | StreamState::Stopped | StreamState::Failed
