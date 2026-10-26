@@ -104,6 +104,12 @@
   hearing with an attenuation hook, damage stimuli, team filtering, decaying memory,
   `engine.PerceptionSensor` and friends, blackboard keys for tree agents, events and
   telemetry.
+- [Environment queries and smart objects](ai-environment-queries.md): EQS-like queries
+  (circle, grid, perceived-actor and smart-object generators; distance, facing, path,
+  reachability, line-of-sight and blackboard tests; normalised weighted scoring;
+  time-sliced execution), `engine.EnvironmentQueries`, `engine.SmartObject` slots with
+  claim, occupy and release, and the built-in `engine.run_query` and
+  `engine.use_smart_object` tree tasks.
 - [Physics library](../crates/engine-physics/README.md),
   [animation library](../crates/engine-animation/README.md), and
   [navigation library](../crates/engine-navigation/README.md): native APIs and limits.

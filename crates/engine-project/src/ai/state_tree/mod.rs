@@ -50,6 +50,16 @@ fn trees<'a>(app: &'a mut EngineApp, what: &str) -> Result<Mut<'a, StateTrees>> 
         })
 }
 
+/// Registers an engine-provided task under a reserved name (user registrations of the
+/// same name are then refused as duplicates).
+pub(super) fn register_builtin(
+    app: &mut EngineApp,
+    name: &str,
+    factory: TaskFactory<World>,
+) -> Result<()> {
+    register_state_tree_task(app, name, factory)
+}
+
 /// Registers a native task under `name` for `native_task` nodes. Register before
 /// the runtime starts; the factory runs once per agent and graph node and its
 /// result is reused across activations. `start` runs when the owning state is

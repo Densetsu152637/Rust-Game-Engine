@@ -155,7 +155,13 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
             "dropped_events":0,"dropped_stimuli":0,"perceivers":[{"entity":"guard","team":1,
             "known":1,"sensed":1,"records":[],"best":{"subject":"thief","sense":"sight",
             "affiliation":"hostile","position":[0.0,0.0,-6.0],"strength":1.0,"sensed":true,
-            "age":0.0}}]}
+            "age":0.0}}]},
+        "env_queries":{"templates":1,"running":0,"finished_untaken":0,"completed":2,"failed":0,
+            "recent":[{"querier":"guard","query":"flank","items":1,"best_score":0.8,
+            "best_position":[1.0,0.0,2.0],"generated":24,"rejected":9,"cost":300,"steps":1}]},
+        "smart_objects":{"objects":1,"slots":2,"free":1,"claimed":0,"occupied":1,
+            "dropped_events":0,"listed":[{"entity":"bench","slots":[
+            {"name":"left","tags":["sit"],"state":"occupied","user":"guard"}]}]}
     }});
     let summary = summarize(&report, None, 50);
     assert_eq!(summary["profile"]["frames"].as_array().unwrap().len(), 32);
@@ -204,6 +210,11 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         "thief"
     );
     assert_eq!(summary["perception"]["rays_cast"], 1);
+    assert_eq!(summary["env_queries"]["recent"][0]["query"], "flank");
+    assert_eq!(
+        summary["smart_objects"]["listed"][0]["slots"][0]["user"],
+        "guard"
+    );
     assert_eq!(summary["telemetry_omitted"], json!([]));
     let oversized_acoustics = summarize(
         &json!({"scene":{"acoustics":{"fallback_reason":"x".repeat(65_536)}}}),
@@ -269,7 +280,18 @@ fn run_telemetry_exposes_recent_profile_and_devices_with_explicit_bounds() {
         oversized_perception["telemetry_omitted"],
         json!(["perception"])
     );
+    let oversized_queries = summarize(
+        &json!({"scene":{"env_queries":{"recent":["x".repeat(65_536)]}}}),
+        None,
+        50,
+    );
+    assert!(oversized_queries["env_queries"].is_null());
+    assert_eq!(
+        oversized_queries["telemetry_omitted"],
+        json!(["env_queries"])
+    );
     let absent = summarize(&json!({}), None, 50);
+    assert!(absent["env_queries"].is_null() && absent["smart_objects"].is_null());
     assert!(absent["perception"].is_null());
     assert!(absent["behavior_trees"].is_null());
     assert!(absent["state_trees"].is_null());

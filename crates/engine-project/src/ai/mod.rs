@@ -9,9 +9,11 @@
 //!   `state_trees` telemetry.
 //! * [`perception`]: sight, hearing and damage senses, memory, events, blackboard
 //!   keys and the `perception` telemetry.
+//! * [`env_query`] and [`smart_object`]: environment queries, smart object slots and
+//!   the built-in `engine.run_query` / `engine.use_smart_object` tree tasks.
 //!
-//! The services run immediately before `simulation::step` (perception first, then
-//! behavior trees, then state trees),
+//! The services run immediately before `simulation::step` (perception, smart
+//! objects and queries first, then behavior trees, then state trees),
 //! so a `move_to` task that sets the entity's `engine.NavigationAgent` target is
 //! routed in the same tick. See `docs/ai-behavior-trees.md` and
 //! `docs/ai-state-trees.md`.
@@ -24,10 +26,13 @@ use engine_core::EngineApp;
 const NAVIGATION_AGENT: &str = "engine.NavigationAgent";
 
 mod component;
+pub mod env_query;
 mod host;
 pub mod perception;
 mod runtime;
+pub mod smart_object;
 pub mod state_tree;
+mod tasks;
 
 pub use component::{BEHAVIOR_TREE_AGENT, BehaviorTreeAgent, MAX_OVERRIDES, descriptor};
 // Native tasks implement `NativeTask<World>`: `cx.world` is the live world and
@@ -36,6 +41,7 @@ pub use engine_ai::{
     BbValue, Blackboard as BtBlackboard,
     behavior_tree::{NativeTask, Status as TaskStatus, TaskContext},
 };
+pub use env_query::{ENVIRONMENT_QUERIES, EnvironmentQueries, status as env_query_status};
 pub use perception::{
     PERCEPTION_NOISE, PERCEPTION_SENSOR, PERCEPTION_SETTINGS, PERCEPTION_STIMULUS, PerceptionNoise,
     PerceptionSensor, PerceptionSettings, PerceptionStatus, PerceptionStimulus, Perceptions,
@@ -45,6 +51,7 @@ pub use runtime::{
     AgentStatus, BehaviorTreeStatus, BehaviorTrees, EVENT_ABORTED, EVENT_FINISHED, MAX_AGENTS,
     MAX_EVENTS_PER_TICK, STATUS_MAX_AGENTS, status,
 };
+pub use smart_object::{SMART_OBJECT, SmartObject, status as smart_object_status};
 pub use state_tree::{
     STATE_TREE_AGENT, StateTreeAgent, StateTreeStatus, StateTrees, register_state_tree_evaluator,
     register_state_tree_task, status as state_tree_status,
@@ -54,6 +61,8 @@ pub use state_tree::{
 pub fn descriptors() -> Vec<crate::ComponentDescriptor> {
     let mut all = vec![descriptor(), state_tree::descriptor()];
     all.extend(perception::descriptors());
+    all.push(env_query::descriptor());
+    all.push(smart_object::descriptor());
     all
 }
 
@@ -62,13 +71,32 @@ pub fn register(app: &mut EngineApp) -> Result<()> {
     crate::register_component::<BehaviorTreeAgent>(app, BEHAVIOR_TREE_AGENT, 1)?;
     app.world_mut().insert_resource(BehaviorTrees::default());
     state_tree::register(app)?;
-    perception::register(app)
+    perception::register(app)?;
+    smart_object::register(app)?;
+    env_query::register(app)?;
+    // Built-in tree tasks under reserved names.
+    for (name, factory) in [
+        (
+            tasks::RUN_QUERY,
+            tasks::run_query_factory as TaskFactory<World>,
+        ),
+        (tasks::USE_SMART_OBJECT, tasks::use_smart_object_factory),
+    ] {
+        app.world_mut()
+            .resource_mut::<BehaviorTrees>()
+            .registry
+            .register(name, factory)
+            .map_err(|m| Error::new("behavior_tree.native.duplicate", m))?;
+        state_tree::register_builtin(app, name, factory)?;
+    }
+    Ok(())
 }
 
 /// Brings every AI service in line with the world's agent components. Called at
 /// runtime start and after scene transitions.
 pub fn prepare(world: &mut World) -> Result<()> {
     perception::prepare(world)?;
+    smart_object::prepare(world)?;
     runtime::prepare(world)?;
     state_tree::prepare(world)
 }
@@ -77,6 +105,8 @@ pub fn prepare(world: &mut World) -> Result<()> {
 /// tick, before `simulation::step`.
 pub fn step(world: &mut World, dt: f32) -> Result<()> {
     perception::step(world, dt)?;
+    smart_object::step(world, dt)?;
+    env_query::step(world)?;
     runtime::step(world, dt)?;
     state_tree::step(world, dt)
 }
@@ -119,7 +149,38 @@ pub fn register_bt_task(
 pub fn validate_scene(project: &Project, scene: &Scene) -> Result<()> {
     validate_behavior_trees(project, scene)?;
     state_tree::validate_scene(project, scene)?;
-    perception::validate_scene(project, scene)
+    perception::validate_scene(project, scene)?;
+    validate_queries_and_objects(project, scene)
+}
+
+/// Query templates and smart objects: values within bounds, query names unique across
+/// the scene, navmesh assets exist.
+fn validate_queries_and_objects(project: &Project, scene: &Scene) -> Result<()> {
+    let mut names = std::collections::BTreeSet::new();
+    for entity in &scene.entities {
+        let custom = &entity.components.custom;
+        if let Some(value) = custom.get(env_query::ENVIRONMENT_QUERIES) {
+            let queries: env_query::EnvironmentQueries =
+                serde_json::from_value(value.data.clone())?;
+            queries.check()?;
+            for template in &queries.queries {
+                if !names.insert(template.name.clone()) {
+                    return Err(Error::new(
+                        "env_query.duplicate",
+                        format!("query name {:?} repeats across the scene", template.name),
+                    ));
+                }
+                if let Some(navmesh) = &template.navmesh {
+                    project.require_asset(navmesh, "navigation")?;
+                }
+            }
+        }
+        if let Some(value) = custom.get(smart_object::SMART_OBJECT) {
+            let object: smart_object::SmartObject = serde_json::from_value(value.data.clone())?;
+            object.check()?;
+        }
+    }
+    Ok(())
 }
 
 /// Behavior tree checks: graph assets exist and compile as behavior trees,
