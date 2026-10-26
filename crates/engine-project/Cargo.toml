@@ -18,6 +18,7 @@ engine-video = { path = "../engine-video" }
 engine-acoustics = { path = "../engine-acoustics" }
 engine-physics = { path = "../engine-physics" }
 engine-animation = { path = "../engine-animation" }
+engine-sequencer = { path = "../engine-sequencer" }
 engine-navigation = { path = "../engine-navigation" }
 engine-graph = { path = "../engine-graph" }
 engine-ai = { path = "../engine-ai" }

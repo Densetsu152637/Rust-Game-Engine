@@ -49,6 +49,7 @@ impl ComponentCatalog {
                 crate::accessibility::descriptor(),
                 crate::captions::descriptor(),
                 crate::video::descriptor(),
+                crate::sequencer::descriptor(),
                 crate::world_text::descriptor(),
                 crate::xr::descriptor(),
             ])
@@ -96,6 +97,7 @@ impl ComponentCatalog {
         crate::ui_tree::validate_component(name, &value.data)?;
         crate::accessibility::validate_component(name, &value.data)?;
         crate::captions::validate_component(name, &value.data)?;
+        crate::sequencer::validate_component(name, &value.data)?;
         if name == crate::video::VIDEO_PLAYER_COMPONENT {
             serde_json::from_value::<crate::video::VideoPlayerComponent>(value.data.clone())?
                 .validate()?;

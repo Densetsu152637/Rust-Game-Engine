@@ -13,6 +13,7 @@ engine is built this way.
 | `engine-log`, `engine-platform` | Logging/history and explicit host capability contracts |
 | `engine-assets` | glTF/GLB import, fingerprints and typed asset ownership |
 | `engine-physics`, `engine-animation`, `engine-navigation` | Independent simulation libraries without ECS or window ownership |
+| `engine-sequencer` | Deterministic authored timeline clocks, transform/FOV curves, camera-cut state and bounded marker crossings; project bindings own ECS authority and cleanup |
 | `engine-text` | Independent CPU text library (fonts, shaping, layout, caret, glyph atlases) without ECS, window or GPU ownership |
 | `engine-ui-render` | GPU render features of the game UI (SDF text, 3D world panels and text, colour-vision filter) as `engine-render-pipeline` features; reads draws that `engine-project` publishes, depends on no windowing code |
 | `engine-locale` | Independent localization library (Fluent string tables, fallback, pseudo-localization, settings descriptor) without ECS, window, GPU or file-system ownership |

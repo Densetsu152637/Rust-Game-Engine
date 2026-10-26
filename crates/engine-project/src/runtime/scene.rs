@@ -95,6 +95,7 @@ impl Runtime {
         // All authored data is prepared before mutating the live generation. Native callback
         // side effects cannot be rolled back; a callback failure stops the generation.
         let (scene, collision) = self.prepare_transition(&request)?;
+        crate::sequencer::reset(self.app.world_mut());
         let retained = self.entity(&request.traveller);
         let mut keep_scripts = Vec::new();
         let mut retirement_error = None;
@@ -155,6 +156,7 @@ impl Runtime {
             &self.project.component_catalog,
         )?;
         crate::networking::validate(self.app.world())?;
+        crate::sequencer::prepare(self.app.world_mut())?;
         crate::simulation::reset(self.app.world_mut())?;
         crate::ai::prepare(self.app.world_mut())?;
         crate::refresh_world_transforms(self.app.world_mut())?;

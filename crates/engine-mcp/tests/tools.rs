@@ -392,6 +392,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.PhysicsJoint3D",
         "engine.PhysicsSettings",
         "engine.Ragdoll",
+        "engine.SequencePlayer",
         "engine.SkinBinding",
         "engine.SoftBody",
         "engine.StateTreeAgent",

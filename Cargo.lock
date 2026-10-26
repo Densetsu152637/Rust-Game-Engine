@@ -1824,6 +1824,7 @@ dependencies = [
  "engine-net-voice",
  "engine-network",
  "engine-physics",
+ "engine-sequencer",
  "engine-text",
  "engine-video",
  "engine-xpbd",
@@ -1884,6 +1885,16 @@ dependencies = [
  "engine-render",
  "pollster 0.4.0",
  "wgpu",
+]
+
+[[package]]
+name = "engine-sequencer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "engine-animation",
+ "glam 0.34.1",
+ "serde",
 ]
 
 [[package]]
