@@ -13,7 +13,7 @@ const ROW: f32 = 25.0;
 pub struct GraphCanvas {
     selected: Option<NodeId>,
     wire: Option<PortRef>,
-    drag: Option<(NodeId, [f32; 2], Vec2)>,
+    drag: Option<(NodeId, [f32; 2], Pos2, Vec2)>,
     pan: Vec2,
     next_id: u64,
     error: Vec<GraphDiagnostic>,
@@ -327,7 +327,7 @@ impl GraphCanvas {
                 30.0 + (index % 4) as f32 * 215.0,
                 40.0 + (index / 4) as f32 * 230.0,
             ]);
-            if let Some((id, start, delta)) = &self.drag {
+            if let Some((id, start, _, delta)) = &self.drag {
                 if *id == node.id {
                     position = [start[0] + delta.x, start[1] + delta.y];
                 }
@@ -377,18 +377,23 @@ impl GraphCanvas {
                 self.select(Some(node.id.clone()));
             }
             if response.drag_started() && !session.is_read_only() {
-                self.drag = Some((node.id.clone(), position, Vec2::ZERO));
+                if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
+                    self.drag = Some((node.id.clone(), position, origin, Vec2::ZERO));
+                }
             }
-            if response.dragged() {
-                if let Some((id, _, delta)) = &mut self.drag {
+            if response.dragged() || response.drag_stopped() {
+                if let Some((id, _, origin, delta)) = &mut self.drag {
                     if *id == node.id {
-                        *delta = response.drag_delta();
+                        // Absolute displacement survives idle frames and includes release motion.
+                        if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) {
+                            *delta = pointer - *origin;
+                        }
                         ui.ctx().request_repaint();
                     }
                 }
             }
             if response.drag_stopped() {
-                if let Some((id, start, delta)) = self.drag.take() {
+                if let Some((id, start, _, delta)) = self.drag.take() {
                     self.commit(
                         session,
                         &[GraphEdit::SetPosition {

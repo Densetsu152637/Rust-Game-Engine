@@ -179,11 +179,12 @@ fn real_egui_palette_drag_wire_delete_and_one_undo_per_gesture() {
     h.pointer(first, true);
     h.frame(vec![Event::PointerMoved(first + Vec2::new(30.0, 20.0))]);
     h.frame(vec![Event::PointerMoved(first + Vec2::new(60.0, 40.0))]);
+    h.frame(Vec::new()); // A stationary frame must preserve the gesture displacement.
     // Preview only, prior graph is authoritative until mouse release.
     assert_eq!(h.session.document().nodes[0].position, Some(old));
-    h.pointer(first + Vec2::new(60.0, 40.0), false);
+    h.pointer(first + Vec2::new(75.0, 50.0), false);
     let moved = h.session.document().nodes[0].position.unwrap();
-    assert_ne!(moved, old);
+    assert_eq!(moved, [old[0] + 75.0, old[1] + 50.0]);
     h.session.undo();
     assert_eq!(h.session.document().nodes[0].position, Some(old));
     h.session.redo();

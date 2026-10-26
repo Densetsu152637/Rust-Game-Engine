@@ -34,7 +34,9 @@ than specialized controls for every parameter type.
 Every accepted UI edit passes through `engine_graph::apply_edits` at Structure
 strictness. The session keeps up to 64 document snapshots for undo, with redo
 cleared by a new edit. A header drag previews locally and submits one position edit
-on release, so one Undo restores the entire gesture. Escape cancels a preview.
+on release, so one Undo restores the entire gesture. Displacement is measured
+from the original pointer press, including release-frame motion; stationary frames
+retain the preview. Escape cancels a preview.
 Rejected batches retain the exact prior document and history. Undo/Redo buttons
 and command-Z / command-shift-Z operate on the graph tab; text fields retain their
 own keyboard editing behavior. Read-only sessions disable authoring and history.
