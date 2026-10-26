@@ -16,10 +16,14 @@ pub(crate) type RootRebases = BTreeMap<Entity, RootRebase>;
 pub(super) struct RootSample {
     pub local: [f32; 3],
     pub absolute: Option<[f64; 3]>,
+    pub residual: [f64; 3],
 }
 #[derive(Clone, Copy)]
 enum Baseline {
-    Exact([f64; 3]),
+    Exact {
+        position: [f64; 3],
+        residual: [f64; 3],
+    },
     Local {
         position: [f32; 3],
         origin: [f64; 3],
@@ -46,7 +50,10 @@ impl RootTranslation {
                     position: baseline.local,
                     origin: current_origin,
                 },
-                Baseline::Exact,
+                |position| Baseline::Exact {
+                    position,
+                    residual: baseline.residual,
+                },
             ),
             absolute_component: baseline.component,
             conflicted: false,
@@ -60,28 +67,39 @@ impl RootTranslation {
         let local = checked_local(std::array::from_fn(|i| {
             f64::from(value[i]) + (origin[i] - self.current_origin[i])
         }))?;
-        let absolute = if self.absolute_component.is_some() {
-            let absolute = std::array::from_fn(|i| origin[i] + f64::from(value[i]));
+        let (absolute, residual) = if self.absolute_component.is_some() {
+            let absolute: [f64; 3] = std::array::from_fn(|i| origin[i] + f64::from(value[i]));
             AbsolutePosition::new(absolute).check()?;
-            Some(absolute)
+            // Keep the low local detail lost by the absolute addition, rather than
+            // re-deriving it from the newly rounded f32 projection after every shift.
+            let residual = std::array::from_fn(|i| f64::from(value[i]) - (absolute[i] - origin[i]));
+            (Some(absolute), residual)
         } else {
-            None
+            (None, [0.; 3])
         };
-        Ok(RootSample { local, absolute })
+        Ok(RootSample {
+            local,
+            absolute,
+            residual,
+        })
     }
     fn baseline_sample(&self) -> Result<RootSample> {
         match self.baseline {
             Baseline::Local { position, origin } => self.local_sample(position, origin),
-            Baseline::Exact(absolute) => {
+            Baseline::Exact {
+                position: absolute,
+                residual,
+            } => {
                 if self.absolute_component.is_some() {
                     AbsolutePosition::new(absolute).check()?;
                 }
                 let local = checked_local(std::array::from_fn(|i| {
-                    absolute[i] - self.current_origin[i]
+                    absolute[i] - self.current_origin[i] + residual[i]
                 }))?;
                 Ok(RootSample {
                     local,
                     absolute: self.absolute_component.as_ref().map(|_| absolute),
+                    residual,
                 })
             }
         }
@@ -96,6 +114,7 @@ impl RootTranslation {
             &self.absolute_component,
             sample.local,
             sample.absolute,
+            sample.residual,
         )?;
         Ok(())
     }

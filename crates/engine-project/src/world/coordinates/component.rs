@@ -90,6 +90,11 @@ pub struct AbsolutePosition {
     /// `Transform` means the entity moved and `position` is stale.
     #[serde(skip)]
     pub(super) applied: Option<[f32; 3]>,
+    /// Absolute identity paired with applied local; direct position writes invalidate residual reuse.
+    #[serde(skip)]
+    pub(super) applied_absolute: Option<[f64; 3]>,
+    #[serde(skip)]
+    pub(super) residual: [f64; 3],
 }
 
 impl AbsolutePosition {
@@ -97,6 +102,8 @@ impl AbsolutePosition {
         Self {
             position,
             applied: None,
+            applied_absolute: None,
+            residual: [0.; 3],
         }
     }
     pub fn check(&self) -> Result<()> {
@@ -112,6 +119,26 @@ impl AbsolutePosition {
                 "position must be finite with |x|, |y|, |z| <= 1e12 metres",
             ))
         }
+    }
+    /// Reuse residual only for the same absolute identity and matching applied local.
+    pub(super) fn residual_for(&self, local: [f32; 3]) -> [f64; 3] {
+        if self.exact_for(local) && self.applied_absolute == Some(self.position) {
+            self.residual
+        } else {
+            [0.; 3]
+        }
+    }
+    pub(super) fn mark_applied(&mut self, local: [f32; 3], residual: [f64; 3]) {
+        self.applied = Some(local);
+        self.applied_absolute = Some(self.position);
+        self.residual = residual;
+    }
+    /// Only writers that know the local's frame derive its residual. Subtracting the
+    /// rounded projection does not turn genuine far-position f32 rounding into motion.
+    pub(super) fn mark_local(&mut self, local: [f32; 3], origin: [f64; 3]) {
+        let projected = WorldOrigin { offset: origin }.local(self.position);
+        let residual = std::array::from_fn(|i| f64::from(local[i]) - f64::from(projected[i]));
+        self.mark_applied(local, residual);
     }
     /// Whether the entity's local position is still the one derived from `position`.
     pub(super) fn exact_for(&self, local: [f32; 3]) -> bool {
@@ -140,7 +167,7 @@ fn absolute_inserted(mut world: DeferredWorld, context: HookContext) {
     };
     transform.position = local;
     if let Some(mut absolute) = world.get_mut::<AbsolutePosition>(entity) {
-        absolute.applied = Some(local);
+        absolute.mark_applied(local, [0.; 3]);
     }
 }
 

@@ -81,6 +81,7 @@ pub(crate) fn capture_origin(world: &mut World) -> [f64; 3] {
 /// Exact baseline when the coordinates service still owns its matching local value.
 pub(crate) struct TranslationSnapshot {
     pub exact: Option<[f64; 3]>,
+    pub residual: [f64; 3],
     pub local: [f32; 3],
     pub component: Option<AbsolutePosition>,
 }
@@ -97,8 +98,12 @@ pub(crate) fn capture_translation(
         .as_ref()
         .filter(|absolute| absolute.exact_for(local))
         .map(|absolute| absolute.position);
+    let residual = component
+        .as_ref()
+        .map_or([0.; 3], |absolute| absolute.residual_for(local));
     Ok(TranslationSnapshot {
         exact,
+        residual,
         local,
         component,
     })
@@ -111,6 +116,7 @@ pub(crate) fn write_captured_translation(
     expected: &Option<AbsolutePosition>,
     local: [f32; 3],
     absolute: Option<[f64; 3]>,
+    residual: [f64; 3],
 ) -> Result<Option<AbsolutePosition>> {
     if world.get::<crate::Parent>(entity).is_some()
         || world.get::<AbsolutePosition>(entity) != expected.as_ref()
@@ -121,7 +127,10 @@ pub(crate) fn write_captured_translation(
             "Sequence exact-position ownership changed",
         ));
     }
-    if local.iter().any(|v| !v.is_finite()) || absolute.iter().flatten().any(|v| !v.is_finite()) {
+    if local.iter().any(|v| !v.is_finite())
+        || absolute.iter().flatten().any(|v| !v.is_finite())
+        || residual.iter().any(|v| !v.is_finite())
+    {
         return Err(crate::Error::new(
             "sequence.invalid",
             "Nonfinite sequence translation",
@@ -138,7 +147,7 @@ pub(crate) fn write_captured_translation(
         (world.get_mut::<AbsolutePosition>(entity), absolute)
     {
         component.position = absolute;
-        component.applied = Some(local);
+        component.mark_applied(local, residual);
         return Ok(Some(component.clone()));
     }
     Ok(None)

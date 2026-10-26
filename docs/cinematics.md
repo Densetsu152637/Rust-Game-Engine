@@ -209,7 +209,12 @@ sub-f32 precision or arbitrary-delta regrouping guarantee is claimed. Nonfinite 
 values outside finite f32 range fail explicitly rather than writing infinity. Existing exact-
 position components also obey their f64 precision and absolute-coordinate bound. Their absolute
 output is calculated separately: rounding below the f64 ULP cannot erase a representable local
-Transform sample or a local-derived baseline.
+Transform sample or a local-derived baseline. While exact state still corresponds to its last
+applied absolute value, World rebasing also preserves the separately recorded local residual
+instead of re-deriving it from each rounded output. Trusted baselines retain that residual, so Stop and later released
+World shifts keep representable local detail. Residual projection remains subject to the new
+frame's f32 precision. A direct native absolute-position mutation changes its private applied
+identity and suppresses residual reuse; its new absolute target remains authoritative.
 ## Limits and validation
 
 A timeline allows 128 bindings, 256 tracks, 4096 total keys, 1024 markers and 1024 cuts, with
@@ -241,3 +246,5 @@ Near-limit exact-position tests also verify sample/rebase/Stop/replay baselines,
 freshness checks, and preservation of external Transform and AbsolutePosition ownership.
 Large equal-origin tests retain 1e-5 local keys and small local baselines, including fresh and
 stale exact-position components whose f64 absolute value cannot encode that tiny offset.
+Immediate tiny-key rebases and released post-Stop shifts are checked without a correcting
+sequence sample; native absolute-position mutations are checked in active and released states.

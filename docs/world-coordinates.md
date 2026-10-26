@@ -249,3 +249,14 @@ matches the local Transform. Existing exact-position state is then guarded and s
 with each owned root write and baseline restoration; foreign writes or component removal
 release neither field back to the sequence. Rebase notifications include the actual exact-
 position snapshots so ordinary service freshness updates do not look like external writes.
+
+Exact-position state privately pairs its applied local value with the absolute value that
+produced it, plus a separately recorded runtime local residual. Rebasing reuses that residual
+only while both identities match; it does not re-derive it from each rounded output. Authoritative
+insertion/API writes initialize zero, while known-frame sequence and post-sync writers record
+their local detail. This preserves small representable local detail without
+treating genuine far-position f32 rounding as motion. Direct native position changes keep
+their existing authoritative behavior: they invalidate residual reuse and rebase to the new
+absolute target. The private identity is not part of the serialized component format.
+The residual is private runtime state and is not serialized; this does not add sub-f64-ULP
+absolute precision to the existing authored file format.

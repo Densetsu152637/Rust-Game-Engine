@@ -467,11 +467,114 @@ fn exact_component_f64_rounding_does_not_erase_small_local_samples_or_stale_base
                 .position[0],
             NEAR_ORIGIN
         );
+        coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN - 1., 0., 0.]).unwrap();
+        assert_eq!(local_x(&rt, "camera"), 1.00001_f32);
+        assert_eq!(position(&rt), 0.);
+        coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN, 0., 0.]).unwrap();
         rt.tick(0.5, InputSnapshot::default()).unwrap();
         assert!((local_x(&rt, "camera") - 1.5e-5_f32).abs() < 1e-10);
         rt.tick(0.5, InputSnapshot::default()).unwrap();
         assert!((local_x(&rt, "camera") - 2e-5_f32).abs() < 1e-10);
         control(&mut rt, Command::Stop).unwrap();
         assert_eq!(local_x(&rt, "camera"), if stale { 4e-5_f32 } else { 0. });
+        if stale {
+            // The released coordinates service must retain the restored local residual
+            // immediately, without a cinematic tick or command correcting it afterward.
+            coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN - 1., 0., 0.]).unwrap();
+            assert_eq!(local_x(&rt, "camera"), 1.00004_f32);
+            coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN, 0., 0.]).unwrap();
+            assert_eq!(local_x(&rt, "camera"), 4e-5_f32);
+            coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN - 1., 0., 0.]).unwrap();
+            control(&mut rt, Command::Play).unwrap();
+            assert_eq!(local_x(&rt, "camera"), 1.00001_f32);
+            control(&mut rt, Command::Stop).unwrap();
+            assert_eq!(local_x(&rt, "camera"), 1.00004_f32);
+        }
     }
+}
+
+#[test]
+fn direct_absolute_mutation_overrides_residual_when_active_or_released() {
+    use coordinates::AbsolutePosition;
+    let foreign = NEAR_ORIGIN - 8.;
+    for active in [true, false] {
+        let (_dir, mut rt) = tiny_runtime(true, active);
+        let camera = rt.entity("camera").unwrap();
+        if !active {
+            rt.app_mut()
+                .world_mut()
+                .get_mut::<Transform>(camera)
+                .unwrap()
+                .position[0] = 4e-5_f32;
+            control(&mut rt, Command::Play).unwrap();
+            control(&mut rt, Command::Stop).unwrap();
+            assert_eq!(local_x(&rt, "camera"), 4e-5_f32);
+        }
+        // This intentionally keeps applied local unchanged, the established native mutation
+        // contract. The changed absolute identity must suppress residual reuse.
+        rt.app_mut()
+            .world_mut()
+            .get_mut::<AbsolutePosition>(camera)
+            .unwrap()
+            .position[0] = foreign;
+        coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN - 1., 0., 0.]).unwrap();
+        assert_eq!(local_x(&rt, "camera"), -7.);
+        assert_eq!(absolute_x(&rt, "camera"), foreign);
+        if active {
+            assert!(control(&mut rt, Command::Stop).is_err());
+        }
+        assert_eq!(local_x(&rt, "camera"), -7.);
+        assert_eq!(
+            rt.app()
+                .world()
+                .get::<AbsolutePosition>(camera)
+                .unwrap()
+                .position[0],
+            foreign
+        );
+    }
+}
+
+#[test]
+fn pending_raw_origin_insertion_keeps_its_authoritative_exact_projection() {
+    use coordinates::AbsolutePosition;
+    let (_dir, mut rt) = tiny_runtime(true, true);
+    control(&mut rt, Command::Stop).unwrap();
+    rt.app_mut()
+        .world_mut()
+        .resource_mut::<WorldOrigin>()
+        .offset = [NEAR_ORIGIN - 4., 0., 0.];
+    let target = NEAR_ORIGIN - 8.;
+    let entity = rt
+        .app_mut()
+        .world_mut()
+        .spawn((
+            Transform::default(),
+            AbsolutePosition::new([target, 0., 0.]),
+        ))
+        .id();
+    assert_eq!(
+        rt.app().world().get::<Transform>(entity).unwrap().position[0],
+        -4.
+    );
+    rt.tick(0.1, InputSnapshot::default()).unwrap();
+    assert_eq!(
+        rt.app().world().get::<Transform>(entity).unwrap().position[0],
+        -4.
+    );
+    assert_eq!(
+        coordinates::absolute_position(rt.app().world(), entity).unwrap()[0],
+        target
+    );
+    coordinates::set_absolute_position(
+        rt.app_mut().world_mut(),
+        entity,
+        [NEAR_ORIGIN - 16., 0., 0.],
+    )
+    .unwrap();
+    coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN - 2., 0., 0.]).unwrap();
+    assert_eq!(
+        rt.app().world().get::<Transform>(entity).unwrap().position[0],
+        -14.
+    );
 }
