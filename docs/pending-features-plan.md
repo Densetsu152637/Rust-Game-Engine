@@ -429,3 +429,12 @@ oracles and neutral defaults for unaffected materials. This slice preserves the
 208-byte instance ABI and does not yet add lightmap UV2, authored asset loading,
 new scene-color stages or temporal lifecycle changes. Those remain explicit
 followups; native resource creation alone did not establish shaded IBL behavior.
+
+Sequencer/origin repair `aa8e501` passed independent source review and is assembled
+in `ac9ced2`. Root track ownership survives legitimate rebases, preserves exact
+absolute baselines plus representable local residuals, and yields to foreign
+Transform or AbsolutePosition writes. Private freshness/residual state is excluded
+from serialization. Runtime regressions cover immediate and repeated rebases,
+paused/seek/Stop/replay, parent changes, near-limit baselines, tiny local keys and
+native absolute mutations. Execution is still pending, including the existing
+coordinate service suite, to validate the combined ownership and precision rules.
