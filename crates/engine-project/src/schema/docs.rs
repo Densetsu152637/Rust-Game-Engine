@@ -121,10 +121,10 @@ fn builtin_docs() -> Vec<ComponentDoc> {
         },
         ComponentDoc {
             name: "MeshMaterial",
-            description: "Material for MeshRenderer or SpriteRenderer: custom WGSL shader, texture, tint and 3D transparency/lighting controls.",
+            description: "Material for MeshRenderer or SpriteRenderer: custom WGSL shader or material graph, texture, tint and 3D transparency/lighting controls.",
             requires: &[],
             schema: closed(
-                json!({"version":version(),"shader":{"type":["string","null"]},"texture":{"type":["string","null"],"description":"Catalog texture asset ID, or stream:<name> for a texture stream registered natively at runtime (video, camera feeds)."},"tint":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":4,"maxItems":4,"default":[1,1,1,1]},"unlit":{"type":"boolean","default":false},"transparent":{"type":"boolean","default":false},"metallic":{"type":"number","minimum":0,"maximum":1,"default":0},"roughness":{"type":"number","minimum":0,"maximum":1,"default":0.5},"cast_shadows":{"type":"boolean","default":true},"receive_shadows":{"type":"boolean","default":true},"normal_scale":{"type":"number","minimum":0,"maximum":10,"default":1},"normal_texture":{"type":["string","null"],"minLength":1},"metallic_roughness_texture":{"type":["string","null"],"minLength":1}}),
+                json!({"version":version(),"shader":{"type":["string","null"],"description":"Catalog shader asset ID or graph asset ID whose document kind is material."},"texture":{"type":["string","null"],"description":"Catalog texture asset ID, or stream:<name> for a texture stream registered natively at runtime (video, camera feeds)."},"tint":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":4,"maxItems":4,"default":[1,1,1,1]},"unlit":{"type":"boolean","default":false},"transparent":{"type":"boolean","default":false},"metallic":{"type":"number","minimum":0,"maximum":1,"default":0},"roughness":{"type":"number","minimum":0,"maximum":1,"default":0.5},"cast_shadows":{"type":"boolean","default":true},"receive_shadows":{"type":"boolean","default":true},"normal_scale":{"type":"number","minimum":0,"maximum":10,"default":1},"normal_texture":{"type":["string","null"],"minLength":1},"metallic_roughness_texture":{"type":["string","null"],"minLength":1}}),
                 &[],
             ),
             example: json!({"tint":[0.4,0.8,1.0,1.0],"unlit":true}),
@@ -260,7 +260,7 @@ pub const SCENE_RULES: [&str; 7] = [
     "A scene may contain at most one Camera2D.",
     "SpriteRenderer, Collider2D, Camera3D, PointLight, SpotLight and AreaLight require a Transform on the same entity.",
     "Camera2D.follow must name an entity that has a Transform.",
-    "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture/normal_texture/metallic_roughness_texture) must be catalog asset IDs of the right kind.",
+    "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture/normal_texture/metallic_roughness_texture) must be catalog asset IDs of the right kind; MeshMaterial.shader also accepts a graph asset with document kind material.",
     "A scene may contain at most one `engine.AcousticEnvironment`; `engine.AudioEmitter` selects exactly one nonempty `clip` (`audio` asset) or `graph` (`graph` asset of kind `audio`) at runtime. File clips use bounded resident decoding by default or incremental decoding with `streamed: true`; graphs use bounded procedural streaming with atomic initial `parameters`. Nonresident sources reject `looped: true`; empty default emitter references remain structurally valid for authoring. `engine.AcousticGeometry.mesh` and `engine.AcousticVolume.mesh` must reference `mesh` assets, and `engine.AcousticEnvironment.geometry.asset` an `acoustics` asset.",
     "A scene may contain at most one `engine.NetworkSession`; `engine.NetworkReplication` requires `engine.NetworkReplica` on the same entity, and `engine.NetworkHitboxes` and `engine.NetworkVoice` require a Transform.",
 ];

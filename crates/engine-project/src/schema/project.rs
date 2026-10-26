@@ -157,7 +157,21 @@ impl Project {
             }
             if let Some(material) = &c.material {
                 if let Some(shader) = &material.shader {
-                    self.require_asset(shader, "shader")?;
+                    if self
+                        .assets
+                        .get(shader)
+                        .is_some_and(|asset| asset.kind == "graph")
+                    {
+                        let graph = crate::graphs::load_graph(self, shader)?;
+                        if graph.kind != engine_material_graph::KIND {
+                            return Err(Error::new(
+                                "project.asset.kind",
+                                format!("Asset {shader} must be shader or a material graph"),
+                            ));
+                        }
+                    } else {
+                        self.require_asset(shader, "shader")?;
+                    }
                 }
                 if let Some(texture) = &material.texture {
                     match texture.strip_prefix(crate::rendering3d::STREAM_TEXTURE_PREFIX) {

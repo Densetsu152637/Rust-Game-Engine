@@ -364,16 +364,32 @@ impl Runtime {
                     .assets
                     .get(id)
                     .ok_or_else(|| Error::new("render.shader.unknown", id))?;
-                if asset.kind != "shader" {
-                    return Err(Error::new("render.shader.kind", id));
+                match asset.kind.as_str() {
+                    "shader" => {
+                        let bytes = crate::schema::read_bounded(
+                            &self.project.resolve_asset(id)?,
+                            16 * 1024 * 1024,
+                        )?;
+                        String::from_utf8(bytes)
+                            .map(Arc::<str>::from)
+                            .map_err(|e| Error::new("render.shader.invalid", e.to_string()))
+                    }
+                    "graph" => {
+                        let document = crate::graphs::load_graph(&self.project, id)?;
+                        if document.kind != engine_material_graph::KIND {
+                            return Err(Error::new(
+                                "render.shader.kind",
+                                format!("{id}: graph kind must be material"),
+                            ));
+                        }
+                        engine_material_graph::compile_material(&document)
+                            .map(|compiled| Arc::<str>::from(compiled.source))
+                            .map_err(|diagnostics| {
+                                crate::graphs::into_error(diagnostics, &asset.path)
+                            })
+                    }
+                    _ => Err(Error::new("render.shader.kind", id)),
                 }
-                let bytes = crate::schema::read_bounded(
-                    &self.project.resolve_asset(id)?,
-                    16 * 1024 * 1024,
-                )?;
-                String::from_utf8(bytes)
-                    .map(Arc::<str>::from)
-                    .map_err(|e| Error::new("render.shader.invalid", e.to_string()))
             })
             .transpose()
     }
