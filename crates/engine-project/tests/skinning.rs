@@ -347,10 +347,12 @@ fn morph_model_rebinding_evicts_unused_cache_entry_before_capacity_check() {
     let path = dir.path().join("project.json");
     let mut project: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     for index in 0..65 {
+        let filename = format!("model-{index}.json");
+        std::fs::copy(dir.path().join("model.json"), dir.path().join(&filename)).unwrap();
         project["assets"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"id":format!("rig-{index}"),"kind":"model","path":"model.json"}));
+            .push(json!({"id":format!("rig-{index}"),"kind":"model","path":filename}));
     }
     std::fs::write(path, serde_json::to_vec(&project).unwrap()).unwrap();
     let path = dir.path().join("scene.json");
