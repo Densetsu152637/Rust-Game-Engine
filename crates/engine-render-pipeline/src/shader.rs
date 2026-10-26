@@ -49,6 +49,8 @@ pub enum MaterialTarget {
     Mesh,
     /// 2D sprites with a material on the sprite path (unlit, one uniform).
     Sprite,
+    /// Opt-in orthographic lit sprites; separate native lighting uniform/layout.
+    SpriteLit,
 }
 
 /// Named WGSL modules and the `#import` resolver.
@@ -81,6 +83,7 @@ impl ShaderComposer {
         let material = match target {
             MaterialTarget::Mesh => MATERIAL_WGSL,
             MaterialTarget::Sprite => SPRITE_MATERIAL_WGSL,
+            MaterialTarget::SpriteLit => crate::sprite_lighting::MATERIAL_WGSL,
         };
         modules.insert("engine::material".to_owned(), material.to_owned());
         modules.insert(
@@ -222,6 +225,16 @@ pub fn material_bindings(target: MaterialTarget) -> &'static [(u32, u32)] {
             (3, 0),
         ],
         MaterialTarget::Sprite => &[(0, 0), (1, 0), (1, 1), (1, 2), (1, 3), (2, 0), (2, 2)],
+        MaterialTarget::SpriteLit => &[
+            (0, 0),
+            (1, 0),
+            (1, 1),
+            (1, 2),
+            (1, 3),
+            (2, 0),
+            (2, 1),
+            (2, 2),
+        ],
     }
 }
 

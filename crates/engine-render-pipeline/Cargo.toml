@@ -16,5 +16,8 @@ naga = { workspace = true, features = ["wgsl-in"] }
 pollster = "0.4"
 wgpu = { workspace = true, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "gles", "wgsl"] }
 
+[dev-dependencies]
+engine-render.workspace = true
+
 [lints]
 workspace = true
