@@ -68,6 +68,9 @@ pub struct CompiledGraph {
     pub(super) parameters: Vec<(String, f32)>,
 }
 impl CompiledGraph {
+    pub fn validate_parameters(&self, values: &[super::ParameterUpdate<'_>]) -> crate::Result<()> {
+        super::runtime::updates(self, values).map(|_| ())
+    }
     pub fn parameter_names(&self) -> impl Iterator<Item = &str> {
         self.parameters.iter().map(|(n, _)| n.as_str())
     }

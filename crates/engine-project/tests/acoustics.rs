@@ -126,14 +126,13 @@ fn all_acoustic_and_audio_components_are_in_the_catalog() {
         let d = &catalog.0[name];
         assert_eq!(d.version, 1);
         assert!(!d.data_only);
-        // Defaults validate against their own schema and typed rules, except an
-        // emitter, which has no clip until authored.
+        // Defaults validate structurally; an emitter still needs a source at runtime.
         let value = CustomValue {
             version: 1,
             data: d.defaults.clone(),
         };
         let result = catalog.validate(name, &value);
-        assert_eq!(result.is_ok(), name != acoustics::EMITTER, "{name}");
+        assert!(result.is_ok(), "{name}");
     }
     assert!(
         catalog.0[acoustics::MATERIAL]
@@ -254,7 +253,7 @@ fn invalid_cases() -> Vec<(&'static str, Value)> {
         (acoustics::SOURCE, json!({"doppler":5})),
         (acoustics::SOURCE, json!({"reverb_send":-1})),
         (acoustics::SOURCE, json!({"radius_m":50})),
-        (acoustics::EMITTER, json!({})),
+        (acoustics::EMITTER, json!({"clip":"sfx","graph":"both"})),
         (acoustics::EMITTER, json!({"clip":"sfx","gain":2})),
         (acoustics::EMITTER, json!({"clip":"sfx","pitch":0.01})),
         (acoustics::EMITTER, json!({"clip":"sfx","bus":"master"})),
@@ -1381,7 +1380,7 @@ fn emitter_events_start_and_stop_playback() {
 }
 
 #[test]
-fn an_emitter_with_an_unloaded_clip_fails_startup_with_a_coded_error() {
+fn an_emitter_lazily_loads_its_clip_at_startup() {
     let dir = write_project(
         vec![entity(
             "e",
@@ -1394,14 +1393,20 @@ fn an_emitter_with_an_unloaded_clip_fails_startup_with_a_coded_error() {
     let engine = AudioEngine::offline(Default::default()).unwrap();
     let mut rt = runtime(&dir);
     rt.set_audio(engine.control()).unwrap();
-    // Drop the decoded clips to simulate a catalog/runtime mismatch.
+    // An empty cache is normal; startup loads only the referenced resident asset.
     rt.app_mut()
         .world_mut()
         .resource_mut::<audio::RuntimeAudio>()
         .clips
         .clear();
-    let error = rt.tick(0.016, ActionFrame::default()).unwrap_err();
-    assert_eq!(code(error), "audio.asset.unknown");
+    rt.tick(0.016, ActionFrame::default()).unwrap();
+    assert!(
+        rt.app()
+            .world()
+            .resource::<audio::RuntimeAudio>()
+            .clips
+            .contains_key("sfx")
+    );
 }
 
 #[test]
@@ -1821,4 +1826,387 @@ fn room_volumes_supply_the_late_reverb_when_the_source_is_volumes() {
         "{}",
         reverb.mean_free_path_m
     );
+}
+
+fn write_tone_graph(dir: &tempfile::TempDir) {
+    let graph = json!({"version":1,"kind":"audio","nodes":[{"id":"value","node_type":"parameter","params":{"variable":"amplitude"}},{"id":"out","node_type":"output"}],"variables":[{"name":"amplitude","type":"float","default":0.25}],"edges":[{"from":{"node":"value","port":"signal"},"to":{"node":"out","port":"left"}},{"from":{"node":"value","port":"signal"},"to":{"node":"out","port":"right"}}]});
+    fs::write(
+        dir.path().join("tone.graph"),
+        serde_json::to_vec(&graph).unwrap(),
+    )
+    .unwrap();
+}
+fn wait_audio(mut ready: impl FnMut() -> bool) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !ready() {
+        assert!(std::time::Instant::now() < until, "producer timeout");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+#[test]
+fn streamed_emitters_use_shared_events_seek_spatial_attachments_and_drop() {
+    let dir = write_project(
+        vec![entity(
+            "speaker",
+            [1., 0., 0.],
+            json!({}),
+            json!({"engine.AudioEmitter":data(json!({"clip":"encoded","streamed":true,"autoplay":false,"queue_frames":4,"play_on":"ring","stop_on":"hush"}))}),
+        )],
+        vec![json!({"id":"encoded","kind":"audio","path":"tone.mp3"})],
+    );
+    fs::write(
+        dir.path().join("tone.mp3"),
+        include_bytes!("../../engine-audio/tests/fixtures/tone.mp3"),
+    )
+    .unwrap();
+    let mut engine = AudioEngine::offline(engine_audio::AudioConfig {
+        sample_rate: 44100,
+        max_voices: 2,
+    })
+    .unwrap();
+    let control = engine.control();
+    let mut rt = runtime(&dir);
+    rt.set_audio(control.clone()).unwrap();
+    tick(&mut rt, 0.016);
+    assert!(
+        rt.app()
+            .world()
+            .resource::<audio::RuntimeAudio>()
+            .clips
+            .is_empty()
+    );
+    let owner = rt.entity("speaker").unwrap();
+    let source = rt
+        .app()
+        .world()
+        .get::<AuthoredEmitter>(owner)
+        .unwrap()
+        .source;
+    assert_eq!(control.voice_count(), 0);
+    audio::notify(rt.app_mut().world_mut(), owner, "ring").unwrap();
+    let voice = rt
+        .app()
+        .world()
+        .get::<EntityAudio>(owner)
+        .unwrap()
+        .sources
+        .voice(source)
+        .unwrap();
+    wait_audio(|| {
+        control
+            .stream_snapshot(voice)
+            .unwrap()
+            .unwrap()
+            .queued_frames
+            == 4
+    });
+    audio::control(
+        rt.app_mut().world_mut(),
+        owner,
+        source,
+        engine_audio::SourceAction::Pause,
+    )
+    .unwrap();
+    engine.mix(&mut [0.; 8]).unwrap();
+    assert_eq!(
+        control
+            .stream_snapshot(voice)
+            .unwrap()
+            .unwrap()
+            .source_frame,
+        0.
+    );
+    let generation = audio::seek_source(rt.app_mut().world_mut(), owner, source, 1000).unwrap();
+    wait_audio(|| {
+        control
+            .stream_snapshot(voice)
+            .unwrap()
+            .unwrap()
+            .queued_frames
+            == 4
+    });
+    audio::control(
+        rt.app_mut().world_mut(),
+        owner,
+        source,
+        engine_audio::SourceAction::Resume,
+    )
+    .unwrap();
+    let mut out = [0.; 2];
+    engine.mix(&mut out).unwrap();
+    assert_eq!(out[0], 0.);
+    assert!(out[1].abs() > 0.001);
+    assert_eq!(
+        control.stream_snapshot(voice).unwrap().unwrap().generation,
+        generation
+    );
+    rt.app_mut()
+        .world_mut()
+        .get_mut::<Transform>(owner)
+        .unwrap()
+        .position = [-1., 0., 0.];
+    tick(&mut rt, 0.016);
+    assert_eq!(
+        rt.app()
+            .world()
+            .get::<EntityAudio>(owner)
+            .unwrap()
+            .sources
+            .options(source)
+            .unwrap()
+            .spatial
+            .position,
+        [-1., 0., 0.]
+    );
+    audio::notify(rt.app_mut().world_mut(), owner, "hush").unwrap();
+    assert_eq!(control.voice_count(), 0);
+    audio::notify(rt.app_mut().world_mut(), owner, "ring").unwrap();
+    assert_ne!(
+        rt.app()
+            .world()
+            .get::<EntityAudio>(owner)
+            .unwrap()
+            .sources
+            .voice(source),
+        Some(voice)
+    );
+    rt.app_mut().world_mut().despawn(owner);
+    assert_eq!(control.voice_count(), 0);
+}
+#[test]
+fn procedural_emitters_apply_initial_controls_before_pcm_and_share_reset_and_owner_cleanup() {
+    let dir = write_project(
+        vec![entity(
+            "speaker",
+            [1., 0., 0.],
+            json!({}),
+            json!({"engine.AudioEmitter":data(json!({"graph":"tone","parameters":{"amplitude":0.5},"queue_frames":4,"duration_frames":64}))}),
+        )],
+        vec![json!({"id":"tone","kind":"graph","path":"tone.graph"})],
+    );
+    write_tone_graph(&dir);
+    let mut engine = AudioEngine::offline(engine_audio::AudioConfig {
+        sample_rate: 8000,
+        max_voices: 1,
+    })
+    .unwrap();
+    let control = engine.control();
+    let mut rt = runtime(&dir);
+    rt.set_audio(control.clone()).unwrap();
+    tick(&mut rt, 0.016);
+    let owner = rt.entity("speaker").unwrap();
+    let source = rt
+        .app()
+        .world()
+        .get::<AuthoredEmitter>(owner)
+        .unwrap()
+        .source;
+    let voice = rt
+        .app()
+        .world()
+        .get::<EntityAudio>(owner)
+        .unwrap()
+        .sources
+        .voice(source)
+        .unwrap();
+    wait_audio(|| {
+        control
+            .stream_snapshot(voice)
+            .unwrap()
+            .unwrap()
+            .queued_frames
+            == 4
+    });
+    let mut out = [0.; 2];
+    engine.mix(&mut out).unwrap();
+    assert_eq!(out, [0., 0.5]);
+    audio::set_parameters(
+        rt.app_mut().world_mut(),
+        owner,
+        source,
+        &[engine_audio::graph::ParameterUpdate {
+            name: "amplitude",
+            value: 0.75,
+            ramp_frames: 0,
+        }],
+    )
+    .unwrap();
+    let generation = audio::seek_source(rt.app_mut().world_mut(), owner, source, 0).unwrap();
+    wait_audio(|| {
+        control
+            .stream_snapshot(voice)
+            .unwrap()
+            .unwrap()
+            .queued_frames
+            == 4
+    });
+    engine.mix(&mut out).unwrap();
+    assert_eq!(out, [0., 0.75]);
+    assert_eq!(
+        control.stream_snapshot(voice).unwrap().unwrap().generation,
+        generation
+    );
+    rt.stop().unwrap();
+    assert_eq!(control.voice_count(), 0);
+}
+#[test]
+fn new_source_modes_are_enumerated_by_the_same_acoustic_service() {
+    let dir = write_project(
+        vec![
+            env_entity(json!({"backend":"cpu","quality":{"occlusion_rays":4}})),
+            entity(
+                "mesh",
+                [100., 0., 0.],
+                json!({"MeshRenderer":{"mesh":"quad"}}),
+                json!({}),
+            ),
+            entity(
+                "file",
+                [1., 0., 0.],
+                json!({}),
+                json!({"engine.AudioEmitter":data(json!({"clip":"encoded","streamed":true,"queue_frames":4})),"engine.AcousticSource":data(json!({}))}),
+            ),
+            entity(
+                "graph",
+                [-1., 0., 0.],
+                json!({}),
+                json!({"engine.AudioEmitter":data(json!({"graph":"tone","queue_frames":4})),"engine.AcousticSource":data(json!({}))}),
+            ),
+        ],
+        vec![
+            json!({"id":"encoded","kind":"audio","path":"tone.mp3"}),
+            json!({"id":"tone","kind":"graph","path":"tone.graph"}),
+        ],
+    );
+    write_tone_graph(&dir);
+    fs::write(
+        dir.path().join("tone.mp3"),
+        include_bytes!("../../engine-audio/tests/fixtures/tone.mp3"),
+    )
+    .unwrap();
+    let mut a = with_audio(dir);
+    let (results, hook) = capture_hook();
+    a.rt.set_param_hook(Some(hook));
+    for _ in 0..8 {
+        tick(&mut a.rt, 1. / 30.);
+    }
+    let expected: Vec<_> = ["file", "graph"]
+        .iter()
+        .map(|id| {
+            let owner = a.rt.entity(id).unwrap();
+            let h =
+                a.rt.app()
+                    .world()
+                    .get::<AuthoredEmitter>(owner)
+                    .unwrap()
+                    .source;
+            a.rt.app()
+                .world()
+                .get::<EntityAudio>(owner)
+                .unwrap()
+                .sources
+                .voice(h)
+                .unwrap()
+                .get()
+        })
+        .collect();
+    assert!(results.lock().unwrap().iter().any(|(r, _)| {
+        expected
+            .iter()
+            .all(|id| r.sources.iter().any(|s| s.id == *id))
+    }));
+}
+#[test]
+fn failed_authored_graph_preparation_cleans_previously_started_streams() {
+    let dir = write_project(
+        vec![
+            entity(
+                "a_file",
+                [0.; 3],
+                json!({}),
+                json!({"engine.AudioEmitter":data(json!({"clip":"encoded","streamed":true}))}),
+            ),
+            entity(
+                "z_bad",
+                [0.; 3],
+                json!({}),
+                json!({"engine.AudioEmitter":data(json!({"graph":"tone","parameters":{"not_declared":1.}}))}),
+            ),
+        ],
+        vec![
+            json!({"id":"encoded","kind":"audio","path":"tone.mp3"}),
+            json!({"id":"tone","kind":"graph","path":"tone.graph"}),
+        ],
+    );
+    write_tone_graph(&dir);
+    fs::write(
+        dir.path().join("tone.mp3"),
+        include_bytes!("../../engine-audio/tests/fixtures/tone.mp3"),
+    )
+    .unwrap();
+    let engine = AudioEngine::offline(Default::default()).unwrap();
+    let control = engine.control();
+    let mut rt = runtime(&dir);
+    rt.set_audio(control.clone()).unwrap();
+    assert_eq!(
+        code(rt.tick(0.016, ActionFrame::default()).unwrap_err()),
+        "audio.graph.parameter"
+    );
+    assert_eq!(control.voice_count(), 0);
+}
+#[test]
+fn emitter_mode_validation_rejects_ambiguous_looped_and_unbounded_settings() {
+    let catalog = engine_project::ComponentCatalog::new(vec![]).unwrap();
+    for data in [
+        json!({"clip":"a","graph":"b"}),
+        json!({"graph":"b","streamed":true}),
+        json!({"clip":"a","streamed":true,"looped":true}),
+        json!({"graph":"b","looped":true}),
+        json!({"clip":"a","parameters":{"x":1}}),
+        json!({"graph":"b","queue_frames":1}),
+        json!({"graph":"b","duration_frames":192000_u64*86400+1}),
+    ] {
+        assert!(
+            catalog
+                .validate(acoustics::EMITTER, &CustomValue { version: 1, data })
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn asynchronous_procedural_fault_is_reported_and_runtime_tears_down_its_voice() {
+    let dir = write_project(
+        vec![entity(
+            "speaker",
+            [1., 0., 0.],
+            json!({}),
+            json!({"engine.AudioEmitter":data(json!({"graph":"bad"}))}),
+        )],
+        vec![json!({"id":"bad","kind":"graph","path":"bad.graph"})],
+    );
+    fs::write(dir.path().join("bad.graph"),br#"{"version":1,"kind":"audio","nodes":[{"id":"osc","node_type":"oscillator","params":{"frequency":4000}},{"id":"out","node_type":"output"}],"edges":[{"from":{"node":"osc","port":"signal"},"to":{"node":"out","port":"left"}},{"from":{"node":"osc","port":"signal"},"to":{"node":"out","port":"right"}}]}"#).unwrap();
+    let engine = AudioEngine::offline(engine_audio::AudioConfig {
+        sample_rate: 8000,
+        max_voices: 1,
+    })
+    .unwrap();
+    let control = engine.control();
+    let mut rt = runtime(&dir);
+    rt.set_audio(control.clone()).unwrap();
+    let mut error = None;
+    for _ in 0..100 {
+        match rt.tick(0.016, ActionFrame::default()) {
+            Err(e) => {
+                error = Some(e);
+                break;
+            }
+            Ok(()) => std::thread::sleep(std::time::Duration::from_millis(1)),
+        }
+    }
+    assert_eq!(
+        code(error.expect("worker fault was silently ignored")),
+        "audio.graph.frequency"
+    );
+    assert_eq!(control.voice_count(), 0);
 }

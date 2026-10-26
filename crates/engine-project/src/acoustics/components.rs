@@ -735,14 +735,21 @@ impl Default for EmitterSpatial {
     }
 }
 
-/// `engine.AudioEmitter`: plays a catalog `audio` clip from its entity. With
-/// `spatial` the voice follows the entity transform; without it the clip is
-/// non-positional (music, UI).
+/// `engine.AudioEmitter`: resident/streamed catalog audio or a procedural graph.
+/// Spatial voices follow the entity and use the common acoustic ownership path.
 #[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioEmitter {
     /// Asset ID of kind `audio`.
     pub clip: String,
+    /// File-backed streaming instead of resident PCM.
+    pub streamed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph: Option<String>,
+    pub parameters: std::collections::BTreeMap<String, f32>,
+    pub queue_frames: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_frames: Option<u64>,
     /// Start playing when the scene starts.
     pub autoplay: bool,
     pub looped: bool,
@@ -763,6 +770,11 @@ impl Default for AudioEmitter {
     fn default() -> Self {
         Self {
             clip: String::new(),
+            streamed: false,
+            graph: None,
+            parameters: std::collections::BTreeMap::new(),
+            queue_frames: 4096,
+            duration_frames: None,
             autoplay: true,
             looped: false,
             bus: EmitterBus::Effects,
@@ -777,8 +789,37 @@ impl Default for AudioEmitter {
 impl AudioEmitter {
     pub fn validate(&self) -> Result<()> {
         let bad = |m: &str| Err(invalid("audio.emitter.invalid", format!("{EMITTER}: {m}")));
-        if !super::identifier(&self.clip) {
+        // Empty defaults are structurally valid catalog placeholders; runtime requires a source.
+        if !self.clip.is_empty() && !super::identifier(&self.clip) {
             return bad("clip must name an audio asset");
+        }
+        if self.graph.as_ref().is_some_and(|id| !super::identifier(id)) {
+            return bad("graph must name a graph asset");
+        }
+        if self.graph.is_some() && (!self.clip.is_empty() || self.streamed) {
+            return bad("Select exactly one clip or graph; streamed selects a file only");
+        }
+        if self.graph.is_none() && (!self.parameters.is_empty() || self.duration_frames.is_some()) {
+            return bad("Parameters and duration require a procedural graph");
+        }
+        if self.looped && (self.streamed || self.graph.is_some()) {
+            return bad("Looped nonresident sources are not supported");
+        }
+        if !(2..=65536).contains(&self.queue_frames)
+            || self.duration_frames.is_some_and(|n| n > 192000_u64 * 86400)
+        {
+            return bad("Invalid queue size or duration");
+        }
+        if self.parameters.len() > 64
+            || self.parameters.iter().any(|(name, value)| {
+                name.is_empty()
+                    || name.len() > 64
+                    || name.chars().any(char::is_control)
+                    || !value.is_finite()
+                    || value.abs() > 1e6
+            })
+        {
+            return bad("At most 64 bounded finite graph parameters");
         }
         if !finite_in(self.gain, 0.0, 1.0) || !finite_in(self.pitch, 0.125, 8.0) {
             return bad("gain 0-1 and pitch 0.125-8");

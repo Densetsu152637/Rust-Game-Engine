@@ -1,10 +1,9 @@
 # Procedural audio graphs
 
 `engine_audio::graph` compiles shared `engine_graph::GraphDocument` assets of kind
-`audio` into executable mono-signal DSP with a stereo output. This milestone is a
-native library/playback foundation. Project graph-kind registration and authored
-emitter/component integration remain host integration work; an AudioEmitter does
-not automatically load this graph merely because the library exists.
+`audio` into executable mono-signal DSP with a stereo output. The native DSP layer and authored `engine.AudioEmitter` use the same source
+handles, events, attachment synchronization and acoustic enumeration. The project
+graph registry must include `graph::kind()` (the host integration registration).
 
 Call `graph::kind()` for the common editor/tool registry. `graph::compile` runs
 complete shared validation and domain checks and returns an immutable
@@ -108,3 +107,54 @@ hard realtime deadline or measured CPU throughput is claimed.
 independent voices, ramp/mix/gain/noise, ADSR stages, filter step response,
 delay/feedback impulses, graph/math/storage/update bounds, and streamed pause,
 epoch reset, audible control updates, finish/EOF/source clocks and teardown.
+
+
+## Authored sources and the shared controller
+
+`engine.AudioEmitter` selects exactly one nonempty `clip` (an existing `audio`
+asset) or `graph` (an existing `graph` asset whose kind is `audio`). No second
+emitter component or asset kind is introduced. `streamed: true` selects bounded
+incremental file decoding; false selects resident PCM loaded on demand. The
+existing `autoplay`, bus, gain, pitch, spatial, play/stop event and owner teardown
+behavior applies to every mode. Stream/graph sources reject `looped: true`
+explicitly before allocating producer resources; use resident clips for looping.
+There is no silently ignored looping option.
+
+A graph may supply `parameters` (up to 64 finite Float values) and optional
+`duration_frames`; both are rejected on file emitters. Initial overrides are
+validated and applied before the first generated sample. `queue_frames` defaults
+to 4,096 and is bounded to 2..65,536. `graph` cannot coexist with `clip` or
+`streamed: true`. Empty catalog defaults remain valid placeholders, but runtime
+startup requires a real selected source and valid asset reference.
+
+`AudioSources::create` retains its resident `Arc<Clip>` API. `create_stream` and
+`create_procedural` use the same `SourceHandle`, observer table and `SourceAction`
+lifecycle. Play retires the previous voice/worker before allocating a replacement;
+a failed restart leaves the source stopped. Configure and pause/resume preserve
+source time. `seek` addresses decoded frames or procedural reset at frame zero;
+`set_parameters` validates and updates procedural controls. Source `refresh`
+reclaims finished producer threads outside callbacks while retaining reusable
+handles and subscriptions; the project calls it during audio synchronization.
+Removal, scene teardown and stop drop/join owned producers.
+
+`engine_project::audio::{source, stream_source, procedural_source}` all attach
+through `EntityAudio`. The existing transform, event and `engine.AcousticSource`
+paths therefore include decoded/procedural voices without a second propagation
+registry. `seek_source` and `set_parameters` expose their native controls.
+
+Resident decode is intentionally whole-clip loading and is never advertised as
+streaming. `load_resident` shares the packet decoder but checks declared and
+cumulative PCM bytes before reserving/retaining each packet. Its payload budget
+is configurable up to 64 MiB; project resident sources use 64 MiB per clip and a
+128 MiB owned cache. Decoder packet scratch and codec internals remain additional
+memory as described in audio-streaming.md; these are not process quotas. Unused
+and streamed assets are not eagerly decoded into the resident cache. Native
+`load_clip` may return an uncached bounded clip, while registering a resident
+source retains it in the project cache. Strict native WAV APIs are unchanged.
+
+Asynchronous decoder/DSP diagnostics are retained by `AudioSources::failure`
+even after `refresh` reclaims a finished worker. A replay clears the prior
+failure; prepare/restart errors also return directly. Project synchronization
+surfaces worker failures as coded runtime errors and follows normal runtime
+teardown, preventing malformed streaming input from silently appearing as a
+normal stopped source.

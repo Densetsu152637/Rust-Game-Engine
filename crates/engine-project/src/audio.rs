@@ -31,13 +31,11 @@ struct AttachedListener {
 }
 impl RuntimeAudio {
     pub fn new(control: AudioControl, project: &Project) -> Result<Self> {
-        let mut clips = BTreeMap::new();
+        // Resolve catalog paths now, but never fully decode an unused/streamed asset.
         for asset in project.assets.values().filter(|a| a.kind == "audio") {
-            clips.insert(
-                asset.id.clone(),
-                engine_audio::load_wav(&project.resolve_asset(&asset.id)?).map_err(audio_error)?,
-            );
+            project.resolve_asset(&asset.id)?;
         }
+        let clips = BTreeMap::new();
         Ok(Self {
             control,
             clips,
@@ -73,6 +71,26 @@ pub fn source(
     world: &mut World,
     owner: Entity,
     asset: &str,
+    options: PlayOptions,
+    attachment: Option<Entity>,
+) -> Result<SourceHandle> {
+    source_prepared(
+        world,
+        owner,
+        AuthoredSource::Resident(asset),
+        options,
+        attachment,
+    )
+}
+enum AuthoredSource<'a> {
+    Resident(&'a str),
+    Stream(&'a str, usize),
+    Graph(&'a str, engine_audio::ProceduralSourceConfig),
+}
+fn source_prepared(
+    world: &mut World,
+    owner: Entity,
+    kind: AuthoredSource<'_>,
     mut options: PlayOptions,
     attachment: Option<Entity>,
 ) -> Result<SourceHandle> {
@@ -95,15 +113,77 @@ pub fn source(
     }
     merge_acoustics(world, owner, &mut options);
     options.validate().map_err(audio_error)?;
-    let audio = world
+    let control = world
         .get_resource::<RuntimeAudio>()
-        .ok_or_else(|| Error::new("audio.unavailable", "Host did not configure audio"))?;
-    let clip = audio
-        .clips
-        .get(asset)
-        .cloned()
-        .ok_or_else(|| Error::new("audio.asset.unknown", asset))?;
-    let control = audio.control.clone();
+        .ok_or_else(|| Error::new("audio.unavailable", "Host did not configure audio"))?
+        .control
+        .clone();
+    enum Ready {
+        Resident(Arc<Clip>),
+        Stream(std::path::PathBuf, usize),
+        Graph(
+            Arc<engine_audio::graph::CompiledGraph>,
+            engine_audio::ProceduralSourceConfig,
+        ),
+    }
+    let prepared = match kind {
+        AuthoredSource::Resident(asset) => {
+            let cached = world.resource::<RuntimeAudio>().clips.get(asset).cloned();
+            let clip = match cached {
+                Some(clip) => clip,
+                None => load_clip(world, asset).map_err(|e| {
+                    if e.diagnostics.first().is_some_and(|d| {
+                        matches!(
+                            d.code.as_str(),
+                            "project.asset.unknown" | "project.asset.kind"
+                        )
+                    }) {
+                        Error::new("audio.asset.unknown", asset)
+                    } else {
+                        e
+                    }
+                })?,
+            };
+            let retained: usize = world
+                .resource::<RuntimeAudio>()
+                .clips
+                .iter()
+                .filter(|(id, _)| id.as_str() != asset)
+                .fold(0usize, |bytes, (_, clip)| {
+                    bytes.saturating_add(clip.samples().len() * std::mem::size_of::<f32>())
+                });
+            if retained.saturating_add(clip.samples().len() * std::mem::size_of::<f32>())
+                > 128 * 1024 * 1024
+            {
+                return Err(Error::new(
+                    "audio.resident.cache_limit",
+                    "Resident cache exceeds 128 MiB",
+                ));
+            }
+            world
+                .resource_mut::<RuntimeAudio>()
+                .clips
+                .insert(asset.into(), clip.clone());
+            Ready::Resident(clip)
+        }
+        AuthoredSource::Stream(asset, capacity) => {
+            let project = &world.resource::<ProjectResource>().0;
+            project.require_asset(asset, "audio")?;
+            Ready::Stream(project.resolve_asset(asset)?, capacity)
+        }
+        AuthoredSource::Graph(asset, config) => {
+            let project = &world.resource::<ProjectResource>().0;
+            project.require_asset(asset, "graph")?;
+            let path = project.resolve_asset(asset)?;
+            let bytes =
+                crate::schema::read_bounded(&path, engine_graph::MAX_DOCUMENT_BYTES as u64)?;
+            let document = engine_graph::GraphDocument::from_json(&bytes)
+                .map_err(|e| Error::new(&e.code, e.message))?;
+            let program = engine_audio::graph::compile(&document)
+                .map_err(|e| crate::graphs::into_error(e, &path))?;
+            Ready::Graph(program, config)
+        }
+    };
     if world.get::<EntityAudio>(owner).is_none() {
         world.entity_mut(owner).insert(EntityAudio {
             sources: AudioSources::new(control, format!("entity:{}", owner.to_bits()))
@@ -115,10 +195,23 @@ pub fn source(
     let mut audio = world
         .get_mut::<EntityAudio>(owner)
         .expect("inserted entity audio");
-    let handle = audio
-        .sources
-        .create(clip, options.clone())
-        .map_err(audio_error)?;
+    let handle = match prepared {
+        Ready::Resident(clip) => audio.sources.create(clip, options.clone()),
+        Ready::Stream(path, capacity) => audio.sources.create_stream(
+            path,
+            options.clone(),
+            engine_audio::SourceStreamConfig {
+                queue_frames: capacity,
+                ..Default::default()
+            },
+        ),
+        Ready::Graph(program, config) => {
+            audio
+                .sources
+                .create_procedural(program, options.clone(), config)
+        }
+    }
+    .map_err(audio_error)?;
     audio.handles.insert(handle);
     if let Some(entity) = attachment {
         audio.attachments.insert(handle, (entity, options));
@@ -290,10 +383,31 @@ pub fn instantiate_authored(world: &mut World) -> Result<()> {
             .clone();
         let owner = format!("emitter:{}", key(world, entity));
         let attachment = emitter.spatial.is_some().then_some(entity);
-        let handle = source(
+        emitter.validate()?;
+        if emitter.clip.is_empty() && emitter.graph.is_none() {
+            return Err(Error::new(
+                "audio.emitter.source",
+                "Emitter requires a clip or graph asset",
+            ));
+        }
+        let kind = if let Some(graph) = emitter.graph.as_deref() {
+            AuthoredSource::Graph(
+                graph,
+                engine_audio::ProceduralSourceConfig {
+                    queue_frames: emitter.queue_frames,
+                    duration_frames: emitter.duration_frames,
+                    parameters: emitter.parameters.clone(),
+                },
+            )
+        } else if emitter.streamed {
+            AuthoredSource::Stream(&emitter.clip, emitter.queue_frames)
+        } else {
+            AuthoredSource::Resident(&emitter.clip)
+        };
+        let handle = source_prepared(
             world,
             entity,
-            &emitter.clip,
+            kind,
             emitter.play_options(&owner),
             attachment,
         )?;
@@ -376,6 +490,23 @@ pub(crate) fn current_listener(world: &World) -> Option<Listener> {
 pub fn synchronize(world: &mut World) -> Result<()> {
     if !world.contains_resource::<RuntimeAudio>() {
         return Ok(());
+    }
+    let owners: Vec<_> = world
+        .iter_entities()
+        .filter(|e| e.contains::<EntityAudio>())
+        .map(|e| e.id())
+        .collect();
+    for owner in owners {
+        if let Some(mut audio) = world.get_mut::<EntityAudio>(owner) {
+            audio.sources.refresh();
+            if let Some(failure) = audio
+                .handles
+                .iter()
+                .find_map(|handle| audio.sources.failure(*handle))
+            {
+                return Err(audio_error(failure));
+            }
+        }
     }
     let updates: Vec<_> = world
         .iter_entities()
@@ -476,12 +607,77 @@ pub fn shutdown(world: &mut World) -> Result<()> {
 }
 /// Load a declared audio asset through the confined project catalog.
 pub fn load_clip(world: &World, id: &str) -> Result<Arc<Clip>> {
-    world
-        .resource::<ProjectResource>()
-        .0
-        .require_asset(id, "audio")?;
-    world
+    let project = &world.resource::<ProjectResource>().0;
+    project.require_asset(id, "audio")?;
+    let audio = world
         .get_resource::<RuntimeAudio>()
-        .and_then(|a| a.clips.get(id).cloned())
-        .ok_or_else(|| Error::new("audio.asset.unknown", id))
+        .ok_or_else(|| Error::new("audio.asset.unknown", id))?;
+    if let Some(clip) = audio.clips.get(id) {
+        return Ok(clip.clone());
+    }
+    engine_audio::load_resident(
+        project.resolve_asset(id)?,
+        engine_audio::DecodeLimits::default(),
+        64 * 1024 * 1024,
+    )
+    .map_err(audio_error)
+}
+/// Native streamed file source, sharing regular handles, events, attachments and acoustics.
+pub fn stream_source(
+    world: &mut World,
+    owner: Entity,
+    asset: &str,
+    options: PlayOptions,
+    attachment: Option<Entity>,
+    queue_frames: usize,
+) -> Result<SourceHandle> {
+    source_prepared(
+        world,
+        owner,
+        AuthoredSource::Stream(asset, queue_frames),
+        options,
+        attachment,
+    )
+}
+pub fn procedural_source(
+    world: &mut World,
+    owner: Entity,
+    asset: &str,
+    options: PlayOptions,
+    attachment: Option<Entity>,
+    config: engine_audio::ProceduralSourceConfig,
+) -> Result<SourceHandle> {
+    source_prepared(
+        world,
+        owner,
+        AuthoredSource::Graph(asset, config),
+        options,
+        attachment,
+    )
+}
+pub fn seek_source(
+    world: &mut World,
+    owner: Entity,
+    source: SourceHandle,
+    frame: u64,
+) -> Result<engine_audio::StreamGeneration> {
+    world
+        .get_mut::<EntityAudio>(owner)
+        .ok_or_else(|| Error::new("audio.owner.missing", "Unknown owner"))?
+        .sources
+        .seek(source, frame)
+        .map_err(audio_error)
+}
+pub fn set_parameters(
+    world: &mut World,
+    owner: Entity,
+    source: SourceHandle,
+    values: &[engine_audio::graph::ParameterUpdate<'_>],
+) -> Result<()> {
+    world
+        .get_mut::<EntityAudio>(owner)
+        .ok_or_else(|| Error::new("audio.owner.missing", "Unknown owner"))?
+        .sources
+        .set_parameters(source, values)
+        .map_err(audio_error)
 }

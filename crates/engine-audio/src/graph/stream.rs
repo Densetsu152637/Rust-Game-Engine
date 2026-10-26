@@ -53,11 +53,30 @@ impl ProceduralStream {
         capacity_frames: usize,
         duration_frames: Option<u64>,
     ) -> Result<Self> {
+        Self::spawn_with_parameters(
+            program,
+            control,
+            options,
+            capacity_frames,
+            duration_frames,
+            &[],
+        )
+    }
+    /// Applies initial overrides atomically before the worker can generate PCM.
+    pub fn spawn_with_parameters(
+        program: Arc<CompiledGraph>,
+        control: AudioControl,
+        options: PlayOptions,
+        capacity_frames: usize,
+        duration_frames: Option<u64>,
+        initial: &[ParameterUpdate<'_>],
+    ) -> Result<Self> {
         let rate = control.lock()?.config.sample_rate;
         if duration_frames.is_some_and(|n| n > u64::from(rate) * 86_400) {
             return Err(error("audio.graph.duration", "Duration exceeds 24 hours"));
         }
         let mut instance = GraphInstance::new(program.clone(), rate)?;
+        instance.set_parameters(initial)?;
         let (voice, mut writer) = control.play_stream(
             StreamConfig {
                 sample_rate: rate,
