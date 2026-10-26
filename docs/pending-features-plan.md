@@ -3,7 +3,8 @@
 Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
 Initial plan commit: `7d614e9`. Main contains accepted audio/server changes through
 `ebc765c`. Larger branches are assembled in `codex/pending-integration`, currently
-`6183242` with reviewed XR, animation graph and ML support. Nothing has been published this session;
+`164b9ed` with reviewed XR, animation graph/IK, ML, scene editing, shared shadows,
+compressed audio decoding and video support. Nothing has been published this session;
 final integrated checks remain pending.
 
 This is the implementation record for the pending-feature request. Existing
@@ -75,7 +76,9 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   tests; codec fixtures and malformed input limits; device checks separately.
 - Outcome: bounded streaming/clock milestone accepted at `dc061859`, integrated
   as `d6823dc`; 326 audio tests, fmt and scoped Clippy passed. Compressed decoding
-  is a separate in-progress slice using Symphonia 0.6.1; not yet validated.
+  milestone `7b5fddd` uses Symphonia 0.6.1 for WAV/FLAC/Vorbis/MP3 and is integrated
+  as `b41c636`. Its 335 tests, scoped strict Clippy and fmt passed after independent
+  review fixes. Authored streamed/procedural emitters remain a separate slice.
 
 ### 4. Animation graph, blend spaces, IK and retargeting
 
@@ -88,14 +91,15 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Acceptance: `cargo test -p engine-animation`, project pose/deformation tests,
   degenerate/unreachable chains, rest/proportion mapping, graph diagnostics.
 - Outcome: graph/blend milestone `71cc1c4` accepted after independent source
-  review, 125 focused tests, fmt and scoped Clippy. IK source and regression
-  tests are ready for validation after an initialization-order review fix;
-  retargeting remains pending. The graph milestone and committed AI foundation
+  review, 125 focused tests, fmt and scoped Clippy. IK `a70064d` is accepted and
+  integrated as `164b9ed`: 141 focused tests, scoped strict Clippy and fmt passed,
+  including the reviewed initial-control repair. Retargeting design is in progress.
+  The graph milestone and committed AI foundation
   are assembled at `b62ef9e`; the external manager retains remaining AI work.
 
 ### 5. Editor scene recovery and graph authoring
 
-- Status: in progress (scene validation and reusable graph canvas). The canvas
+- Status: in progress (scene accepted; reusable graph canvas validation pending). The canvas
   uses the committed engine-graph foundation; shell wiring follows scene handoff.
 - Objective: finish scene WIP `9e4a063`, multi-selection/gizmos/picking/settings,
   then reusable node/port canvas with graph-kind palettes, edits, undo and save.
@@ -104,10 +108,13 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   engine-graph validation and atomic edits. No duplicate document semantics.
 - Acceptance: real egui interaction tests, one undo per gesture, parented
   transforms, cancelled/stale gestures, graph persistence and validation.
+- Outcome: scene `7d215a7` accepted and integrated as `f52cf2f`; 113 tests, scoped
+  strict Clippy and fmt passed after picker review fixes. Generic graph canvas and
+  actual editor shell wiring are preserved at `a71dafb5`, not yet compiled/tested.
 
 ### 6. Render integration seams
 
-- Status: in progress (shared-shadow contract); depends on baseline and
+- Status: in progress (shared shadows accepted; UI seams source checkpoint); depends on baseline and
   committed World rendering contracts for terrain/foliage integration.
 - Objective: shared shadow targets/writer API, terrain and foliage casters,
   ordered UI overlays and final compositing including Frame Generation, and
@@ -116,10 +123,14 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   integration; root serializes shared pipeline edits.
 - Acceptance: fake/native caster GPU readback, actual terrain/foliage shadows,
   ordered UI pixels and compositing contract tests; hardware FG separately.
+- Outcome: shared-shadow API `0aba854` integrated as `f56981d`; 42 CPU and 17 real
+  Vulkan tests, scoped strict Clippy and fmt passed. Terrain/foliage adoption is
+  still pending the World handoff. Ordered overlays, Composite ping-pong and late
+  UI replay across generated frames remain unvalidated source work.
 
 ### 7. Platform services
 
-- Status: in progress (video validation; XR, ML and server milestones accepted).
+- Status: in progress (XR, ML, server and video milestones accepted; final combined checks pending).
 - Objective: review OpenXR `daa2888`, finish ML WIP `609ccb2`, implement
   existing self-hosted services and real video decode/playback. The user clarified
   that services means completing/validating the existing server, not adding cloud
@@ -140,13 +151,15 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   is accepted and integrated as `6183242`: 13 core tests, two native adapter tests,
   scoped strict Clippy and fmt pass, including output-contract and stale-handle
   repairs. CPU inference is supported; GPU inference remains explicitly unavailable.
-  Video implementation uses an explicit FFmpeg executable backend with a shared
-  audio/caption clock; frame resampling and dependency requirements must be
-  documented and tested before acceptance.
+  Video `cc4e0b8` is accepted and integrated as `2bdf9bb`: 97 focused tests, scoped
+  strict Clippy and fmt passed, using real FFmpeg/ffprobe 7.0.2. It uses explicit
+  host executables, 30fps CPU RGBA, shared audio/caption timing and 3D material
+  texture streams. Sprite texture-stream integration and hardware presentation
+  timing remain unverified/outstanding; no audible-device claim is made.
 
 ### 8. Remaining animation/editor/audio integrations
 
-- Status: in progress (hot-reload tooling and morph targets); other slices remain pending and
+- Status: in progress (hot reload validation, morph integration, sequencer and procedural graph source); other slices remain pending and
   depend on relevant earlier stages.
 - Objective: morph import/animation/deformation, cinematics timeline/sequencer,
   editor hot reload/tooling, procedural audio graph, microphone/voice codec,
@@ -159,10 +172,15 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   successful and failed reloads; graph PCM; codec/capture lifecycle and voice
   loopback; collision-driven audio and collider acoustic geometry behavior.
 - Handoff: hot reload prepares a candidate while the old game runs, then activates
-  through the existing generation barrier. Tooling source is in progress; editor
-  action wiring waits for scene-editor handoff to avoid concurrent ownership.
+  through the existing generation barrier. Tooling and editor controls are
+  preserved at `3bd8d64`; focused validation owns the sole heavy build slot.
   Morph import and weight playback feed a single geometry-deformation writer
-  before skinning; shared simulation registration waits for IK handoff.
+  before skinning; source `f8165ad` is undergoing shared registration after IK.
+  Sequencer source is preserved at `7b96bb9` and remains unbuilt. It must run before
+  simulation and native scrubbing must immediately refresh skin deformation.
+  Procedural audio source `bfae437` passed source critique; actual DSP/producer
+  tests and authored integration remain pending. These source checkpoints are
+  incomplete milestones, not accepted features.
 
 ### 9. Rendering round two
 
@@ -199,18 +217,19 @@ external worktrees are not cleanup targets.
 | gameplay-completion | `834c047` | Unused managed creation; registration incomplete | retained pending host recovery |
 | audio-foundation | `91b961c` | Unused managed creation; registration incomplete | retained pending host recovery |
 | animation-features | `834c047` | Unused managed creation; registration incomplete | retained pending host recovery |
-| codex-audio-streams | `91b961c` | Audio source/clock; `codex/audio-streams` | active |
+| codex-audio-streams | `b41c636` | Procedural audio; `codex/audio-procedural`, old branch retained at `7b5fddd` | active |
 | codex-animation-graph | `834c047` | Graph/blends; `codex/animation-graph` | active |
 | codex-render-contracts | `91b961c` | Shared shadows; `codex/render-contracts` | active |
 | codex-pending-integration | `697e36f` | Root integration and final checks; `codex/pending-integration` | active |
-| parity-editor-scene | `9e4a063` | Resume scene WIP; existing `claude/parity-editor-scene` | active, retain |
+| parity-editor-scene | `9e4a063` | Resume scene WIP; existing `claude/parity-editor-scene` | integrated, retained for existing owner |
 | parity-editor-hotreload | `319c7df` | Runtime generation replacement; existing `claude/parity-editor-hotreload` | active, retain |
 | parity-editor-graph | `b62ef9e` | Reusable graph authoring; existing `claude/parity-editor-graph` | active, retain |
 | parity-animation-morph | `b62ef9e` | Morph import/playback/deformation; existing `claude/parity-animation-morph` | active, retain |
+| parity-animation-cinematics | `f52cf2f` | Timeline source; existing `claude/parity-animation-cinematics` | preserved at `7b96bb9`, retain |
 | parity-platform-services-ml | `609ccb2` | Complete ML; existing `claude/parity-platform-services-ml` | integrated, retained for existing owner |
 | parity-platform-services-services | `7d614e9` | Existing server; existing `claude/parity-platform-services-services` | integrated, retained for existing owner |
 | parity-platform-services-xr | `daa2888` | Reviewed repairs; existing `claude/parity-platform-services-xr` | integrated, retained for existing owner |
-| parity-platform-services-video | `dc061859` | Video/audio/caption integration; existing `claude/parity-platform-services-video` | active, retain |
+| parity-platform-services-video | `dc061859` | Video/audio/caption integration; existing `claude/parity-platform-services-video` | integrated, retained for existing owner |
 
 Manual and reused paths are `D:/Git-Worktrees/Rust-Game-Engine/<name>`; managed
 paths are `D:/Git-Worktrees/<name>/Rust-Game-Engine`. Root creates task branches,
