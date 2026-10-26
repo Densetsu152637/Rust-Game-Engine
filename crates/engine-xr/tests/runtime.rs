@@ -1,10 +1,11 @@
 //! Tests against the OpenXR runtime installed on this machine. Ignored by
 //! default; see docs/xr.md "Manual headset test" for the exact steps.
+#[cfg(any(windows, target_os = "linux"))]
 use engine_project::xr::{XrHapticPulse, XrHapticTarget};
-use engine_xr::{
-    Eye, LoaderMode, MirrorTarget, SessionPhase, TestPattern, XrAppInfo, XrRuntime, XrSession,
-    XrStatus, manifest::DiscoveryInputs, probe,
-};
+#[cfg(any(windows, target_os = "linux"))]
+use engine_xr::{Eye, MirrorTarget, SessionPhase, TestPattern, XrRuntime, XrSession};
+use engine_xr::{LoaderMode, XrAppInfo, XrStatus, manifest::DiscoveryInputs, probe};
+#[cfg(any(windows, target_os = "linux"))]
 use std::time::{Duration, Instant};
 
 fn app() -> XrAppInfo {
@@ -39,8 +40,10 @@ fn installed_runtime_without_a_headset_reports_an_honest_status() {
 }
 
 /// Frames rendered with the test pattern once the session is focused.
+#[cfg(any(windows, target_os = "linux"))]
 const FRAMES: u64 = 180;
 
+#[cfg(any(windows, target_os = "linux"))]
 #[test]
 #[ignore = "requires a connected, worn headset and its OpenXR runtime; see docs/xr.md"]
 fn headset_session_renders_tracks_and_vibrates() {

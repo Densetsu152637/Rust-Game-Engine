@@ -17,14 +17,52 @@ impl Eye {
     }
 }
 
-/// One eye's colour target for this frame. The texture is an OpenXR swapchain
-/// image (single layer, single mip) in `RENDER_ATTACHMENT | TEXTURE_BINDING |
-/// COPY_SRC` usage; renderers create their own depth buffers.
+/// One eye's colour target for this frame. This is an ordinary wgpu-owned
+/// texture (single layer, single mip) in `RENDER_ATTACHMENT | TEXTURE_BINDING |
+/// COPY_SRC` usage; renderers create their own depth buffers. Clones of these
+/// textures, views and recorded commands may safely outlive the frame/session.
+/// Runtime-owned swapchain images are private and receive an internal blit.
 pub struct XrRenderTarget<'a> {
     pub view: &'a XrView,
     pub texture: &'a wgpu::Texture,
     pub color: &'a wgpu::TextureView,
     pub format: wgpu::TextureFormat,
+}
+
+/// Independently owned render memory. Imported runtime images must never be
+/// passed across the safe renderer boundary (wgpu resources are cloneable).
+#[cfg(any(windows, target_os = "linux", test))]
+pub(crate) struct EyeRenderTexture {
+    pub texture: wgpu::Texture,
+    pub color: wgpu::TextureView,
+}
+#[cfg(any(windows, target_os = "linux", test))]
+impl EyeRenderTexture {
+    pub fn new(
+        device: &wgpu::Device,
+        extent: [u32; 2],
+        format: wgpu::TextureFormat,
+        label: &str,
+    ) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: extent[0],
+                height: extent[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color = texture.create_view(&Default::default());
+        Self { texture, color }
+    }
 }
 
 /// Everything a renderer receives for one XR frame.
@@ -395,6 +433,107 @@ pub(crate) fn finish_eye_layouts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a Vulkan GPU"]
+    fn retained_eye_textures_views_and_commands_survive_the_render_owner() {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::VULKAN;
+        let instance = wgpu::Instance::new(descriptor);
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+            .expect("Vulkan adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).expect("Vulkan device");
+        let target = EyeRenderTexture::new(
+            &device,
+            [128, 128],
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "owned eye",
+        );
+        let retained_texture = target.texture.clone();
+        let retained_view = target.color.clone();
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(color_attachment(
+                &target.color,
+                wgpu::LoadOp::Clear(wgpu::Color::BLUE),
+            ))],
+            ..Default::default()
+        });
+        let retained_commands = encoder.finish();
+        drop(target); // Equivalent to dropping the session-side render target.
+        queue.submit([retained_commands]);
+        // A retained view can also create entirely new work after teardown.
+        let mut encoder = device.create_command_encoder(&Default::default());
+        TestPattern::new(&device).encode(
+            &device,
+            &mut encoder,
+            Eye::Left,
+            &retained_view,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        );
+        // Exercise the exact owned-eye -> runtime-target blit with the same
+        // sRGB format; it must preserve linear colour through sample/write.
+        let destination = EyeRenderTexture::new(
+            &device,
+            [128, 128],
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "blit destination",
+        );
+        MirrorBlit::new(&device).encode(
+            &device,
+            &mut encoder,
+            &retained_view,
+            &destination.color,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        );
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("retained eye readback"),
+            size: 128 * 128 * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            destination.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(512),
+                    rows_per_image: Some(128),
+                },
+            },
+            retained_texture.size(),
+        );
+        queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("GPU completion");
+        rx.recv().unwrap().expect("map");
+        let bytes = buffer.slice(..).get_mapped_range().expect("readback");
+        for (index, pixel) in bytes.as_chunks::<4>().0.iter().enumerate() {
+            let (x, y) = (index % 128, index / 128);
+            let expected = if (x / 64 + y / 64).is_multiple_of(2) {
+                [63, 63, 63, 255]
+            } else {
+                [255, 188, 0, 255]
+            };
+            assert!(
+                pixel
+                    .iter()
+                    .zip(expected)
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 1),
+                "({x}, {y}) = {pixel:?}, expected {expected:?}"
+            );
+        }
+    }
 
     #[test]
     fn swapchain_format_prefers_srgb_rgba() {

@@ -159,6 +159,62 @@ mod live {
     use super::*;
     use crate::vulkan::{self, GraphicsRequest, VulkanGraphics};
     use openxr as xr;
+    use std::sync::{Arc, Mutex, MutexGuard};
+
+    // HAL textures keep this owner alive through deferred GPU resource cleanup.
+    // The callback runs before the Vulkan device that owns the texture dies.
+    struct SwapchainOwner {
+        handle: Mutex<xr::Swapchain<xr::Vulkan>>,
+        // xr::Swapchain retains its session/instance, but not our library guard.
+        _library: crate::negotiate::LibraryGuard,
+    }
+    impl SwapchainOwner {
+        fn lock(&self) -> Result<MutexGuard<'_, xr::Swapchain<xr::Vulkan>>, XrError> {
+            self.handle
+                .lock()
+                .map_err(|_| XrError::Render("XR swapchain lock poisoned".into()))
+        }
+    }
+
+    // Publish only a complete stereo pair; failures drop all temporary owners.
+    fn build_stereo<T, E>(mut build: impl FnMut(Eye) -> Result<T, E>) -> Result<[T; 2], E> {
+        Ok([build(Eye::Left)?, build(Eye::Right)?])
+    }
+
+    fn clear_inactive_input(
+        lifecycle: &SessionLifecycle,
+        controls: &mut XrControllerState,
+        tracking: &mut XrTracking,
+    ) {
+        if lifecycle.phase() != crate::SessionPhase::Focused || !lifecycle.frame_loop_active() {
+            clear_input(controls, tracking);
+        }
+    }
+
+    fn clear_input(controls: &mut XrControllerState, tracking: &mut XrTracking) {
+        *controls = XrControllerState::default();
+        *tracking = XrTracking {
+            frame: tracking.frame,
+            ..Default::default()
+        };
+    }
+
+    // A failed image ownership step leaves acquire/wait/release progress
+    // unknown. Recreate the session rather than retrying a half-acquired pair.
+    fn guard_image_ownership<T>(
+        result: Result<T, XrError>,
+        lifecycle: &mut SessionLifecycle,
+        controls: &mut XrControllerState,
+        tracking: &mut XrTracking,
+    ) -> Result<T, XrError> {
+        if let Err(error) = &result {
+            lifecycle.on_lost(format!(
+                "swapchain image ownership failed: {error}; recreate the session"
+            ));
+            clear_input(controls, tracking);
+        }
+        result
+    }
 
     struct Actions {
         trigger: xr::Action<f32>,
@@ -319,14 +375,17 @@ mod live {
     struct EyeSwapchain {
         views: Vec<wgpu::TextureView>,
         textures: Vec<wgpu::Texture>,
-        handle: xr::Swapchain<xr::Vulkan>,
+        owner: Arc<SwapchainOwner>,
+        // Public render targets use wgpu-owned memory, never runtime images.
+        target: crate::render::EyeRenderTexture,
         extent: [u32; 2],
         format: wgpu::TextureFormat,
     }
 
     /// An OpenXR session rendering through a wgpu device. Field order is the
     /// teardown order: swapchains and spaces, then the session, then Vulkan,
-    /// then the OpenXR instance and finally its library.
+    /// then the OpenXR instance and finally its library. Imported-image
+    /// callbacks also retain runtime owners through deferred GPU cleanup.
     pub struct XrSession {
         swapchains: Vec<EyeSwapchain>,
         mirror: Option<MirrorBlit>,
@@ -358,6 +417,11 @@ mod live {
             config: XrSessionConfig,
         ) -> Result<Self, XrError> {
             config.validate()?;
+            if system.eyes.len() != 2 {
+                return Err(XrError::InvalidInput(
+                    "a stereo session requires exactly two eyes".into(),
+                ));
+            }
             instance
                 .check_graphics(&system)
                 .map_err(XrError::Unavailable)?;
@@ -495,6 +559,7 @@ mod live {
                     Kind::InstanceLoss => self.lifecycle.on_instance_loss_pending(),
                     Kind::Other => LifecycleAction::None,
                 };
+                clear_inactive_input(&self.lifecycle, &mut self.controls, &mut self.tracking);
                 match action {
                     LifecycleAction::BeginSession => match self
                         .session
@@ -522,12 +587,15 @@ mod live {
                 self.lifecycle
                     .on_lost(format!("{operation} returned {}", result_name(result)));
             }
+            clear_input(&mut self.controls, &mut self.tracking);
             Err(XrError::Runtime { operation, result })
         }
         /// Ask the runtime to end the session; keep calling
         /// [`Self::poll_events`] until [`Self::is_finished`].
         pub fn request_exit(&mut self) -> Result<(), XrError> {
-            match self.lifecycle.request_exit() {
+            let action = self.lifecycle.request_exit();
+            clear_inactive_input(&self.lifecycle, &mut self.controls, &mut self.tracking);
+            match action {
                 ExitRequest::DestroyNow => Ok(()),
                 ExitRequest::RequestExitSession => match self.session.request_exit() {
                     Ok(()) | Err(sys::Result::ERROR_SESSION_NOT_RUNNING) => Ok(()),
@@ -579,7 +647,9 @@ mod live {
                         ),
                     })
                 })?;
-            for (index, eye) in self.system.eyes.iter().enumerate() {
+            let swapchains = build_stereo(|eye| -> Result<EyeSwapchain, XrError> {
+                let index = eye.index();
+                let eye = &self.system.eyes[index];
                 let extent = scaled_extent(eye.recommended, eye.max, self.config.render_scale);
                 let handle = self
                     .session
@@ -605,6 +675,10 @@ mod live {
                 } else {
                     "xr right eye"
                 };
+                let owner = Arc::new(SwapchainOwner {
+                    handle: Mutex::new(handle),
+                    _library: self.instance._library.clone(),
+                });
                 let textures = images
                     .into_iter()
                     .map(|image| {
@@ -614,6 +688,7 @@ mod live {
                             format,
                             extent,
                             label,
+                            owner.clone(),
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()
@@ -622,47 +697,66 @@ mod live {
                     .iter()
                     .map(|t| t.create_view(&Default::default()))
                     .collect();
-                self.swapchains.push(EyeSwapchain {
-                    views,
-                    textures,
-                    handle,
+                let target = crate::render::EyeRenderTexture::new(
+                    &self.graphics.device,
                     extent,
                     format,
-                });
-            }
+                    label,
+                );
+                Ok(EyeSwapchain {
+                    views,
+                    textures,
+                    owner,
+                    target,
+                    extent,
+                    format,
+                })
+            })?;
+            self.swapchains = Vec::from(swapchains);
             Ok(())
         }
 
         fn sample_input(&mut self, time: xr::Time) -> Result<(), XrError> {
+            // Never publish a previous frame if syncing or any pose query fails.
+            clear_input(&mut self.controls, &mut self.tracking);
+            if self.lifecycle.phase() != crate::SessionPhase::Focused
+                || !self.lifecycle.frame_loop_active()
+            {
+                return Ok(());
+            }
             if let Err(result) = self
                 .session
                 .sync_actions(&[xr::ActiveActionSet::new(&self.actions.set)])
             {
                 return self.fail("xrSyncActions", result);
             }
-            let focused = self.lifecycle.phase() == crate::SessionPhase::Focused;
             let left = self.actions.controls(&self.session, 0)?;
             let right = self.actions.controls(&self.session, 1)?;
-            self.controls = XrControllerState {
-                connected: focused,
+            let controls = XrControllerState {
+                connected: true,
                 left,
                 right,
             };
             let base = &self.base_space;
-            self.tracking.head = locate(&self.head_space, base, time)?;
+            let mut tracking = XrTracking {
+                head: locate(&self.head_space, base, time)?,
+                predicted_display_time_ns: time.as_nanos(),
+                frame: self.tracking.frame + 1,
+                ..Default::default()
+            };
             for hand in 0..2 {
                 let pose = engine_project::xr::XrHandPose {
                     grip: locate(&self.actions.grip_spaces[hand], base, time)?,
                     aim: locate(&self.actions.aim_spaces[hand], base, time)?,
                 };
                 if hand == 0 {
-                    self.tracking.left = pose;
+                    tracking.left = pose;
                 } else {
-                    self.tracking.right = pose;
+                    tracking.right = pose;
                 }
             }
-            self.tracking.predicted_display_time_ns = time.as_nanos();
-            self.tracking.frame += 1;
+            self.controls = controls;
+            self.tracking = tracking;
             Ok(())
         }
 
@@ -694,7 +788,7 @@ mod live {
             // Input first so gameplay and the renderer see this frame's poses.
             let input = self.sample_input(time);
             let mut ended = false;
-            let rendered = if state.should_render {
+            let rendered = if state.should_render && input.is_ok() {
                 self.render(time, renderer, mirror, &mut report, &mut ended)
             } else {
                 Ok(())
@@ -703,8 +797,14 @@ mod live {
             {
                 return self.fail("xrEndFrame", result);
             }
-            rendered?;
-            input?;
+            for result in [rendered, input] {
+                if let Err(error) = result {
+                    return match error {
+                        XrError::Runtime { operation, result } => self.fail(operation, result),
+                        other => Err(other),
+                    };
+                }
+            }
             report.rendered = ended && !report.views.is_empty();
             Ok(report)
         }
@@ -749,25 +849,32 @@ mod live {
                 );
             }
             let mut images = [0usize; 2];
-            for (index, swapchain) in self.swapchains.iter_mut().enumerate() {
-                images[index] = swapchain
-                    .handle
-                    .acquire_image()
-                    .map_err(runtime("xrAcquireSwapchainImage"))?
-                    as usize;
-                swapchain
-                    .handle
-                    .wait_image(xr::Duration::INFINITE)
-                    .map_err(runtime("xrWaitSwapchainImage"))?;
-            }
+            let acquired = (|| {
+                for (index, swapchain) in self.swapchains.iter_mut().enumerate() {
+                    let mut handle = swapchain.owner.lock()?;
+                    images[index] = handle
+                        .acquire_image()
+                        .map_err(runtime("xrAcquireSwapchainImage"))?
+                        as usize;
+                    handle
+                        .wait_image(xr::Duration::INFINITE)
+                        .map_err(runtime("xrWaitSwapchainImage"))?;
+                }
+                Ok(())
+            })();
+            guard_image_ownership(
+                acquired,
+                &mut self.lifecycle,
+                &mut self.controls,
+                &mut self.tracking,
+            )?;
             let targets: Vec<XrRenderTarget<'_>> = views
                 .iter()
                 .zip(&self.swapchains)
-                .zip(images)
-                .map(|((view, swapchain), image)| XrRenderTarget {
+                .map(|(view, swapchain)| XrRenderTarget {
                     view,
-                    texture: &swapchain.textures[image],
-                    color: &swapchain.views[image],
+                    texture: &swapchain.target.texture,
+                    color: &swapchain.target.color,
                     format: swapchain.format,
                 })
                 .collect();
@@ -779,42 +886,81 @@ mod live {
                 predicted_display_time_ns: time.as_nanos(),
                 targets: &targets,
             });
-            if rendered.is_ok()
-                && let Some(mirror) = &mirror
-            {
+            if rendered.is_ok() {
                 let blit = self.mirror.get_or_insert_with(|| MirrorBlit::new(device));
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("xr mirror"),
+                    label: Some("xr swapchain and mirror blit"),
                 });
-                blit.encode(
-                    device,
-                    &mut encoder,
-                    targets[mirror.eye.index()].color,
-                    mirror.view,
-                    mirror.format,
-                );
+                // Only internal commands can reference acquired runtime images.
+                // Public renderer resources remain ordinary, independently owned textures.
+                for ((target, swapchain), image) in targets.iter().zip(&self.swapchains).zip(images)
+                {
+                    blit.encode(
+                        device,
+                        &mut encoder,
+                        target.color,
+                        &swapchain.views[image],
+                        swapchain.format,
+                    );
+                }
+                if let Some(mirror) = &mirror {
+                    blit.encode(
+                        device,
+                        &mut encoder,
+                        targets[mirror.eye.index()].color,
+                        mirror.view,
+                        mirror.format,
+                    );
+                }
                 queue.submit([encoder.finish()]);
             }
-            let colors: Vec<&wgpu::TextureView> = targets.iter().map(|t| t.color).collect();
+            let colors: Vec<&wgpu::TextureView> = self
+                .swapchains
+                .iter()
+                .zip(images)
+                .map(|(swapchain, image)| &swapchain.views[image])
+                .collect();
             crate::render::finish_eye_layouts(device, queue, &colors);
             drop(targets);
-            for swapchain in &mut self.swapchains {
-                swapchain
-                    .handle
-                    .release_image()
-                    .map_err(runtime("xrReleaseSwapchainImage"))?;
-            }
+            let released = (|| {
+                for swapchain in &mut self.swapchains {
+                    swapchain
+                        .owner
+                        .lock()?
+                        .release_image()
+                        .map_err(runtime("xrReleaseSwapchainImage"))?;
+                }
+                Ok(())
+            })();
+            guard_image_ownership(
+                released,
+                &mut self.lifecycle,
+                &mut self.controls,
+                &mut self.tracking,
+            )?;
             rendered.map_err(XrError::Render)?;
+            let handles = self
+                .swapchains
+                .iter()
+                .map(|swapchain| swapchain.owner.lock())
+                .collect::<Result<Vec<_>, _>>();
+            let handles = guard_image_ownership(
+                handles,
+                &mut self.lifecycle,
+                &mut self.controls,
+                &mut self.tracking,
+            )?;
             let projection_views: Vec<_> = located
                 .iter()
                 .zip(&self.swapchains)
-                .map(|(view, swapchain)| {
+                .zip(&handles)
+                .map(|((view, swapchain), handle)| {
                     xr::CompositionLayerProjectionView::new()
                         .pose(view.pose)
                         .fov(view.fov)
                         .sub_image(
                             xr::SwapchainSubImage::new()
-                                .swapchain(&swapchain.handle)
+                                .swapchain(handle)
                                 .image_array_index(0)
                                 .image_rect(xr::Rect2Di {
                                     offset: xr::Offset2Di { x: 0, y: 0 },
@@ -830,10 +976,11 @@ mod live {
                 .space(&self.base_space)
                 .views(&projection_views);
             *ended = true;
-            if let Err(result) = self
+            let end = self
                 .frame_stream
-                .end(time, self.system.blend_mode, &[&layer])
-            {
+                .end(time, self.system.blend_mode, &[&layer]);
+            drop(handles);
+            if let Err(result) = end {
                 return self.fail("xrEndFrame", result);
             }
             report.views = views;
@@ -843,13 +990,208 @@ mod live {
 
     impl Drop for XrSession {
         fn drop(&mut self) {
-            // Swapchain images and their views must be unused and destroyed
-            // before the runtime destroys the swapchains.
+            // No runtime image is exposed to callers. Wait for our internal
+            // submissions, destroy imports, then collect deferred resources.
+            // Each HAL callback also retains the swapchain/session/library
+            // until wgpu actually destroys the imported image wrapper.
             let _ = self.graphics.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
             });
+            for swapchain in &self.swapchains {
+                for texture in &swapchain.textures {
+                    texture.destroy();
+                }
+            }
             self.swapchains.clear();
+            let _ = self.graphics.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[test]
+        fn right_eye_failure_drops_left_eye_and_retry_builds_a_complete_pair() {
+            struct EyeResource(Arc<AtomicUsize>);
+            impl Drop for EyeResource {
+                fn drop(&mut self) {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            let dropped = Arc::new(AtomicUsize::new(0));
+            let mut published = Vec::new();
+            for attempt in 0..2 {
+                let built = build_stereo(|eye| {
+                    if attempt == 0 && eye == Eye::Right {
+                        return Err("right-eye import failed");
+                    }
+                    Ok(EyeResource(dropped.clone()))
+                });
+                match built {
+                    Ok(pair) => published = Vec::from(pair),
+                    Err(_) => {
+                        assert!(published.is_empty());
+                        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+                    }
+                }
+            }
+            assert_eq!(published.len(), 2);
+            // A right-eye mirror can now always index the complete pair.
+            let _right = &published[Eye::Right.index()];
+            drop(published);
+            assert_eq!(dropped.load(Ordering::SeqCst), 3);
+        }
+
+        fn active_snapshot() -> (XrControllerState, XrTracking) {
+            let pose = XrPose {
+                tracked: true,
+                position: [1.0; 3],
+                ..Default::default()
+            };
+            (
+                XrControllerState {
+                    connected: true,
+                    left: XrHandControls {
+                        trigger: 1.0,
+                        menu: true,
+                        ..Default::default()
+                    },
+                    right: XrHandControls {
+                        grip: 1.0,
+                        thumbstick: [0.5; 2],
+                        ..Default::default()
+                    },
+                },
+                XrTracking {
+                    head: pose,
+                    left: engine_project::xr::XrHandPose {
+                        grip: pose,
+                        aim: pose,
+                    },
+                    right: engine_project::xr::XrHandPose {
+                        grip: pose,
+                        aim: pose,
+                    },
+                    predicted_display_time_ns: 123,
+                    frame: 7,
+                },
+            )
+        }
+
+        #[test]
+        fn focus_loss_stop_exit_and_loss_invalidate_controls_and_all_poses_without_a_frame() {
+            for next in [
+                xr::SessionState::VISIBLE,
+                xr::SessionState::SYNCHRONIZED,
+                xr::SessionState::STOPPING,
+                xr::SessionState::EXITING,
+                xr::SessionState::LOSS_PENDING,
+            ] {
+                let mut lifecycle = SessionLifecycle::default();
+                lifecycle.on_state_changed(xr::SessionState::READY);
+                lifecycle.began();
+                lifecycle.on_state_changed(xr::SessionState::FOCUSED);
+                let (mut controls, mut tracking) = active_snapshot();
+                clear_inactive_input(&lifecycle, &mut controls, &mut tracking);
+                assert!(controls.connected && tracking.head.tracked);
+                lifecycle.on_state_changed(next);
+                clear_inactive_input(&lifecycle, &mut controls, &mut tracking);
+                assert_eq!(controls, XrControllerState::default(), "{next:?}");
+                assert_eq!(
+                    tracking,
+                    XrTracking {
+                        frame: 7,
+                        ..Default::default()
+                    },
+                    "{next:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn image_ownership_failures_are_terminal_and_successful_steps_remain_running() {
+            for operation in [
+                "xrAcquireSwapchainImage",
+                "xrWaitSwapchainImage",
+                "xrReleaseSwapchainImage",
+                "image lock",
+            ] {
+                let mut lifecycle = SessionLifecycle::default();
+                lifecycle.began();
+                lifecycle.on_state_changed(xr::SessionState::FOCUSED);
+                let (mut controls, mut tracking) = active_snapshot();
+                let failure = if operation == "image lock" {
+                    XrError::Render("XR swapchain lock poisoned".into())
+                } else {
+                    XrError::Runtime {
+                        operation,
+                        result: sys::Result::ERROR_RUNTIME_FAILURE,
+                    }
+                };
+                let result = guard_image_ownership::<()>(
+                    Err(failure.clone()),
+                    &mut lifecycle,
+                    &mut controls,
+                    &mut tracking,
+                );
+                assert_eq!(result, Err(failure));
+                assert!(lifecycle.is_finished());
+                assert!(
+                    !lifecycle.frame_loop_active(),
+                    "a later frame must return before acquire/wait"
+                );
+                assert!(
+                    lifecycle
+                        .lost_reason()
+                        .unwrap()
+                        .contains("recreate the session")
+                );
+                assert_eq!(controls, XrControllerState::default());
+                assert_eq!(
+                    tracking,
+                    XrTracking {
+                        frame: 7,
+                        ..Default::default()
+                    }
+                );
+            }
+            let mut lifecycle = SessionLifecycle::default();
+            lifecycle.began();
+            lifecycle.on_state_changed(xr::SessionState::FOCUSED);
+            let (mut controls, mut tracking) = active_snapshot();
+            // Successful release steps do not change the running lifecycle.
+            guard_image_ownership(Ok(()), &mut lifecycle, &mut controls, &mut tracking).unwrap();
+            assert!(lifecycle.frame_loop_active());
+            assert!(controls.connected && tracking.head.tracked);
+        }
+
+        #[test]
+        fn instance_loss_and_runtime_loss_invalidate_a_focused_snapshot() {
+            for instance_event in [false, true] {
+                let mut lifecycle = SessionLifecycle::default();
+                lifecycle.began();
+                lifecycle.on_state_changed(xr::SessionState::FOCUSED);
+                let (mut controls, mut tracking) = active_snapshot();
+                if instance_event {
+                    lifecycle.on_instance_loss_pending();
+                } else {
+                    lifecycle.on_lost("xrWaitFrame returned XR_ERROR_SESSION_LOST");
+                }
+                clear_inactive_input(&lifecycle, &mut controls, &mut tracking);
+                assert_eq!(controls, XrControllerState::default());
+                assert_eq!(
+                    tracking,
+                    XrTracking {
+                        frame: 7,
+                        ..Default::default()
+                    }
+                );
+            }
         }
     }
 }

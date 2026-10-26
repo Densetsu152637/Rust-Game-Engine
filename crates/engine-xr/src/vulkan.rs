@@ -304,6 +304,7 @@ pub(crate) fn wrap_swapchain_image(
     format: wgpu::TextureFormat,
     extent: [u32; 2],
     label: &str,
+    owner: impl Send + Sync + 'static,
 ) -> Result<wgpu::Texture, String> {
     let size = wgpu::Extent3d {
         width: extent[0],
@@ -329,14 +330,16 @@ pub(crate) fn wrap_swapchain_image(
     // SAFETY: `image` is a live swapchain image the runtime created on this
     // device with colour-attachment, sampled and transfer-source usage, this
     // format and extent, one layer and one mip, and no mutable-format flag
-    // (so no view formats). Memory is external and the drop callback is a
-    // no-op: wgpu never frees runtime-owned images, and `XrSession` waits for
-    // the device to idle and drops textures before their swapchain.
+    // (so no view formats). The callback retains the swapchain (which retains
+    // the XR session/instance) and runtime library until HAL destroys this
+    // wrapper, including deferred cleanup. HAL's device is still alive then.
+    // Public renderer targets use separate wgpu-owned memory: no runtime image
+    // or commands using one can escape its acquire/wait/release window.
     let texture = unsafe {
         hal_device.texture_from_raw(
             vk::Image::from_raw(image),
             &hal_descriptor,
-            Some(Box::new(|| {})),
+            Some(retain_until_drop(owner)),
             hal_vk::TextureMemory::External,
         )
     };
@@ -364,9 +367,36 @@ pub(crate) fn wrap_swapchain_image(
     })
 }
 
+fn retain_until_drop(owner: impl Send + Sync + 'static) -> wgpu::hal::DropCallback {
+    Box::new(move || drop(owner))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_images_retain_their_shared_owner_until_the_last_hal_callback() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Owner(Arc<AtomicUsize>);
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let owner = Arc::new(Owner(destroyed.clone()));
+        let first = retain_until_drop(owner.clone());
+        let last = retain_until_drop(owner.clone());
+        drop(owner); // Session-side owner is gone; HAL cleanup may be delayed.
+        first();
+        assert_eq!(destroyed.load(Ordering::SeqCst), 0);
+        last();
+        assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn vulkan_version_prefers_1_2_within_the_runtime_range() {

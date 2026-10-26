@@ -70,6 +70,7 @@ impl XrWorldBridge {
     /// and neutralise XR input.
     pub fn publish_status(&self, world: &mut World, status: &XrStatus) {
         self.feed.set(Default::default());
+        world.insert_resource(px::XrTracking::default());
         px::publish_status(world, status_report(status));
     }
     /// Publish this frame's poses, controller input and session status.
@@ -175,7 +176,26 @@ mod tests {
         let frame = poll_devices(&mut world, ActionFrame::default());
         assert!(frame.pressed("menu"));
         assert!(frame.released("grab"));
-        // Session loss neutralises XR input and reports the reason.
+        // Session loss neutralises XR input, invalidates every tracked pose
+        // and reports the reason even when no session remains to publish.
+        let pose = px::XrPose {
+            tracked: true,
+            position: [1.0; 3],
+            ..Default::default()
+        };
+        world.insert_resource(px::XrTracking {
+            head: pose,
+            left: px::XrHandPose {
+                grip: pose,
+                aim: pose,
+            },
+            right: px::XrHandPose {
+                grip: pose,
+                aim: pose,
+            },
+            predicted_display_time_ns: 123,
+            frame: 5,
+        });
         bridge.publish_status(
             &mut world,
             &XrStatus::SessionLost {
@@ -193,5 +213,9 @@ mod tests {
                 .any(|d| d.descriptor.id == "xr" && !d.connected)
         );
         assert_eq!(px::status(&world).unwrap().state, "session_lost");
+        assert_eq!(
+            *world.resource::<px::XrTracking>(),
+            px::XrTracking::default()
+        );
     }
 }

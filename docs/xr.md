@@ -2,8 +2,9 @@
 
 The `engine-xr` crate runs PC VR through OpenXR on Windows and Linux: runtime
 discovery, an honest availability status, the session lifecycle, action-based
-controller input, head/hand tracking, haptics, and per-eye swapchains wrapped as
-`wgpu::Texture`s on a Vulkan device created through `XR_KHR_vulkan_enable2`.
+controller input, head/hand tracking, haptics, and private per-eye swapchains on a
+Vulkan device created through `XR_KHR_vulkan_enable2`. Renderers receive separate
+wgpu-owned eye textures; an internal blit copies them into the runtime images.
 Authored settings, tracking data, controller input and haptic requests live in
 `engine-project` (`crates/engine-project/src/xr.rs`) so gameplay never touches
 OpenXR.
@@ -125,7 +126,9 @@ is the expected state; that was not observed here.
 ## Session lifecycle and frame loop
 
 `XrSession::create(instance, system, config)` creates the Vulkan device through
-the runtime, the session, the action set and the reference spaces. The host
+the runtime, the session, the action set and the reference spaces. Raw OpenXR
+instances and handles stay inside the crate so they cannot outlive the dynamically
+loaded runtime library. The host
 calls `poll_events()` every frame; `SessionLifecycle` maps runtime states to
 actions (READY: `xrBeginSession`; STOPPING: `xrEndSession`; EXITING: drop the
 session; LOSS_PENDING or instance loss: `session_lost`). `request_exit()` calls
@@ -133,11 +136,22 @@ session; LOSS_PENDING or instance loss: `session_lost`). `request_exit()` calls
 
 `frame(renderer, mirror)` does, while the session runs: `xrWaitFrame`,
 `xrBeginFrame`, action sync and pose location at the predicted display time,
-`xrLocateViews`, per-eye `acquire`/`wait`, `XrViewRenderer::render_views`, the
-optional mirror blit, a pass that leaves each image in colour-attachment layout,
+`xrLocateViews`, per-eye `acquire`/`wait`, `XrViewRenderer::render_views` into
+wgpu-owned targets, internal blits into the runtime images and optional mirror,
+a pass that leaves each runtime image in colour-attachment layout,
 `release`, and `xrEndFrame` with one projection layer. With `should_render`
 false, invalid view orientation, or a renderer error, the frame is ended with no
 layers (renderer errors are then returned).
+
+Stereo swapchains are constructed together: a right-eye creation/import failure
+publishes neither eye, and retry constructs a complete pair. Imported-image HAL
+callbacks retain their swapchain, session, instance and runtime library until
+wgpu finishes deferred cleanup; session teardown waits for GPU work and destroys
+its private imports. The callbacks do not capture the wgpu device itself.
+An acquire/wait/release or image-lock failure makes the session terminal and
+invalidates controls/poses; a later `frame` does no image work, and the host must
+recreate the session. Unwaited images are never released as error recovery.
+A renderer error remains retryable after both images are released successfully.
 
 Reference space: `stage` (floor-level play area) falls back to `local` when the
 runtime lacks STAGE; the fallback is listed in `XrSession::notes()`.
@@ -175,7 +189,10 @@ deadzone `thumbstick_deadzone`); `InputDevices` resolves the tokens against it
 with the usual edge, quarantine and disconnect handling. Poses are in the
 `XrTracking` resource (`head`, `left`/`right` `grip` and `aim`, each with
 `tracked`), in the reference space; compose with the rig entity's `Transform`
-for world space.
+for world space. Focus loss, STOPPING, EXITING, session loss and instance loss
+immediately disconnect controls and invalidate all poses, even if no further frame
+runs. Unfocused frames keep neutral input/tracking; sampling failures publish no
+partial or stale snapshot. Publishing a no-session status also resets `XrTracking`.
 
 ## Haptics
 
@@ -212,9 +229,14 @@ and documented by `component_schema`.
 
 `engine-xr` exposes rendering only through `XrViewRenderer`
 (`render_views(&XrFrameContext)`): the XR device and queue, the predicted
-display time, and per eye an `XrRenderTarget` (view data, swapchain
-`wgpu::Texture` and view, format). `TestPattern` implements it; `MirrorBlit`
-copies an eye into a texture created on the XR device.
+display time, and per eye an `XrRenderTarget` (view data, wgpu-owned
+`wgpu::Texture` and view, format). Renderers may retain texture/view clones and
+recorded commands safely across frames and session teardown. Runtime-owned
+images and commands referencing them never cross this safe API boundary. The
+host blits each rendered eye to its acquired swapchain image before release,
+using matching sRGB/linear formats. This costs one extra colour texture and one
+fullscreen blit per eye. `TestPattern` implements the adapter; `MirrorBlit`
+also copies an owned eye into a desktop texture created on the XR device.
 
 The desktop renderer (`engine-desktop`) is not wired yet because it lacks two
 things owned by the rendering domain (program contract 1):
@@ -263,6 +285,7 @@ GPU helper checks (no headset; any Vulkan GPU):
 
 ```text
 cargo test -p engine-xr --test gpu -- --ignored --test-threads=1
+cargo test -p engine-xr --lib retained_eye_textures_views_and_commands_survive_the_render_owner -- --ignored --nocapture
 ```
 
 ## Limitations

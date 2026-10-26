@@ -156,20 +156,25 @@ pub struct XrSystem {
 }
 
 /// An OpenXR instance plus the library that implements it.
+///
+/// Raw OpenXR objects cannot escape this owner: they are cloneable but do not
+/// retain the dynamically negotiated runtime library.
+/// ```compile_fail
+/// fn escape(instance: &engine_xr::XrInstance) {
+///     let _unowned_instance = instance.raw().clone();
+/// }
+/// ```
 pub struct XrInstance {
     pub(crate) instance: openxr::Instance,
     runtime: String,
     vulkan_enable2: bool,
     /// Last field: keeps the runtime library mapped until after the instance drops.
-    _library: LibraryGuard,
+    pub(crate) _library: LibraryGuard,
 }
 impl XrInstance {
     /// Runtime name and version from `xrGetInstanceProperties`.
     pub fn runtime(&self) -> &str {
         &self.runtime
-    }
-    pub fn raw(&self) -> &openxr::Instance {
-        &self.instance
     }
     /// Whether the runtime offers `XR_KHR_vulkan_enable2`.
     pub fn supports_vulkan_enable2(&self) -> bool {
