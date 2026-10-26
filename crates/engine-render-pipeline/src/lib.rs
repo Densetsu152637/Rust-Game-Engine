@@ -76,7 +76,7 @@ pub use post::{
 };
 pub use resources::{ENGINE_VERTEX_LAYOUT, EngineVertex, GpuMesh, GpuTexture, TEXTURE_USAGES};
 pub use shader::{LIT_WGSL, MaterialTarget, ShaderComposer, compose_material, validate_wgsl};
-pub use shadows::{ShadowAtlasConfig, cascade_splits};
+pub use shadows::{ShadowAtlasConfig, ShadowRenderView, cascade_splits};
 pub use streams::{MAX_STREAMS, StreamMode, TextureStreams};
 pub use targets::{
     DEPTH_FORMAT, FrameTargets, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT,
