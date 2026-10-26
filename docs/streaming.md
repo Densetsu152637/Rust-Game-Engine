@@ -88,6 +88,7 @@ Authored, schema-validated and editable through `component_set`.
 | `camera_source` | true | every active `Camera3D` is a priority-0 source |
 | `synchronous` | false | read cells on the calling thread in the same tick (deterministic; tests/tools) |
 | `hlod`, `hlod_radius` | true, 0 | show proxies of unloaded cells; only within `hlod_radius` of a source (0 = all) |
+| `hlod_max_proxies` | 256 | most proxies shown at once (1..=65536), nearest to a source first |
 | `layers` | `[]` | `[{name, enabled}]`; unlisted layers are enabled |
 
 `engine.StreamingSource` (requires `Transform`): `enabled`, `priority` (integer, higher
@@ -99,7 +100,10 @@ effect on a running world.
 
 Invalid combinations are rejected by `Project::validate_scene` (load, `scene_edit`,
 `component_set`): radii order, ranges, duplicate layer names, a `manifest` that is not a
-`partition` asset.
+`partition` asset. `Project::validate` also loads every cell file of a `partition` asset and
+runs the feature-component validators (`Project::validate_feature_components`: terrain,
+foliage, water, tilemap, PCG, streaming, coordinates, acoustics) on it; diagnostics name
+the cell file.
 
 ## Runtime behaviour
 
@@ -120,7 +124,8 @@ Every tick, in the world `pre_simulation` hook (before `simulation::step`):
    back over a channel; `synchronous` does it inline.
 4. **Apply** finished reads on the main thread in rank order within `loads_per_tick` and
    `bytes_per_tick`: the cell is checked (no entity id already in the world, every `parent`
-   present), its roots are shifted, entities are spawned like scene entities
+   present, and the same feature-component validators as project validation pass, so for
+   example a terrain with a missing asset is rejected here), its roots are shifted, entities are spawned like scene entities
    (`StreamedCell` marker added), custom components hydrated. A failing cell spawns nothing,
    logs a diagnostic, raises `streaming.cell_failed` and backs off.
 5. **Proxies**, **status**.
@@ -146,7 +151,14 @@ the proxy is despawned, so exactly one of the two is ever drawn (tests compare
 `extract_scene_frame` meshes with the cell states every tick). Proxies use the existing CPU
 mesh path, so headless runs and render frames work and nothing can draw twice; they are not
 a GPU `PipelineFeature` and no GPU test applies. Proxy meshes are read on the main thread when
-first needed (small files, cached, at most 64 spawns per tick).
+first needed (small files, at most 64 spawns per tick).
+
+Proxies are bounded: at most `hlod_max_proxies` (default 256) are shown at once. Candidates
+are ranked by distance to the nearest source (ties by cell key); proxies that fall outside
+the cap are despawned and the ranking is re-evaluated every tick. Proxy meshes are cached
+per file with least-recently-used eviction (256 soft entries); files of currently shown
+proxies are never evicted, so a shown proxy is never re-read. `PartitionStatus.proxy_mesh_reads`
+counts the actual disk reads.
 
 `streaming_hlod` builds them offline: for each cell it takes the `MeshRenderer` entities
 (composing the parent chain), merges them with `engine_mesh_lod::build_hlod` into one cluster

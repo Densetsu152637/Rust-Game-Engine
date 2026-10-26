@@ -164,6 +164,12 @@ and spawns the new ones in the same tick, before transforms are refreshed:
   `instantiate_prefab`). Components of prefab entities are attached, but scripts are not
   started for runtime-spawned entities.
 
+When a volume entity disappears (despawned, or its streamed cell unloads) or loses its
+`engine.PcgVolume`, the next tick despawns its whole output and drops its `PcgStatus` entry.
+A generated id that already belongs to an entity the volume does not own (two volumes with
+the same id, say) fails that volume's attempt with `pcg.entity.id_collision` instead of
+overwriting the other entity's lookup entry.
+
 Generation is deterministic: the same project, volume values and surface give the same ids
 and transforms on every run. A failed attempt (bad graph, unknown surface, missing asset,
 limit exceeded) keeps the previous output, appends `pcg <volume>: ...` lines to the runtime

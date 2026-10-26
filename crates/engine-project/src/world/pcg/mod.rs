@@ -33,6 +33,7 @@ pub fn install(world: &mut World) -> Result<()> {
     world.init_resource::<PcgSurfaceRegistry>();
     world.init_resource::<PcgNodes>();
     world.init_resource::<PcgStatus>();
+    world.init_resource::<generate::PcgOwned>();
     Ok(())
 }
 pub fn pre_simulation(world: &mut World, _dt: f32) -> Result<()> {

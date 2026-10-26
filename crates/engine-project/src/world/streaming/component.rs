@@ -61,6 +61,8 @@ pub struct WorldPartition {
     pub hlod: bool,
     /// Only show proxies of cells within this many metres of a source; `0` is unlimited.
     pub hlod_radius: f64,
+    /// Most HLOD proxies shown at once; the nearest to a source win.
+    pub hlod_max_proxies: u32,
     pub layers: Vec<DataLayerSetting>,
 }
 
@@ -78,6 +80,7 @@ impl Default for WorldPartition {
             synchronous: false,
             hlod: true,
             hlod_radius: 0.0,
+            hlod_max_proxies: 256,
             layers: Vec::new(),
         }
     }
@@ -96,6 +99,9 @@ impl WorldPartition {
         }
         if !(self.hlod_radius.is_finite() && (0.0..=MAX_RADIUS).contains(&self.hlod_radius)) {
             return Err(bad("hlod_radius must be in [0, 1e9]"));
+        }
+        if !(1..=65_536).contains(&self.hlod_max_proxies) {
+            return Err(bad("hlod_max_proxies must be in 1..=65536"));
         }
         if !(1..=1024).contains(&self.loads_per_tick) {
             return Err(bad("loads_per_tick must be in 1..=1024"));
@@ -210,6 +216,7 @@ pub(super) fn descriptors() -> Vec<ComponentDescriptor> {
                     "synchronous": {"type": "boolean", "description": "Read cells on the calling thread (deterministic)."},
                     "hlod": {"type": "boolean", "description": "Show HLOD proxies of cells that are not loaded."},
                     "hlod_radius": number(0.0, MAX_RADIUS, "Only show proxies within this distance of a source; 0 is unlimited."),
+                    "hlod_max_proxies": integer(1, 65_536, "Most HLOD proxies shown at once, nearest to a source first."),
                     "layers": {"type": "array", "maxItems": MAX_LAYERS,
                         "description": "Data layers and whether they are streamed; unlisted layers are enabled.",
                         "items": {"type": "object", "additionalProperties": false, "required": ["name"],

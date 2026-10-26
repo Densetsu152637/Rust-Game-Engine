@@ -126,17 +126,59 @@ fn project_validates_tile_assets_and_component() {
         level_json(|_| {}),
     );
     assert!(Project::load(unknown.dir.path().join("project.json")).is_err());
-    // Semantic failures (missing tileset asset) surface as a tick diagnostic.
+    // Semantic failures (missing tileset asset) are rejected by scene validation.
     let missing = Fixture::new(
         json!({"at":[0,0,0],"player":[0,0,0],"data":{"tileset":"nope"}}),
         level_json(|_| {}),
     );
-    let mut runtime = missing.runtime();
-    let error = runtime.tick(0.1, InputSnapshot::default()).unwrap_err();
+    let error = Project::load(missing.dir.path().join("project.json")).unwrap_err();
     assert!(
         error.to_string().contains("project.asset.unknown"),
         "{error}"
     );
+}
+
+fn validation_error(data: Value) -> String {
+    let fixture = Fixture::new(
+        json!({"at":[0,0,0],"player":[0,0,0],"data":data}),
+        level_json(|_| {}),
+    );
+    Project::load(fixture.dir.path().join("project.json"))
+        .expect_err("scene must be rejected")
+        .to_string()
+}
+
+#[test]
+fn scene_validation_rejects_invalid_tilemaps() {
+    // Empty tileset id (`engine.Tilemap {}`).
+    let error = validation_error(json!({}));
+    assert!(
+        error.contains("tilemap.component.invalid") && error.contains("entity world"),
+        "{error}"
+    );
+    // Unknown tileset id.
+    let error = validation_error(json!({"tileset":"nope"}));
+    assert!(error.contains("project.asset.unknown"), "{error}");
+    // Wrong asset kind for the tileset (a texture) and for the map (a tileset).
+    let error = validation_error(json!({"tileset":"atlas"}));
+    assert!(error.contains("project.asset.kind"), "{error}");
+    let error = validation_error(json!({"tileset":"tiles","map":"tiles"}));
+    assert!(error.contains("project.asset.kind"), "{error}");
+    // Inline document that does not parse, and one with an unknown tile id.
+    let error = validation_error(json!({"tileset":"tiles","inline":{"bogus":1}}));
+    assert!(
+        error.contains("tilemap.inline.invalid") || error.contains("tilemap."),
+        "{error}"
+    );
+    let valid: Value = serde_json::from_str(&level_json(|m| {
+        m.layer_mut("ground")
+            .unwrap()
+            .set([0, 0], 9999, 0, None)
+            .unwrap();
+    }))
+    .unwrap();
+    let error = validation_error(json!({"tileset":"tiles","inline":valid}));
+    assert!(error.contains("tilemap."), "{error}");
 }
 
 #[test]

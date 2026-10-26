@@ -277,8 +277,16 @@ flow: `tilemap_create_tileset` (register the returned `tileset` asset in `projec
 `tilemap_define_rules`, `tilemap_create` (register the `tilemap` asset), `tilemap_paint`,
 `tilemap_query` / `tilemap_info` to verify, then `component_set` an `engine.Tilemap`
 component onto an entity. Creation tools never overwrite; `tilemap_paint` applies up to
-256 ops atomically and rewrites the file with a temp-file rename. Tools never execute
-game code.
+256 ops atomically and rewrites the file with a temp-file rename. `tilemap_paint` and
+`tilemap_define_rules` take an optional `expected_hash` (the `hash` of an earlier result or
+`tilemap_info`); when the file no longer has that content hash they fail with `stale_hash`
+and write nothing. Tools never execute game code.
+
+Scene validation (`Project::validate`, scene load) checks every `engine.Tilemap`: the
+component itself, that `tileset` is a loadable `tileset` asset, that `map` is a `tilemap`
+asset consistent with it and that an `inline` document parses against the tileset. Failures
+name the entity (`tilemap.component.invalid`, `project.asset.unknown`, `project.asset.kind`,
+`tilemap.inline.invalid` or the tilemap crate's own codes).
 
 ## Deferred and limits
 
