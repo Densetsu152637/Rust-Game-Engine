@@ -56,6 +56,7 @@ impl Project {
                 "tilemap",
                 "terrain",
                 "foliage",
+                "gameplay",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -286,6 +287,9 @@ impl Project {
                         None,
                     )
                     .map_err(|e| Error::new(e.code, e.message))?;
+                }
+                "gameplay" => {
+                    crate::gameplay::load_definitions(self, &asset.id)?;
                 }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;

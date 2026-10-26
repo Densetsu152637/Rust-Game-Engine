@@ -1662,6 +1662,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-gameplay"
+version = "0.1.0"
+dependencies = [
+ "engine-graph",
+ "engine-net-predict",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-graph"
 version = "0.1.0"
 dependencies = [
@@ -1883,6 +1893,7 @@ dependencies = [
  "engine-destruction",
  "engine-fluids",
  "engine-foliage",
+ "engine-gameplay",
  "engine-graph",
  "engine-locale",
  "engine-material-graph",

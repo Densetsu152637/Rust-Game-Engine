@@ -47,6 +47,7 @@ fn build() -> GraphKinds {
         engine_audio::graph::kind(),
         engine_ai::state_tree::kind(),
         engine_material_graph::material_kind(),
+        engine_gameplay::dialogue::kind(),
     ];
     GraphKinds {
         kinds: kinds.into_iter().map(|k| (k.name.clone(), k)).collect(),
