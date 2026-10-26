@@ -74,3 +74,14 @@ position through the `WM_COMMAND` path, undoes it, selects typed assets, checks 
 geometry and closes automatically, verifying the scene file is unchanged. It is
 structural evidence, not visual review or physical input testing, and needs an
 interactive desktop.
+
+## Graph authoring
+
+Project graph assets have an **Open graph <asset id>** action in Assets. The Graph
+view uses the common `engine-graph` model and registered domain schemas for
+behavior trees, state trees and animation. The native canvas provides node/port
+editing, validated properties, history, diagnostics and revision-aware persistence.
+Scene/Graph selectors retain independent documents; Save/Undo/Redo target the
+active view. Dirty close protects both, and incomplete drafts export separately
+without replacing the active asset. Play/reload reads saved graph asset data.
+See [Native graph editor](editor-graph.md) for interaction and persistence contracts.

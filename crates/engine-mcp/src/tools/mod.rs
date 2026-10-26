@@ -5,6 +5,7 @@ mod acoustics;
 mod assets;
 mod components;
 mod edit;
+mod editor;
 mod files;
 mod graph;
 mod locale;
@@ -87,6 +88,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(ui::tools());
     tools.extend(networking::tools());
     tools.extend(graph::tools());
+    tools.extend(editor::tools());
     tools
 }
 

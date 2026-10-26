@@ -1611,12 +1611,24 @@ dependencies = [
  "eframe",
  "engine-core",
  "engine-desktop",
+ "engine-editor-graph",
  "engine-editor-settings",
  "engine-project",
  "glam 0.34.1",
  "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "engine-editor-graph"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "engine-graph",
+ "engine-project",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1682,6 +1694,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "engine-editor-settings",
  "engine-graph",
  "engine-project",
  "epaint_default_fonts",
