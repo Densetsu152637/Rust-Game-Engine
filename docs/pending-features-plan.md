@@ -3,7 +3,7 @@
 Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
 Initial plan commit: `7d614e9`. Main contains accepted audio/server changes through
 `ebc765c`. Larger branches are assembled in `codex/pending-integration`, currently
-`8afd976`. Validated milestones include XR, animation graph/IK/morphs, ML, scene
+`3b4f289` before this plan update. Validated milestones include XR, animation graph/IK/morphs, ML, scene
 editing/hot reload, shared shadows, compressed decoding and video. The branch also
 contains source-reviewed retargeting, procedural/authored audio, voice, sequencer,
 UI presentation, material graphs, editor graphs/settings and physics-audio work
@@ -53,7 +53,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Handoff: request/consume completed commits; the manager reported 4,705 passing workspace tests and three build-timeout failures
   whose isolated suite passed 14/14; that branch-only evidence is
   not validation of the merged revision. World is now integrated into local main;
-  merged-revision workspace, MCP/tooling and GPU gates remain pending. Networking
+  Merged main `598e395` passes formatting and strict workspace Clippy using an isolated build cache. The locked workspace test run is active; merged-revision MCP/tooling and GPU gates remain pending. Networking
   and World registrations are both retained; recomputed CLI tool totals are
   read 31, write 62, exec 34, write+exec 65. The Claude manager retains cleanup
   of its own worktree/branches after main ancestry is confirmed.
@@ -141,8 +141,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Acceptance: fake/native caster GPU readback, actual terrain/foliage shadows,
   ordered UI pixels and compositing contract tests; hardware FG separately.
 - Outcome: shared-shadow API `0aba854` integrated as `f56981d`; 42 CPU and 17 real
-  Vulkan tests, scoped strict Clippy and fmt passed. Terrain/foliage adoption is
-  still pending the World handoff. Ordered overlays, Composite ping-pong and late
+  Vulkan tests, scoped strict Clippy and fmt passed. World is merged. Terrain/foliage shared-atlas adoption is now being implemented in `codex/world-shadows`; water casting is opt-in opaque depth, disabled by default. Casters must cover every allocated light tile, preserve off-camera casters and avoid advancing motion/LOD histories in Shadow. Ordered overlays, Composite ping-pong and late
   UI replay across generated frames are source-reviewed at `ca609ef`, including
   lazy RT registration and disabled-hook repairs; execution remains pending.
 
@@ -307,7 +306,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   explicit hardware limitations and reconciliation of every task worktree.
 - Outcome: not yet established. Source-only assembly in the isolated integration
   branch does not count as an accepted feature or final merge. Combined native
-  checks use one root-owned build slot and the populated morph-validation cache;
+  checks use one root-owned build slot and a dedicated cache per checkout; never share Cargo target directories across main and integration after observed stale dependency metadata;
   required project, editor, MCP, GPU and final workspace/example gates follow.
 
 ## Session worktree record
@@ -353,3 +352,44 @@ in `target/task-baseline`. The required suite will run on the integrated revisio
 All heavy validation now uses one root-scheduled build slot with `-j1`; source
 work remains parallel within the eight-worker limit. Branch test results do not
 replace final integration checks.
+
+## Current integration and rendering execution checkpoint
+
+Assembled revision `3b4f289` contains World, native Hi-Z `9895e8`, depth/motion
+post-effects `71a0eb`, and indirect-lighting resources `d56e751`. These three
+rendering slices passed independent source review; CPU/GPU execution remains
+pending. No authored IBL/lightmap or post-effects integration is claimed yet.
+Main `598e395` is frozen during merged-World tests; it contains World's `255035b`.
+The integration MCP union is read 34, write-enabled 67, CLI exec 37 and both 70;
+provider-free exec remains 34. Asset kinds total 26 unique entries.
+
+Project execution before World produced 2,035 passes and nine fixture failures.
+The unknown-kind fixture used newly valid video, material scenes omitted entity
+names, and sequencer skinning fixtures omitted Transform/Camera3D. Repairs
+`3afb4f4`, `ba9d8ec` and `0d36ad8` are assembled; reruns remain pending. Sequencer
+origin-rebase integration exposed a separate exact AbsolutePosition baseline
+ownership defect; its source repair and independent recheck are active.
+
+Next Hi-Z slice: the existing Hi-Z worker owns a new native pipeline visibility
+module and tests consuming the actual GPU visibility mask, stably compacting
+existing instance records and generating indexed/nonindexed indirect arguments.
+Per-batch group-3 ranges are aligned and first-instance is zero. GPU tests must
+render diagnostic tiles with depth disabled and inspect actual surviving counts;
+a mask-only test is insufficient. No shared instance/material ABI changes.
+
+Subsequent serialized integration adds trusted OccluderDepth then Visibility
+stages before Opaque, using a separate depth texture containing only certified
+current-frame geometry. Existing custom-shader prepass depth is not trusted.
+CPU LOD is selected before all camera prepasses; its chain bounds enclose every
+level, projection uses all transformed corners and uncertainty stays visible.
+Custom displacement/alpha, unsupported World paths, query overflow and missing
+capabilities take an explicit visible/direct fallback. Shadow uses its own caster
+plan, independent of camera visibility. Authored MeshLods and desktop upload,
+actual selected geometry/hysteresis, occluder movement, resize/jitter/multiview,
+and off-camera shadow regressions remain mandatory before feature acceptance.
+
+Build-cache ownership: main uses target/world-merge-validation/build; integration
+will use its own target/validation-build. The old morph cache is retained only as
+evidence. Full integration cargo fmt --all hit Windows command-line error 206;
+affected packages formatted individually. Whole-workspace formatting still needs
+a successful package-batched check or the shorter main path.
