@@ -50,7 +50,9 @@ pub enum VoiceRoutingKind {
 
 /// Creates one decoder per speaker (and the encoder), so a real codec plugs in natively.
 #[derive(Clone)]
-pub struct VoiceCodecFactory(pub Arc<dyn Fn() -> Box<dyn VoiceCodec> + Send + Sync>);
+pub struct VoiceCodecFactory(
+    pub Arc<dyn Fn() -> engine_net_voice::Result<Box<dyn VoiceCodec>> + Send + Sync>,
+);
 impl fmt::Debug for VoiceCodecFactory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("VoiceCodecFactory")

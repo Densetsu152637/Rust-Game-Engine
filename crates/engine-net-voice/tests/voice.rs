@@ -38,7 +38,7 @@ fn raw_pcm_round_trip_through_router_and_receiver() {
     let mut sender = VoiceSender::new(codec(), limits.clone(), 0).unwrap();
     let mut router = router(VoiceRouting::Global, &[1, 2]);
     let mut receiver =
-        VoiceReceiver::new(limits, JitterConfig::default(), Box::new(codec)).unwrap();
+        VoiceReceiver::new(limits, JitterConfig::default(), Box::new(|| Ok(codec()))).unwrap();
     let samples = sender.frame_samples();
     assert_eq!(samples, 320);
     let mut played = Vec::new();
@@ -71,7 +71,7 @@ fn jitter_buffer_reorders_conceals_losses_and_adapts_delay() {
     let mut sender = VoiceSender::new(codec(), limits.clone(), 0).unwrap();
     let mut router = router(VoiceRouting::Global, &[1, 2]);
     let mut receiver =
-        VoiceReceiver::new(limits, JitterConfig::default(), Box::new(codec)).unwrap();
+        VoiceReceiver::new(limits, JitterConfig::default(), Box::new(|| Ok(codec()))).unwrap();
     let samples = sender.frame_samples();
     let mut rng = Rng(7);
     let frames = 500u32;
@@ -167,7 +167,7 @@ fn codec_native_concealment_hook_is_preferred() {
     let mut receiver = VoiceReceiver::new(
         limits,
         JitterConfig::default(),
-        Box::new(|| Box::new(Native) as Box<dyn VoiceCodec>),
+        Box::new(|| Ok(Box::new(Native) as Box<dyn VoiceCodec>)),
     )
     .unwrap();
     let mut router = router(VoiceRouting::Global, &[1, 2]);
@@ -185,6 +185,57 @@ fn codec_native_concealment_hook_is_preferred() {
     let concealed: Vec<_> = outputs.iter().filter(|f| f.concealed).collect();
     assert_eq!(concealed.len(), 1);
     assert!(concealed[0].pcm.iter().all(|&s| s == 7));
+}
+
+#[test]
+fn fallible_decoder_factory_propagates_and_preserves_speaker_capacity() {
+    let limits = VoiceLimits {
+        max_speakers: 1,
+        ..VoiceLimits::default()
+    };
+    let mut sender = VoiceSender::new(codec(), limits.clone(), 0).unwrap();
+    let bytes = sender.encode_frame(&tone(0, 320), None, false).unwrap();
+    let mut router = router(VoiceRouting::Global, &[1, 2]);
+    let down = router.route(1, &bytes, 0.).unwrap().remove(0).1;
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let mut receiver = VoiceReceiver::new(
+        limits,
+        JitterConfig::default(),
+        Box::new(move || {
+            let call = observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if call == 0 {
+                Ok(codec())
+            } else {
+                Err(VoiceError::Codec("decoder unavailable"))
+            }
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        receiver.receive(&down, 0.),
+        Err(VoiceError::Codec("decoder unavailable"))
+    );
+    assert_eq!(receiver.speakers().count(), 0);
+}
+
+#[test]
+fn sender_elapsed_media_time_does_not_consume_sequence() {
+    let limits = VoiceLimits::default();
+    let mut sender = VoiceSender::new(codec(), limits.clone(), 0).unwrap();
+    let first = UplinkPacket::decode(
+        &sender.encode_frame(&[0; 320], None, false).unwrap(),
+        &limits,
+    )
+    .unwrap();
+    sender.advance_timestamp(32_000);
+    let next = UplinkPacket::decode(
+        &sender.encode_frame(&[0; 320], None, false).unwrap(),
+        &limits,
+    )
+    .unwrap();
+    assert_eq!((first.sequence, next.sequence), (0, 1));
+    assert_eq!(next.timestamp, 32_320);
 }
 
 #[test]
@@ -275,8 +326,12 @@ fn malformed_packets_are_rejected_without_panics() {
     };
     assert!(UplinkPacket::decode(&good, &small).is_err(), "payload cap");
 
-    let mut receiver =
-        VoiceReceiver::new(limits.clone(), JitterConfig::default(), Box::new(codec)).unwrap();
+    let mut receiver = VoiceReceiver::new(
+        limits.clone(),
+        JitterConfig::default(),
+        Box::new(|| Ok(codec())),
+    )
+    .unwrap();
     let mut r = router(VoiceRouting::Global, &[1, 2]);
     let mut rng = Rng(42);
     for i in 0..20_000 {
@@ -305,8 +360,12 @@ fn receiver_bounds_speakers_and_buffers() {
         max_buffered_frames: 4,
         ..VoiceLimits::default()
     };
-    let mut receiver =
-        VoiceReceiver::new(limits.clone(), JitterConfig::default(), Box::new(codec)).unwrap();
+    let mut receiver = VoiceReceiver::new(
+        limits.clone(),
+        JitterConfig::default(),
+        Box::new(|| Ok(codec())),
+    )
+    .unwrap();
     let payload = vec![0u8; 640];
     let packet = |speaker, sequence| DownlinkPacket {
         speaker,

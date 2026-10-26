@@ -11,7 +11,8 @@ Ownership is split with the audio domain (program contract 4):
 - **Audio domain**: capture, real codecs (for example Opus) and spatial mixing.
 
 Real codecs plug in through `VoiceCodec`. `RawPcmCodec` (16-bit little-endian PCM) is the
-uncompressed reference and test path.
+uncompressed reference and test path. [`engine-voice-audio`](voice-audio.md) supplies a
+fixed 48 kHz Opus/CPAL/PCM stream bridge with explicit microphone start.
 
 Packets travel on `VOICE_LANE` (`Lane::VOICE`, 4) with `VOICE_DELIVERY` (`Unreliable`), over
 any `engine_network::MessageEndpoint`. Voice is latency-critical, so lost frames are
@@ -34,16 +35,19 @@ default `VoiceLimits::max_payload_bytes` is 1000.
      bytes.
    - Errors are soft and per packet (`Malformed`, `RateLimited`, `Invalid`). The application
      decides whether repeated failures justify a disconnect.
-3. **Listener**: `VoiceReceiver::new(limits, JitterConfig, codec_factory)`. Call
+3. **Listener**: `VoiceReceiver::new(limits, JitterConfig, codec_factory)`. The factory is
+   fallible and creates a separate matching-profile decoder per speaker. Call
    `receive(bytes, now_ms)` for each downlink payload received from `SERVER_PEER` (the
    speaker ID inside is trusted because only the router stamps it; never feed payloads from
    other peers), and `pull(now_ms)` once per frame interval on the audio clock.
    - `pull` returns at most one `VoiceOutput { speaker, pcm, position, concealed }` per
-     active speaker.
+     active speaker, with `end_of_talkspurt` set on the drained final frame.
    - The audio domain mixes and spatializes the output using `position`.
 
 All times are caller-supplied milliseconds on one monotonic clock, which keeps tests
 deterministic.
+`VoiceSender::advance_timestamp(samples)` preserves elapsed media time when captured
+samples are muted or dropped; it does not consume a packet sequence number.
 
 ## Routing
 
@@ -166,10 +170,10 @@ Peers are untrusted.
 - Sequence numbers are 32-bit, which wraps after about 2.7 years of continuous 20 ms frames.
   Wraparound is not handled beyond the resynchronisation rule.
 
-Not implemented here:
+Not implemented in `engine-net-voice` itself:
 
-- **Capture, encoding codecs, echo cancellation, voice activity detection and spatial
-  mixing.** These belong to the audio domain.
+- **Capture, encoding codecs and spatial mixing.** The optional `engine-voice-audio`
+  bridge handles those. Echo cancellation and voice activity detection remain absent.
 - **Engine-project components and MCP tools for voice.** These are tracked in the networking
   integration work.
 
