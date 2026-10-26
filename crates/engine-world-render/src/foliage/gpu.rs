@@ -167,6 +167,8 @@ fn pipeline(
     shadow: bool,
 ) -> wgpu::RenderPipeline {
     let instance = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4];
+    let color_targets = [Some(wgpu::ColorTargetState::from(HDR_FORMAT))];
+    let targets = if shadow { &[][..] } else { &color_targets[..] };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(vertex),
         layout: Some(layout),
@@ -201,11 +203,7 @@ fn pipeline(
             module,
             entry_point: Some(if shadow { "fs_shadow" } else { "fs_main" }),
             compilation_options: Default::default(),
-            targets: if shadow {
-                &[]
-            } else {
-                &[Some(HDR_FORMAT.into())]
-            },
+            targets,
         }),
         multiview_mask: None,
         cache: None,
