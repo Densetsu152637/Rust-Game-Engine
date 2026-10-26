@@ -74,10 +74,27 @@ separable Smith masking and Schlick Fresnel, including the existing shader's
 numerical regularization: NdotV >= 1e-4, distribution denominator >= 1e-7,
 half-vector length and local Smith denominator >= 1e-6, and final specular
 denominator >= 1e-6. Geometry retains the actual view direction before the NdotV
-floor. It importance-samples ideal GGX half vectors with a deterministic
-bit-reversal sequence, then multiplies by D_shader/D_ideal: the regularized
-shader's distribution cannot cancel against the ideal sampling PDF. No shared
-BRDF shader is changed by this native preparation. Texel centers are x=NdotV and
+floor. CPU preparation uses f64 inversion/accumulation and deterministic bit-reversal
+samples of the actual capped GGX distribution. Ideal GGX sampling undersamples its
+remaining tail after the shader floor suppresses the narrow peak, especially at
+low roughness and grazing angles. Precision promotion alone does not repair that
+coverage problem. This matches the mathematical regularized shader, without
+claiming bitwise agreement with its GPU f32 arithmetic.
+
+For `u=NdotH^2`, `a=max(roughness,0.045)^4`, `k=sqrt(1e-7/pi)` and
+`d=1-(1-a)*u`, the unnormalized density is `pi*D=a/max(d^2,k^2)`.
+When `a>=k`, it is ordinary GGX with mass `Z=1`. Otherwise the CDF changes at
+`u0=(1-k)/(1-a)`: lower mass is `T=a/(1-a)*(1/k-1)` and the constant-density
+upper mass is `C=a*(k-a)/((1-a)*k^2)`, with `Z=T+C`. Inverting these two branches
+spends samples on the distribution that survives the cap. The half-vector PDF is
+`D_sample*NdotH/Z`, and the light-direction PDF divides by `4*VdotH`.
+Integration retains both `Z` and `D_shader/D_sample`, evaluating the shader's
+reconstructed, length-floored half vector separately. No shared BRDF shader is
+changed by this native preparation. Independent numerical density/CDF regression
+sources cover both regimes, their transition and the roughness-one endpoint;
+light-direction quadrature retains its original accuracy thresholds. Bounded
+standalone CPU diagnostics checked these formulas; Cargo revalidation remains a
+separate gate. Texel centers are x=NdotV and
 y=roughness at `(i+0.5)/size`. Size is 8..128, samples 64..4096, with at most
 16,777,216 sample evaluations. This approximation is BRDF preparation, not lighting
 baking. The LUT uploads as R=A, G=B, B=0, A=1 in `Rgba16Float`.
