@@ -124,7 +124,7 @@ impl GraphCanvas {
         if keyboard.1 {
             self.cancel_gesture();
         }
-        if !ui.ctx().wants_keyboard_input() {
+        if !ui.ctx().egui_wants_keyboard_input() {
             if keyboard.2 {
                 self.cancel_gesture();
                 if keyboard.3 {
@@ -371,7 +371,7 @@ impl GraphCanvas {
             );
             let response = ui.interact(
                 header,
-                Id::new(("graph_node", node.id.as_str())),
+                Id::unique(("graph_node", node.id.as_str())),
                 Sense::click_and_drag(),
             );
             if response.clicked() || response.drag_started() {
@@ -442,7 +442,7 @@ impl GraphCanvas {
                 let hit = Rect::from_center_size(center, Vec2::splat(18.0));
                 let response = ui.interact(
                     hit,
-                    Id::new(("graph_port", node.id.as_str(), &port.name)),
+                    Id::unique(("graph_port", node.id.as_str(), &port.name)),
                     Sense::click_and_drag(),
                 );
                 if !session.is_read_only() {
