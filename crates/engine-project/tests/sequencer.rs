@@ -246,7 +246,7 @@ fn natural_completion_holds_endpoint_until_explicit_stop() {
     assert_eq!(x(&rt), 8.);
 }
 #[test]
-fn ancestor_and_retained_skin_pose_dependencies_are_rejected() {
+fn ancestor_of_world_space_physics_writer_is_rejected() {
     let dir = fixture();
     let mut rt = runtime(&dir);
     rt.app_mut().world_mut().spawn((
@@ -254,13 +254,5 @@ fn ancestor_and_retained_skin_pose_dependencies_are_rejected() {
         Parent("actor".into()),
         simulation::PhysicsBody3D::default(),
     ));
-    assert!(sequencer::prepare(rt.app_mut().world_mut()).is_err());
-    let mut rt = runtime(&dir);
-    rt.app_mut().world_mut().spawn(simulation::SkinBinding {
-        model: "unused".into(),
-        mesh_node: 0,
-        primitive: 0,
-        bindings: vec!["actor".into()],
-    });
     assert!(sequencer::prepare(rt.app_mut().world_mut()).is_err());
 }

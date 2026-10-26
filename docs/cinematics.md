@@ -101,8 +101,11 @@ reacquires ownership in `Paused`. Editing the authored component replaces its pl
 the edited autoplay/loop/speed values; native speed changes do not edit the authored component.
 
 Runtime startup applies time zero without emitting zero-time events. Each runtime tick
-advances sequences after simulation and before network publication and world-transform
-refresh. Native commands apply immediately and refresh world transforms before returning.
+advances sequences before simulation, so local animation, physics synchronization and final
+skin evaluation see the current timeline pose. Network publication and world-transform refresh
+follow simulation. Native commands apply transforms/cameras immediately and refresh retained
+deformed geometry and world transforms before returning. This uses the simulation service's
+`refresh_deformation` operation; it does not advance animation, physics or morph clocks.
 The clock uses f64 seconds; transform keys and interpolation use the existing f32 animation
 contract. Results are deterministic for the same operation/delta stream; floating point
 addition is not claimed to be invariant under arbitrary regrouping of deltas.
@@ -136,18 +139,29 @@ properties may have different sequence owners. Baselines are captured at acquisi
 never replace the whole Transform just to change one property.
 
 Transform targets reject remote network replicas, physics bodies/controllers/vehicles,
-cloth/soft-body writers, navigation/crowd agents, and existing skeletal animation or ragdoll
-bindings, including bindings from other entities and transform ancestors of those writers. Retained SkinBinding nodes, mesh owners and their ancestors are rejected because skinning runs before the sequence step in this milestone. Sequence owners cannot be remote replicas.
-Camera cut acquisition also rejects remote cameras. These checks run on acquisition and every
-operation. If another native writer changes an owned property or camera activation, the
-sequence reports a conflict instead of silently overwriting it. Native systems should stop the
-sequence before taking authority. IK inside AnimationGraphPlayer is covered by the same binding checks. Future independent pose writers require explicit conflict integration before targeting sequenced transforms. Moving a cinematic actor with an animated/skinned descendant is outside this conservative milestone; use ordinary props and cameras until sequence evaluation can join the simulation pose stages.
+cloth/soft-body writers, navigation/crowd agents, and exact existing skeletal animation or
+ragdoll binding targets, including bindings from other entities. Animation and IK inside an
+AnimationGraphPlayer own their bound local poses, so sequences cannot write those same
+transforms. A sequence may move an external common anchor above an animated rig: its local
+pose composes with the graph's child poses. SkinBinding reads transforms and writes deformed
+geometry; it does not own a joint's transform. An otherwise-unowned skin joint is therefore
+a valid sequence target, and final skinning sees that joint's current timeline pose in the
+same runtime tick. Skin geometry is never advertised as an independently controlled clip.
+
+Ancestors of physics/navigation/remote and ragdoll bone writers remain restricted: those
+services retain world-space body, route or replica state rather than only composing local
+animation beneath an anchor. Stop or remove those writers before moving their hierarchy.
+Sequence owners cannot be remote replicas. Camera cut acquisition also rejects remote
+cameras. Authority checks run on acquisition and every operation. If another native writer
+changes an owned local property or camera activation, the sequence reports a conflict instead
+of silently overwriting it. Native systems should stop the sequence before taking authority.
+Future independent pose writers require explicit conflict integration.
 
 Stopping, component removal, authored reconfiguration, scene replacement and runtime shutdown
 restore surviving owned fields only when their current values still equal the sequence's last
 written values and no competing known authority has appeared. Externally changed values and
 new remote/physics authority are preserved. Removed/recreated entities never inherit a stale
-capture. Failure cancels all sequence captures and clears the typed crossing batch. Runtime
+capture. A project operation failure cancels all sequence captures and clears the typed crossing batch; it is not a transactional rollback of every scene service. Cleanup attempts to refresh deformation after restoring owned fields, preserves the original error, and cannot promise a refresh if a model or target is missing. Runtime
 errors follow the normal runtime stop path. Mutating the scene camera set while cuts are owned
 is an error: stop the sequence, modify cameras, then reacquire. Changing a binding to resolve
 to a different live entity requires reauthoring/restarting; silent live rebinding is rejected.
@@ -167,9 +181,11 @@ Focused validation commands (run serially with the project's Rust toolchain):
 
 ```text
 cargo test -j1 -p engine-sequencer
-cargo test -j1 -p engine-project --test sequencer
+cargo test -j1 -p engine-project --test sequencer --test sequencer_skinning
 ```
 
 Tests cover native exact keys, interpolated tracks, reverse/loop seams and ties, seek policies,
 bounded failure, authored runtime transforms and render camera cuts, controls, completion,
 removal/failure cleanup, external ownership, remote/physics conflicts and prefab binding remaps.
+Imported-skin tests verify same-tick joint deformation, animated-rig anchor composition, direct
+graph target conflicts, and seek/stop deformation with immediate render extraction and no tick.

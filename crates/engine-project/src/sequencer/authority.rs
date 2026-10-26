@@ -28,8 +28,8 @@ pub(super) fn resolve(
         })
         .collect()
 }
-/// A local ancestor move also changes the world pose of its descendants. Reject that
-/// when simulation or retained skinning already consumed/will own those poses.
+/// World-space physics/network/navigation services retain authority over descendant poses.
+/// Skeletal animation writes local poses and can compose beneath a cinematic anchor.
 fn affects(world: &World, target: Entity, mut descendant: Entity) -> Result<bool> {
     let mut visited = BTreeSet::new();
     loop {
@@ -48,18 +48,18 @@ fn affects(world: &World, target: Entity, mut descendant: Entity) -> Result<bool
 }
 fn bound_pose(world: &World, target: Entity, owner: Entity, bindings: &[String]) -> Result<bool> {
     if bindings.is_empty() {
-        return affects(world, target, owner);
+        return Ok(target == owner);
     }
     for id in bindings {
         let binding = crate::services::find_entity(world, id)
             .ok_or_else(|| invalid("Existing pose writer binding missing"))?;
-        if affects(world, target, binding)? {
+        if target == binding {
             return Ok(true);
         }
     }
     Ok(false)
 }
-/// Reject known writers and their ancestors, including cross-entity binding dependencies.
+/// Reject overlapping local pose writers; animated-rig anchors and skin readers can compose.
 pub(super) fn pose_authority(world: &World, target: Entity) -> Result<()> {
     world
         .get_entity(target)
@@ -83,23 +83,14 @@ pub(super) fn pose_authority(world: &World, target: Entity) -> Result<()> {
         if let Some(animation) = other.get::<simulation::AnimationPlayer>() {
             if bound_pose(world, target, other.id(), &animation.bindings)? {
                 return Err(invalid(
-                    "Sequence target/descendant already has animation pose authority",
+                    "Sequence target already has animation pose authority",
                 ));
             }
         }
         if let Some(graph) = other.get::<simulation::AnimationGraphPlayer>() {
             if bound_pose(world, target, other.id(), &graph.bindings)? {
                 return Err(invalid(
-                    "Sequence target/descendant already has animation graph pose authority",
-                ));
-            }
-        }
-        if let Some(skin) = other.get::<simulation::SkinBinding>() {
-            if affects(world, target, other.id())?
-                || bound_pose(world, target, other.id(), &skin.bindings)?
-            {
-                return Err(invalid(
-                    "Sequence target/descendant participates in retained skinning",
+                    "Sequence target already has animation graph pose authority",
                 ));
             }
         }

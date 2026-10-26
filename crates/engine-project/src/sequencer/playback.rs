@@ -163,6 +163,9 @@ fn operate(
     });
     if result.is_err() {
         sequences.reset(world);
+        // Cleanup is best-effort if a target/model has disappeared; keep the original error.
+        let _ = crate::simulation::refresh_deformation(world);
+        let _ = crate::refresh_world_transforms(world);
     }
     world.insert_resource(sequences);
     result
@@ -175,7 +178,7 @@ pub fn prepare(world: &mut World) -> Result<()> {
         Ok(vec![])
     })
 }
-/// Called after simulation and before network snapshot/world transform refresh.
+/// Called before simulation so animation, physics synchronization and skinning see this pose.
 pub fn step(world: &mut World, dt: f32) -> Result<()> {
     operate(world, |sequences, world| {
         if !dt.is_finite() || dt < 0. {
@@ -205,6 +208,7 @@ pub fn step(world: &mut World, dt: f32) -> Result<()> {
 }
 /// Native controls act immediately. Call after Runtime::start/hydration. Failures cancel captures.
 /// Stop restores baseline fields; seek acquires at the requested position and defaults to silent.
+/// Retained skin geometry refreshes without advancing simulation clocks before returning.
 pub fn command(world: &mut World, owner: Entity, command: Command) -> Result<()> {
     operate(world, |sequences, world| {
         sequences.sync(world)?;
@@ -229,6 +233,7 @@ pub fn command(world: &mut World, owner: Entity, command: Command) -> Result<()>
         }
         sequences.acquire(world)?;
         sequences.apply(world)?;
+        crate::simulation::refresh_deformation(world)?;
         crate::refresh_world_transforms(world)?;
         Ok(crossings
             .into_iter()
