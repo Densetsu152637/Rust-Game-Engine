@@ -10,6 +10,7 @@ anyhow.workspace = true
 bevy_ecs.workspace = true
 bytemuck.workspace = true
 engine-render-wgpu.workspace = true
+engine-render-hiz = { path = "../engine-render-hiz" }
 glam.workspace = true
 naga = { workspace = true, features = ["wgsl-in"] }
 pollster = "0.4"

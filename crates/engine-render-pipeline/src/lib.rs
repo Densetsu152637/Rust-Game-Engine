@@ -43,6 +43,7 @@ pub mod shadows;
 mod streams;
 mod targets;
 mod view;
+pub mod visibility;
 
 pub use builtin::mesh::{
     GpuInstance, MAX_SCENE_MESHES, MaterialParams, SceneMesh, id_hash, validate_params,
