@@ -29,6 +29,7 @@
 mod builtin;
 mod context;
 mod feature;
+pub mod indirect;
 mod instancing;
 mod lighting;
 mod lights;
