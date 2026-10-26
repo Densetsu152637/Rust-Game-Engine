@@ -272,6 +272,10 @@ impl OnlineService {
 
     /// Handles one `Lane::SESSION` payload.
     pub fn on_message(&mut self, peer: PeerId, payload: &[u8], now: Now) {
+        if let Some(why) = self.gate.timeout(peer, now) {
+            self.expire_peer(peer, why, now);
+            return;
+        }
         let admitted = self.peers.contains_key(&peer);
         if !admitted && !self.gate.contains(peer) {
             // Already disconnected or never admitted: nothing to answer.
@@ -300,12 +304,7 @@ impl OnlineService {
     /// Periodic work: deadlines, token expiry, matchmaking. Call at least every few hundred ms.
     pub fn tick(&mut self, now: Now) {
         for (peer, why) in self.gate.expired(now) {
-            let reason = match why {
-                GateTimeout::NoToken => "no valid token before the deadline",
-                GateTimeout::TokenExpired => "connect token expired",
-            };
-            self.drop_peer(peer, now);
-            self.force_disconnect(peer, reason);
+            self.expire_peer(peer, why, now);
         }
         if now.mono_ms >= self.next_match_ms {
             self.next_match_ms = now
@@ -367,6 +366,14 @@ impl OnlineService {
                 message: message.into(),
             },
         );
+    }
+    fn expire_peer(&mut self, peer: PeerId, why: GateTimeout, now: Now) {
+        let reason = match why {
+            GateTimeout::NoToken => "no valid token before the deadline",
+            GateTimeout::TokenExpired => "connect token expired",
+        };
+        self.drop_peer(peer, now);
+        self.force_disconnect(peer, reason);
     }
     fn force_disconnect(&mut self, peer: PeerId, reason: &'static str) {
         self.stats.forced_disconnects = self.stats.forced_disconnects.saturating_add(1);

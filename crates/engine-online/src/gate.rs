@@ -164,21 +164,27 @@ impl SessionGate {
     pub fn is_empty(&self) -> bool {
         self.peers.is_empty()
     }
+    /// Checks a peer before processing a message, independently of periodic timer work.
+    pub(crate) fn timeout(&self, peer: PeerId, now: Now) -> Option<GateTimeout> {
+        match &self.peers.get(&peer)?.state {
+            State::Pending { deadline_ms } if now.mono_ms >= *deadline_ms => {
+                Some(GateTimeout::NoToken)
+            }
+            State::Admitted(identity)
+                if self.config.enforce_expiry && now.unix_secs >= identity.expires_at =>
+            {
+                Some(GateTimeout::TokenExpired)
+            }
+            _ => None,
+        }
+    }
+
     /// Removes and returns peers that missed the deadline or whose admitting token expired.
     pub fn expired(&mut self, now: Now) -> Vec<(PeerId, GateTimeout)> {
-        let enforce = self.config.enforce_expiry;
         let due: Vec<(PeerId, GateTimeout)> = self
             .peers
-            .iter()
-            .filter_map(|(&peer, entry)| match &entry.state {
-                State::Pending { deadline_ms } if now.mono_ms >= *deadline_ms => {
-                    Some((peer, GateTimeout::NoToken))
-                }
-                State::Admitted(identity) if enforce && now.unix_secs >= identity.expires_at => {
-                    Some((peer, GateTimeout::TokenExpired))
-                }
-                _ => None,
-            })
+            .keys()
+            .filter_map(|&peer| self.timeout(peer, now).map(|why| (peer, why)))
             .collect();
         for (peer, _) in &due {
             self.peers.remove(peer);

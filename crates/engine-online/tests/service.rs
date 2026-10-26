@@ -1691,3 +1691,60 @@ fn teardown_leaves_no_residual_state() {
     assert_eq!(sim.service.tracked_peers(), 0);
     sim.service.lobby().check_invariants().unwrap();
 }
+
+#[test]
+fn late_hello_is_refused_even_before_the_next_tick() {
+    for lateness in [0, 1] {
+        let mut sim = Sim::new(|cfg| cfg.limits.auth_timeout_ms = 100);
+        sim.admit(1, "alice");
+        let token = sim.connect_token("alice", "alice", 600);
+        sim.mono = 100 + lateness; // Deliberately do not tick before delivering the message.
+        let payload = engine_online::ClientEnvelope {
+            v: 1,
+            id: 1,
+            body: ClientBody::Hello { token: Blob(token) },
+        }
+        .encode(&sim.limits)
+        .unwrap();
+        sim.send_raw(1, &payload);
+        assert!(sim.disconnected.contains(&1), "late hello was admitted");
+        assert_eq!(sim.service.authenticated_peers(), 0);
+        assert!(sim.take(1).is_empty(), "expired peers receive no service");
+    }
+}
+
+#[test]
+fn expired_identity_cannot_request_or_refresh_before_the_next_tick() {
+    for refresh in [false, true] {
+        let mut sim = Sim::new(|_| {});
+        sim.admit(1, "alice");
+        let token = sim.connect_token("alice", "alice", 100);
+        assert!(matches!(
+            sim.request(1, ClientBody::Hello { token: Blob(token) }),
+            ServerBody::HelloOk { .. }
+        ));
+        sim.mono = 100_000; // Token has expired, but the periodic tick has not run.
+        let body = if refresh {
+            ClientBody::Hello {
+                token: Blob(sim.connect_token("alice", "alice", 600)),
+            }
+        } else {
+            ClientBody::CreateSession(CreateSession {
+                name: "too late".into(),
+                mode: "duel".into(),
+                capacity: 2,
+                private: false,
+                attributes: Attributes::new(),
+                candidates: None,
+            })
+        };
+        let payload = engine_online::ClientEnvelope { v: 1, id: 2, body }
+            .encode(&sim.limits)
+            .unwrap();
+        sim.send_raw(1, &payload);
+        assert!(sim.disconnected.contains(&1), "expired peer was served");
+        assert_eq!(sim.service.authenticated_peers(), 0);
+        assert_eq!(sim.service.stats().sessions_created, 0);
+        assert!(sim.take(1).is_empty(), "expired peers receive no service");
+    }
+}

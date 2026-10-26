@@ -123,7 +123,9 @@ failure (bad token, wrong certificate, replay, non-`hello` first message, malfor
 closes the connection immediately after a single generic reply (`authentication failed`; the real
 reason is never an oracle). A peer without a recorded fingerprint is disconnected. The token that
 admitted a peer is also an expiry: when it expires the peer is disconnected and must `hello` again
-with a fresh token. A new authenticated connection for the same subject replaces the old one.
+with a fresh token on a new connection. Deadlines and admitting-token expiry are checked before
+processing each request as well as during periodic ticks, so queued messages cannot extend admission
+after a delayed poll. A new authenticated connection for the same subject replaces the old one.
 
 ### How a game server verifies join tokens
 
@@ -578,7 +580,8 @@ Residual risks and limits:
   expired / wrong-audience / wrong-key / tampered / replayed / other-certificate tokens, abuse,
   host migration.
 * `tests/binary.rs`: the `engine-online-server` process over QUIC and TCP, key and token
-  generation, bad configuration, stdin-close shutdown.
+  generation, bad configuration, occupied listen addresses, active-client stdin-close shutdown,
+  and restart with empty sessions and a fresh replay cache.
 * `tests/fuzz.rs`: seeded fuzzing described above.
 
 ```text

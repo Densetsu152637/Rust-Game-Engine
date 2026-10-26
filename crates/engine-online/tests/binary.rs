@@ -108,7 +108,7 @@ fn spawn(config: &Path) -> (Server, SocketAddr) {
 }
 
 /// Authenticate, create a session and list it, over whichever endpoint the caller built.
-fn exercise<E: MessageEndpoint>(mut client: OnlineClient<E>, token: &[u8]) {
+fn exercise<E: MessageEndpoint>(mut client: OnlineClient<E>, token: &[u8]) -> OnlineClient<E> {
     let end = Instant::now() + Duration::from_secs(15);
     let mut hello = None;
     let mut create = None;
@@ -164,6 +164,7 @@ fn exercise<E: MessageEndpoint>(mut client: OnlineClient<E>, token: &[u8]) {
         }
         thread::sleep(Duration::from_millis(1));
     }
+    client
 }
 
 fn config_json(transport: &str) -> String {
@@ -176,6 +177,39 @@ fn config_json(transport: &str) -> String {
   "max_connections": 8
 }}"#
     )
+}
+
+fn shutdown<E: MessageEndpoint>(server: &mut Server, client: &mut OnlineClient<E>) {
+    // Closing stdin shuts the server down cleanly.
+    drop(server.child.stdin.take());
+    let end = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < end,
+            "server did not exit after stdin closed"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success());
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        if client
+            .poll()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, ClientEvent::Disconnected(_)))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "active client was not closed by shutdown"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn full_cycle(transport: &str) {
@@ -241,47 +275,37 @@ fn full_cycle(transport: &str) {
     let token_text = String::from_utf8(issued.stdout).unwrap();
     let token = decode_token_text(&token_text).unwrap();
 
-    let (mut server, addr) = spawn(&config);
-    let limits = OnlineLimits::default();
-    if transport == "quic" {
-        let security = QuicClientSecurity::new(
-            "localhost",
-            [server_id.cert.clone()],
-            vec![client_id.cert.clone()],
-            client_id.key.clone_key(),
-        )
-        .unwrap();
-        let endpoint = QuicClient::connect(addr, QuicClientConfig::default(), security).unwrap();
-        exercise(OnlineClient::new(endpoint, limits).unwrap(), &token);
-    } else {
-        let security = ClientSecurity::new(
-            "localhost",
-            [server_id.cert.clone()],
-            vec![client_id.cert.clone()],
-            client_id.key.clone_key(),
-        )
-        .unwrap();
-        let endpoint = TcpClient::connect_secure(TcpClientConfig::new(addr), security).unwrap();
-        exercise(OnlineClient::new(endpoint, limits).unwrap(), &token);
-    }
-
-    // Closing stdin shuts the server down cleanly.
-    drop(server.child.stdin.take());
-    let end = Instant::now() + Duration::from_secs(15);
-    let status = loop {
-        if let Some(status) = server.child.try_wait().unwrap() {
-            break status;
+    // A second process reuses the same key and token: replay nonces and sessions are in memory.
+    for _ in 0..2 {
+        let (mut server, addr) = spawn(&config);
+        let limits = OnlineLimits::default();
+        if transport == "quic" {
+            let security = QuicClientSecurity::new(
+                "localhost",
+                [server_id.cert.clone()],
+                vec![client_id.cert.clone()],
+                client_id.key.clone_key(),
+            )
+            .unwrap();
+            let endpoint =
+                QuicClient::connect(addr, QuicClientConfig::default(), security).unwrap();
+            let mut client = exercise(OnlineClient::new(endpoint, limits).unwrap(), &token);
+            shutdown(&mut server, &mut client);
+        } else {
+            let security = ClientSecurity::new(
+                "localhost",
+                [server_id.cert.clone()],
+                vec![client_id.cert.clone()],
+                client_id.key.clone_key(),
+            )
+            .unwrap();
+            let endpoint = TcpClient::connect_secure(TcpClientConfig::new(addr), security).unwrap();
+            let mut client = exercise(OnlineClient::new(endpoint, limits).unwrap(), &token);
+            shutdown(&mut server, &mut client);
         }
-        assert!(
-            Instant::now() < end,
-            "server did not exit after stdin closed"
-        );
-        thread::sleep(Duration::from_millis(20));
-    };
-    assert!(status.success());
-    // Nothing else the process printed contains the token or key material.
-    let rest: String = server.lines.try_iter().collect();
-    assert!(!rest.contains(token_text.trim()) && !rest.contains(&secret_body));
+        let rest: String = server.lines.try_iter().collect();
+        assert!(!rest.contains(token_text.trim()) && !rest.contains(&secret_body));
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -419,4 +443,45 @@ fn bad_invocations_and_configs_fail_without_leaking_secrets() {
     assert!(out.stdout.is_empty());
     let _ = std::io::stdout().flush();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn occupied_listen_addresses_fail_before_the_ready_banner() {
+    let dir = scratch("occupied");
+    write_identity(&dir, "server", &Identity::new("localhost"));
+    write_identity(&dir, "client", &Identity::new("alice-device"));
+    assert!(
+        run(&[
+            "generate-key",
+            "--out",
+            dir.join("signing.pem").to_str().unwrap(),
+            "--key-id",
+            "k1",
+            "--issuer",
+            "studio",
+        ])
+        .status
+        .success()
+    );
+    let config = dir.join("server.json");
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    for (transport, addr) in [
+        ("quic", udp.local_addr().unwrap()),
+        ("tcp", tcp.local_addr().unwrap()),
+    ] {
+        std::fs::write(
+            &config,
+            config_json(transport).replace("127.0.0.1:0", &addr.to_string()),
+        )
+        .unwrap();
+        let out = run(&["run", "--config", config.to_str().unwrap()]);
+        assert!(
+            !out.status.success(),
+            "occupied {transport} address was bound"
+        );
+        assert!(out.stdout.is_empty(), "failed startup advertised readiness");
+        assert!(!out.stderr.is_empty(), "failed startup needs a diagnostic");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }
