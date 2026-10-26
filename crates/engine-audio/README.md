@@ -269,3 +269,10 @@ prove a physical disconnect occurred.
 `AudioControl::play_stream` adds bounded incremental PCM sources without changing
 clip playback. See [streaming and clock contracts](../../docs/audio-streaming.md)
 for queue backpressure, generation-safe seek, EOF/starvation and source clocks.
+
+## Procedural synthesis
+
+`engine_audio::graph` compiles shared authored graphs into independent DSP
+instances and feeds real PCM through bounded streamed voices. See
+[procedural audio](../../docs/audio-procedural.md) for node behavior, controls,
+lifecycle, limits and the remaining project authoring integration.

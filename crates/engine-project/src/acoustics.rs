@@ -69,7 +69,17 @@ pub fn validate_scene(project: &Project, scene: &Scene) -> Result<()> {
                     environments += 1;
                     reference("/geometry/asset", "acoustics")?;
                 }
-                EMITTER => reference("/clip", "audio")?,
+                EMITTER => {
+                    if value
+                        .data
+                        .get("clip")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|s| !s.is_empty())
+                    {
+                        reference("/clip", "audio")?;
+                    }
+                    reference("/graph", "graph")?;
+                }
                 GEOMETRY | VOLUME => reference("/mesh", "mesh")?,
                 _ => {}
             }

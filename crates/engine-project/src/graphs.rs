@@ -44,6 +44,7 @@ fn build() -> GraphKinds {
     let kinds = [
         engine_ai::behavior_tree::kind(),
         engine_animation::graph::kind(),
+        engine_audio::graph::kind(),
         engine_ai::state_tree::kind(),
     ];
     GraphKinds {

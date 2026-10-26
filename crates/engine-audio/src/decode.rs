@@ -426,6 +426,19 @@ impl AudioDecoder {
         if self.eof {
             return Ok(DecodeProgress::Finished);
         }
+        match self.decode_next()? {
+            DecodeProgress::Queued { .. } => self.flush(writer, generation),
+            DecodeProgress::Finished => {
+                writer.finish(generation)?;
+                Ok(DecodeProgress::Finished)
+            }
+            progress => Ok(progress),
+        }
+    }
+    fn decode_next(&mut self) -> Result<DecodeProgress> {
+        if self.eof {
+            return Ok(DecodeProgress::Finished);
+        }
         if self.packets >= self.limits.max_packets {
             return Err(failure(
                 "audio.decode.packet_limit",
@@ -445,7 +458,6 @@ impl AudioDecoder {
                 ));
             }
             self.eof = true;
-            writer.finish(generation)?;
             return Ok(DecodeProgress::Finished);
         };
         self.packets += 1;
@@ -504,7 +516,9 @@ impl AudioDecoder {
         if self.offset == self.pending.len() {
             return Ok(DecodeProgress::Skipped);
         }
-        self.flush(writer, generation)
+        Ok(DecodeProgress::Queued {
+            frames: self.pending.len() / usize::from(self.info.channels),
+        })
     }
     fn flush(
         &mut self,
@@ -565,4 +579,57 @@ fn audio_signature(
         parameters.channels.as_ref().map(|c| c.count()),
         parameters.codec,
     ))
+}
+
+/// Fully decodes a resident clip, with a cumulative PCM byte cap checked before each retained packet.
+/// This is intentionally resident loading, not streamed playback. The strict WAV APIs are unchanged.
+pub fn load_resident(
+    path: impl AsRef<Path>,
+    limits: DecodeLimits,
+    max_pcm_bytes: usize,
+) -> Result<Arc<crate::Clip>> {
+    if !(4..=crate::MAX_WAV_BYTES).contains(&max_pcm_bytes) {
+        return Err(failure(
+            "audio.resident.limit",
+            "PCM budget must be 4 bytes through 64 MiB",
+        ));
+    }
+    let mut decoder = AudioDecoder::open(path, limits)?;
+    let bytes_per_frame = usize::from(decoder.info.channels) * std::mem::size_of::<f32>();
+    if decoder
+        .info
+        .total_frames
+        .is_some_and(|n| n > (max_pcm_bytes / bytes_per_frame) as u64)
+    {
+        return Err(failure(
+            "audio.resident.limit",
+            "Declared resident PCM exceeds byte budget",
+        ));
+    }
+    let mut samples = Vec::new();
+    loop {
+        match decoder.decode_next()? {
+            DecodeProgress::Queued { .. } => {
+                let packet = &decoder.pending[decoder.offset..];
+                let total = samples
+                    .len()
+                    .checked_add(packet.len())
+                    .ok_or_else(|| failure("audio.resident.limit", "PCM length overflow"))?;
+                if total > max_pcm_bytes / std::mem::size_of::<f32>() {
+                    return Err(failure(
+                        "audio.resident.limit",
+                        "Decoded resident PCM exceeds byte budget",
+                    ));
+                }
+                samples
+                    .try_reserve_exact(packet.len())
+                    .map_err(|_| failure("audio.resident.memory", "Cannot reserve resident PCM"))?;
+                samples.extend_from_slice(packet);
+                decoder.offset = decoder.pending.len();
+            }
+            DecodeProgress::Finished => break,
+            _ => (),
+        }
+    }
+    crate::Clip::new(decoder.info.sample_rate, decoder.info.channels, samples)
 }

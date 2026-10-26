@@ -10,9 +10,12 @@ slot names. Crate READMEs (`crates/engine-audio/README.md`,
 
 `engine-audio` has no ECS dependency. It owns immutable PCM clips, deterministic
 stereo mixing, real device output through CPAL, reusable source handles and ordered
-event subscriptions. WAV decoding uses Hound.
+event subscriptions. Strict WAV decoding uses Hound; bounded resident/incremental
+compressed decoding uses Symphonia. Authored file and procedural graph sources use
+the same emitter, source handles, spatial/acoustic paths and lifecycle; see
+[streaming](audio-streaming.md) and [procedural audio](audio-procedural.md).
 
-- **Clips.** WAV files are bounded to 64 MiB with strict RIFF framing (truncation,
+- **Strict WAV APIs.** WAV files are bounded to 64 MiB with strict RIFF framing (truncation,
   duplicates and inconsistent PCM rates are rejected). 16-bit integer mono or stereo
   at 8-192 kHz is accepted; `Clip::new` also accepts validated finite PCM in
   `[-1,1]`. Clips are validated once, not on every play.
@@ -29,8 +32,9 @@ event subscriptions. WAV decoding uses Hound.
 - **Spatial audio.** Right-handed coordinates with +X right, +Y up and forward -Z.
   Listener forward/up define the right vector. Spatial stereo clips downmix to mono,
   then equal-power panning combines with `None`, `Linear` or `Inverse` distance
-  attenuation (silent at and beyond max distance). There is no HRTF, Doppler,
-  obstruction or reverb.
+  attenuation (silent at and beyond max distance). Authored acoustic rendering
+  additionally supplies binaural, Doppler, obstruction and reverb behavior;
+  see [acoustics](acoustics.md).
 - **Sources and events.** `AudioSources` creates reusable sources (`create`),
   controls them (`SourceAction::Play`, pause, resume, stop), reconfigures them while
   keeping the cursor, and subscribes sources to named events with `observe` and

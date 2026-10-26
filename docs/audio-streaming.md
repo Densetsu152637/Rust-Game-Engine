@@ -185,3 +185,27 @@ Caller-driven cancellation is terminal: the next `pump` publishes a failure to
 its supplied source generation, preventing already queued PCM from continuing.
 Publication to an old generation is rejected by the queue and cannot fail a new
 seek epoch. Dropping a worker performs its explicit stop/cancel/join lifecycle.
+
+
+## Resident clips and reusable source handles
+
+`load_resident(path, decode_limits, max_pcm_bytes)` converts supported encoded
+files into a resident `Clip`, checking declared frame counts and cumulative PCM
+bytes before retaining each decoded packet. It uses the same packet decode core
+as streaming, but deliberately retains the full bounded clip. The maximum payload
+budget is 64 MiB; packet scratch, allocator overhead and codec internals are extra.
+`decode_wav` and `load_wav` retain their strict existing policy.
+
+`AudioSources::create_stream` and `create_procedural` prepare nonresident sources
+under normal `SourceHandle`s. Events, restart, pause/resume, configure and owner
+cleanup use the same controller as resident clips. Queue capacity is limited to
+2..65,536 frames at this source layer. Nonresident looping returns
+`audio.source.loop` before file probing/producer allocation. Call `refresh` outside
+the callback to reclaim workers whose voices finished; project synchronization
+performs that cleanup. Authored selection is described in audio-procedural.md.
+
+Producer cancellation status does not erase a terminal queue diagnostic.
+`DecodedStream::failure()` retains access after mixer retirement/cancellation;
+source-controller cleanup reads it after joining the worker. Queue failure and
+worker status publication may occur at different times, so status alone is not
+the diagnostic lifetime contract.

@@ -1,7 +1,15 @@
 use crate::{
     AudioControl, AudioError, Clip, PlayOptions, Result, VoiceHandle, VoiceState, allocate_handle,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use crate::{
+    AudioDecoder, DecodeLimits, DecodedStream, StreamGeneration, StreamSnapshot,
+    graph::{CompiledGraph, GraphInstance, ParameterUpdate, ProceduralStream},
+};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceHandle(u64);
@@ -24,10 +32,107 @@ pub enum SourceAction {
     Resume,
     Stop,
 }
+#[derive(Clone, Debug)]
+pub struct SourceStreamConfig {
+    pub queue_frames: usize,
+    pub decode_limits: DecodeLimits,
+}
+impl Default for SourceStreamConfig {
+    fn default() -> Self {
+        Self {
+            queue_frames: 4096,
+            decode_limits: DecodeLimits::default(),
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub struct ProceduralSourceConfig {
+    pub queue_frames: usize,
+    pub duration_frames: Option<u64>,
+    pub parameters: BTreeMap<String, f32>,
+}
+impl Default for ProceduralSourceConfig {
+    fn default() -> Self {
+        Self {
+            queue_frames: 4096,
+            duration_frames: None,
+            parameters: BTreeMap::new(),
+        }
+    }
+}
+enum Prepared {
+    Clip(Arc<Clip>),
+    File(PathBuf, SourceStreamConfig),
+    Graph(Arc<CompiledGraph>, ProceduralSourceConfig),
+}
+enum Active {
+    Clip(VoiceHandle),
+    File(DecodedStream),
+    Graph(ProceduralStream),
+}
+impl Active {
+    fn failure(&self) -> Option<AudioError> {
+        match self {
+            Self::Clip(_) => None,
+            Self::File(v) => v.failure(),
+            Self::Graph(v) => v.failure(),
+        }
+    }
+    fn voice(&self) -> VoiceHandle {
+        match self {
+            Self::Clip(v) => *v,
+            Self::File(v) => v.voice(),
+            Self::Graph(v) => v.voice(),
+        }
+    }
+}
 struct Source {
-    clip: Arc<Clip>,
+    prepared: Prepared,
     options: PlayOptions,
-    voice: Option<VoiceHandle>,
+    active: Option<Active>,
+    failure: Option<AudioError>,
+}
+fn stop_active(control: &AudioControl, active: &mut Option<Active>) -> Option<AudioError> {
+    let mut value = active.take()?;
+    control.stop(value.voice());
+    let joined = match &mut value {
+        Active::Clip(_) => Ok(()),
+        Active::File(worker) => worker.cancel(),
+        Active::Graph(worker) => worker.stop(),
+    };
+    // Both worker types retain queue errors through cancellation; read after joining.
+    value.failure().or_else(|| joined.err())
+}
+fn queue_valid(frames: usize) -> Result<()> {
+    if (2..=65_536).contains(&frames) {
+        Ok(())
+    } else {
+        Err(AudioError::new(
+            "audio.source.queue",
+            "Queue must hold 2..=65536 frames",
+        ))
+    }
+}
+fn nonresident(options: &PlayOptions) -> Result<()> {
+    if options.looped {
+        Err(AudioError::new(
+            "audio.source.loop",
+            "Nonresident sources do not support looped playback",
+        ))
+    } else {
+        Ok(())
+    }
+}
+fn initial(config: &ProceduralSourceConfig) -> Vec<ParameterUpdate<'_>> {
+    config
+        .parameters
+        .iter()
+        .map(|(name, value)| ParameterUpdate {
+            name,
+            value: *value,
+            ramp_frames: 0,
+        })
+        .collect()
 }
 struct Observer {
     event: String,
@@ -60,32 +165,90 @@ impl AudioSources {
             observers: BTreeMap::new(),
         })
     }
-    pub fn create(&mut self, clip: Arc<Clip>, mut options: PlayOptions) -> Result<SourceHandle> {
-        options.owner.clone_from(&self.owner);
-        options.validate()?;
+    pub fn create(&mut self, clip: Arc<Clip>, options: PlayOptions) -> Result<SourceHandle> {
+        self.insert(Prepared::Clip(clip), options)
+    }
+    fn capacity(&self) -> Result<()> {
         if self.sources.len() >= 1024 {
-            return Err(AudioError::new(
+            Err(AudioError::new(
                 "audio.source.limit",
                 "Source limit reached",
-            ));
+            ))
+        } else {
+            Ok(())
         }
+    }
+    fn insert(&mut self, prepared: Prepared, mut options: PlayOptions) -> Result<SourceHandle> {
+        self.capacity()?;
+        options.owner.clone_from(&self.owner);
+        options.validate()?;
         let handle = SourceHandle(allocate_handle()?);
         self.sources.insert(
             handle,
             Source {
-                clip,
+                prepared,
                 options,
-                voice: None,
+                active: None,
+                failure: None,
             },
         );
         Ok(handle)
+    }
+    pub fn create_stream(
+        &mut self,
+        path: impl AsRef<Path>,
+        mut options: PlayOptions,
+        config: SourceStreamConfig,
+    ) -> Result<SourceHandle> {
+        nonresident(&options)?;
+        options.owner.clone_from(&self.owner);
+        options.validate()?;
+        self.capacity()?;
+        queue_valid(config.queue_frames)?;
+        let path = path.as_ref().to_owned();
+        drop(AudioDecoder::open(&path, config.decode_limits)?);
+        self.insert(Prepared::File(path, config), options)
+    }
+    pub fn create_procedural(
+        &mut self,
+        program: Arc<CompiledGraph>,
+        mut options: PlayOptions,
+        config: ProceduralSourceConfig,
+    ) -> Result<SourceHandle> {
+        nonresident(&options)?;
+        options.owner.clone_from(&self.owner);
+        options.validate()?;
+        self.capacity()?;
+        queue_valid(config.queue_frames)?;
+        let rate = self.control.lock()?.config.sample_rate;
+        if config
+            .duration_frames
+            .is_some_and(|n| n > u64::from(rate) * 86400)
+        {
+            return Err(AudioError::new(
+                "audio.source.duration",
+                "Duration exceeds 24 hours",
+            ));
+        }
+        if config.parameters.len() > 64 {
+            return Err(AudioError::new(
+                "audio.source.parameters",
+                "At most 64 initial parameters",
+            ));
+        }
+        program.validate_parameters(&initial(&config))?;
+        drop(GraphInstance::new(program.clone(), rate)?);
+        self.insert(Prepared::Graph(program, config), options)
     }
     pub fn configure(&mut self, handle: SourceHandle, mut options: PlayOptions) -> Result<()> {
         let source = self.sources.get_mut(&handle).ok_or_else(missing)?;
         options.owner.clone_from(&self.owner);
         options.validate()?;
-        if let Some(voice) = source.voice {
-            self.control.configure(voice, options.clone())?;
+        if !matches!(source.prepared, Prepared::Clip(_)) {
+            nonresident(&options)?;
+        }
+        if let Some(active) = &source.active {
+            self.control.configure(active.voice(), options.clone())?;
         }
         source.options = options;
         Ok(())
@@ -94,39 +257,50 @@ impl AudioSources {
         let source = self.sources.get_mut(&handle).ok_or_else(missing)?;
         match action {
             SourceAction::Play => {
-                // Retire before allocation so a restart succeeds at the voice cap.
-                // A failed restart deliberately leaves the source stopped.
-                if let Some(voice) = source.voice.take() {
-                    self.control.stop(voice);
-                }
-                source.voice = Some(
-                    self.control
-                        .play(source.clip.clone(), source.options.clone())?,
-                );
+                let _ = stop_active(&self.control, &mut source.active);
+                source.failure = None;
+                source.active = Some(match &source.prepared {
+                    Prepared::Clip(clip) => {
+                        Active::Clip(self.control.play(clip.clone(), source.options.clone())?)
+                    }
+                    Prepared::File(path, config) => Active::File(DecodedStream::spawn(
+                        AudioDecoder::open(path, config.decode_limits)?,
+                        self.control.clone(),
+                        source.options.clone(),
+                        config.queue_frames,
+                    )?),
+                    Prepared::Graph(program, config) => {
+                        Active::Graph(ProceduralStream::spawn_with_parameters(
+                            program.clone(),
+                            self.control.clone(),
+                            source.options.clone(),
+                            config.queue_frames,
+                            config.duration_frames,
+                            &initial(config),
+                        )?)
+                    }
+                });
             }
             SourceAction::Pause => {
-                if let Some(voice) = source.voice {
-                    self.control.pause(voice);
+                if let Some(active) = &source.active {
+                    self.control.pause(active.voice());
                 }
             }
             SourceAction::Resume => {
-                if let Some(voice) = source.voice {
-                    self.control.resume(voice);
+                if let Some(active) = &source.active {
+                    self.control.resume(active.voice());
                 }
             }
             SourceAction::Stop => {
-                if let Some(voice) = source.voice.take() {
-                    self.control.stop(voice);
-                }
+                source.failure = stop_active(&self.control, &mut source.active)
+                    .or_else(|| source.failure.take());
             }
         }
         Ok(())
     }
     pub fn remove(&mut self, handle: SourceHandle) -> bool {
-        if let Some(source) = self.sources.remove(&handle) {
-            if let Some(voice) = source.voice {
-                self.control.stop(voice);
-            }
+        if let Some(mut source) = self.sources.remove(&handle) {
+            let _ = stop_active(&self.control, &mut source.active);
             self.observers
                 .retain(|_, observer| observer.source != handle);
             true
@@ -137,7 +311,7 @@ impl AudioSources {
     pub fn state(&self, handle: SourceHandle) -> VoiceState {
         self.sources
             .get(&handle)
-            .and_then(|s| s.voice)
+            .and_then(|s| s.active.as_ref().map(Active::voice))
             .map_or(VoiceState::Stopped, |v| self.control.voice_state(v))
     }
     pub fn contains(&self, handle: SourceHandle) -> bool {
@@ -147,7 +321,70 @@ impl AudioSources {
         self.sources.get(&handle).map(|s| &s.options)
     }
     pub fn voice(&self, handle: SourceHandle) -> Option<VoiceHandle> {
-        self.sources.get(&handle).and_then(|s| s.voice)
+        self.sources
+            .get(&handle)
+            .and_then(|s| s.active.as_ref().map(Active::voice))
+    }
+    /// Reclaims finished producer threads outside the callback, preserving reusable handles/observers.
+    pub fn refresh(&mut self) {
+        for source in self.sources.values_mut() {
+            if source
+                .active
+                .as_ref()
+                .is_some_and(|a| self.control.voice_state(a.voice()) == VoiceState::Stopped)
+            {
+                source.failure = stop_active(&self.control, &mut source.active)
+                    .or_else(|| source.failure.take());
+            }
+        }
+    }
+    pub fn failure(&self, handle: SourceHandle) -> Option<AudioError> {
+        self.sources.get(&handle).and_then(|s| {
+            s.failure
+                .clone()
+                .or_else(|| s.active.as_ref().and_then(Active::failure))
+        })
+    }
+    pub fn stream_snapshot(&self, handle: SourceHandle) -> Result<Option<StreamSnapshot>> {
+        match self.voice(handle) {
+            Some(voice) => self.control.stream_snapshot(voice),
+            None => Ok(None),
+        }
+    }
+    pub fn seek(&mut self, handle: SourceHandle, frame: u64) -> Result<StreamGeneration> {
+        let source = self.sources.get_mut(&handle).ok_or_else(missing)?;
+        match (&source.prepared, &mut source.active) {
+            (_, Some(Active::File(worker))) => worker.seek(frame),
+            (Prepared::Graph(_, config), Some(Active::Graph(worker))) if frame == 0 => {
+                worker.reset_with_parameters(&initial(config))
+            }
+            _ => Err(AudioError::new(
+                "audio.source.seek",
+                "Seek requires an active decoded source, or frame zero for a procedural source",
+            )),
+        }
+    }
+    pub fn set_parameters(
+        &mut self,
+        handle: SourceHandle,
+        values: &[ParameterUpdate<'_>],
+    ) -> Result<()> {
+        self.refresh();
+        let source = self.sources.get_mut(&handle).ok_or_else(missing)?;
+        let Prepared::Graph(program, config) = &mut source.prepared else {
+            return Err(AudioError::new(
+                "audio.source.parameters",
+                "Source is not procedural",
+            ));
+        };
+        program.validate_parameters(values)?;
+        if let Some(Active::Graph(worker)) = &source.active {
+            worker.set_parameters(values)?;
+        }
+        for value in values {
+            config.parameters.insert(value.name.into(), value.value);
+        }
+        Ok(())
     }
     pub fn observe(
         &mut self,
@@ -199,10 +436,8 @@ impl AudioSources {
         Ok(count)
     }
     pub fn clear(&mut self) {
-        for source in self.sources.values() {
-            if let Some(voice) = source.voice {
-                self.control.stop(voice);
-            }
+        for source in self.sources.values_mut() {
+            let _ = stop_active(&self.control, &mut source.active);
         }
         self.sources.clear();
         self.observers.clear();
@@ -224,4 +459,143 @@ fn validate_event(event: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod failure_race_tests {
+    use super::*;
+    use std::{
+        sync::{
+            atomic::Ordering,
+            mpsc::{self, SyncSender},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+    struct Resume(Option<SyncSender<()>>);
+    impl Resume {
+        fn release(mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.try_send(());
+            }
+        }
+    }
+    struct Fixture(std::path::PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    #[test]
+    fn refresh_retains_decoder_and_dsp_errors_published_before_worker_status() {
+        for decoded in [false, true] {
+            let mut engine = crate::AudioEngine::offline(crate::AudioConfig {
+                sample_rate: if decoded { 44100 } else { 8000 },
+                max_voices: 1,
+            })
+            .unwrap();
+            let control = engine.control();
+            let mut sources = AudioSources::new(control.clone(), "race").unwrap();
+            let fixture = Fixture(std::env::temp_dir().join(format!(
+                "audio-failure-race-{}-{}.mp3",
+                std::process::id(),
+                allocate_handle().unwrap()
+            )));
+            let source = if decoded {
+                let bytes = include_bytes!("../tests/fixtures/tone.mp3");
+                std::fs::write(&fixture.0, &bytes[..bytes.len() - 20]).unwrap();
+                sources
+                    .create_stream(
+                        &fixture.0,
+                        PlayOptions::default(),
+                        SourceStreamConfig {
+                            queue_frames: 4,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap()
+            } else {
+                let document=engine_graph::GraphDocument::from_json(br#"{"version":1,"kind":"audio","nodes":[{"id":"osc","node_type":"oscillator","params":{"frequency":4000}},{"id":"out","node_type":"output"}],"edges":[{"from":{"node":"osc","port":"signal"},"to":{"node":"out","port":"left"}},{"from":{"node":"osc","port":"signal"},"to":{"node":"out","port":"right"}}]}"#).unwrap();
+                sources
+                    .create_procedural(
+                        crate::graph::compile(&document).unwrap(),
+                        PlayOptions::default(),
+                        ProceduralSourceConfig::default(),
+                    )
+                    .unwrap()
+            };
+            let (published, resume) = crate::stream::pause_next_stream_failure();
+            sources.control(source, SourceAction::Play).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match published.try_recv() {
+                    Ok(()) => break,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "producer never reached failure publication barrier"
+                        );
+                        engine.mix(&mut [0.; 64]).unwrap();
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(e) => panic!("failure barrier disconnected: {e}"),
+                }
+            }
+            // The queue is failed, but neither worker has published Failed status yet.
+            let cancellation = match sources.sources[&source].active.as_ref().unwrap() {
+                Active::File(worker) => {
+                    assert!(worker.status().unwrap().error.is_none());
+                    worker.cancellation()
+                }
+                Active::Graph(worker) => {
+                    assert!(worker.status().unwrap().error.is_none());
+                    worker.cancellation()
+                }
+                Active::Clip(_) => unreachable!(),
+            };
+            engine.mix(&mut [0.; 64]).unwrap();
+            assert_eq!(control.voice_count(), 0);
+            thread::scope(|scope| {
+                // Release on unwind as well, so a failed assertion cannot deadlock join.
+                let resume = Resume(Some(resume));
+                let refresh = scope.spawn(move || {
+                    sources.refresh();
+                    sources
+                });
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !cancellation.load(Ordering::Acquire) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "refresh did not cancel/join the producer"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+                assert!(
+                    !refresh.is_finished(),
+                    "producer must still be paused before status publication"
+                );
+                // Joining is in refresh, never in the mixer callback path.
+                engine.mix(&mut [0.; 64]).unwrap();
+                assert!(!refresh.is_finished());
+                resume.release();
+                let sources = refresh.join().unwrap();
+                assert!(sources.voice(source).is_none());
+                assert_eq!(
+                    sources.failure(source).unwrap().code,
+                    if decoded {
+                        "audio.decode.truncated"
+                    } else {
+                        "audio.graph.frequency"
+                    }
+                );
+            });
+        }
+    }
 }

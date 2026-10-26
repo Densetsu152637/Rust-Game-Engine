@@ -537,3 +537,105 @@ fn animation_palette_uses_shared_graph_schema() {
             .any(|port| port["name"] == "a")
     );
 }
+
+#[test]
+fn audio_palette_and_emitter_references_share_project_registration() {
+    let dir = fixture();
+    let schema = data(dir.path(), "graph_schema", json!({"kind":"audio"}));
+    assert_eq!(schema["ok"], true, "{schema}");
+    let types = schema["kinds"][0]["node_types"].as_array().unwrap();
+    for name in [
+        "constant",
+        "parameter",
+        "oscillator",
+        "noise",
+        "mix",
+        "gain",
+        "adsr",
+        "lowpass",
+        "delay",
+        "output",
+    ] {
+        assert!(
+            types.iter().any(|node| node["name"] == name),
+            "{name}: {schema}"
+        );
+    }
+    let created = write(
+        dir.path(),
+        "graph_edit",
+        json!({"path":"assets/tone.graph.json","kind":"audio","edits":[
+            {"op":"add_node","id":"tone","node_type":"constant","params":{"value":0.25}},
+            {"op":"add_node","id":"out","node_type":"output"},
+            {"op":"connect","from":{"node":"tone","port":"signal"},"to":{"node":"out","port":"left"}},
+            {"op":"connect","from":{"node":"tone","port":"signal"},"to":{"node":"out","port":"right"}}
+        ]}),
+    );
+    assert_eq!(created["ok"], true, "{created}");
+    let mut wav = b"RIFF".to_vec();
+    wav.extend_from_slice(&38u32.to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&8000u32.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&2u32.to_le_bytes());
+    wav.extend_from_slice(&0i16.to_le_bytes());
+    fs::write(dir.path().join("assets/tone.wav"), wav).unwrap();
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(dir.path().join("project.json")).unwrap()).unwrap();
+    manifest["assets"].as_array_mut().unwrap().extend([
+        json!({"id":"tone-graph","kind":"graph","path":"assets/tone.graph.json"}),
+        json!({"id":"tone-clip","kind":"audio","path":"assets/tone.wav"}),
+    ]);
+    fs::write(dir.path().join("project.json"), manifest.to_string()).unwrap();
+    let set = |value: Value| {
+        write(
+            dir.path(),
+            "component_set",
+            json!({
+                "scene":START,"expected_revision":revision(dir.path(), START),"entity":"player",
+                "component":"engine.AudioEmitter","value":{"version":1,"data":value}
+            }),
+        )
+    };
+    for (field, id, value) in [
+        (
+            "clip",
+            "tone-clip",
+            json!({"clip":"tone-clip","streamed":true,"autoplay":false}),
+        ),
+        (
+            "graph",
+            "tone-graph",
+            json!({"graph":"tone-graph","autoplay":false}),
+        ),
+    ] {
+        let result = set(value);
+        assert_eq!(result["ok"], true, "{result}");
+        let info = data(dir.path(), "asset_info", json!({"asset":id}));
+        assert_eq!(
+            info["used_by"][0]["component"], "engine.AudioEmitter",
+            "{info}"
+        );
+        assert_eq!(info["used_by"][0]["field"], field, "{info}");
+    }
+    let clip = data(dir.path(), "asset_info", json!({"asset":"tone-clip"}));
+    assert_eq!(
+        clip["used_by"],
+        json!([]),
+        "replacing the reference removes old uses: {clip}"
+    );
+    let empty = set(json!({}));
+    assert_eq!(empty["ok"], true, "empty authoring defaults: {empty}");
+    let graph = data(dir.path(), "asset_info", json!({"asset":"tone-graph"}));
+    assert_eq!(
+        graph["used_by"],
+        json!([]),
+        "empty defaults do not create uses: {graph}"
+    );
+}

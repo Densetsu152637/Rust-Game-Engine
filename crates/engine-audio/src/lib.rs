@@ -10,15 +10,19 @@ mod decode;
 mod decode_worker;
 mod device;
 mod dsp;
+pub mod graph;
 mod mixer;
 mod sources;
 mod stream;
 
 pub use clip::{Clip, decode_wav, load_wav};
-pub use decode::{AudioDecoder, DecodeLimits, DecodeProgress, DecoderInfo};
+pub use decode::{AudioDecoder, DecodeLimits, DecodeProgress, DecoderInfo, load_resident};
 pub use decode_worker::{DecodeWorkerState, DecodeWorkerStatus, DecodedStream};
 pub use mixer::{AudioControl, VoiceHandle, VoiceSnapshot, VoiceState};
-pub use sources::{AudioSources, ObserverHandle, SourceAction, SourceHandle};
+pub use sources::{
+    AudioSources, ObserverHandle, ProceduralSourceConfig, SourceAction, SourceHandle,
+    SourceStreamConfig,
+};
 pub use stream::{
     MAX_STREAM_FRAMES, StreamConfig, StreamGeneration, StreamSnapshot, StreamState, StreamWriter,
 };

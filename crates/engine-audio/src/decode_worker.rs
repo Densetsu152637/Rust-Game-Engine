@@ -27,6 +27,7 @@ struct SeekRequest {
 }
 /// Owns its worker and voice. Drop cancels playback, wakes backpressure, and joins the worker.
 pub struct DecodedStream {
+    observer: crate::stream::StreamObserver,
     control: AudioControl,
     voice: VoiceHandle,
     info: DecoderInfo,
@@ -57,6 +58,7 @@ impl DecodedStream {
             },
             options,
         )?;
+        let observer = writer.observer();
         let cancel = decoder.cancel.clone();
         let commands = Arc::new(Mutex::new(None::<SeekRequest>));
         let status = Arc::new(Mutex::new(DecodeWorkerStatus {
@@ -143,6 +145,7 @@ impl DecodedStream {
             }
         };
         Ok(Self {
+            observer,
             control,
             voice,
             info,
@@ -152,6 +155,14 @@ impl DecodedStream {
             status,
             worker: Some(worker),
         })
+    }
+    /// Durable queue failure, preserved after cancellation and mixer retirement.
+    pub fn failure(&self) -> Option<AudioError> {
+        self.observer.failure()
+    }
+    #[cfg(test)]
+    pub(crate) fn cancellation(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.cancel.clone()
     }
     pub fn voice(&self) -> VoiceHandle {
         self.voice
