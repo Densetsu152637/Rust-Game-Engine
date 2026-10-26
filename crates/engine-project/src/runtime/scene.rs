@@ -43,6 +43,17 @@ pub struct RuntimeSnapshot {
     /// Acoustic propagation state; absent without an `engine.AcousticEnvironment`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustics: Option<engine_acoustics::AcousticStatus>,
+    /// XR host status; `not_attached` when XR is enabled without a host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xr: Option<crate::xr::XrStatusReport>,
+    /// Behavior tree agents: active path and blackboard summary per agent; absent
+    /// without an `engine.BehaviorTreeAgent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub behavior_trees: Option<crate::ai::BehaviorTreeStatus>,
+    /// State tree agents: active path, recent transitions and blackboard summary per
+    /// agent; absent without an `engine.StateTreeAgent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_trees: Option<crate::ai::StateTreeStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -145,6 +156,7 @@ impl Runtime {
         )?;
         crate::networking::validate(self.app.world())?;
         crate::simulation::reset(self.app.world_mut())?;
+        crate::ai::prepare(self.app.world_mut())?;
         crate::refresh_world_transforms(self.app.world_mut())?;
         self.validate_event_bindings()?;
         crate::events::clear(self.app.world_mut());
@@ -208,6 +220,9 @@ impl Runtime {
             ray_tracing: self.ray_tracing_status(),
             ui_render: self.ui_render_status(),
             acoustics: self.acoustics_status(),
+            xr: crate::xr::status(self.app.world()),
+            behavior_trees: crate::ai::status(self.app.world()),
+            state_trees: crate::ai::state_tree_status(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self

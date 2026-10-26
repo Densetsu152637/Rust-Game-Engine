@@ -23,8 +23,8 @@ nonzero weights must address existing joints.
 `Animator::new(rest)`, `play(Arc<Clip>, Playback)` and `update(dt)` provide
 stateful playback. `transition` crossfades from the currently displayed pose to
 the incoming clip, so interrupting a fade does not jump. The outgoing pose is
-frozen during the fade; this is not a blend-tree/state-machine graph. Playback
-speed is nonnegative. Updates accept at most 60 seconds, and event traversal
+frozen during the fade; the separate pose graph runtime supplies blend trees and
+state machines. Playback speed is nonnegative. Updates accept at most 60 seconds, and event traversal
 rejects more than 1024 loops or 4096 emitted events in one call.
 
 Events use (previous time, next time], including loop crossings. A zero-time
@@ -34,6 +34,8 @@ only incoming-clip events are emitted. The host owns their ECS/event routing.
 Limits: up to 4096 joints, one million keys per channel, and 4096 authored events
 per clip. No cubic-spline interpolation, morph-target animation, root-motion
 extraction, animation graph editor, IK, retargeting, or GPU skinning is claimed.
+Pose graphs, state transitions and 1D/2D blend spaces are described in
+[Animation pose graphs](../../docs/animation-graph.md).
 A glTF adapter must explicitly reject unsupported interpolation and preserve
 non-joint ancestor transforms when constructing skin palettes.
 

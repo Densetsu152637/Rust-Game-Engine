@@ -2,7 +2,9 @@
 
 `Runtime::new` installs Rapier 2D/3D, animation playback and waypoint navigation.
 All projects automatically expose `engine.PhysicsBody2D`, `engine.PhysicsBody3D`,
-`engine.PhysicsSettings`, `engine.AnimationPlayer`, `engine.SkinBinding` and `engine.NavigationAgent` in the component catalog,
+`engine.PhysicsSettings`, `engine.AnimationPlayer`, `engine.SkinBinding`, `engine.NavigationAgent` and the crowd components
+(`engine.CrowdAgent`, `engine.NavigationObstacle`, `engine.OffMeshLink`, `engine.Formation`;
+see [ai-crowds.md](ai-crowds.md)) in the component catalog,
 including MCP discovery. No game registration is required. Custom values use
 `{"version":1,"data":{...}}` in the entity's `components.custom` map.
 The `engine.*` namespace is reserved.
@@ -104,8 +106,9 @@ file size, 64 models, 4096 bound nodes per mesh and one million deformed vertice
 across the world. Model and palette indices, weights and matrices are validated;
 bad bindings fail before rendering. Scene changes must call `simulation::reset`
 after hydration so retained entities rebuild from their new scene poses.
-Native animation supplies crossfades and CPU skinning; there is no authored state
-machine, inverse kinematics, retargeting or morph animation.
+Native animation supplies crossfades, CPU skinning and authored
+[pose graphs, state machines and blend spaces](animation-graph.md). Inverse
+kinematics, retargeting and morph animation remain separate features.
 
 ## Navigation and ownership
 

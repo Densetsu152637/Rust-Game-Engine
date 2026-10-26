@@ -1,6 +1,8 @@
 //! Bounded deterministic grid, graph and baked polygon navigation.
+mod crowd;
 mod navmesh;
 use anyhow::{Result, ensure};
+pub use crowd::*;
 use glam::Vec3;
 pub use navmesh::*;
 use std::{cmp::Reverse, collections::BinaryHeap};
@@ -215,6 +217,7 @@ impl Graph {
         ))
     }
 }
+#[derive(Clone, Debug)]
 pub struct Agent {
     position: Vec3,
     path: Vec<Vec3>,
@@ -246,6 +249,30 @@ impl Agent {
     }
     pub fn position(&self) -> Vec3 {
         self.position
+    }
+    /// Teleports the follower without touching its path (used by steering integrators).
+    pub fn set_position(&mut self, position: Vec3) -> Result<()> {
+        ensure!(
+            position.is_finite() && position.abs().max_element() <= 1e8,
+            "invalid position"
+        );
+        self.position = position;
+        Ok(())
+    }
+    pub fn path(&self) -> &[Vec3] {
+        &self.path
+    }
+    /// Index of the waypoint currently being approached; `path().len()` when arrived.
+    pub fn next_index(&self) -> usize {
+        self.next
+    }
+    /// The waypoint currently being approached, if any.
+    pub fn target(&self) -> Option<Vec3> {
+        self.path.get(self.next).copied()
+    }
+    /// Marks the current waypoint as reached without moving.
+    pub fn skip_waypoint(&mut self) {
+        self.next = (self.next + 1).min(self.path.len());
     }
     pub fn arrived(&self) -> bool {
         self.next == self.path.len()

@@ -43,6 +43,8 @@ protocols need an adapter. See [Custom and accessible input](docs/custom-input.m
 | `crates/engine-audio` | PCM clips, deterministic stereo mixer, spatial sources, binaural/reverb/Doppler acoustic DSP, CPAL device output |
 | `crates/engine-acoustics` | Acoustic world (BVH, 2D proxy, materials, rooms), CPU ray-traced propagation, reverb fitting and the propagation service |
 | `crates/engine-acoustics-gpu` | Hardware ray-query and compute GPU tiers of the propagation backend, with self-tests and fallback |
+| `crates/engine-graph` | Shared node-graph document model (nodes, typed ports, edges, variables), per-kind node registries, bounded validation with stable codes and pure atomic edit operations |
+| `crates/engine-ai` | Pure AI runtimes: behavior trees (composites, decorators with observer aborts, services, native tasks) over a typed blackboard, compiled from `engine-graph` documents |
 | `crates/engine-editor` | Portable egui/eframe scene editor, real rendered viewport, shared `EditorController` and isolated Cargo-backed play; retained Win32 smoke controls |
 | `crates/engine-mcp` | MCP stdio server for agents: project/scene/asset/file read tools, `--allow-write` scene and file edits, `project://` resources, and a `ToolProvider` for the CLI's `--allow-exec` build/run/screenshot tools |
 | `crates/engine-tooling` | Native Rust compiler/launcher, generation management, asset index, shader import, packaging and the `engine` command-line tool |

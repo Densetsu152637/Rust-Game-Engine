@@ -9,7 +9,9 @@ use std::{
 
 mod bake;
 mod funnel;
+mod overlay;
 pub use bake::bake;
+pub use overlay::*;
 
 pub const MAX_POLYGONS: usize = 65_536;
 const MAX_WORK: usize = 4_000_000;
@@ -95,7 +97,7 @@ pub enum NavPath {
     Unreachable,
     BudgetExceeded,
 }
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
 pub struct NavLocation {
     pub polygon: usize,
     pub position: [f32; 3],
@@ -131,6 +133,15 @@ impl NavMesh {
         &self.settings
     }
     pub fn nearest(&self, position: [f32; 3], query: QuerySettings) -> Result<Option<NavLocation>> {
+        self.nearest_filtered(position, query, |_| false)
+    }
+    /// `nearest` that ignores polygons for which `skip` returns true (dynamic carving).
+    fn nearest_filtered(
+        &self,
+        position: [f32; 3],
+        query: QuerySettings,
+        skip: impl Fn(usize) -> bool,
+    ) -> Result<Option<NavLocation>> {
         query.validate()?;
         ensure!(valid_point(position), "invalid navigation position");
         ensure!(
@@ -141,6 +152,9 @@ impl NavMesh {
         let mut best = None;
         let mut distance = query.max_distance * query.max_distance;
         for (index, polygon) in self.polygons.iter().enumerate() {
+            if skip(index) {
+                continue;
+            }
             let min =
                 Vec2::new(polygon.cell[0] as f32, polygon.cell[1] as f32) * self.settings.cell_size;
             let size = self.settings.cell_size;

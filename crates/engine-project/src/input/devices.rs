@@ -74,6 +74,8 @@ pub struct InputDevices {
     was_unfocused: bool,
     physical_bindings: Option<BindingMap>,
     physical_revision: Option<u64>,
+    /// XR controls named by `XR:` tokens in the authored physical bindings.
+    xr_bindings: DeviceBindings,
 }
 impl InputDevices {
     /// Also handles Runtime callers that update InputSettings without a desktop mapper.
@@ -87,6 +89,7 @@ impl InputDevices {
             }
         }
         self.physical_bindings = Some(bindings.clone());
+        self.xr_bindings = super::xr::xr_device_bindings(bindings);
     }
     pub fn register(&mut self, source: impl InputSource) -> Result<()> {
         let descriptor = source.descriptor();
@@ -120,6 +123,7 @@ impl InputDevices {
         self.lost_actions.extend(
             self.bindings
                 .iter()
+                .chain(&self.xr_bindings)
                 .filter(|(_, bindings)| bindings.iter().any(|binding| binding.device == id))
                 .map(|(action, _)| action.clone()),
         );
@@ -208,7 +212,7 @@ impl InputDevices {
                 disconnected.insert(id.clone());
             }
         }
-        for (action, bindings) in &self.bindings {
+        for (action, bindings) in self.bindings.iter().chain(&self.xr_bindings) {
             if bindings
                 .iter()
                 .any(|binding| disconnected.contains(&binding.device))
@@ -241,7 +245,7 @@ impl InputDevices {
         }
         let mut custom_held = BTreeSet::new();
         if physical.focused {
-            for (action, bindings) in &self.bindings {
+            for (action, bindings) in self.bindings.iter().chain(&self.xr_bindings) {
                 let value = bindings
                     .iter()
                     .filter_map(|binding| {

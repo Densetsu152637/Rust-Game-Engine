@@ -106,6 +106,7 @@ pub fn binding_registry() -> BTreeSet<String> {
             result.insert(format!("Gamepad:{axis}{direction}"));
         }
     }
+    result.extend(xr_binding_tokens());
     result
 }
 #[derive(Clone, Debug, Default, Serialize)]
