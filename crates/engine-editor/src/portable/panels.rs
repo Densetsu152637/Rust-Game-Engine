@@ -116,17 +116,47 @@ impl PortableEditor {
 impl PortableEditor {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.heading("Scene editor");
+            ui.heading("Editor");
+            if ui.selectable_label(!self.graph_view, "Scene").clicked() {
+                if let Some(tab) = &mut self.graph {
+                    tab.canvas.cancel_gesture();
+                }
+                self.graph_view = false;
+            }
+            if ui.selectable_label(self.graph_view, "Graph").clicked() {
+                self.cancel_interaction();
+                self.graph_view = true;
+            }
             if ui.button("Save").clicked() {
-                let r = self.controller.save();
+                let r = if self.graph_view {
+                    self.save_graph()
+                } else {
+                    self.controller.save()
+                };
                 self.report(r);
             }
             if ui.button("Undo").clicked() {
-                let r = self.controller.undo();
+                let r = if self.graph_view {
+                    if let Some(tab) = &mut self.graph {
+                        tab.canvas.cancel_gesture();
+                        tab.session.undo();
+                    }
+                    Ok(())
+                } else {
+                    self.controller.undo()
+                };
                 self.report(r);
             }
             if ui.button("Redo").clicked() {
-                let r = self.controller.redo();
+                let r = if self.graph_view {
+                    if let Some(tab) = &mut self.graph {
+                        tab.canvas.cancel_gesture();
+                        tab.session.redo();
+                    }
+                    Ok(())
+                } else {
+                    self.controller.redo()
+                };
                 self.report(r);
             }
             if ui
@@ -143,6 +173,26 @@ impl PortableEditor {
                     self.controller.play()
                 };
                 self.report(r);
+            }
+            let reload = ui.add_enabled(
+                self.controller.can_reload_play(),
+                egui::Button::new("Reload game"),
+            );
+            let cancel = ui.add_enabled(
+                self.controller.is_reloading_play(),
+                egui::Button::new("Cancel reload"),
+            );
+            #[cfg(test)]
+            {
+                self.play_control_rects = Some([reload.rect, cancel.rect]);
+            }
+            if reload.clicked() {
+                let result = self.controller.reload_play();
+                self.report(result);
+            }
+            if cancel.clicked() {
+                let result = self.controller.cancel_play_reload();
+                self.report(result);
             }
             if ui
                 .selectable_label(!self.navigation.three_dimensional, "2D")
@@ -166,11 +216,13 @@ impl PortableEditor {
                 }
                 self.dirty_preview = true;
             }
-            if self.controller.is_dirty() {
+            if self.controller.is_dirty() || self.graph_is_dirty() {
                 ui.label("Unsaved");
             }
         });
-        self.settings_panel(ui);
+        if !self.graph_view {
+            self.settings_panel(ui);
+        }
     }
     pub(super) fn hierarchy(&mut self, ui: &mut egui::Ui) {
         ui.heading("Hierarchy");
@@ -194,13 +246,28 @@ impl PortableEditor {
         }
         ui.separator();
         ui.heading("Assets");
-        if let Some(document) = self.controller.document() {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for asset in document.project().assets.values() {
-                    ui.label(format!("{} · {}", asset.kind, asset.id));
+        let assets = self
+            .controller
+            .document()
+            .map(|document| {
+                document
+                    .project()
+                    .assets
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for asset in assets {
+                ui.label(format!("{} · {}", asset.kind, asset.id));
+                if asset.kind == "graph" && ui.button(format!("Open graph {}", asset.id)).clicked()
+                {
+                    let result = self.open_graph(&asset.id);
+                    self.report(result);
                 }
-            });
-        }
+            }
+        });
     }
     pub(super) fn inspector(&mut self, ui: &mut egui::Ui) {
         ui.heading("Inspector");

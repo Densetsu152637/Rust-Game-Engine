@@ -39,10 +39,12 @@ pub enum Stage {
     Tonemap,
     /// After tonemapping, in the target format: UI, gizmos, debug draw.
     Overlay,
+    /// Final display-colour filters after all overlays, including 2D-only frames.
+    Composite,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 10] = [
+    pub const ALL: [Stage; 11] = [
         Self::Prepare,
         Self::Shadow,
         Self::Prepass,
@@ -53,6 +55,7 @@ impl Stage {
         Self::PostProcess,
         Self::Tonemap,
         Self::Overlay,
+        Self::Composite,
     ];
 
     /// Stable lowercase name used in status reports.
@@ -68,6 +71,7 @@ impl Stage {
             Self::PostProcess => "post_process",
             Self::Tonemap => "tonemap",
             Self::Overlay => "overlay",
+            Self::Composite => "composite",
         }
     }
 
@@ -131,6 +135,9 @@ pub struct FeatureDescriptor {
     /// overrides cannot disable them.
     pub required: bool,
     pub needs: FeatureNeeds,
+    /// May run again on UI-free generated frames, without scene targets or
+    /// advancing scene history. Opt in only for presentation-only features.
+    pub replayable: bool,
 }
 
 impl FeatureDescriptor {
@@ -143,6 +150,7 @@ impl FeatureDescriptor {
             enabled_by_default: true,
             required: false,
             needs: FeatureNeeds::default(),
+            replayable: false,
         }
     }
 
@@ -163,6 +171,13 @@ impl FeatureDescriptor {
 
     pub fn needs(mut self, needs: FeatureNeeds) -> Self {
         self.needs = needs;
+        self
+    }
+
+    /// Declare that this Overlay/Composite feature supports late presentation
+    /// on real and generated frames. Scene HDR/depth/normals are unavailable.
+    pub fn replayable(mut self) -> Self {
+        self.replayable = true;
         self
     }
 
@@ -197,6 +212,39 @@ pub trait PipelineFeature: Send + Sync + 'static {
 
     fn prepare(&mut self, _setup: &FeatureSetup<'_>) -> Result<()> {
         Ok(())
+    }
+
+    /// Pin presentation-only data while a host composites a generated/real
+    /// output sequence. End runs even when a begin/encode operation fails.
+    fn begin_presentation_sequence(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn end_presentation_sequence(&mut self) {}
+
+    /// Whether this Composite-stage feature needs a readable final image for
+    /// this output. Inactive features encode nothing and allocate no scratch.
+    fn composite_active(&self, _view: &crate::ViewData) -> bool {
+        true
+    }
+
+    /// Opt into the shared painter stream. Items are merged at engine.sprites;
+    /// use that node for constraints around the combined stream. The producer
+    /// must retain a snapshot until every batch is encoded. None keeps the
+    /// existing whole-feature Overlay behaviour; Some(empty) still finishes a
+    /// producer once, so it can publish an empty report.
+    fn overlay_items(
+        &mut self,
+        _view: &crate::ViewData,
+    ) -> Result<Option<Vec<crate::OverlayItem>>> {
+        Ok(None)
+    }
+
+    fn encode_overlay(
+        &mut self,
+        _ctx: &mut FeatureContext<'_>,
+        _batch: crate::OverlayBatch<'_>,
+    ) -> Result<()> {
+        bail!("ordered overlay producer did not implement encode_overlay")
     }
 
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()>;
@@ -356,6 +404,20 @@ impl FeatureRegistry {
         self.features.extend(other.features);
         self.order = order;
         Ok(())
+    }
+
+    /// Running presentation extensions that cannot be replayed without scene
+    /// targets/history. This remains a pure capability query on headless hosts.
+    pub fn presentation_blockers(&self, overrides: &FeatureOverrides) -> Vec<String> {
+        let resolved = self.resolve(overrides);
+        self.descriptors()
+            .filter(|d| {
+                matches!(d.stage, Stage::Overlay | Stage::Composite)
+                    && !d.replayable
+                    && resolved.is_enabled(&d.name)
+            })
+            .map(|d| d.name.clone())
+            .collect()
     }
 
     /// The same descriptors without implementations, for status previews
@@ -803,6 +865,22 @@ mod tests {
                 screen_lighting: false,
             }
         );
+    }
+
+    #[test]
+    fn generated_frames_accept_replayable_ui_and_ignore_disabled_blockers() {
+        let registry = build([
+            feature("ui.sdf_text", Stage::Overlay).replayable(),
+            feature("ui.color_filter", Stage::Composite).replayable(),
+            feature("custom.depth_overlay", Stage::Overlay),
+        ]);
+        assert_eq!(
+            registry.presentation_blockers(&FeatureOverrides::default()),
+            ["custom.depth_overlay"]
+        );
+        let mut overrides = FeatureOverrides::default();
+        overrides.set("custom.depth_overlay", false);
+        assert!(registry.presentation_blockers(&overrides).is_empty());
     }
 
     #[test]

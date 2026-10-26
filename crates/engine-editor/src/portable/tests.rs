@@ -1,7 +1,13 @@
 use super::*;
-struct Host;
+pub(super) struct Host;
 impl PlayHost for Host {
     fn start(&mut self, _: engine_project::Project) -> Result<()> {
+        Ok(())
+    }
+    fn reload(&mut self, _: engine_project::Project) -> Result<()> {
+        Ok(())
+    }
+    fn cancel_reload(&mut self) -> Result<()> {
         Ok(())
     }
     fn stop(&mut self) -> Result<()> {
@@ -11,7 +17,7 @@ impl PlayHost for Host {
         Ok(crate::PlayStatus::Running)
     }
 }
-fn fixture() -> tempfile::TempDir {
+pub(super) fn fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("scene.json"),r#"{"schema":1,"scene_id":"scene","entities":[{"id":"object","name":"Object","components":{"Transform":{"position":[0,0,0]}}}]}"#).unwrap();
     std::fs::write(
@@ -448,4 +454,86 @@ fn runtime_3d_coplanar_opaque_ids_match_renderer_less_equal_order() {
         assert_eq!(app.pick(rect.center(), rect).as_deref(), Some("z"));
         assert_eq!(app.box_members(rect, rect), vec!["z"]);
     }
+}
+
+#[test]
+fn actual_egui_reload_and_cancel_controls_reach_the_play_host() {
+    use std::{cell::RefCell, rc::Rc};
+    #[derive(Default)]
+    struct Calls {
+        reloads: usize,
+        cancels: usize,
+        stops: usize,
+        pending: bool,
+    }
+    struct ReloadHost(Rc<RefCell<Calls>>);
+    impl PlayHost for ReloadHost {
+        fn start(&mut self, _: engine_project::Project) -> Result<()> {
+            Ok(())
+        }
+        fn reload(&mut self, _: engine_project::Project) -> Result<()> {
+            let mut calls = self.0.borrow_mut();
+            calls.reloads += 1;
+            calls.pending = true;
+            Ok(())
+        }
+        fn cancel_reload(&mut self) -> Result<()> {
+            let mut calls = self.0.borrow_mut();
+            calls.cancels += 1;
+            calls.pending = false;
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<()> {
+            self.0.borrow_mut().stops += 1;
+            Ok(())
+        }
+        fn poll(&mut self) -> Result<crate::PlayStatus> {
+            Ok(if self.0.borrow().pending {
+                crate::PlayStatus::Reloading
+            } else {
+                crate::PlayStatus::Running
+            })
+        }
+    }
+    let dir = fixture();
+    let calls = Rc::new(RefCell::new(Calls::default()));
+    let mut controller = EditorController::new(Box::new(ReloadHost(calls.clone())));
+    controller
+        .open(dir.path().join("project.json"), false)
+        .unwrap();
+    let mut app = PortableEditor::new(controller);
+    app.renderer = Some(OffscreenSprites::headless(640, 360, RenderLimits::default()).unwrap());
+    let ctx = egui::Context::default();
+    pass(&mut app, &ctx, vec![]);
+    pass(&mut app, &ctx, vec![]);
+    let click = |app: &mut PortableEditor, index: usize| {
+        let pos = app.play_control_rects.unwrap()[index].center();
+        pass(
+            app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos), button(pos, true)],
+        );
+        pass(app, &ctx, vec![button(pos, false)]);
+    };
+    click(&mut app, 0);
+    assert_eq!(
+        calls.borrow().reloads,
+        0,
+        "reload must be disabled outside play"
+    );
+    app.controller.play().unwrap();
+    pass(&mut app, &ctx, vec![]);
+    click(&mut app, 0);
+    assert_eq!(calls.borrow().reloads, 1);
+    assert!(app.controller.is_reloading_play());
+    click(&mut app, 0);
+    assert_eq!(
+        calls.borrow().reloads,
+        1,
+        "a second pending reload must be disabled"
+    );
+    click(&mut app, 1);
+    assert_eq!(calls.borrow().cancels, 1);
+    assert_eq!(calls.borrow().stops, 0);
+    assert!(app.controller.is_playing() && !app.controller.is_reloading_play());
 }

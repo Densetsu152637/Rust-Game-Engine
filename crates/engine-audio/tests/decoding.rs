@@ -480,3 +480,38 @@ fn caller_driven_cancel_retires_queued_pcm_and_cannot_fail_a_new_epoch() {
     e.mix(&mut [0.; 2]).unwrap();
     assert_eq!(w.snapshot().unwrap().source_frame, 33.);
 }
+
+#[test]
+fn resident_loading_preserves_samples_and_checks_declared_and_cumulative_pcm_caps() {
+    let file = Fixture::new("flac", &flac());
+    let clip = engine_audio::load_resident(&file.0, DecodeLimits::default(), 512).unwrap();
+    assert_eq!(clip.frames(), 128);
+    assert!(clip.samples()[..64].iter().all(|s| *s == 0.25));
+    assert!(clip.samples()[64..].iter().all(|s| *s == -0.25));
+    assert_eq!(
+        engine_audio::load_resident(&file.0, DecodeLimits::default(), 508)
+            .unwrap_err()
+            .code,
+        "audio.resident.limit"
+    );
+    let unknown = Fixture::new("mp3", &variable_bitrate_mp3(true));
+    assert_eq!(
+        AudioDecoder::open(&unknown.0, DecodeLimits::default())
+            .unwrap()
+            .info()
+            .total_frames,
+        None
+    );
+    assert_eq!(
+        engine_audio::load_resident(&unknown.0, DecodeLimits::default(), 10000)
+            .unwrap_err()
+            .code,
+        "audio.resident.limit"
+    );
+    let tone = Fixture::new("mp3", include_bytes!("fixtures/tone.mp3"));
+    let clip = engine_audio::load_resident(&tone.0, DecodeLimits::default(), 8820 * 4).unwrap();
+    compare_pcm(
+        clip.samples(),
+        &reference(include_bytes!("fixtures/tone-mp3.f32")),
+    );
+}

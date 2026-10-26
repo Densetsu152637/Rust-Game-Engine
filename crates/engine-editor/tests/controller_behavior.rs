@@ -65,6 +65,10 @@ impl Fixture {
 struct HostState {
     captured: Option<Project>,
     starts: usize,
+    replacements: Vec<Project>,
+    reload_cancellations: usize,
+    fail_reload: bool,
+    fail_cancel_reload: bool,
     stops: usize,
     polls: usize,
     fail_start: bool,
@@ -81,6 +85,22 @@ impl PlayHost for Host {
             bail!("compile rejected");
         }
         s.captured = Some(project);
+        Ok(())
+    }
+    fn reload(&mut self, project: Project) -> Result<()> {
+        let mut state = self.0.borrow_mut();
+        if state.fail_reload {
+            bail!("replacement rejected");
+        }
+        state.replacements.push(project);
+        Ok(())
+    }
+    fn cancel_reload(&mut self) -> Result<()> {
+        let mut state = self.0.borrow_mut();
+        if state.fail_cancel_reload {
+            bail!("replacement still cancelling");
+        }
+        state.reload_cancellations += 1;
         Ok(())
     }
     fn stop(&mut self) -> Result<()> {
@@ -1054,4 +1074,116 @@ fn play_status_value_semantics() {
         }
     );
     assert!(format!("{:?}", PlayStatus::Compiling).contains("Compiling"));
+}
+
+#[test]
+fn reload_game_snapshots_unsaved_edits_and_rejection_keeps_play_and_history() {
+    let fixture = Fixture::new();
+    let original = fs::read(&fixture.scene).unwrap();
+    let (mut controller, host) = opened(&fixture);
+    assert!(controller.reload_play().is_err());
+    controller.play().unwrap();
+    assert!(!controller.can_reload_play());
+    controller.poll().unwrap();
+    assert!(controller.can_reload_play());
+    edit(
+        &mut controller,
+        EditOperation::SetPosition {
+            entity_id: "object:hero".into(),
+            position: [7.0, 0.0, 0.0],
+        },
+    )
+    .unwrap();
+    let revision = revision(&controller);
+    controller.reload_play().unwrap();
+    assert!(controller.is_reloading_play());
+    assert!(!controller.can_reload_play());
+    assert!(controller.reload_play().is_err());
+    assert_eq!(host.borrow().replacements.len(), 1);
+    assert_eq!(
+        host.borrow().replacements[0].scene.entities[0]
+            .components
+            .transform
+            .as_ref()
+            .unwrap()
+            .position[0],
+        7.0
+    );
+    host.borrow_mut()
+        .script
+        .push_back(Ok(PlayStatus::ReloadFailed {
+            message: "compile error; previous game continues".into(),
+        }));
+    assert!(controller.poll().is_err());
+    assert!(controller.is_playing() && controller.document().unwrap().is_playing());
+    assert!(!controller.is_reloading_play() && controller.can_reload_play());
+    assert_eq!(controller.document().unwrap().revision(), revision);
+    assert!(!controller.diagnostics().is_empty());
+    controller.poll().unwrap();
+    assert!(
+        !controller.diagnostics().is_empty(),
+        "running polls retain failure diagnostics"
+    );
+    assert_eq!(host.borrow().stops, 0);
+    assert_eq!(fs::read(&fixture.scene).unwrap(), original);
+    controller.undo().unwrap();
+    assert!(!controller.is_dirty());
+}
+
+#[test]
+fn reload_success_and_cancel_leave_document_in_play_until_stop() {
+    let fixture = Fixture::new();
+    let (mut controller, host) = opened(&fixture);
+    controller.play().unwrap();
+    controller.poll().unwrap();
+    controller.reload_play().unwrap();
+    host.borrow_mut()
+        .script
+        .push_back(Ok(PlayStatus::Reloading));
+    controller.poll().unwrap();
+    assert!(controller.is_reloading_play());
+    controller.cancel_play_reload().unwrap();
+    assert_eq!(host.borrow().reload_cancellations, 1);
+    assert!(controller.is_playing() && controller.document().unwrap().is_playing());
+    assert!(controller.can_reload_play());
+    controller.reload_play().unwrap();
+    controller.poll().unwrap();
+    assert!(!controller.is_reloading_play());
+    assert!(controller.status().contains("Game reloaded"));
+    controller.reload_play().unwrap();
+    controller.stop().unwrap();
+    assert!(
+        !controller.is_playing()
+            && !controller.is_reloading_play()
+            && !controller.can_reload_play()
+    );
+    assert!(!controller.document().unwrap().is_playing());
+    assert_eq!(host.borrow().stops, 1);
+}
+
+#[test]
+fn synchronous_reload_errors_and_terminal_teardown_failures_are_truthful() {
+    let fixture = Fixture::new();
+    let (mut controller, host) = opened(&fixture);
+    controller.play().unwrap();
+    controller.poll().unwrap();
+    host.borrow_mut().fail_reload = true;
+    assert!(controller.reload_play().is_err());
+    assert!(controller.can_reload_play() && controller.is_playing());
+    host.borrow_mut().fail_reload = false;
+    controller.reload_play().unwrap();
+    host.borrow_mut().fail_cancel_reload = true;
+    assert!(controller.cancel_play_reload().is_err());
+    assert!(controller.is_reloading_play());
+    host.borrow_mut().script.push_back(Ok(PlayStatus::Stopped {
+        success: false,
+        message: "old teardown failed".into(),
+    }));
+    assert!(controller.poll().is_err());
+    assert!(
+        !controller.is_playing()
+            && !controller.is_reloading_play()
+            && !controller.can_reload_play()
+    );
+    assert!(!controller.document().unwrap().is_playing());
 }

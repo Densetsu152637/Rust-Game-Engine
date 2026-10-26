@@ -139,6 +139,9 @@ fn screenshot_on(
     let mut audio = engine_audio::AudioEngine::offline(engine_audio::AudioConfig::default())?;
     runtime.set_audio(audio.control())?;
     engine_desktop::configure_acoustics(&mut runtime, true, arguments.acoustics_backend)?;
+    engine_desktop::install_default_ui_features(runtime.app_mut())?;
+    // The image is rendered on the GPU: the same default render features as a window.
+    engine_desktop::install_default_render_features(runtime.app_mut())?;
     runtime.start()?;
     let mut event_trace = engine_project::EventTrace::default();
     let result = (|| -> Result<serde_json::Value> {
@@ -218,9 +221,17 @@ fn screenshot_on(
         let mut renderer =
             GpuRenderer::with_upscaler_device(gpu, target.info, RenderLimits::default(), upscaler)?;
         renderer.set_features(features)?;
+        // Readiness is now established; use the GPU text route for the final image.
+        let frame = runtime.extract_scene_frame()?;
         renderer.note_ray_tracing_request(ray_tracing);
         if let Some(previous) = &previous_frame {
-            renderer.render_scene(previous, &target.view, Some(runtime.app().render_world()))?;
+            // The old 3D source advances history once. Its discarded presentation
+            // uses the coherent current UI snapshot, prepared above, rather than
+            // mixing pre-readiness coverage text with current SDF glyphs.
+            let mut warm_up = previous.clone();
+            warm_up.sprites = frame.sprites.clone();
+            warm_up.materials2d = frame.materials2d.clone();
+            renderer.render_scene(&warm_up, &target.view, Some(runtime.app().render_world()))?;
         }
         renderer.render_scene(&frame, &target.view, Some(runtime.app().render_world()))?;
         let world = runtime.app_mut().world_mut();

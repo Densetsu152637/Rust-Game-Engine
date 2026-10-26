@@ -11,7 +11,9 @@ gameplay interface. Native authored code has the user's normal process privilege
 
 `NativeCompiler::compile` invokes the selected Cargo/rustc executables, captures
 real Cargo JSON diagnostics, and returns a copied executable at a unique path.
-The compiler explicitly resolves a generation Cargo.lock using Cargo metadata,
+Toolchain identity probes use owned process groups/jobs, bounded output capture,
+cancellation, and a five-second deadline per executable. The compiler explicitly
+resolves a generation Cargo.lock using Cargo metadata,
 then builds with `--locked`. `NativeCompiler::check` runs `cargo check` on the
 same generated graph for compile-only validation; it returns diagnostics, never
 produces or replaces a generation, and removes its temporary workspace.
@@ -97,13 +99,33 @@ prints one `run` result. Configure errors are `runtime.failed`, panics are
 
 ## Editor play host
 
-`play_host::NativePlayHost` implements `engine_editor::PlayHost`. `start` compiles
-on a worker thread and launches the isolated project clone with its unsaved scene
-as a snapshot and a private user-data directory inside the generation; authored
-files and player saves are never written. `poll` reports `Compiling`, `Running`
-or `Stopped`; a build or startup failure is `Stopped { success: false }` whose
-message lists the compiler errors, and earlier generations remain intact. `stop`
-cancels an in-flight build or gracefully stops the game.
+`play_host::NativePlayHost` implements `engine_editor::PlayHost`. `start` and
+`reload` compile on a worker and prepare an isolated authored scene snapshot plus
+generation-private user-data directory. `poll` reports `Compiling`, `Running`,
+`Reloading`, `ReloadFailed { message }` or `Stopped { success, message }`. The old
+game continues while a replacement compiles/reaches readiness. A rejected candidate
+keeps a still-running game active with diagnostics; cancel reload joins and drops
+only the candidate. Poll activation checks candidate liveness, gracefully stops the
+old game, then starts the candidate once. This can wait for the bounded teardown
+deadline. Failure after teardown begins is terminal. Runtime state is restarted
+from the authored snapshot, never transferred between processes. If the old game
+exits independently during preparation, its terminal status survives later polls,
+cancellation, and rejected replacement. Stop/Drop cancel pending work and release
+the active process; authored files and ordinary player saves remain separate.
+
+Editor sessions do not automatically prune completed generation directories or
+private ephemeral data. At an idle boundary after all builds/preparations stop,
+tool hosts may explicitly call
+`engine_tooling::artifacts::prune_generations(cache, current_generation, 3)`: it keeps
+the supplied current generation, the newest two completed non-ready generations,
+and every generation with a readiness file; incomplete generations and Cargo's
+`target` directory are untouched. Existing `engine run <manifest>` and
+`engine project package <manifest> <new-dir>` also apply this three-generation
+policy after their builds; these commands execute/build/package projects rather
+than being cleanup-only commands. Editor-private data inside a retired generation
+is removed with that generation. This is an explicit cache policy, not automatic
+bounded editor retention or a cross-process lease protocol. See
+[Native hot reload](../../docs/editor-hot-reload.md).
 
 ## Tests
 

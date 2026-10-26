@@ -17,18 +17,22 @@ Tooling supplies the implementation of:
 ```rust,ignore
 trait PlayHost {
     fn start(&mut self, project: engine_project::Project) -> engine_core::Result<()>;
+    fn reload(&mut self, project: engine_project::Project) -> engine_core::Result<()>;
+    fn cancel_reload(&mut self) -> engine_core::Result<()>;
     fn stop(&mut self) -> engine_core::Result<()>;
     fn poll(&mut self) -> engine_core::Result<engine_editor::PlayStatus>;
 }
 ```
 
-`PlayStatus` is `Compiling`, `Running`, or
-`Stopped { success: bool, message: String }`. Start should queue compilation in
-a worker and return promptly; poll must be nonblocking so the native message loop
-remains responsive. The host owns candidate builds, cancellation and process
-cleanup. Stop must release that generation before returning success. An error
-keeps play active so the user can retry stopping. The controller attempts best
-effort stop on Drop, but explicit close/stop is needed to report errors.
+`PlayStatus` is `Compiling`, `Running`, `Reloading`,
+`ReloadFailed { message: String }`, or `Stopped { success: bool, message: String }`.
+Start and reload queue compilation in a worker and return promptly. Polling a
+prepared replacement can wait up to the bounded graceful teardown deadline before
+starting the candidate. Cancel reload joins/discards the pending candidate while
+retaining the active game. Stop releases both pending and active processes. Errors
+remain visible, and explicit close/stop reports cleanup problems; Drop attempts
+best-effort cleanup. Toolchain identity probes are cancellable owned processes
+with a five-second deadline per executable.
 
 Start receives `SceneDocument::begin_play`'s isolated Project clone, including
 unsaved scene edits and the original asset root. The host must launch that clone,
@@ -38,8 +42,11 @@ play state, and terminal runtime failures appear in the log pane.
 
 `EditorController::apply(operation, expected_revision)` exposes the same stale
 revision protection as `SceneDocument`. `open`/`reload` require an explicit
-discard flag when dirty. `select`, `save`, `undo`, `redo`, `play`, `stop`, `poll`
-and `close` are independently testable without a native window.
+discard flag when dirty. `select`, `save`, `undo`, `redo`, `play`, `stop`, `poll`,
+`reload_play`, `cancel_play_reload`, and `close` are independently testable without a native window.
+Reload Game uses the current authored snapshot while project-file `reload` still
+protects unsaved edits and reads disk content. See [Native hot reload](../../docs/editor-hot-reload.md)
+for the process-restart boundary, retained diagnostics, and explicit cache policy.
 
 ## Verification
 

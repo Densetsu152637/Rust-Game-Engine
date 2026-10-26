@@ -12,6 +12,14 @@ entity JSON editor exposes all authored components, including custom registered
 component data. Asset IDs and diagnostics are visible beside the viewport.
 Save, undo and redo retain document revision checks. Play compiles and launches
 an isolated project snapshot, preserving the existing external-process boundary.
+Once play is running, **Reload game** compiles current Rust sources and prepares
+the latest authored scene, including unsaved edits, while the old game continues.
+**Cancel reload** discards a pending candidate. Successful replacement shuts down
+the old game and restarts runtime state from the new snapshot. Compilation or
+readiness errors keep a still-running old game active and appear in the console;
+failed teardown or activation ends play. This action does not reload scene files
+from disk or transfer live runtime state. See [Native hot reload](editor-hot-reload.md)
+for failure guarantees and private save isolation.
 
 The scene viewport renders through `OffscreenSprites::render_scene`, including
 actual 3D materials and custom WGSL. It reads the GPU result into an egui texture
@@ -33,3 +41,13 @@ bounded CPU raster limits, transform limitations and verification coverage.
 Invalid preview data leaves the last successful image visible with diagnostics.
 Closing a dirty document prompts Save, Discard or Cancel. Changes are validated
 through the document model before they reach disk.
+
+The **Graph** view opens project graph assets through **Open graph <asset id>** in
+Assets. Its shared canvas supports registered behavior tree, state tree and
+animation schemas, node/port editing, undo/redo, complete diagnostics and
+revision-protected Save. Scene and graph changes remain independent; toolbar
+Save/Undo/Redo target the active view. Unsaved graph edits survive switching back
+to Scene and participate in the application close prompt. Graph view also exports
+incomplete work to a separate unregistered draft file. Save a graph before
+Play/Reload game to use its latest authored graph data. See
+[Native graph editor](editor-graph.md) for controls and limits.

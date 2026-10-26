@@ -5,16 +5,23 @@ mod acoustics;
 mod assets;
 mod components;
 mod edit;
+mod editor;
 mod files;
+mod foliage;
 mod graph;
 mod locale;
 mod model_import;
 mod navigation;
 mod networking;
+mod pcg;
 mod physics;
 mod project;
 mod scene;
+mod streaming;
+mod terrain;
+mod tilemap;
 mod ui;
+mod water;
 
 pub use components::{COMPONENT_NAMES, ComponentDoc, component_docs};
 
@@ -87,6 +94,13 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(ui::tools());
     tools.extend(networking::tools());
     tools.extend(graph::tools());
+    tools.extend(editor::tools());
+    tools.extend(tilemap::tools());
+    tools.extend(pcg::tools());
+    tools.extend(streaming::tools());
+    tools.extend(terrain::tools());
+    tools.extend(foliage::tools());
+    tools.extend(water::tools());
     tools
 }
 

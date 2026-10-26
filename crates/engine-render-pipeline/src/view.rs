@@ -54,6 +54,15 @@ impl Viewport {
     }
 }
 
+/// Whether a scene view also draws presentation-only overlays and filters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Presentation {
+    #[default]
+    Enabled,
+    /// Produce a UI-free, tonemapped scene for a later presentation step.
+    SceneOnly,
+}
+
 /// CPU description of one view for one frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewData {
@@ -85,6 +94,7 @@ pub struct ViewData {
     /// HDR post-processing and tonemapping for this view (`None`: the
     /// default clamp output). See [`crate::PostSettings`].
     pub post: Option<crate::post::PostSettings>,
+    pub presentation: Presentation,
 }
 
 impl ViewData {
@@ -112,6 +122,7 @@ impl ViewData {
             host_needs: FeatureNeeds::default(),
             reset_history: false,
             post: None,
+            presentation: Presentation::Enabled,
         };
         view.validate()?;
         Ok(view)

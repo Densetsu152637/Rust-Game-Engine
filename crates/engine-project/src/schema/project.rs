@@ -48,8 +48,14 @@ impl Project {
                 "animation",
                 "navigation",
                 "acoustics",
+                "pcg",
+                "partition",
                 "lut",
                 "graph",
+                "tileset",
+                "tilemap",
+                "terrain",
+                "foliage",
             ]
             .contains(&asset.kind.as_str())
             {
@@ -157,7 +163,21 @@ impl Project {
             }
             if let Some(material) = &c.material {
                 if let Some(shader) = &material.shader {
-                    self.require_asset(shader, "shader")?;
+                    if self
+                        .assets
+                        .get(shader)
+                        .is_some_and(|asset| asset.kind == "graph")
+                    {
+                        let graph = crate::graphs::load_graph(self, shader)?;
+                        if graph.kind != engine_material_graph::KIND {
+                            return Err(Error::new(
+                                "project.asset.kind",
+                                format!("Asset {shader} must be shader or a material graph"),
+                            ));
+                        }
+                    } else {
+                        self.require_asset(shader, "shader")?;
+                    }
                 }
                 if let Some(texture) = &material.texture {
                     match texture.strip_prefix(crate::rendering3d::STREAM_TEXTURE_PREFIX) {
@@ -197,9 +217,23 @@ impl Project {
                 self.require_asset(&s.texture, "texture")?;
             }
         }
+        self.validate_feature_components(scene)
+    }
+    /// Validates the feature components of `scene` that reference assets or carry semantic
+    /// constraints beyond the JSON schema (acoustics and every world feature). Unlike
+    /// [`Self::validate_scene`] it does not require parents to live in `scene`, so it also
+    /// serves streamed cells, whose roots may parent to entities of the running world.
+    pub fn validate_feature_components(&self, scene: &Scene) -> Result<()> {
         crate::acoustics::validate_scene(self, scene)?;
         crate::networking::validate_scene(scene)?;
         crate::ai::validate_scene(self, scene)?;
+        crate::world::coordinates::validate_scene(scene)?;
+        crate::world::pcg::validate_scene(self, scene)?;
+        crate::world::streaming::validate_scene(self, scene)?;
+        crate::world::terrain::validate_scene(self, scene)?;
+        crate::world::foliage::validate_scene(self, scene)?;
+        crate::world::water::validate_scene(self, scene)?;
+        crate::world::tilemap::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.
@@ -218,12 +252,41 @@ impl Project {
                 "navigation" => {
                     crate::simulation::load_navmesh(self, &asset.id)?;
                 }
+                "pcg" => {
+                    crate::world::pcg::load_graph(self, &asset.id)?;
+                }
+                "partition" => {
+                    let manifest = crate::world::streaming::load_manifest(self, &asset.id)?;
+                    for cell in &manifest.cells {
+                        confined_file(&self.root, Path::new(&cell.file))?;
+                        let scene = load_scene(&self.root, Path::new(&cell.file))?;
+                        self.validate_feature_components(&scene)
+                            .map_err(|e| e.with_context(&format!("cell {}", cell.file)))?;
+                    }
+                }
                 "acoustics" => {
                     let bytes =
                         read_bounded(&file, crate::acoustics::MAX_BAKED_DOCUMENT_BYTES as u64)?;
                     crate::acoustics::validate_document(&asset.id, &bytes)?;
                 }
                 "graph" => crate::graphs::validate_asset(self, &asset.id)?,
+                "tileset" => {
+                    crate::world::tilemap::load_tileset(self, &asset.id)?;
+                }
+                "terrain" => {
+                    crate::world::terrain::load_terrain(self, &asset.id)?;
+                }
+                "foliage" => {
+                    crate::world::foliage::load_foliage(self, &asset.id)?;
+                }
+                "tilemap" => {
+                    // A map is validated against the tileset of the entities that use it.
+                    engine_tilemap::Tilemap::from_json(
+                        &read_bounded(&file, 16 * 1024 * 1024)?,
+                        None,
+                    )
+                    .map_err(|e| Error::new(e.code, e.message))?;
+                }
                 "mesh" => {
                     crate::content::load_mesh(&file)?;
                 }

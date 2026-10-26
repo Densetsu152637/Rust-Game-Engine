@@ -32,7 +32,7 @@ use std::{
 pub const FEATURE_SDF_TEXT: &str = "ui.sdf_text";
 /// Render feature name of the depth-tested world UI pass (Transparent stage).
 pub const FEATURE_WORLD: &str = "ui.world";
-/// Render feature name of the colour-vision filter (PostProcess stage).
+/// Render feature name of the colour-vision filter (Composite stage).
 pub const FEATURE_COLOR_FILTER: &str = "ui.color_filter";
 
 /// The three UI render features.
@@ -221,6 +221,7 @@ struct Shared {
     /// The last routing decision: reasons a registered feature was not used.
     sdf_off: Option<String>,
     world_off: Option<String>,
+    filter_off: Option<String>,
     had_camera3d: bool,
 }
 
@@ -304,6 +305,9 @@ impl UiGpuQueue {
             Some("disabled for the active camera through Camera3D.render_features".to_owned())
         };
         shared.had_camera3d = camera3d_overrides.is_some();
+        shared.filter_off = (ready(&shared, UiGpuFeature::ColorFilter)
+            && disabled(UiGpuFeature::ColorFilter))
+        .then(|| "disabled for the active camera through Camera3D.render_features".to_owned());
         UiGpuRouting { sdf_text, world_ui }
     }
 
@@ -337,13 +341,12 @@ impl UiGpuQueue {
             match feature {
                 UiGpuFeature::SdfText => shared.sdf_off.clone(),
                 UiGpuFeature::World => shared.world_off.clone(),
-                UiGpuFeature::ColorFilter => {
+                UiGpuFeature::ColorFilter => shared.filter_off.clone().or_else(|| {
                     (shared.frame.color_filter.is_active() && slot.frames == 0).then(|| {
-                        "requested, but the filter is a PostProcess feature and no 3D frame has \
-                         run it yet (2D-only frames have no post-process stage)"
+                        "requested, but no final presentation has run the colour filter yet"
                             .to_owned()
                     })
-                }
+                }),
             }
         };
         let state = if reason.is_some() {
@@ -474,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_status_flags_a_request_no_3d_frame_has_run() {
+    fn filter_status_flags_a_request_before_final_presentation() {
         let queue = UiGpuQueue::default();
         queue.mark_registered(UiGpuFeature::ColorFilter);
         queue.set_ready(UiGpuFeature::ColorFilter, true);
@@ -494,7 +497,7 @@ mod tests {
                 .state_of(UiGpuFeature::ColorFilter)
                 .1
                 .unwrap()
-                .contains("PostProcess")
+                .contains("no final presentation")
         );
         queue.report(UiGpuFeature::ColorFilter, UiFeatureReport::default());
         assert_eq!(

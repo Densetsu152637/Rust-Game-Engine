@@ -7,7 +7,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
@@ -19,8 +19,24 @@ pub(super) struct CompilerOutput {
 }
 
 pub(super) fn run_compiler(
+    command: Command,
+    cancel: &AtomicBool,
+) -> Result<CompilerOutput, BuildFailure> {
+    run_compiler_until(command, cancel, None)
+}
+
+pub(super) fn run_compiler_with_timeout(
+    command: Command,
+    cancel: &AtomicBool,
+    timeout: Duration,
+) -> Result<CompilerOutput, BuildFailure> {
+    run_compiler_until(command, cancel, Some(Instant::now() + timeout))
+}
+
+fn run_compiler_until(
     mut command: Command,
     cancel: &AtomicBool,
+    deadline: Option<Instant>,
 ) -> Result<CompilerOutput, BuildFailure> {
     command
         .stdout(Stdio::piped())
@@ -38,6 +54,7 @@ pub(super) fn run_compiler(
         let _ = send.send((false, read_bounded(stderr)));
     });
     let mut was_cancelled = false;
+    let mut timed_out = false;
     let mut status = None;
     let mut drain_deadline = None;
     let mut leaked_output = false;
@@ -45,9 +62,13 @@ pub(super) fn run_compiler(
     let mut stdout = String::new();
     let mut stderr = String::new();
     while status.is_none() || received < 2 {
-        if cancel.load(Ordering::Acquire) && !was_cancelled {
+        if !was_cancelled
+            && !timed_out
+            && (cancel.load(Ordering::Acquire) || deadline.is_some_and(|end| Instant::now() >= end))
+        {
+            was_cancelled = cancel.load(Ordering::Acquire);
+            timed_out = !was_cancelled;
             terminate_tree(&mut child)?;
-            was_cancelled = true;
             if status.is_none() {
                 status = Some(reap(&mut child)?);
             }
@@ -93,6 +114,12 @@ pub(super) fn run_compiler(
     err_thread
         .join()
         .map_err(|_| failure("compiler.output", "stderr reader panicked"))?;
+    if timed_out {
+        return Err(failure(
+            "compiler.timeout",
+            "Compiler command exceeded its deadline",
+        ));
+    }
     if leaked_output && !was_cancelled {
         return Err(failure(
             "compiler.output_leak",

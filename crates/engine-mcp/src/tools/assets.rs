@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 19] = [
+const KINDS: [&str; 26] = [
     "script",
     "mesh",
     "texture",
@@ -32,6 +32,12 @@ const KINDS: [&str; 19] = [
     "acoustics",
     "lut",
     "graph",
+    "tileset",
+    "tilemap",
+    "pcg",
+    "partition",
+    "terrain",
+    "foliage",
 ];
 const MAX_USES: usize = 200;
 
@@ -264,6 +270,44 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
                 "instances":document.instances.len(),"volumes":document.volumes.len(),
                 "proxy":document.proxy.is_some(),"content_hash":document.content_hash})
         }
+        "tileset" => {
+            let (tileset, size) = engine_project::world::tilemap::load_tileset(project, &asset.id)?;
+            let document = tileset.document();
+            json!({"texture":document.texture,"texture_size":size,"tiles":document.tiles.len(),
+                "rule_tiles":document.rule_tiles.len()})
+        }
+        "tilemap" => {
+            let map = engine_tilemap::Tilemap::from_json(
+                &paths::read_bounded(&file, 16 * 1024 * 1024)
+                    .map_err(|_| ToolFailure::new("file_too_large", "tilemap is too large"))?,
+                None,
+            )
+            .map_err(|e| ToolFailure::new(e.code, e.message))?;
+            let layers: Vec<_> = map
+                .layers()
+                .iter()
+                .map(|l| json!({"name":l.name,"cells":l.filled_cells()}))
+                .collect();
+            json!({"bounds":{"min":map.bounds().min,"max":map.bounds().max},"layers":layers})
+        }
+        "terrain" => {
+            let field = engine_project::world::terrain::load_terrain(project, &asset.id)?;
+            let layers: Vec<_> = field.layers().iter().map(|l| l.name.clone()).collect();
+            json!({"samples":[field.columns(), field.rows()],"spacing":field.spacing(),
+                "height_range":field.height_range(),"layers":layers,"holes":field.hole_count()})
+        }
+        "pcg" => {
+            let graph = engine_project::world::pcg::load_graph(project, &asset.id)?;
+            json!({"version": graph.version, "seed": graph.seed,
+                "nodes": graph.nodes.len(), "edges": graph.edges.len()})
+        }
+        "partition" => {
+            let manifest = engine_project::world::streaming::load_manifest(project, &asset.id)?;
+            json!({"cell_size": manifest.cell_size, "cells": manifest.cells.len(),
+                "layers": manifest.cells.iter().map(|c| c.layer.as_str())
+                    .collect::<std::collections::BTreeSet<_>>(),
+                "hlod_cells": manifest.cells.iter().filter(|c| c.hlod.is_some()).count()})
+        }
         "scene" | "prefab" => {
             let relative = file.strip_prefix(cx.root).expect("confined file");
             let scene = load_scene(cx.root, relative)?;
@@ -348,6 +392,17 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
                     .and_then(Value::as_str)
                 {
                     fields.push((component, "navmesh", navmesh));
+                }
+            }
+            for field in ["clip", "graph"] {
+                if let Some(id) = c
+                    .custom
+                    .get("engine.AudioEmitter")
+                    .and_then(|v| v.data.get(field))
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                {
+                    fields.push(("engine.AudioEmitter", field, id));
                 }
             }
             for agent in ["engine.BehaviorTreeAgent", "engine.StateTreeAgent"] {

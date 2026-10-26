@@ -129,6 +129,12 @@ impl RunningGeneration {
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.stdout.take()
     }
+    /// Fault injection for lifecycle tests: retaining this handle keeps the real
+    /// prepared child alive while activation exercises a missing control pipe.
+    #[cfg(test)]
+    pub(crate) fn take_start_pipe_for_test(&mut self) -> Option<ChildStdin> {
+        self.stdin.take()
+    }
     pub fn id(&self) -> u32 {
         self.child.id()
     }

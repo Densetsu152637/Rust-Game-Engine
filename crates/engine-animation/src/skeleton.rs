@@ -56,6 +56,9 @@ impl Skeleton {
     pub fn parents(&self) -> &[Option<usize>] {
         &self.parents
     }
+    pub(crate) fn joint_order(&self) -> &[usize] {
+        &self.order
+    }
     pub fn joint_count(&self) -> usize {
         self.parents.len()
     }

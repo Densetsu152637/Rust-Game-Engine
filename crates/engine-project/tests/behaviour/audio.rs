@@ -67,9 +67,10 @@ impl Rig {
 // ---- clips --------------------------------------------------------------------------------
 
 #[test]
-fn audio_assets_are_decoded_when_audio_is_configured() {
+fn audio_assets_are_decoded_on_demand() {
     let mut r = rig();
-    let clip = r.world().resource::<RuntimeAudio>().clips["sfx"].clone();
+    assert!(r.world().resource::<RuntimeAudio>().clips.is_empty());
+    let clip = audio::load_clip(r.world(), "sfx").unwrap();
     assert_eq!(
         (clip.sample_rate(), clip.channels(), clip.frames()),
         (8000, 1, 800)
@@ -77,8 +78,9 @@ fn audio_assets_are_decoded_when_audio_is_configured() {
 }
 
 #[test]
-fn only_audio_kind_assets_become_clips() {
+fn only_requested_audio_assets_become_cached_clips() {
     let mut r = rig();
+    r.source("player", None);
     let keys: Vec<_> = r
         .world()
         .resource::<RuntimeAudio>()
@@ -95,18 +97,19 @@ fn stereo_clips_keep_their_channel_count() {
     p.write("st.wav", wav(44100, 2, 100));
     p.add_asset("st", "audio", "st.wav");
     let mut r = rig_from(p);
-    let clip = r.world().resource::<RuntimeAudio>().clips["st"].clone();
+    let clip = audio::load_clip(r.world(), "st").unwrap();
     assert_eq!((clip.channels(), clip.frames()), (2, 100));
 }
 
 #[test]
-fn a_corrupt_wav_is_rejected_when_audio_is_configured() {
+fn a_corrupt_file_is_rejected_on_resident_load() {
     let p = Proj::new();
     let project = p.project();
     p.write("sfx.wav", "not a wav");
     let engine = AudioEngine::offline(Default::default()).unwrap();
     let mut rt = Runtime::new(project).unwrap();
-    expect_code(rt.set_audio(engine.control()), "audio.wav.invalid");
+    rt.set_audio(engine.control()).unwrap();
+    assert!(audio::load_clip(rt.app().world(), "sfx").is_err());
 }
 
 #[test]
@@ -740,5 +743,5 @@ fn configuring_audio_twice_replaces_the_runtime_clips_resource() {
     let mut rt = p.runtime();
     rt.set_audio(engine.control()).unwrap();
     rt.set_audio(engine.control()).unwrap();
-    assert_eq!(rt.app().world().resource::<RuntimeAudio>().clips.len(), 1);
+    assert!(rt.app().world().resource::<RuntimeAudio>().clips.is_empty());
 }

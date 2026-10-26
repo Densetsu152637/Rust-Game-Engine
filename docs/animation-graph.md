@@ -15,6 +15,7 @@ ordered by their incoming edges in the document's `edges` array.
 | Node | Inputs | Parameters |
 | --- | --- | --- |
 | `output` | `pose` | None |
+| `retarget_clip` | None | source `clip`, explicit `source_rig`, `target_rig`, `mapping`; optional speed/looping; [contract](animation-retargeting.md) |
 | `clip` | None | `clip` animation asset ID; `looping` (default true), `speed` (0–100, default 1) |
 | `blend` | `a`, `b` | `parameter`: float variable name; clamped to 0–1 |
 | `blend1d` | ordered `samples` | `parameter`, strictly increasing `positions` |
@@ -69,8 +70,9 @@ Limits are 256 nodes, 1024 edges, 64 variables, 64 samples/states per blend/mach
 128 triangles or transitions, 262144 joint-node pose entries per player, and
 4096 emitted events per update. Existing clip/joint/key/event traversal limits
 also apply, together with shared graph JSON size, depth and entry limits.
-This is CPU pose evaluation and skinning. Retargeting, root motion, morph targets
-and a timeline sequencer remain separate features.
+This is CPU pose evaluation and skinning. Explicit [rotation retargeting](animation-retargeting.md)
+provides a source-clip leaf with optional local root translation. General root-motion
+extraction, morph targets and a timeline sequencer remain separate features.
 
 ## Project integration
 

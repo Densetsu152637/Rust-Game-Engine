@@ -81,6 +81,10 @@ fn body(n: usize) -> Value {
             json!({"type":"integer","minimum":0,"maximum":engine_physics::MAX_HEIGHTFIELD_SAMPLES});
         properties["heightfield_rows"] = count.clone();
         properties["heightfield_columns"] = count;
+        properties["heightfield_holes"] = list(
+            engine_physics::MAX_HEIGHTFIELD_SAMPLES,
+            json!({"type":"integer","minimum":0,"maximum":engine_physics::MAX_HEIGHTFIELD_SAMPLES - 1}),
+        );
     }
     properties
 }

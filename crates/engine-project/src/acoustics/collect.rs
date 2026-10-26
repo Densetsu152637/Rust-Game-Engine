@@ -10,8 +10,14 @@
 //!   cylinder and heightfield add a named warning) and `space: "proxy2d"` volumes become 2D footprints
 //!   for the proxy synthesizer, and 3D meshes are not used.
 //! - `engine.AcousticVolume` solids and rooms with `space: "world"`.
+//! - Opt-in, non-sensor `engine.PhysicsBody3D` boxes without mesh geometry become
+//!   masked acoustic instances with body-local geometry and current world pose.
 use super::components::*;
-use crate::{Error, Result, WorldTransform, content::Mesh, runtime::AuthoredId};
+use crate::{
+    Error, Result, WorldTransform,
+    content::{Mesh, Vertex},
+    runtime::AuthoredId,
+};
 use bevy_ecs::prelude::*;
 use engine_acoustics as ac;
 use glam::{Mat4, Vec3};
@@ -174,6 +180,44 @@ fn mesh_geometry(
     }
     cache.insert(id.to_owned(), mesh);
     Ok(())
+}
+/// A deterministic, outward-facing twelve-triangle box in body-local coordinates.
+fn physics_box_mesh(half_extents: [f32; 3]) -> Mesh {
+    let [x, y, z] = half_extents;
+    let positions = [
+        [-x, -y, -z],
+        [x, -y, -z],
+        [x, y, -z],
+        [-x, y, -z],
+        [-x, -y, z],
+        [x, -y, z],
+        [x, y, z],
+        [-x, y, z],
+    ];
+    let vertices = positions
+        .into_iter()
+        .map(|position| Vertex {
+            position,
+            uv: [0.; 2],
+            color: [1.; 4],
+        })
+        .collect();
+    Mesh {
+        normals: vec![],
+        vertices,
+        indices: vec![
+            0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 3, 7, 6, 3, 6, 2, 0, 4, 7, 0, 7,
+            3, 1, 2, 6, 1, 6, 5,
+        ],
+    }
+}
+fn physics_box_key(half_extents: [f32; 3]) -> String {
+    format!(
+        "\0physics3d/box/{:08x}/{:08x}/{:08x}",
+        half_extents[0].to_bits(),
+        half_extents[1].to_bits(),
+        half_extents[2].to_bits(),
+    )
 }
 /// Planar pose of a 2D entity: rotation about Z and the XY scale lengths.
 fn planar(matrix: &Mat4) -> (f32, f32, f32) {
@@ -531,22 +575,60 @@ pub fn collect(world: &World, lookup: &MeshLookup) -> Result<Option<Collected>> 
             .filter(|_| environment.geometry.render_meshes)
             .map(|m| m.mesh.as_str());
         let override_mesh = geometry.and_then(|g| g.mesh.as_deref());
-        let Some(mesh) = override_mesh.or(renderer_mesh) else {
-            continue;
-        };
         if mode == GeometryMode::Exclude {
             continue;
         }
-        mesh_geometry(mesh, lookup, &mut out.meshes)?;
+        if let Some(mesh) = override_mesh.or(renderer_mesh) {
+            mesh_geometry(mesh, lookup, &mut out.meshes)?;
+            out.instances.push(InstanceSpec {
+                key: key.clone(),
+                mesh: mesh.to_owned(),
+                material: material.unwrap_or(default_material),
+                transform: affine(&matrix),
+                mobility: if mode == GeometryMode::Dynamic {
+                    Mobility::Dynamic
+                } else {
+                    Mobility::Static
+                },
+                mask: geometry.map_or(environment.geometry.mask, |g| g.mask),
+            });
+            continue;
+        }
+        if !environment.geometry.physics_bodies {
+            continue;
+        }
+        let Some(body) = entity.get::<crate::simulation::PhysicsBody3D>() else {
+            continue;
+        };
+        if body.material.sensor {
+            continue;
+        }
+        if body.shape != crate::simulation::Shape::Box {
+            out.warnings.push(format!(
+                "{key}: PhysicsBody3D {:?} has no acoustic collider proxy (only box is supported)",
+                body.shape
+            ));
+            continue;
+        }
+        let half_extents = body.half_extents;
+        if !half_extents.iter().all(|v| v.is_finite() && *v > 0.0) {
+            out.warnings
+                .push(format!("{key}: invalid PhysicsBody3D box omitted"));
+            continue;
+        }
+        let mesh = physics_box_key(half_extents);
+        out.meshes
+            .entry(mesh.clone())
+            .or_insert_with(|| Arc::new(physics_box_mesh(half_extents)));
         out.instances.push(InstanceSpec {
             key: key.clone(),
-            mesh: mesh.to_owned(),
+            mesh,
             material: material.unwrap_or(default_material),
             transform: affine(&matrix),
-            mobility: if mode == GeometryMode::Dynamic {
-                Mobility::Dynamic
-            } else {
+            mobility: if body.motion == crate::simulation::Motion::Fixed {
                 Mobility::Static
+            } else {
+                Mobility::Dynamic
             },
             mask: geometry.map_or(environment.geometry.mask, |g| g.mask),
         });

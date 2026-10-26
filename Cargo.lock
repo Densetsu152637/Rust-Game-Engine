@@ -944,6 +944,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1519,6 +1528,7 @@ name = "engine-audio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "engine-graph",
  "hound",
  "symphonia",
 ]
@@ -1550,11 +1560,15 @@ dependencies = [
  "engine-audio",
  "engine-core",
  "engine-dlss",
+ "engine-physics-render",
  "engine-project",
  "engine-render",
  "engine-render-pipeline",
  "engine-render-rt",
  "engine-render-wgpu",
+ "engine-terrain",
+ "engine-ui-render",
+ "engine-world-render",
  "epaint_default_fonts",
  "gilrs",
  "glam 0.34.1",
@@ -1600,12 +1614,24 @@ dependencies = [
  "eframe",
  "engine-core",
  "engine-desktop",
+ "engine-editor-graph",
  "engine-editor-settings",
  "engine-project",
  "glam 0.34.1",
  "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "engine-editor-graph"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "engine-graph",
+ "engine-project",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1622,6 +1648,16 @@ name = "engine-fluids"
 version = "0.1.0"
 dependencies = [
  "glam 0.34.1",
+]
+
+[[package]]
+name = "engine-foliage"
+version = "0.1.0"
+dependencies = [
+ "engine-pcg",
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1652,14 +1688,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-material-graph"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "engine-graph",
+ "engine-render-pipeline",
+ "engine-render-wgpu",
+ "glam 0.34.1",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
 name = "engine-mcp"
 version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "engine-editor-settings",
+ "engine-foliage",
  "engine-graph",
+ "engine-mesh-lod",
+ "engine-pcg",
  "engine-project",
+ "engine-streaming",
+ "engine-terrain",
+ "engine-tilemap",
+ "engine-water",
  "epaint_default_fonts",
+ "glam 0.34.1",
  "regex",
  "serde",
  "serde_json",
@@ -1768,6 +1827,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-pcg"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-physics"
 version = "0.1.0"
 dependencies = [
@@ -1813,8 +1881,10 @@ dependencies = [
  "engine-core",
  "engine-destruction",
  "engine-fluids",
+ "engine-foliage",
  "engine-graph",
  "engine-locale",
+ "engine-material-graph",
  "engine-ml",
  "engine-navigation",
  "engine-net-predict",
@@ -1822,10 +1892,15 @@ dependencies = [
  "engine-net-replication",
  "engine-net-voice",
  "engine-network",
+ "engine-pcg",
  "engine-physics",
  "engine-sequencer",
+ "engine-streaming",
+ "engine-terrain",
  "engine-text",
+ "engine-tilemap",
  "engine-video",
+ "engine-water",
  "engine-xpbd",
  "epaint_default_fonts",
  "fs2",
@@ -1897,6 +1972,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-streaming"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "engine-terrain"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-text"
 version = "0.1.0"
 dependencies = [
@@ -1911,6 +2003,14 @@ dependencies = [
  "unicode-linebreak",
  "unicode-script",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "engine-tilemap"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1964,6 +2064,46 @@ dependencies = [
  "engine-audio",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "engine-voice-audio"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "engine-audio",
+ "engine-net-voice",
+ "engine-network",
+ "opusic-c",
+]
+
+[[package]]
+name = "engine-water"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "engine-world-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "bytemuck",
+ "engine-core",
+ "engine-foliage",
+ "engine-project",
+ "engine-render-pipeline",
+ "engine-render-wgpu",
+ "engine-terrain",
+ "engine-water",
+ "glam 0.34.1",
+ "serde_json",
+ "tempfile",
+ "wgpu",
 ]
 
 [[package]]
@@ -3853,6 +3993,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "febb5d50cee7b964b69d5b7a810ed9620fc64f41382ffefe05434754c7a48877"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "opusic-c"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89f8e9c909466f15e60277212cc4fec082c68a5e1c9f6e373eee716fec2fed47"
+dependencies = [
+ "opusic-sys",
+]
+
+[[package]]
+name = "opusic-sys"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9d1ecdf206421bc74343ab3bb2f30ad2abbfee41fa341f7181fecbaf957769a"
+dependencies = [
+ "cmake",
 ]
 
 [[package]]

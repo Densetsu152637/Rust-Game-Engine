@@ -11,14 +11,37 @@ use engine_network::{MessageEndpoint, PeerId, SERVER_PEER};
 use serde::Serialize;
 use std::{collections::BTreeMap, sync::Arc, sync::Mutex};
 
-type Factory = Arc<dyn Fn() -> Box<dyn VoiceCodec> + Send + Sync>;
+type Factory = Arc<dyn Fn() -> engine_net_voice::Result<Box<dyn VoiceCodec>> + Send + Sync>;
 
 fn factory(settings: &VoiceSettings) -> Result<Factory> {
     if let Some(codec) = &settings.codec {
         return Ok(codec.0.clone());
     }
     let codec = RawPcmCodec::new(settings.sample_rate, settings.frame_ms).map_err(voice_error)?;
-    Ok(Arc::new(move || Box::new(codec)))
+    Ok(Arc::new(move || Ok(Box::new(codec) as Box<dyn VoiceCodec>)))
+}
+
+#[cfg(test)]
+mod codec_factory_tests {
+    use super::super::settings::VoiceCodecFactory;
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn decoder_initialization_failure_propagates_from_client_creation() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut settings = VoiceSettings::default();
+        settings.codec = Some(VoiceCodecFactory(Arc::new(move || {
+            if observed.fetch_add(1, Ordering::Relaxed) == 0 {
+                Ok(Box::new(RawPcmCodec::new(16_000, 20).unwrap()) as Box<dyn VoiceCodec>)
+            } else {
+                Err(engine_net_voice::VoiceError::Codec("decoder init failed"))
+            }
+        })));
+        assert!(ClientVoice::new(&settings).is_err());
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
 }
 
 /// Nonsecret voice counters in the status report.
@@ -117,7 +140,8 @@ pub(crate) struct ClientVoice {
 impl ClientVoice {
     pub(crate) fn new(settings: &VoiceSettings) -> Result<Self> {
         let make = factory(settings)?;
-        let sender = VoiceSender::new(make(), settings.limits.clone(), 0).map_err(voice_error)?;
+        let sender = VoiceSender::new(make().map_err(voice_error)?, settings.limits.clone(), 0)
+            .map_err(voice_error)?;
         let receiver = VoiceReceiver::new(
             settings.limits.clone(),
             settings.jitter,

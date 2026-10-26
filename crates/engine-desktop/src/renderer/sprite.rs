@@ -47,6 +47,7 @@ pub(crate) struct BuiltFrame {
     pub commands: RenderCommandBuffer,
     pub stats: RenderStats,
     pub viewport: PixelRect,
+    pub painter: Vec<engine_render_pipeline::OverlayItem>,
 }
 
 impl BuiltFrame {
@@ -305,12 +306,19 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         };
         let mut draws: Vec<&Draw> = frame.draws.iter().collect();
         // Stable IDs make equal-layer draws independent of ECS iteration order.
-        draws.sort_by(|a, b| a.layer.cmp(&b.layer).then_with(|| a.id.cmp(&b.id)));
+        draws.sort_by(|a, b| {
+            (a.space == DrawSpace::Ui, a.layer, &a.id).cmp(&(
+                b.space == DrawSpace::Ui,
+                b.layer,
+                &b.id,
+            ))
+        });
         let cameras = [
             DrawUniform::from_pod("camera", CAMERA_SLOT, &camera.world),
             DrawUniform::from_pod("camera", CAMERA_SLOT, &camera.ui),
         ];
         let mut commands = self.device.make_frame();
+        let mut painter = Vec::new();
         let mut previous = None;
         for draw in draws {
             let Some(scissor) = camera.scissor(draw.clip)? else {
@@ -372,6 +380,14 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             }
             command.texture = texture;
             let shader = command.shader;
+            painter.push(engine_render_pipeline::OverlayItem {
+                order: engine_render_pipeline::OverlayOrderKey {
+                    ui: draw.space == DrawSpace::Ui,
+                    layer: draw.layer,
+                    id: draw.id.clone(),
+                },
+                token: commands.len() as u64,
+            });
             commands.record(command)?;
             // A batch is a run of draws sharing pipeline state, texture, camera
             // and scissor; painter order is never changed to reduce them.
@@ -395,6 +411,7 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             commands,
             stats,
             viewport: neutral_rect(camera.viewport),
+            painter,
         })
     }
 

@@ -44,7 +44,9 @@ fn build() -> GraphKinds {
     let kinds = [
         engine_ai::behavior_tree::kind(),
         engine_animation::graph::kind(),
+        engine_audio::graph::kind(),
         engine_ai::state_tree::kind(),
+        engine_material_graph::material_kind(),
     ];
     GraphKinds {
         kinds: kinds.into_iter().map(|k| (k.name.clone(), k)).collect(),
@@ -116,12 +118,57 @@ pub fn load_graph(project: &Project, id: &str) -> Result<GraphDocument> {
 /// Project validation of a `graph` asset.
 pub(crate) fn validate_asset(project: &Project, id: &str) -> Result<()> {
     let document = load_graph(project, id)?;
+    if document.kind == engine_material_graph::KIND {
+        engine_material_graph::compile_material(&document)
+            .map_err(|diagnostics| into_error(diagnostics, &project.assets[id].path))?;
+    }
     if document.kind == "animation" {
         let graph = engine_animation::graph::Graph::compile(&document)
             .map_err(|d| into_error(d, Path::new(id)))?;
-        for clip in graph.clip_ids() {
-            crate::simulation::load_clip(project, clip)?;
+        use engine_animation::graph::{GraphAssetKind, GraphRigs};
+        let mut clips = std::collections::BTreeMap::new();
+        let mut rigs = std::collections::BTreeMap::new();
+        for dependency in graph.asset_dependencies() {
+            match dependency.kind {
+                GraphAssetKind::Animation => {
+                    clips.insert(
+                        dependency.id.to_owned(),
+                        crate::simulation::load_clip(project, dependency.id)?,
+                    );
+                }
+                GraphAssetKind::Model => {
+                    rigs.insert(
+                        dependency.id.to_owned(),
+                        load_animation_rig(project, dependency.id)?,
+                    );
+                }
+            }
+        }
+        if let Some(spec) = graph.retargets().next() {
+            let sources = graph
+                .source_rig_ids()
+                .map(|id| (id.to_owned(), rigs[id].clone()))
+                .collect();
+            let bindings = GraphRigs::new(
+                spec.target_rig.clone(),
+                rigs[&spec.target_rig].clone(),
+                sources,
+            )
+            .map_err(|e| Error::new("animation.retarget.invalid", e.to_string()))?;
+            graph
+                .validate_retarget_bindings(&bindings, &clips)
+                .map_err(|e| Error::new("animation.retarget.invalid", e.to_string()))?;
         }
     }
     Ok(())
+}
+
+/// Shared bounded model dependency read used by animation graph validation and runtime binding.
+pub(crate) fn load_animation_rig(
+    project: &Project,
+    id: &str,
+) -> Result<std::sync::Arc<engine_animation::Skeleton>> {
+    project.require_asset(id, "model")?;
+    let model = crate::model_import::load_model(&project.resolve_asset(id)?)?;
+    crate::simulation::imported_skeleton(&model.scene).map(std::sync::Arc::new)
 }

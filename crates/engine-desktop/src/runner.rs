@@ -199,6 +199,13 @@ pub fn run_with_wgpu_backends(
     if let Some(path) = &options.user_data {
         runtime.set_user_data_root(path.clone())?;
     }
+    // Default world and physics render features, merged with the game's own;
+    // headless runs only list them in the preview status.
+    if options.headless {
+        crate::defaults::register_headless_defaults(runtime.app_mut())?;
+    } else {
+        crate::install_default_render_features(runtime.app_mut())?;
+    }
     let audio = if options.headless {
         AudioEngine::offline(AudioConfig::default())?
     } else {
@@ -587,6 +594,7 @@ impl ApplicationHandler for DesktopRunner {
             return;
         }
         let result = (|| -> Result<()> {
+            crate::install_default_ui_features(self.runtime.app_mut())?;
             let frame = self.runtime.extract_scene_frame()?;
             let [width, height] = frame.sprites.camera.logical_size;
             let window = Arc::new(
@@ -637,6 +645,8 @@ impl ApplicationHandler for DesktopRunner {
                 .remove_resource::<PipelineFeatures>()
                 .unwrap_or_default();
             host.renderer.set_features(features)?;
+            // Re-extract after readiness so the first presented frame can use SDF.
+            let frame = self.runtime.extract_scene_frame()?;
             // Failure to initialize the controller service is propagated. A
             // service with no connected gamepad is valid and still polls hotplug.
             self.gamepads = Some(Gamepads::new()?);

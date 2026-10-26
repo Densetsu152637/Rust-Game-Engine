@@ -202,7 +202,7 @@ impl WindowSurface {
         if self.suspended {
             return Ok(None);
         }
-        if let Some(stats) = self.renderer.render_generated(frame)? {
+        if let Some(stats) = self.renderer.render_generated_with_world(frame, world)? {
             let generated = self.renderer.generated_frame_count();
             let start = Instant::now();
             let offsets = crate::presentation_offsets(self.pacer.begin(start), generated);

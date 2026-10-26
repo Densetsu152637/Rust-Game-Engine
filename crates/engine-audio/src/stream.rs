@@ -75,10 +75,21 @@ struct Shared {
     ended: AtomicBool,
     underruns: AtomicU64,
     starved: AtomicBool,
+    #[cfg(test)]
+    failure_pause: Option<FailurePause>,
 }
 /// One producer. A generation token prevents stale decoder work after seek.
 pub struct StreamWriter {
     shared: Arc<Shared>,
+}
+/// Read-only queue lifetime retained independently of mixer voice/producer status.
+pub(crate) struct StreamObserver {
+    shared: Arc<Shared>,
+}
+impl StreamObserver {
+    pub(crate) fn failure(&self) -> Option<AudioError> {
+        snapshot(&self.shared).map_or_else(Some, |s| s.error)
+    }
 }
 pub(crate) struct StreamPlayback {
     shared: Arc<Shared>,
@@ -87,6 +98,11 @@ fn error(code: &'static str, message: &str) -> AudioError {
     AudioError::new(code, message)
 }
 impl StreamWriter {
+    pub(crate) fn observer(&self) -> StreamObserver {
+        StreamObserver {
+            shared: self.shared.clone(),
+        }
+    }
     pub fn snapshot(&self) -> Result<StreamSnapshot> {
         snapshot(&self.shared)
     }
@@ -141,6 +157,15 @@ impl StreamWriter {
         self.check(&q, generation)?;
         q.error = Some(failure);
         self.shared.ended.store(true, Ordering::Release);
+        drop(q);
+        #[cfg(test)]
+        if let Some(pause) = &self.shared.failure_pause {
+            let _ = pause.reached.send(());
+            let _ = pause
+                .resume
+                .lock()
+                .map(|r| r.recv_timeout(std::time::Duration::from_secs(10)));
+        }
         Ok(())
     }
     fn check(&self, q: &Queue, generation: StreamGeneration) -> Result<()> {
@@ -215,6 +240,8 @@ impl StreamPlayback {
             ended: AtomicBool::new(false),
             underruns: AtomicU64::new(0),
             starved: AtomicBool::new(false),
+            #[cfg(test)]
+            failure_pause: NEXT_FAILURE_PAUSE.with(|slot| slot.borrow_mut().take()),
         });
         Ok((
             Self {
@@ -351,4 +378,27 @@ mod tests {
         assert_eq!(writer.snapshot().unwrap().underrun_output_frames, 128);
         assert_eq!(writer.snapshot().unwrap().state, StreamState::Starved);
     }
+}
+
+#[cfg(test)]
+struct FailurePause {
+    reached: std::sync::mpsc::SyncSender<()>,
+    resume: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+#[cfg(test)]
+std::thread_local! {static NEXT_FAILURE_PAUSE:std::cell::RefCell<Option<FailurePause>>=const {std::cell::RefCell::new(None)};}
+#[cfg(test)]
+pub(crate) fn pause_next_stream_failure() -> (
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::SyncSender<()>,
+) {
+    let (reached, wait) = std::sync::mpsc::sync_channel(1);
+    let (release, resume) = std::sync::mpsc::sync_channel(1);
+    NEXT_FAILURE_PAUSE.with(|slot| {
+        *slot.borrow_mut() = Some(FailurePause {
+            reached,
+            resume: Mutex::new(resume),
+        })
+    });
+    (wait, release)
 }

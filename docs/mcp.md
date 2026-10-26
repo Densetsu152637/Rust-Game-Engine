@@ -45,7 +45,7 @@ clients take the same `command` and `args`.
 
 | Level | Flag | Tools | What it can do |
 | --- | --- | --- | --- |
-| Read | always on | 25 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
+| Read | always on | 34 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
 | Write | `--allow-write` | `entity_create`, `entity_update`, `entity_delete`, `component_set`, `component_remove`, `file_write` | Change scenes and text files inside the project root. |
 | Exec | `--allow-exec` | `project_build`, `project_run_headless`, `render_screenshot` | Compile and run the project's native game code. |
 
@@ -157,6 +157,13 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `ui_preview` | `scene`, `entity` (required), `viewport`, `scale`, `theme`, `locale`, `states`, `font`, `background`, `sampling` | A PNG of the entity's `engine.UiRoot` from the headless CPU rasterizer, returned as MCP image content with size and digest. At most 2048 x 2048 pixels and within the output message limit; coverage text only. |
 | `graph_schema` | `kind`, `node_type` | The graph kinds (for example `behavior_tree`) and, for one kind, every node type with ports, parameter schemas (type, default, bounds, choices), category and description; also the `graph_edit` operations and the stable diagnostic codes. Pure metadata. See [Graph documents](ai-graphs.md). |
 | `graph_validate` | `asset`, `path` or `document` (exactly one), `level` | Coded diagnostics (`code`, `path`, `message`) for a graph asset, file or inline document at the `complete` (default) or `structure` level, plus `valid`, `kind`, counts and, for files, the `revision` that `graph_edit` expects. Works on an asset that is currently invalid. |
+| `tilemap_info` | `path` (asset ID or file) | Summary of a tileset (texture, tile and collision counts, rule tiles) or tilemap (bounds, per-layer z order, visibility, opacity, chunk and cell counts). See [World tilemaps](world-tilemap.md). |
+| `tilemap_query` | `path`, `tileset`, `layer`, `mode` (`cell`, `rect`, `collision`), `cell`, `rect` | Painted and displayed tile (rule tiles resolved as the runtime does), a rectangle listing of up to 4096 cells, or the merged collision boxes and outline loops of a layer. |
+| `terrain_info` | `path` (asset ID or `.terrain` file), `samples` (at most 256 `[x, z]`) | Terrain summary (samples, spacing, extent, height range, layers, hole count, content hash) and per-point triangulated height, normal, slope, hole flag and layer weights. See [Heightmap terrain](terrain.md). |
+| `water_sample` | `scene`, `points` (at most 256 `[x, y, z]`), `water`, `ticks` (1-3600), `dt` | Runs the scene headless (no game code) and reports every `engine.WaterBody` (kind, wave model, steepness bound, FFT significant wave height, river discharge, notes) and, per point, the covering body, surface height, depth, underwater flag with fog colour/density/transmittance, normal, flow velocity, crest and shore foam and wave amplitude. See [Water](world-water.md). |
+| `water_spectrum` | one of `water` (with `scene`), `ocean`, `gerstner` (+ `depth`); `time` | Wave statistics without running a scene: FFT variance, significant height, continuum variance, peak wavelength/period, slope, energy by wavelength and frame height stats; Gerstner dispersion per wave, steepness scale and Lipschitz bound. |
+| `pcg_validate` | `path`, `kinds`, `run`, `seed`, `center`, `size`, `origin_offset`, `ground_height`, `max_instances`, `sample` | Validates a procedural generation graph against the built-in node library with precise `problems` (code, node, port, message); `kinds` adds the node catalog; `run` adds a bounded dry run on flat ground (counts, per-asset totals, bounds, content hash, sample). See [Procedural content generation](pcg.md). |
+| `streaming_info` | `manifest`, `offset`, `limit`, `position`, `radius` | Summary of a world-partition manifest: grid, cell, entity and byte counts, data layers, HLOD coverage, key bounds, missing cell files and a page of cells; with `position` and `radius` the cells within that distance, nearest first (what a source there would load). See [Level streaming](streaming.md). |
 | `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |
 | `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
 | `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob` (at most 512 bytes), `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
@@ -180,11 +187,25 @@ nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
 | `component_remove` | `entity`, `component` | yes / yes | Removes one component; removing an absent one is a no-op. |
 | `file_write` | `path`, `content`, `expected_hash` | yes / yes | Creates or overwrites a UTF-8 text file. |
 | `navigation_bake` | `meshes` (1-128 mesh assets), `output`, `settings`, `obstacles` | no / no | Bakes world-space floor meshes and box obstacles into a new navigation JSON file (never overwrites) and returns the asset entry to add to `project.json`. |
+| `pcg_create` | `output`, `seed`, `template` (`empty`, `scatter`), `assets` | no / no | Creates a new PCG graph JSON file (never overwrites) and returns the `pcg` asset entry for `project.json`. |
+| `pcg_edit` | `path`, `expected_hash`, `operations` (at most 256), `dry_run` | yes / no | Atomically applies `add_node`, `remove_node`, `connect`, `disconnect`, `set_parameter`, `clear_parameter` and `set_seed` operations to a graph; a failing operation reports its index and problem and changes nothing. |
+| `pcg_run` | `path`, run parameters of `pcg_validate`, `scene`, `expected_revision`, `volume`, `dry_run` | yes / yes | Runs a graph and, with `scene`, replaces the entities `pcg:<volume>:*` of that scene with the generated instances in one revisioned atomic edit. |
+| `streaming_partition` | `scene`, `output_dir`, `cell_size`, `plane`, `origin_offset`, `exclude`, `strip`, `expected_revision`, `dry_run` | no / no | Splits a scene into world-partition cells: one cell document per cell and data layer plus `partition.json`, never overwriting. With `strip` the moved entities are removed from the scene in one revisioned edit. |
+| `streaming_hlod` | `manifest`, `proxy_ratio`, `max_proxy_triangles`, `expected_hash`, `dry_run` | yes / no | Builds a merged, simplified HLOD proxy mesh per cell (`engine-mesh-lod`) under `<manifest dir>/hlod/` and records it in the manifest; only files the manifest already names are replaced. |
 | `acoustics_bake` | `scene`, `output`, `include` (`meshes`, `proxy2d`, `volumes`) | no / no | Writes the scene's acoustic source geometry (meshes, instances, volumes, proxy footprints and resolved materials) as a sealed `AcousticWorldDocument` JSON file after replaying it through the world builder; never overwrites. Returns `path`, `triangles`, `hash` (of the file), `content_hash` (the document's own) and the `acoustics` asset entry to add to `project.json`. |
 | `locale_set_message` | `locale`, `ftl` (required), `file`, `expected_hash` | yes / yes | Adds or replaces one Fluent message or term in a locale's `.ftl` file; validated with the Fluent parser first. |
 | `locale_remove_message` | `locale`, `id` (required), `file`, `expected_hash` | yes / no | Removes one message or term and its attached comment from a locale's `.ftl` file. |
 | `locale_add_locale` | `locale`, `path` (required), `asset_id`, `copy_from` | no / no | Creates a new `.ftl` file (never overwrites), registers it as a `string_table` asset and in the `locale_config` (creating `localization.json` if the project has none). |
 | `ui_edit` | `entity`, `operations` (required), `expected_hash`, plus the scene arguments | yes / no | Applies a batch of UI document operations (add, remove, move, duplicate, rename nodes; patch widget, style, node flags, classes, accessibility, bindings, root fields) to the entity's `engine.UiRoot` atomically, validated as a whole and saved through the scene revision check. See [UI authoring tools](#ui-authoring-tools). |
+| `tilemap_create_tileset` | `output`, `texture`, `tile_size`, `name`, `tiles`, `grid` | no / no | Writes a new tileset JSON file (atlas rectangles, collision, properties) and returns the `tileset` asset entry. Never overwrites. |
+| `tilemap_create` | `output`, `tileset`, `bounds`, `layers` | no / no | Writes a new empty tilemap JSON file and returns the `tilemap` asset entry plus an `engine.Tilemap` component snippet. Never overwrites. |
+| `tilemap_define_rules` | `path`, `rule_tile`, `expected_hash` | yes / yes | Adds or replaces a rule tile (`blob47`, `four_neighbour16` or custom neighbour rules) in an existing tileset file, validated before an atomic rewrite; a stale `expected_hash` fails with `stale_hash` and writes nothing. |
+| `tilemap_paint` | `path`, `tileset`, `layer`, `ops` (1-256), `expected_hash` | yes / yes | Applies `set`, `erase`, `rect`, `flood` and `layer` edits to an existing tilemap file, all or nothing; a stale `expected_hash` fails with `stale_hash`. |
+| `terrain_create` | `output`, `columns`, `rows`, `spacing`, `height`, `noise`, `layers` | no / no | Writes a new binary `.terrain` heightmap and returns the `terrain` asset entry plus an `engine.Terrain` component snippet. Never overwrites. |
+| `terrain_sculpt` | `path`, `expected_hash`, `ops` (1-256) | yes / no | Applies `raise`, `lower`, `smooth`, `flatten`, `set_height` and `noise` brushes, all or nothing, with an atomic rewrite. |
+| `terrain_paint` | `path`, `expected_hash`, `ops` (1-256) | yes / no | Applies splat `paint`, `add_layer` and `set_layer` edits, all or nothing. |
+| `terrain_holes` | `path`, `expected_hash`, `ops` (1-256) | yes / no | Cuts or fills hole cells under circular brushes, all or nothing. |
+| `terrain_navmesh` | `path`, `output`, `origin`, `region`, `settings` | no / no | Bakes a terrain into a new `navigation` JSON document (raster-aligned walkable soup without holes and steep cells). Never overwrites. |
 
 | `graph_edit` | `asset` or `path`, `kind`, `expected_revision`, `edits` (1-1024) | yes / no | Applies graph edit operations (add/remove node, connect/disconnect, set param, set position, add/remove/set variable, set metadata) to a graph asset atomically. Every operation is validated and the result must pass complete validation, otherwise nothing is written (`details.op_index` names the failing operation); a stale `expected_revision` fails with `revision_conflict`. A new `path` plus `kind` creates a graph and returns the asset entry for `project.json`. See [Graph documents](ai-graphs.md#mcp-tools). |
 
@@ -481,3 +502,12 @@ is not required for this ephemeral run input. The result includes `event_trace`,
 `event_count` and `event_trace_truncated`, covering actual deliveries across the
 run rather than only the final tick. See [scheduled events](scheduled-events.md)
 for bounds, stable-ID resolution, atomic enqueue and CLI usage.
+
+## Persisted editor settings
+
+`editor_settings_get` reads validated project-root `editor.json`, returning defaults
+without writing when missing. `editor_settings_update` requires write access and a
+partial `patch`; existing files require `expected_revision` from Get. Both tools
+reuse the native settings validator, bounded confined reads and atomic publication.
+They do not refresh a running editor cache. See [Editor settings](editor-settings.md)
+for merge rules, revision failures and writer coordination.

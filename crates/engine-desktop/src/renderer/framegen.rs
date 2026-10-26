@@ -134,6 +134,27 @@ impl FrameGeneration {
         self.last_frame = Some(now);
     }
 
+    /// Finish the already-rendered source once, even when interpolation fails.
+    /// The caller retains its valid real colour and must not rerender the scene.
+    pub fn complete_evaluation(
+        &mut self,
+        camera: &CameraInstance3D,
+        now: Instant,
+        request: FrameGenerationSettings,
+        sizes: ([u32; 2], [u32; 2]),
+        failure: Option<&str>,
+    ) -> bool {
+        self.history.commit(camera);
+        self.finish_frame(now);
+        if let Some(reason) = failure {
+            self.remember_failure(request, sizes, reason);
+            self.fallback(request, reason);
+            false
+        } else {
+            true
+        }
+    }
+
     /// Not requested: only real frames, and history restarts when it is.
     pub fn off(&mut self, requested: FrameGenerationSettings) {
         self.history.request_reset();
@@ -185,7 +206,7 @@ impl FrameGeneration {
         &self,
         requested: FrameGenerationSettings,
         device: &UpscalerDevice,
-        overlay_features: bool,
+        presentation_blocker: Option<&str>,
         sizes: ([u32; 2], [u32; 2]),
     ) -> Option<String> {
         if let Err(error) = requested.validate() {
@@ -194,11 +215,8 @@ impl FrameGeneration {
         if let Some(reason) = device.frame_generation_unavailable_reason() {
             return Some(reason);
         }
-        if overlay_features {
-            return Some(
-                "frame generation does not support overlay render features yet: they draw after the HUD, which generated frames do not contain"
-                    .into(),
-            );
+        if let Some(reason) = presentation_blocker {
+            return Some(reason.to_owned());
         }
         self.failure
             .as_ref()
@@ -343,6 +361,8 @@ pub(super) mod stage {
         pub output: [u32; 2],
         pub render: [u32; 2],
         pub generator: engine_dlss::FrameGenerator,
+        /// Failed interpolation keeps real colour presentable until replacement.
+        pub poisoned: bool,
         pub hudless: ColorTarget,
         pub backbuffer: ColorTarget,
         pub generated: Vec<ColorTarget>,
@@ -366,7 +386,7 @@ pub(super) mod stage {
                     output_size: output,
                     render_size: render,
                     color_format: engine_dlss::ColorFormat::Rgba8Unorm,
-                    hudless: true,
+                    hudless: false,
                 },
             )
             .map_err(|e| format!("DLSS Frame Generation initialization failed: {e}"))?;
@@ -377,6 +397,7 @@ pub(super) mod stage {
                 output,
                 render,
                 generator,
+                poisoned: false,
                 hudless: ColorTarget::new(&device, "DLSS-G HUD-less scene", output),
                 backbuffer: ColorTarget::new(&device, "DLSS-G backbuffer", output),
                 generated,
@@ -473,7 +494,7 @@ mod tests {
             "DLSS requires the Vulkan backend".into(),
         ));
         let sizes = ([64, 64], [64, 64]);
-        let reason = state.precheck(fg(2), &unavailable, false, sizes).unwrap();
+        let reason = state.precheck(fg(2), &unavailable, None, sizes).unwrap();
         assert_eq!(reason, "DLSS requires the Vulkan backend");
         state.fallback(fg(2), &reason);
         let status = state.status();
@@ -481,7 +502,7 @@ mod tests {
         assert_eq!(status.generated_frames, 0);
         assert!(status.multiplier.is_none());
         let unprepared = UpscalerDevice::default();
-        let reason = state.precheck(fg(2), &unprepared, false, sizes).unwrap();
+        let reason = state.precheck(fg(2), &unprepared, None, sizes).unwrap();
         if cfg!(feature = "dlss") {
             assert!(
                 reason.contains("NGX") || reason.contains("without DLSS extensions"),
@@ -495,7 +516,7 @@ mod tests {
         }
         assert!(
             state
-                .precheck(fg(5), &unprepared, false, sizes)
+                .precheck(fg(5), &unprepared, None, sizes)
                 .unwrap()
                 .contains("multiplier must be 2, 3 or 4")
         );
@@ -512,24 +533,53 @@ mod tests {
             frame_generation: None,
         }));
         let sizes = ([64, 64], [64, 64]);
-        assert!(state.precheck(fg(2), &ready, false, sizes).is_none());
+        assert!(state.precheck(fg(2), &ready, None, sizes).is_none());
         assert!(
             state
-                .precheck(fg(2), &ready, true, sizes)
+                .precheck(
+                    fg(2),
+                    &ready,
+                    Some("overlay render features require replay support"),
+                    sizes
+                )
                 .unwrap()
                 .contains("overlay render features")
         );
         state.remember_failure(fg(2), sizes, "runtime missing");
         assert_eq!(
-            state.precheck(fg(2), &ready, false, sizes).as_deref(),
+            state.precheck(fg(2), &ready, None, sizes).as_deref(),
             Some("runtime missing")
         );
-        assert!(state.precheck(fg(3), &ready, false, sizes).is_none());
+        assert!(state.precheck(fg(3), &ready, None, sizes).is_none());
         assert!(
             state
-                .precheck(fg(2), &ready, false, ([32, 32], [32, 32]))
+                .precheck(fg(2), &ready, None, ([32, 32], [32, 32]))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn interpolation_failure_commits_the_existing_real_source_once() {
+        let camera = CameraInstance3D {
+            camera: Camera3D::default(),
+            world: Mat4::IDENTITY.to_cols_array_2d(),
+        };
+        let mut state = FrameGeneration::new();
+        let now = Instant::now();
+        let sizes = ([64, 64], [64, 64]);
+        assert!(!state.complete_evaluation(&camera, now, fg(2), sizes, Some("evaluation failed")));
+        assert_eq!(
+            state.history.frame(),
+            1,
+            "retain the real source rather than rerendering it"
+        );
+        assert_eq!(state.status().state, FrameGenerationState::Fallback);
+        assert!(state.presentable.is_empty());
+        assert!(
+            state.needs_reset(&camera, now),
+            "a replacement generator resets"
+        );
+        assert_eq!(state.failure.as_ref().unwrap().1, "evaluation failed");
     }
 
     #[test]

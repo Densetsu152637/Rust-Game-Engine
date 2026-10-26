@@ -2,7 +2,7 @@
 use super::*;
 use engine_animation::{
     LocalPose, Skeleton,
-    graph::{Graph, GraphPlayer},
+    graph::{Graph, GraphPlayer, GraphRigs},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -108,8 +108,29 @@ impl GraphAnimations {
                         rest,
                     )
                     .map_err(mapped)?;
-                    GraphPlayer::with_skeleton(graph, Arc::new(skeleton), clips, &config.parameters)
-                        .map_err(mapped)?
+                    let skeleton = Arc::new(skeleton);
+                    if graph.retargets().next().is_some() {
+                        let sources = graph
+                            .source_rig_ids()
+                            .map(|id| {
+                                Ok((
+                                    id.to_owned(),
+                                    crate::graphs::load_animation_rig(project, id)?,
+                                ))
+                            })
+                            .collect::<Result<BTreeMap<_, _>>>()?;
+                        let bindings = GraphRigs::new(
+                            config.rig.clone().expect("present rig binding"),
+                            skeleton,
+                            sources,
+                        )
+                        .map_err(mapped)?;
+                        GraphPlayer::with_rigs(graph, bindings, clips, &config.parameters)
+                            .map_err(mapped)?
+                    } else {
+                        GraphPlayer::with_skeleton(graph, skeleton, clips, &config.parameters)
+                            .map_err(mapped)?
+                    }
                 } else {
                     GraphPlayer::with_parameters(graph, rest, clips, &config.parameters)
                         .map_err(mapped)?
@@ -177,9 +198,7 @@ struct RigBinding {
 }
 impl RigBinding {
     fn load(project: &crate::Project, id: &str, world: &World, targets: &[Entity]) -> Result<Self> {
-        project.require_asset(id, "model")?;
-        let model = crate::model_import::load_model(&project.resolve_asset(id)?)?;
-        let skeleton = super::imported_skeleton(&model.scene)?;
+        let skeleton = crate::graphs::load_animation_rig(project, id)?;
         let rig = Self {
             parents: skeleton.parents().to_vec(),
         };

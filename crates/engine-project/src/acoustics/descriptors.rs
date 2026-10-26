@@ -87,6 +87,7 @@ fn environment_schema() -> Value {
             "seed": integer(0, u64::MAX >> 11, "Deterministic tracing seed."),
             "geometry": object(json!({
                 "render_meshes": boolean("MeshRenderer meshes contribute acoustic geometry."),
+                "physics_bodies": boolean("Collider-only, non-sensor PhysicsBody3D boxes contribute acoustic geometry."),
                 "asset": text(128, "Baked acoustics asset used instead of live static collection."),
                 "default_material": choice(&Preset::NAMES, "Material of geometry without engine.AcousticMaterial."),
                 "mask": integer(1, 255, "Instance mask for geometry without engine.AcousticGeometry.")
@@ -200,6 +201,11 @@ pub fn descriptors() -> Vec<ComponentDescriptor> {
             object(
                 json!({
                     "clip": text(256, "Asset ID of kind audio."),
+                    "streamed": boolean("Decode the audio asset incrementally into bounded PCM."),
+                    "graph": text(256, "Graph asset of kind audio, exclusive with clip."),
+                    "parameters": json!({"type":"object","additionalProperties":true,"description":"Up to 64 finite Float graph parameter overrides."}),
+                    "queue_frames": integer(2, 65536, "Bounded nonresident PCM queue capacity."),
+                    "duration_frames": integer(0, 192000_u64*86400, "Optional generated-frame duration for procedural audio."),
                     "autoplay": boolean("Start when the scene starts."),
                     "looped": boolean("Loop the clip."),
                     "bus": choice(&["music","effects","dialogue"], "Mixer bus."),
