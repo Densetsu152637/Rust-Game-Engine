@@ -175,6 +175,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                             "path",
                             schema::string("Existing tileset asset id or project-relative file."),
                         ),
+                        expected_hash_schema(),
                         (
                             "rule_tile",
                             json!({"type":"object","description":"{id, name?, preset?, first_tile?, default_tile?, connects?:[tile ids], rules?:[{neighbours:[8], output, transform?}]}. default_tile is the tile shown when nothing matches (preset: first_tile)."}),
@@ -204,6 +205,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                             "path",
                             schema::string("Existing tilemap asset id or project-relative file."),
                         ),
+                        expected_hash_schema(),
                         (
                             "tileset",
                             schema::string(
@@ -358,6 +360,27 @@ fn read_target(path: &Path) -> Result<Vec<u8>, ToolFailure> {
         ));
     }
     std::fs::read(path).map_err(|e| host_failure(e.into()))
+}
+/// Rejects the write when `expected_hash` is given and no longer matches `bytes`.
+fn check_expected_hash(args: &Map<String, Value>, bytes: &[u8]) -> Result<(), ToolFailure> {
+    if let Some(expected) = Args(args).optional_string("expected_hash")?
+        && expected != paths::content_hash(bytes)
+    {
+        return Err(ToolFailure::new(
+            "stale_hash",
+            "the file changed since expected_hash was read",
+        )
+        .with_hint("Re-read it with tilemap_info and retry."));
+    }
+    Ok(())
+}
+fn expected_hash_schema() -> (&'static str, Value) {
+    (
+        "expected_hash",
+        schema::string(
+            "Optional content hash the file must still have (from a previous result or tilemap_info); a mismatch fails with stale_hash and writes nothing.",
+        ),
+    )
 }
 fn load_tileset_arg(
     cx: &ToolContext<'_>,
@@ -592,7 +615,9 @@ fn define_rules(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome 
     let reference = a.string("path")?;
     let project = cx.project()?;
     let file = target(cx, &project, "path", reference)?;
-    let tileset = Tileset::from_json(&read_target(&file)?).map_err(failure)?;
+    let current = read_target(&file)?;
+    check_expected_hash(args, &current)?;
+    let tileset = Tileset::from_json(&current).map_err(failure)?;
     let arg: RuleArg = decode(args.get("rule_tile").unwrap_or(&Value::Null), "rule_tile")?;
     let name = arg.name.as_deref().unwrap_or("");
     let mut rule = match (arg.preset.as_deref(), arg.first_tile) {
@@ -663,7 +688,9 @@ fn paint(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     let project = cx.project()?;
     let file = target(cx, &project, "path", a.string("path")?)?;
     let tileset = load_tileset_arg(cx, &project, "tileset", a.string("tileset")?)?;
-    let mut map = load_map_arg(&file, &tileset)?;
+    let current = read_target(&file)?;
+    check_expected_hash(args, &current)?;
+    let mut map = Tilemap::from_json(&current, Some(&tileset)).map_err(failure)?;
     let ops: Vec<PaintOp> = decode(args.get("ops").unwrap_or(&Value::Null), "ops")?;
     if ops.is_empty() || ops.len() > MAX_OPS {
         return Err(schema::invalid("ops", "1 to 256 edits"));

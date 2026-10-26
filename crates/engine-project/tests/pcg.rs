@@ -435,3 +435,38 @@ fn malformed_pcg_assets_are_rejected_at_load() {
     fs::write(dir.path().join("scatter.pcg.json"), "not json").unwrap();
     assert!(Project::load(dir.path().join("project.json")).is_err());
 }
+
+#[test]
+fn a_generated_id_that_clashes_with_a_foreign_entity_fails_the_volume() {
+    let dir = fixture(volume("scatter", 3), [0.0; 3]);
+    let scene_path = dir.path().join("scene.json");
+    let mut scene: Value = serde_json::from_slice(&fs::read(&scene_path).unwrap()).unwrap();
+    scene["entities"].as_array_mut().unwrap().push(json!(
+        {"id":"pcg:forest:0","name":"squatter","components":{"Transform":{"position":[9,9,9]}}}
+    ));
+    fs::write(&scene_path, scene.to_string()).unwrap();
+    let mut runtime = start(&dir);
+    tick(&mut runtime);
+    let status = runtime
+        .app()
+        .world()
+        .resource::<PcgStatus>()
+        .0
+        .get("forest")
+        .cloned()
+        .unwrap();
+    assert!(
+        status
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("pcg.entity.id_collision")),
+        "{:?}",
+        status.diagnostics
+    );
+    assert!(generated(&runtime).len() <= 1, "nothing was spawned");
+    let squatter = runtime.entity("pcg:forest:0").unwrap();
+    let position = world_transform(runtime.app().world(), squatter)
+        .unwrap()
+        .position();
+    assert_eq!(position, [9.0, 9.0, 9.0], "the foreign entity is untouched");
+}

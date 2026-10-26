@@ -8,6 +8,7 @@ use engine_core::EngineApp;
 mod assets;
 mod component;
 mod service;
+mod validate;
 
 pub use assets::{load_tilemap, load_tileset, texture_size};
 pub use component::{
@@ -18,6 +19,7 @@ pub use service::{
     export_document, failure, fill_rect, flood_fill, paint, regenerate_collision, status,
     store_inline, sync_tilemaps, tile_at_world, with_tilemap, world_to_cell,
 };
+pub use validate::validate_scene;
 
 /// Registers the typed ECS adapter for `engine.Tilemap`.
 pub fn register_components(app: &mut EngineApp) -> Result<()> {

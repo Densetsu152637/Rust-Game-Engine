@@ -201,6 +201,13 @@ impl Project {
                 self.require_asset(&s.texture, "texture")?;
             }
         }
+        self.validate_feature_components(scene)
+    }
+    /// Validates the feature components of `scene` that reference assets or carry semantic
+    /// constraints beyond the JSON schema (acoustics and every world feature). Unlike
+    /// [`Self::validate_scene`] it does not require parents to live in `scene`, so it also
+    /// serves streamed cells, whose roots may parent to entities of the running world.
+    pub fn validate_feature_components(&self, scene: &Scene) -> Result<()> {
         crate::acoustics::validate_scene(self, scene)?;
         crate::world::coordinates::validate_scene(scene)?;
         crate::world::pcg::validate_scene(self, scene)?;
@@ -208,6 +215,7 @@ impl Project {
         crate::world::terrain::validate_scene(self, scene)?;
         crate::world::foliage::validate_scene(self, scene)?;
         crate::world::water::validate_scene(self, scene)?;
+        crate::world::tilemap::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.
@@ -233,6 +241,9 @@ impl Project {
                     let manifest = crate::world::streaming::load_manifest(self, &asset.id)?;
                     for cell in &manifest.cells {
                         confined_file(&self.root, Path::new(&cell.file))?;
+                        let scene = load_scene(&self.root, Path::new(&cell.file))?;
+                        self.validate_feature_components(&scene)
+                            .map_err(|e| e.with_context(&format!("cell {}", cell.file)))?;
                     }
                 }
                 "acoustics" => {

@@ -77,6 +77,7 @@ struct Stats {
     total_loaded: u64,
     total_unloaded: u64,
     total_failed: u64,
+    proxy_mesh_reads: u64,
 }
 
 pub(super) struct Partition {
@@ -92,7 +93,9 @@ pub(super) struct Partition {
     next_generation: u64,
     proxies: BTreeMap<CellId, (String, Entity)>,
     bad_proxies: BTreeSet<CellId>,
-    mesh_cache: BTreeMap<String, Arc<Mesh>>,
+    /// Proxy meshes by file with the clock value of their last use (LRU).
+    mesh_cache: BTreeMap<String, (Arc<Mesh>, u64)>,
+    mesh_clock: u64,
     stats: Stats,
     sources: usize,
     diagnostics: VecDeque<String>,
@@ -170,6 +173,7 @@ impl Partition {
             proxies: BTreeMap::new(),
             bad_proxies: BTreeSet::new(),
             mesh_cache: BTreeMap::new(),
+            mesh_clock: 0,
             stats: Stats::default(),
             sources: 0,
             diagnostics: VecDeque::new(),
@@ -263,6 +267,7 @@ impl Partition {
             total_loaded: self.stats.total_loaded,
             total_unloaded: self.stats.total_unloaded,
             total_failed: self.stats.total_failed,
+            proxy_mesh_reads: self.stats.proxy_mesh_reads,
             layers: self
                 .streamer
                 .layers()
@@ -699,6 +704,14 @@ fn apply_cell(
             scene.entities.len()
         ));
     }
+    // The same semantic checks as project validation, so a cell holding an invalid feature
+    // component (missing terrain asset, empty tileset, ...) fails locally and spawns nothing.
+    {
+        let project = world.resource::<ProjectResource>().0.clone();
+        project
+            .validate_feature_components(&scene)
+            .map_err(|e| e.to_string())?;
+    }
     {
         let lookup = world.resource::<EntityLookup>();
         let own: BTreeSet<&str> = scene.entities.iter().map(|e| e.id.as_str()).collect();
@@ -794,19 +807,25 @@ fn spawn_proxy(
     file: &str,
     origin: [f64; 3],
 ) {
-    let mesh = match partition.mesh_cache.get(file) {
-        Some(mesh) => mesh.clone(),
+    partition.mesh_clock += 1;
+    let clock = partition.mesh_clock;
+    let mesh = match partition.mesh_cache.get_mut(file) {
+        Some((mesh, used)) => {
+            *used = clock;
+            mesh.clone()
+        }
         None => {
             let root = world.resource::<ProjectResource>().0.root.clone();
+            partition.stats.proxy_mesh_reads += 1;
             let loaded = crate::confined_file(&root, Path::new(file))
                 .and_then(|path| crate::content::load_mesh(&path));
             match loaded {
                 Ok(mesh) => {
-                    if partition.mesh_cache.len() >= MAX_MESH_CACHE {
-                        partition.mesh_cache.clear();
-                    }
                     let mesh = Arc::new(mesh);
-                    partition.mesh_cache.insert(file.to_owned(), mesh.clone());
+                    evict_unshown_meshes(partition);
+                    partition
+                        .mesh_cache
+                        .insert(file.to_owned(), (mesh.clone(), clock));
                     mesh
                 }
                 Err(error) => {
@@ -856,8 +875,32 @@ fn spawn_proxy(
     partition.proxies.insert(id, (name, entity));
 }
 
-/// Shows the proxy of every cell that is not loaded (within `hlod_radius` of a source) and
-/// hides it once the cell is loaded or its layer is disabled.
+/// Makes room for one more cached proxy mesh by dropping least recently used entries, never
+/// those of currently shown proxies (the cache may exceed its soft size only by shown proxies).
+fn evict_unshown_meshes(partition: &mut Partition) {
+    while partition.mesh_cache.len() >= MAX_MESH_CACHE {
+        let shown: BTreeSet<&str> = partition
+            .proxies
+            .keys()
+            .filter_map(|id| partition.cells.get(id)?.hlod.as_deref())
+            .collect();
+        let victim = partition
+            .mesh_cache
+            .iter()
+            .filter(|(file, _)| !shown.contains(file.as_str()))
+            .min_by_key(|(_, (_, used))| *used)
+            .map(|(file, _)| file.clone());
+        match victim {
+            Some(file) => {
+                partition.mesh_cache.remove(&file);
+            }
+            None => break,
+        }
+    }
+}
+
+/// Shows the proxies of cells that are not loaded (within `hlod_radius` of a source), at most
+/// `hlod_max_proxies` of them, nearest to a source first, and hides the rest.
 fn sync_proxies(
     world: &mut World,
     partition: &mut Partition,
@@ -865,28 +908,47 @@ fn sync_proxies(
     sources: &[Source],
     origin: [f64; 3],
 ) {
-    let ids: Vec<CellId> = partition.cells.keys().copied().collect();
-    let mut spawns = 0;
-    for id in ids {
-        let Some(file) = partition.cells[&id].hlod.clone() else {
+    let mut wanted: Vec<(f64, CellId, String)> = Vec::new();
+    for (id, cell) in &partition.cells {
+        let Some(file) = cell.hlod.clone() else {
             continue;
         };
-        let near = component.hlod_radius <= 0.0
-            || sources.iter().any(|s| {
-                partition.streamer.grid().distance(s.position, id.key) <= component.hlod_radius
-            });
-        let want = component.hlod
-            && near
-            && partition.streamer.layer_enabled(id.layer)
-            && partition.streamer.state(id) != Some(CellState::Loaded);
-        let have = partition.proxies.contains_key(&id);
-        if want && !have {
-            if spawns < HLOD_SPAWNS_PER_TICK && !partition.bad_proxies.contains(&id) {
-                spawns += 1;
-                spawn_proxy(world, partition, id, &file, origin);
-            }
-        } else if !want && have {
-            remove_proxy(world, partition, id);
+        if !component.hlod
+            || !partition.streamer.layer_enabled(id.layer)
+            || partition.streamer.state(*id) == Some(CellState::Loaded)
+            || partition.bad_proxies.contains(id)
+        {
+            continue;
+        }
+        let distance = sources
+            .iter()
+            .map(|s| partition.streamer.grid().distance(s.position, id.key))
+            .fold(f64::INFINITY, f64::min);
+        if component.hlod_radius > 0.0 && distance > component.hlod_radius {
+            continue;
+        }
+        wanted.push((distance, *id, file));
+    }
+    wanted.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    wanted.truncate(component.hlod_max_proxies as usize);
+    let keep: BTreeSet<CellId> = wanted.iter().map(|(_, id, _)| *id).collect();
+    let stale: Vec<CellId> = partition
+        .proxies
+        .keys()
+        .filter(|id| !keep.contains(id))
+        .copied()
+        .collect();
+    for id in stale {
+        remove_proxy(world, partition, id);
+    }
+    let mut spawns = 0;
+    for (_, id, file) in wanted {
+        if spawns >= HLOD_SPAWNS_PER_TICK {
+            break;
+        }
+        if !partition.proxies.contains_key(&id) {
+            spawns += 1;
+            spawn_proxy(world, partition, id, &file, origin);
         }
     }
 }

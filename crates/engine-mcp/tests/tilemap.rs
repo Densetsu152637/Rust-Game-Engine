@@ -357,6 +357,54 @@ fn creation_never_overwrites_and_rules_are_validated() {
 }
 
 #[test]
+fn edit_tools_reject_stale_expected_hash_and_accept_current_ones() {
+    let dir = tile_fixture();
+    tileset(&dir);
+    level(&dir);
+    let paint = |hash: &str, tile: u32| {
+        write(
+            dir.path(),
+            "tilemap_paint",
+            json!({"path":"level","tileset":"tiles","layer":"ground","expected_hash":hash,
+                "ops":[{"op":"set","cell":[0,0],"tile":tile}]}),
+        )
+    };
+    let current = data(dir.path(), "tilemap_info", json!({"path":"level"}))["details"]["hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first = paint(&current, 1);
+    assert_eq!(first["ok"], true, "{first}");
+    // The old hash is now stale: nothing is written.
+    let before = file_bytes(dir.path(), "assets/level.json");
+    let stale = paint(&current, 2);
+    assert_eq!(error_code(&stale), "stale_hash", "{stale}");
+    assert_eq!(file_bytes(dir.path(), "assets/level.json"), before);
+    // The hash returned by the write chains into the next edit.
+    let chained = paint(first["hash"].as_str().unwrap(), 2);
+    assert_eq!(chained["ok"], true, "{chained}");
+    let tiles_hash = data(dir.path(), "tilemap_info", json!({"path":"tiles"}))["details"]["hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let rule = |hash: &str| {
+        write(
+            dir.path(),
+            "tilemap_define_rules",
+            json!({"path":"tiles","expected_hash":hash,
+                "rule_tile":{"id":101,"name":"cap","default_tile":1,"rules":[
+                    {"neighbours":["any","this","any","not_this","not_this","any","not_this","any"],"output":2}]}}),
+        )
+    };
+    let before = file_bytes(dir.path(), "assets/tiles.json");
+    let stale = rule("0000");
+    assert_eq!(error_code(&stale), "stale_hash", "{stale}");
+    assert_eq!(file_bytes(dir.path(), "assets/tiles.json"), before);
+    let accepted = rule(&tiles_hash);
+    assert_eq!(accepted["ok"], true, "{accepted}");
+}
+
+#[test]
 fn write_tools_are_gated_and_read_tools_stay_available() {
     let dir = tile_fixture();
     tileset(&dir);
@@ -443,6 +491,14 @@ fn engine_tilemap_component_is_editable_through_component_set() {
         "component_set",
         json!({"scene":START,"expected_revision":revision(),"entity":"player","component":"engine.Tilemap",
             "value":{"version":1,"data":{"visible":false}},"merge":true}),
+    );
+    // Scene validation now rejects a tilemap without a tileset, merged or not.
+    assert_eq!(error_code(&merged), "tilemap.component.invalid", "{merged}");
+    let merged = write(
+        dir.path(),
+        "component_set",
+        json!({"scene":START,"expected_revision":revision(),"entity":"player","component":"engine.Tilemap",
+            "value":{"version":1,"data":{"tileset":"tiles","visible":false}},"merge":true}),
     );
     assert_eq!(merged["ok"], true, "{merged}");
     let before = file_bytes(dir.path(), START);

@@ -75,6 +75,13 @@ impl Error {
             }],
         }
     }
+    /// Prefixes every diagnostic message with `context` (for example an entity or cell name).
+    pub fn with_context(mut self, context: &str) -> Self {
+        for diagnostic in &mut self.diagnostics {
+            diagnostic.message = format!("{context}: {}", diagnostic.message);
+        }
+        self
+    }
     pub fn at(mut self, file: impl Into<PathBuf>, path: impl Into<String>) -> Self {
         if let Some(diagnostic) = self.diagnostics.first_mut() {
             diagnostic.file = file.into();

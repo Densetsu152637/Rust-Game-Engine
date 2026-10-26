@@ -42,6 +42,8 @@ pub struct PartitionStatus {
     pub total_loaded: u64,
     pub total_unloaded: u64,
     pub total_failed: u64,
+    /// Proxy mesh files read from disk so far (cache hits do not count).
+    pub proxy_mesh_reads: u64,
     pub layers: Vec<LayerStatus>,
     /// Names (`x_y_z` or `x_y_z@layer`) of loaded cells, at most [`MAX_LISTED_CELLS`].
     pub loaded_cells: Vec<String>,

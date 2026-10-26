@@ -36,6 +36,39 @@ pub struct PcgReport {
     pub diagnostics: Vec<String>,
 }
 
+/// Output ids owned by each volume entity, kept outside the volume so the output can be swept
+/// after the volume entity (and its [`PcgState`]) is gone, for example when a streamed cell
+/// unloads.
+#[derive(Resource, Clone, Debug, Default)]
+pub(super) struct PcgOwned(BTreeMap<Entity, (String, Vec<String>)>);
+
+/// Despawns the output of every volume whose entity no longer exists or lost its `PcgVolume`.
+fn sweep_vanished(world: &mut World) {
+    let vanished: Vec<Entity> = world
+        .resource::<PcgOwned>()
+        .0
+        .keys()
+        .copied()
+        .filter(|e| {
+            world
+                .get_entity(*e)
+                .map_or(true, |r| !r.contains::<PcgVolume>())
+        })
+        .collect();
+    for volume in vanished {
+        let Some((id, ids)) = world.resource_mut::<PcgOwned>().0.remove(&volume) else {
+            continue;
+        };
+        for old in &ids {
+            let removed = world.resource_mut::<EntityLookup>().0.remove(old);
+            if let Some(entity) = removed {
+                world.despawn(entity);
+            }
+        }
+        world.resource_mut::<PcgStatus>().0.remove(&id);
+    }
+}
+
 /// Per-volume reports keyed by the volume's authored id.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct PcgStatus(pub BTreeMap<String, PcgReport>);
@@ -47,6 +80,7 @@ struct Built {
 }
 
 pub(super) fn run(world: &mut World) {
+    sweep_vanished(world);
     let mut jobs: Vec<(Entity, PcgVolume, String)> = {
         let mut query =
             world.query::<(Entity, &PcgVolume, Option<&PcgState>, Option<&AuthoredId>)>();
@@ -95,6 +129,28 @@ fn apply(world: &mut World, volume_entity: Entity, volume: PcgVolume, id: &str) 
     } else {
         build(world, volume_entity, &volume, id)
     };
+    // Generated ids must not shadow entities the volume does not own: spawning would silently
+    // overwrite their `EntityLookup` entry.
+    let outcome = outcome.and_then(|built| {
+        let lookup = &world.resource::<EntityLookup>().0;
+        let owned: BTreeSet<&String> = previous.iter().collect();
+        let clashes: Vec<String> = built
+            .entities
+            .iter()
+            .filter(|e| lookup.contains_key(&e.id) && !owned.contains(&e.id))
+            .map(|e| {
+                format!(
+                    "pcg.entity.id_collision: generated entity id `{}` already exists",
+                    e.id
+                )
+            })
+            .collect();
+        if clashes.is_empty() {
+            Ok(built)
+        } else {
+            Err(clashes)
+        }
+    });
     match outcome {
         Ok(built) => {
             for old in &previous {
@@ -140,6 +196,10 @@ fn apply(world: &mut World, volume_entity: Entity, volume: PcgVolume, id: &str) 
                     diagnostics: Vec::new(),
                 },
             );
+            world
+                .resource_mut::<PcgOwned>()
+                .0
+                .insert(volume_entity, (id.to_owned(), ids.clone()));
             world.entity_mut(volume_entity).insert(PcgState {
                 applied: volume,
                 entities: ids,

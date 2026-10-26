@@ -853,3 +853,109 @@ fn snapshot_carries_bounded_streaming_status() {
     );
     assert!(serde_json::to_vec(&value["streaming"]).unwrap().len() < 8 * 1024);
 }
+
+#[test]
+fn a_cell_with_an_invalid_feature_component_fails_locally_and_spawns_nothing() {
+    let dir = fixture(&Options::default());
+    // The content goes bad after the project validated. Cell 0 holds a terrain whose asset
+    // does not exist; the others are fine.
+    let project = Project::load(dir.path().join("project.json")).unwrap();
+    fs::write(
+        dir.path().join("cells/0.json"),
+        json!({"schema":1,"scene_id":"cell0","entities":[
+            {"id":"c0_a","name":"a","components":{"Transform":{"position":[1,0,1]},
+                "custom":{"engine.Terrain":{"version":1,"data":{"asset":"missing"}}}}}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let mut runtime = Runtime::new(project).unwrap();
+    runtime.start().unwrap();
+    let mut failed = Vec::new();
+    for _ in 0..4 {
+        tick(&mut runtime);
+        failed.extend(
+            runtime
+                .snapshot()
+                .events
+                .into_iter()
+                .filter(|e| e.name == streaming::EVENT_CELL_FAILED),
+        );
+    }
+    assert_eq!(loaded(&runtime), [1, 2], "the other cells keep streaming");
+    assert!(
+        !has(&runtime, 0, "", "a"),
+        "nothing of the bad cell spawned"
+    );
+    assert!(
+        failed.iter().any(|e| e.payload["cell"][0] == 0),
+        "cell_failed is raised: {failed:?}"
+    );
+    let s = status(&runtime);
+    assert!(s.total_failed >= 1);
+    assert!(
+        s.diagnostics
+            .iter()
+            .any(|d| d.contains("project.asset.unknown")),
+        "{:?}",
+        s.diagnostics
+    );
+    // Project validation catches the same content up front.
+    let error = Project::load(dir.path().join("project.json"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("cells/0.json") && error.contains("project.asset.unknown"),
+        "{error}"
+    );
+}
+
+#[test]
+fn hlod_proxies_are_capped_nearest_first_and_cached_meshes_are_not_reread() {
+    let options = Options {
+        hlod: true,
+        partition: json!({"hlod_max_proxies":3,"max_loaded_cells":3}),
+        ..Options::default()
+    };
+    let dir = fixture(&options);
+    let mut runtime = start(&dir, [0.0; 3]);
+    let proxies = |runtime: &Runtime| -> Vec<i32> {
+        let frame = runtime.extract_scene_frame().unwrap();
+        let mut found: Vec<i32> = frame
+            .meshes
+            .iter()
+            .filter_map(|m| m.id.strip_prefix("hlod:streaming:"))
+            .map(|name| name.split('_').next().unwrap().parse().unwrap())
+            .collect();
+        found.sort_unstable();
+        found
+    };
+    for _ in 0..6 {
+        tick(&mut runtime);
+        assert!(proxies(&runtime).len() <= 3);
+    }
+    assert_eq!(loaded(&runtime), [0, 1, 2]);
+    assert_eq!(proxies(&runtime), [3, 4, 5], "the nearest unloaded cells");
+    assert_eq!(status(&runtime).proxies, 3);
+    // Proxies shown while the cells were still loading may have been read too.
+    let reads = status(&runtime).proxy_mesh_reads;
+    assert!((3..=6).contains(&reads), "{reads}");
+    for _ in 0..5 {
+        tick(&mut runtime);
+    }
+    assert_eq!(
+        status(&runtime).proxy_mesh_reads,
+        reads,
+        "shown proxies are not re-read"
+    );
+    // Walk away and back: the cap holds throughout and each file is read at most once.
+    for x in [450.0, 950.0, 450.0, 50.0] {
+        move_scout(&mut runtime, [x, 0.0, 50.0]);
+        for _ in 0..8 {
+            tick(&mut runtime);
+            assert!(proxies(&runtime).len() <= 3, "{:?}", proxies(&runtime));
+        }
+    }
+    assert!(status(&runtime).proxy_mesh_reads <= 10);
+    assert_eq!(proxies(&runtime), [3, 4, 5]);
+}
