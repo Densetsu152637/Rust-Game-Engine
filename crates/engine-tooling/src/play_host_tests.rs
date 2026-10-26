@@ -167,11 +167,11 @@ fn readiness_failure_retains_old_and_stop_discards_pending_candidate() {
     let old = host.active.as_ref().unwrap().id();
     // A real process that exits without announcing readiness, unlike a mock
     // status result. No gameplay barrier is inserted for this raw executable.
-    let source = fixture.root.path().join("not-ready.rs");
+    let source = fixture.root.path().join("not_ready.rs");
     let executable = fixture.root.path().join(if cfg!(windows) {
-        "not-ready.exe"
+        "not_ready.exe"
     } else {
-        "not-ready"
+        "not_ready"
     });
     fs::write(&source, "fn main() {}").unwrap();
     assert!(

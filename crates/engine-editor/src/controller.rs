@@ -14,15 +14,30 @@ use engine_project::{EditOperation, Project, SceneDocument};
 pub enum PlayStatus {
     Compiling,
     Running,
-    Stopped { success: bool, message: String },
+    /// The previous game runs while a candidate compiles/reaches readiness.
+    Reloading,
+    /// Candidate rejected before teardown; the previous game is still active.
+    ReloadFailed {
+        message: String,
+    },
+    Stopped {
+        success: bool,
+        message: String,
+    },
 }
 
 /// Tooling supplies native compilation and process ownership. `start` receives an
 /// isolated clone containing unsaved authored edits. It must not alter the source
 /// project files. `stop` must release the generation before reporting success.
-/// Hosts should return promptly from start/poll, doing compilation in a worker.
+/// Hosts queue compilation in a worker. Polling activation may wait for the
+/// previous generation's bounded graceful teardown before starting a candidate.
 pub trait PlayHost {
     fn start(&mut self, project: Project) -> Result<()>;
+    /// Prepare a replacement without stopping the running game. Activation
+    /// happens at poll after readiness and successful previous-game teardown.
+    fn reload(&mut self, project: Project) -> Result<()>;
+    /// Discard only the pending candidate; retain the previous game.
+    fn cancel_reload(&mut self) -> Result<()>;
     fn stop(&mut self) -> Result<()>;
     fn poll(&mut self) -> Result<PlayStatus>;
 }
@@ -36,6 +51,8 @@ pub struct EditorController {
     selection: Vec<String>,
     host: Box<dyn PlayHost>,
     playing: bool,
+    runtime_running: bool,
+    reloading: bool,
     status: String,
     diagnostics: Vec<String>,
     log: VecDeque<String>,
@@ -49,6 +66,8 @@ impl EditorController {
             selection: Vec::new(),
             host,
             playing: false,
+            runtime_running: false,
+            reloading: false,
             status: "No project open".into(),
             diagnostics: Vec::new(),
             log: VecDeque::new(),
@@ -77,6 +96,12 @@ impl EditorController {
     }
     pub fn is_playing(&self) -> bool {
         self.playing
+    }
+    pub fn can_reload_play(&self) -> bool {
+        self.runtime_running && !self.reloading
+    }
+    pub fn is_reloading_play(&self) -> bool {
+        self.reloading
     }
     pub fn status(&self) -> &str {
         &self.status
@@ -226,6 +251,41 @@ impl EditorController {
         )
     }
 
+    /// Rebuild gameplay using the current authored snapshot, including unsaved
+    /// edits. Runtime state remains in the old process until replacement.
+    pub fn reload_play(&mut self) -> Result<()> {
+        let result = (|| {
+            ensure!(
+                self.can_reload_play(),
+                "a running game with no pending reload is required"
+            );
+            let document = self
+                .document
+                .as_ref()
+                .ok_or_else(|| anyhow!("no project is open"))?;
+            let mut project = document.project().clone();
+            project.scene = document.snapshot().clone();
+            project.validate_scene(&project.scene)?;
+            self.host.reload(project)?;
+            self.reloading = true;
+            Ok(())
+        })();
+        self.finish("Preparing replacement; previous game continues", result)
+    }
+
+    pub fn cancel_play_reload(&mut self) -> Result<()> {
+        let result = (|| {
+            ensure!(self.reloading, "no game reload is pending");
+            self.host.cancel_reload()?;
+            self.reloading = false;
+            Ok(())
+        })();
+        self.finish(
+            "Reload cancelled; previous game retained if still running",
+            result,
+        )
+    }
+
     pub fn stop(&mut self) -> Result<()> {
         if !self.playing {
             return Ok(());
@@ -233,6 +293,8 @@ impl EditorController {
         let result = (|| {
             self.host.stop()?;
             self.playing = false;
+            self.runtime_running = false;
+            self.reloading = false;
             if let Some(document) = &mut self.document {
                 document.end_play();
             }
@@ -248,15 +310,37 @@ impl EditorController {
         }
         match self.host.poll() {
             Ok(PlayStatus::Compiling) => {
+                self.runtime_running = false;
                 self.status = "Compiling native runtime; authored scene is unchanged".into();
                 Ok(())
             }
+            Ok(PlayStatus::Reloading) => {
+                self.runtime_running = true;
+                self.reloading = true;
+                self.status = "Preparing replacement; previous game continues".into();
+                Ok(())
+            }
+            Ok(PlayStatus::ReloadFailed { message }) => {
+                self.runtime_running = true;
+                self.reloading = false;
+                self.finish("Reload failed", Err(anyhow!(message)))
+            }
             Ok(PlayStatus::Running) => {
+                self.runtime_running = true;
+                if self.reloading {
+                    self.reloading = false;
+                    return self.finish(
+                        "Game reloaded from authored snapshot; runtime state restarted",
+                        Ok(()),
+                    );
+                }
                 self.status = "Native play running; authored scene is unchanged".into();
                 Ok(())
             }
             Ok(PlayStatus::Stopped { success, message }) => {
                 self.playing = false;
+                self.runtime_running = false;
+                self.reloading = false;
                 if let Some(document) = &mut self.document {
                     document.end_play();
                 }

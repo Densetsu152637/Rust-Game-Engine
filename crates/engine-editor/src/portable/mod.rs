@@ -54,6 +54,8 @@ struct PortableEditor {
     confirm_close: bool,
     close_approved: bool,
     viewport_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    play_control_rects: Option<[egui::Rect; 2]>,
 }
 impl PortableEditor {
     fn new(controller: EditorController) -> Self {
@@ -88,6 +90,8 @@ impl PortableEditor {
             confirm_close: false,
             close_approved: false,
             viewport_rect: None,
+            #[cfg(test)]
+            play_control_rects: None,
         }
     }
     fn report(&mut self, result: Result<()>) {
@@ -222,8 +226,14 @@ impl PortableEditor {
 impl eframe::App for PortableEditor {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let was_reloading = self.controller.is_reloading_play();
         if let Err(error) = self.controller.poll() {
             self.error = error.to_string();
+        } else if was_reloading
+            && !self.controller.is_reloading_play()
+            && self.controller.diagnostics().is_empty()
+        {
+            self.error.clear();
         }
         if self
             .controller
