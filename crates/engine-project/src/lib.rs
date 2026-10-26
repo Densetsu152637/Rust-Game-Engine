@@ -31,6 +31,7 @@ pub mod simulation;
 pub mod transforms;
 pub mod ui;
 pub mod ui_tree;
+pub mod video;
 pub mod world_text;
 pub mod xr;
 

@@ -40,6 +40,7 @@ impl Project {
                 "caption_track",
                 "locale_config",
                 "audio",
+                "video",
                 "scene",
                 "shader",
                 "prefab",

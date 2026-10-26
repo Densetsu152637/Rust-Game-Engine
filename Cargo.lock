@@ -1824,6 +1824,7 @@ dependencies = [
  "engine-network",
  "engine-physics",
  "engine-text",
+ "engine-video",
  "engine-xpbd",
  "epaint_default_fonts",
  "fs2",
@@ -1943,6 +1944,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "wgpu",
+]
+
+[[package]]
+name = "engine-video"
+version = "0.1.0"
+dependencies = [
+ "engine-audio",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

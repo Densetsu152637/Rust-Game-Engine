@@ -22,6 +22,7 @@ const KINDS: [&str; 19] = [
     "caption_track",
     "locale_config",
     "audio",
+    "video",
     "scene",
     "shader",
     "prefab",
