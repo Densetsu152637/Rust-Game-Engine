@@ -88,3 +88,6 @@ fn cancelled() -> BuildFailure {
     result.cancelled = true;
     result
 }
+
+#[cfg(test)]
+pub(crate) mod test_support;

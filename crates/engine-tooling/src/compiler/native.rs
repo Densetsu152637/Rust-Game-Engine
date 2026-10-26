@@ -198,7 +198,7 @@ impl NativeCompiler {
             .ok_or_else(|| failure("compiler.manifest", "Manifest has no parent"))?;
         let package_name = package_name(&manifest)?;
         let neutral = self.neutral_directory()?;
-        let identity = self.identity(&neutral)?;
+        let identity = self.identity(&neutral, cancel)?;
         fs::create_dir_all(&request.cache_root).map_err(io_error)?;
         let cache = request.cache_root.canonicalize().map_err(io_error)?;
         if cache == engine_root || cache == project_root {

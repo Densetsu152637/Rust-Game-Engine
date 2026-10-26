@@ -144,6 +144,26 @@ impl PortableEditor {
                 };
                 self.report(r);
             }
+            let reload = ui.add_enabled(
+                self.controller.can_reload_play(),
+                egui::Button::new("Reload game"),
+            );
+            let cancel = ui.add_enabled(
+                self.controller.is_reloading_play(),
+                egui::Button::new("Cancel reload"),
+            );
+            #[cfg(test)]
+            {
+                self.play_control_rects = Some([reload.rect, cancel.rect]);
+            }
+            if reload.clicked() {
+                let result = self.controller.reload_play();
+                self.report(result);
+            }
+            if cancel.clicked() {
+                let result = self.controller.cancel_play_reload();
+                self.report(result);
+            }
             if ui
                 .selectable_label(!self.navigation.three_dimensional, "2D")
                 .clicked()

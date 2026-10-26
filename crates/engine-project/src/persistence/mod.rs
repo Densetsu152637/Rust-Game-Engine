@@ -112,6 +112,15 @@ impl PersistenceStore {
         let mut prefix = PathBuf::new();
         for component in absolute.components() {
             prefix.push(component);
+            // A Windows drive prefix (including a verbatim canonical prefix)
+            // is not a filesystem root until RootDir follows. Query the full
+            // root and all descendants; already-rooted UNC/device prefixes
+            // keep their metadata checks as well.
+            if matches!(component, std::path::Component::Prefix(value)
+                if matches!(value.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
+            {
+                continue;
+            }
             reject_link(&prefix)?;
         }
         fs::create_dir_all(&absolute)?;
