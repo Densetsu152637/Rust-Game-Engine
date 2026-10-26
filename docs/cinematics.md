@@ -175,12 +175,18 @@ positions in the origin frame first acquired by that authored player. Subsequent
 subtract the current applied origin in f64 before one checked f32 conversion. Stop/replay
 of the same player retains that key frame; replacing its authored configuration establishes
 a new frame. Each acquisition captures a fresh baseline, so Stop restores that baseline
-expressed relative to the current origin.
+expressed relative to the current origin. If an existing `engine.AbsolutePosition` is fresh
+for that local pose, its exact f64 baseline is retained instead of reconstructing it from the
+rounded Transform. A stale component uses the current local pose and applied origin.
 
 The coordinates service notifies captures only during an actual shift and supplies the
 root positions it moved. A capture accepts that shift only if the pre-shift value matched
 its last write. This recognizes multiple rebases between ticks or native commands without
-mistaking ordinary external writes for coordinate changes. The notification changes neither
+mistaking ordinary external writes for coordinate changes. Existing exact-position state is
+guarded alongside the root Transform: samples and Stop synchronize its position and freshness
+together, and legitimate coordinates-service updates are recognized through before/after
+snapshots. Foreign component writes, insertion or removal reject ownership and cleanup leaves
+both fields untouched. A sequence never inserts or removes an AbsolutePosition component. The notification changes neither
 clock nor marker delivery and cannot fail the coordinates operation. An invalid or
 unrepresentable capture instead fails the next sequence operation and follows normal
 cancellation cleanup. Pending raw origin writes are not treated as already-applied shifts.
@@ -226,3 +232,5 @@ Integration cases also cover startup failure cleanup, scene-generation rebinding
 of current graph, morph and physics state during native scrubs.
 Floating-origin regressions cover manual and automatic shifts during active/paused playback,
 seek/Stop/replay, child-local invariance, repeated shifts and external-write/reparent conflicts.
+Near-limit exact-position tests also verify sample/rebase/Stop/replay baselines, stale-component
+freshness checks, and preservation of external Transform and AbsolutePosition ownership.

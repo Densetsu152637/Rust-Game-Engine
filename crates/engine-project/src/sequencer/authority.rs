@@ -213,6 +213,9 @@ impl Capture {
                 {
                     let current = crate::world::coordinates::capture_origin(world);
                     let key = *result.key_origin.get_or_insert(current);
+                    let baseline = crate::world::coordinates::capture_translation(
+                        world, target, current, baseline,
+                    )?;
                     result
                         .translations
                         .insert(target, RootTranslation::new(key, current, baseline)?);
@@ -251,7 +254,7 @@ impl Capture {
                 continue;
             };
             if let Some((before, last)) = self.fields.get_mut(&(*target, Property::Translation))
-                && let Some(shifted) = frame.shifted(from, to, *actual, *last)
+                && let Some(shifted) = frame.shifted(from, to, actual, *last)
             {
                 *before = shifted.0;
                 *last = shifted.1;
@@ -266,7 +269,11 @@ impl Capture {
                 ));
             }
         }
-        if self.translations.values().any(|frame| !frame.valid()) {
+        if self
+            .translations
+            .iter()
+            .any(|(target, frame)| !frame.valid() || !frame.component_owned(world, *target))
+        {
             return Err(invalid(
                 "Sequence translation lost ownership during origin shift",
             ));
@@ -313,17 +320,18 @@ impl Capture {
             .map_err(mapped)?;
         for sample in samples {
             let target = targets[sample.binding];
-            let value = match (
-                sample.property,
-                sample.value,
-                self.translations.get(&target),
-            ) {
-                (Property::Translation, Value::Vector(value), Some(frame)) => {
-                    Value::Vector(frame.sample(value)?)
-                }
-                _ => sample.value,
+            let value = if sample.property == Property::Translation
+                && let Value::Vector(value) = sample.value
+                && let Some(frame) = self.translations.get_mut(&target)
+            {
+                let projected = frame.sample(value)?;
+                let value = Value::Vector(projected.local);
+                frame.write(world, target, projected)?;
+                value
+            } else {
+                write(world, target, sample.property, sample.value)?;
+                sample.value
             };
-            write(world, target, sample.property, value)?;
             if let Some((_, last)) = self.fields.get_mut(&(target, sample.property)) {
                 *last = value;
             }
@@ -341,7 +349,7 @@ impl Capture {
         }
         Ok(())
     }
-    pub fn restore(self, world: &mut World) {
+    pub fn restore(mut self, world: &mut World) {
         // Do not overwrite a new owner or externally changed value during cancellation.
         for ((target, property), (before, last)) in self.fields {
             let parent_unchanged = self.parents.get(&target).is_none_or(|captured| {
@@ -350,12 +358,18 @@ impl Capture {
             let origin_owned = self
                 .translations
                 .get(&target)
-                .is_none_or(RootTranslation::valid);
+                .is_none_or(|frame| frame.valid() && frame.component_owned(world, target));
             if parent_unchanged
                 && (property != Property::Translation || origin_owned)
                 && read(world, target, property).is_ok_and(|value| value == last)
             {
-                let _ = write(world, target, property, before);
+                if property == Property::Translation
+                    && let Some(frame) = self.translations.get_mut(&target)
+                {
+                    let _ = frame.restore(world, target);
+                } else {
+                    let _ = write(world, target, property, before);
+                }
             }
         }
         for (entity, (before, last)) in self.cameras {

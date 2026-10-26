@@ -5,7 +5,7 @@ mod playback;
 use crate::{ComponentDescriptor, Error, Result};
 use bevy_ecs::prelude::*;
 use engine_sequencer::{Player, Timeline};
-pub(crate) use origin::RootRebases;
+pub(crate) use origin::{RootRebase, RootRebases};
 pub(crate) use playback::origin_shifted;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

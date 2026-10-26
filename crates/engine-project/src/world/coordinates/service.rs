@@ -330,6 +330,7 @@ pub(super) fn shift(
     for &entity in &roots {
         let local = world.get::<Transform>(entity).map(|t| t.position);
         let Some(local) = local else { continue };
+        let absolute_before = world.get::<AbsolutePosition>(entity).cloned();
         let moved = match world.get::<AbsolutePosition>(entity) {
             Some(absolute) if absolute.exact_for(local) => {
                 let moved = target.local(absolute.position);
@@ -340,7 +341,15 @@ pub(super) fn shift(
         };
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
             transform.position = moved;
-            rebased.insert(entity, (local, moved));
+            rebased.insert(
+                entity,
+                crate::sequencer::RootRebase {
+                    before: local,
+                    after: moved,
+                    absolute_before,
+                    absolute_after: None,
+                },
+            );
         }
         report.roots += 1;
     }
@@ -366,6 +375,9 @@ pub(super) fn shift(
                 absolute.position = target.absolute(local);
             }
             absolute.applied = Some(local);
+        }
+        if let Some(rebase) = rebased.get_mut(&entity) {
+            rebase.absolute_after = world.get::<AbsolutePosition>(entity).cloned();
         }
     }
     world.resource_mut::<WorldOrigin>().offset = to;

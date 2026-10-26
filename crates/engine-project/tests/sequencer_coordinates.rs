@@ -255,3 +255,149 @@ fn nonfinite_native_capture_is_rejected_before_any_infinite_projection() {
     assert!(!rt.running());
     assert!(rt.app().world().get::<Camera3D>(camera).is_some());
 }
+
+const EXACT_BASELINE: f64 = 1e12 - 8.;
+const NEAR_ORIGIN: f64 = 1e12 - 16.;
+fn exact_fixture(autoplay: bool) -> tempfile::TempDir {
+    let dir = fixture(false);
+    let path = dir.path().join("scene.json");
+    let mut scene: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    scene["entities"][0]["components"]["custom"] =
+        json!({"engine.AbsolutePosition":{"version":1,"data":{"position":[EXACT_BASELINE,0,4]}}});
+    scene["entities"][3]["components"]["custom"]["engine.SequencePlayer"]["data"]["autoplay"] =
+        json!(autoplay);
+    fs::write(path, scene.to_string()).unwrap();
+    dir
+}
+#[test]
+fn distant_exact_baseline_survives_sample_rebase_stop_and_replay() {
+    use coordinates::AbsolutePosition;
+    let dir = exact_fixture(true);
+    let mut rt = runtime(&dir);
+    let camera = rt.entity("camera").unwrap();
+    near(absolute_x(&rt, "camera"), 10.);
+    assert_eq!(
+        rt.app()
+            .world()
+            .get::<AbsolutePosition>(camera)
+            .unwrap()
+            .position[0],
+        10.
+    );
+    coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN, 0., 0.]).unwrap();
+    control(&mut rt, Command::Stop).unwrap();
+    assert_eq!(local_x(&rt, "camera"), 8.);
+    assert_eq!(absolute_x(&rt, "camera"), EXACT_BASELINE);
+    assert_eq!(
+        rt.app()
+            .world()
+            .get::<AbsolutePosition>(camera)
+            .unwrap()
+            .position[0],
+        EXACT_BASELINE
+    );
+    // Once released, the coordinates service can use the restored exact state on its own.
+    coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN - 64., 0., 0.]).unwrap();
+    assert_eq!(local_x(&rt, "camera"), 72.);
+    control(&mut rt, Command::Play).unwrap();
+    assert_eq!(absolute_x(&rt, "camera"), 10.);
+    control(
+        &mut rt,
+        Command::Seek {
+            position: 1.5,
+            events: SeekEvents::Silent,
+        },
+    )
+    .unwrap();
+    assert_eq!(absolute_x(&rt, "camera"), 13.);
+    control(&mut rt, Command::Stop).unwrap();
+    assert_eq!(local_x(&rt, "camera"), 72.);
+    assert_eq!(absolute_x(&rt, "camera"), EXACT_BASELINE);
+}
+#[test]
+fn foreign_exact_position_writes_before_or_after_rebase_are_not_restored_over() {
+    use coordinates::AbsolutePosition;
+    let foreign = EXACT_BASELINE - 100.;
+    for before in [true, false] {
+        let dir = exact_fixture(true);
+        let mut rt = runtime(&dir);
+        let camera = rt.entity("camera").unwrap();
+        if before {
+            rt.app_mut()
+                .world_mut()
+                .get_mut::<AbsolutePosition>(camera)
+                .unwrap()
+                .position[0] = foreign;
+        }
+        coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN, 0., 0.]).unwrap();
+        if !before {
+            rt.app_mut()
+                .world_mut()
+                .get_mut::<AbsolutePosition>(camera)
+                .unwrap()
+                .position[0] = foreign;
+        }
+        let local = local_x(&rt, "camera");
+        assert!(control(&mut rt, Command::Stop).is_err());
+        assert_eq!(local_x(&rt, "camera"), local);
+        assert_eq!(
+            rt.app()
+                .world()
+                .get::<AbsolutePosition>(camera)
+                .unwrap()
+                .position[0],
+            foreign
+        );
+        assert_eq!(absolute_x(&rt, "camera"), foreign);
+    }
+}
+#[test]
+fn foreign_transform_write_or_exact_component_removal_preserves_both_owned_fields() {
+    use coordinates::AbsolutePosition;
+    let dir = exact_fixture(true);
+    let mut rt = runtime(&dir);
+    let camera = rt.entity("camera").unwrap();
+    coordinates::rebase_now(rt.app_mut().world_mut(), [NEAR_ORIGIN, 0., 0.]).unwrap();
+    let component = rt
+        .app()
+        .world()
+        .get::<AbsolutePosition>(camera)
+        .unwrap()
+        .clone();
+    rt.app_mut()
+        .world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .position[0] = 99.;
+    assert!(control(&mut rt, Command::Stop).is_err());
+    assert_eq!(local_x(&rt, "camera"), 99.);
+    assert_eq!(
+        rt.app().world().get::<AbsolutePosition>(camera).unwrap(),
+        &component
+    );
+    let mut rt = runtime(&dir);
+    let camera = rt.entity("camera").unwrap();
+    rt.app_mut()
+        .world_mut()
+        .entity_mut(camera)
+        .remove::<AbsolutePosition>();
+    assert!(control(&mut rt, Command::Stop).is_err());
+    assert_eq!(local_x(&rt, "camera"), 10.);
+    assert!(rt.app().world().get::<AbsolutePosition>(camera).is_none());
+}
+#[test]
+fn stale_absolute_component_is_not_used_as_an_exact_capture_baseline() {
+    let dir = exact_fixture(false);
+    let mut rt = runtime(&dir);
+    let camera = rt.entity("camera").unwrap();
+    rt.app_mut()
+        .world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .position[0] = 99.;
+    control(&mut rt, Command::Play).unwrap();
+    coordinates::rebase_now(rt.app_mut().world_mut(), [32., 0., 0.]).unwrap();
+    control(&mut rt, Command::Stop).unwrap();
+    assert_eq!(local_x(&rt, "camera"), 67.);
+    assert_eq!(absolute_x(&rt, "camera"), 99.);
+}

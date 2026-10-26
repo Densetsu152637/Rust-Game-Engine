@@ -243,3 +243,9 @@ cinematic clocks nor changes World-only origin shifting. Root capture acquisitio
 applied origin through the coordinates service, just as a native coordinates API call does.
 See [cinematic sequences](cinematics.md#floating-origins-and-local-frames) for frame lifetime,
 external-write conflicts and f32 precision limits.
+
+Cinematic root captures trust an AbsolutePosition baseline only while its freshness value
+matches the local Transform. Existing exact-position state is then guarded and synchronized
+with each owned root write and baseline restoration; foreign writes or component removal
+release neither field back to the sequence. Rebase notifications include the actual exact-
+position snapshots so ordinary service freshness updates do not look like external writes.
