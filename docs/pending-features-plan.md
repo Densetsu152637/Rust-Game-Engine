@@ -421,3 +421,11 @@ All 55 workspace packages passed individual formatting checks at `51b89f8`.
 Subsequent authored adapters were separately formatted by their owners; final
 integrated formatting and runtime gates remain required. Main's isolated workspace
 test build continues at `598e395`; it is not a passing test result yet.
+
+Native IBL/probe shading adapter is now in progress in codex/render-indirect,
+based on `0232937`. Its single owner connects existing validated HDR resources to
+built-in mesh shading and bounded per-draw probe selection, with actual pixel
+oracles and neutral defaults for unaffected materials. This slice preserves the
+208-byte instance ABI and does not yet add lightmap UV2, authored asset loading,
+new scene-color stages or temporal lifecycle changes. Those remain explicit
+followups; native resource creation alone did not establish shaded IBL behavior.
