@@ -219,6 +219,8 @@ impl Default for Quality {
 pub struct GeometrySettings {
     /// Entities with `MeshRenderer` contribute their meshes.
     pub render_meshes: bool,
+    /// Include collider-only, non-sensor 3D physics boxes as acoustic geometry.
+    pub physics_bodies: bool,
     /// Baked `acoustics` asset used instead of live static collection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asset: Option<String>,
@@ -230,6 +232,7 @@ impl Default for GeometrySettings {
     fn default() -> Self {
         Self {
             render_meshes: true,
+            physics_bodies: false,
             asset: None,
             default_material: Preset::Default,
             mask: 255,

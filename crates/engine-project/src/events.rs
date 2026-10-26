@@ -86,6 +86,22 @@ impl Default for EventLimits {
 pub(crate) struct EventQueue {
     pending: VecDeque<EngineEvent>,
 }
+/// Accepted, targeted 3D contact transitions awaiting ordinary next-tick delivery.
+/// Audio observes a snapshot after physics writes poses; this does not drain the queue.
+pub(crate) fn pending_audio_contacts(world: &World) -> Vec<(Entity, String)> {
+    world
+        .get_resource::<EventQueue>()
+        .into_iter()
+        .flat_map(|queue| &queue.pending)
+        .filter(|event| {
+            matches!(
+                event.name.as_str(),
+                "physics.contact.start" | "physics.contact.stop"
+            ) && event.payload.get("dimension").and_then(Value::as_u64) == Some(3)
+        })
+        .filter_map(|event| event.target.map(|target| (target, event.name.clone())))
+        .collect()
+}
 /// Events dispatched this tick, available to ordinary ECS systems.
 #[derive(Resource, Default)]
 pub struct DeliveredEvents(pub Vec<EngineEvent>);

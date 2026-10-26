@@ -87,6 +87,7 @@ fn environment_schema() -> Value {
             "seed": integer(0, u64::MAX >> 11, "Deterministic tracing seed."),
             "geometry": object(json!({
                 "render_meshes": boolean("MeshRenderer meshes contribute acoustic geometry."),
+                "physics_bodies": boolean("Collider-only, non-sensor PhysicsBody3D boxes contribute acoustic geometry."),
                 "asset": text(128, "Baked acoustics asset used instead of live static collection."),
                 "default_material": choice(&Preset::NAMES, "Material of geometry without engine.AcousticMaterial."),
                 "mask": integer(1, 255, "Instance mask for geometry without engine.AcousticGeometry.")
