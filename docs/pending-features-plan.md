@@ -244,6 +244,26 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   Existing Prepass screen lighting cannot provide same-frame SSR. Shaded normal,
   roughness and F0 need real producers before SSR; RT currently reconstructs
   positions and uses a zero roughness input.
+- Shared-seam design checkpoint (source `8afd976`, implementation pending): add
+  an ordered `OpaqueEffects` stage between Sky and Transparent, with one lazy
+  render-size HDR scratch texture. `scene_color()` is authoritative for every
+  later attachment, host upscale input, native upscale and readback. Each effect
+  obtains distinct source/destination once and writes the full image.
+  Commit camera, staged mesh models and participating feature histories together
+  after scene encoding/submission through Tonemap, before Overlay/Composite.
+  Aborted scene attempts discard pending CPU histories and reset the next attempt;
+  late presentation failure retains the committed scene. Add CPU-only reset,
+  finish and forget callbacks, unique per-view evaluation IDs, and adapt existing
+  RT denoiser/auto-exposure/SR/FG bookkeeping. A submission is not GPU completion.
+  Test noncommuting color passes followed by transparency on every upscale route,
+  aborted-frame camera/model consistency, and late-UI retries without repeating
+  scene evaluation or advancing FG twice. One owner edits all shared seam files.
+- Independent source preparation underway: `codex/render-hiz` owns a conservative
+  forward-Z MAX pyramid and bounded rectangle queries only. Odd-sized mip levels
+  must cover every source texel; invalid/uncertain queries stay visible. Actual
+  LOD visibility consumption remains pending. `codex/render-post-effects` owns
+  native depth-of-field and motion-blur features on existing output-size post I/O;
+  authored settings and real GPU validation follow native source handoff.
 - Dependency order after those prerequisites:
   1. IBL uses prefiltered specular cubemaps, diffuse SH and a BRDF LUT; local
      probes add bounded deterministic selection/blending. Validate constant
