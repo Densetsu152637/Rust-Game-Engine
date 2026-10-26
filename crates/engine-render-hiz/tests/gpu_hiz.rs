@@ -9,27 +9,48 @@ fn gpu() -> Result<GpuContext> {
     Ok(gpu)
 }
 
+const DEPTH_WRITE_WGSL: &str = r#"
+@group(0) @binding(0) var source: texture_2d<f32>;
+
+@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let corners = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    return vec4<f32>(corners[index], 0.0, 1.0);
+}
+
+@fragment fn fs(@builtin(position) position: vec4<f32>) -> @builtin(frag_depth) f32 {
+    return textureLoad(source, vec2<i32>(position.xy), 0).x;
+}
+"#;
+
+// Depth32Float cannot be populated through Queue::write_texture in wgpu 30.
+// Upload R32Float values, then write actual depth through a depth-only pass.
 fn depth_texture(gpu: &GpuContext, size: [u32; 2], values: &[f32]) -> wgpu::Texture {
-    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("hiz test depth"),
-        size: wgpu::Extent3d {
-            width: size[0],
-            height: size[1],
-            depth_or_array_layers: 1,
-        },
+    assert_eq!(values.len(), size[0] as usize * size[1] as usize);
+    let extent = wgpu::Extent3d {
+        width: size[0],
+        height: size[1],
+        depth_or_array_layers: 1,
+    };
+    let upload = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("hiz test uploaded depth values"),
+        size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Depth32Float,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        format: wgpu::TextureFormat::R32Float,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     gpu.queue.write_texture(
         wgpu::TexelCopyTextureInfo {
-            texture: &texture,
+            texture: &upload,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::DepthOnly,
+            aspect: wgpu::TextureAspect::All,
         },
         bytemuck::cast_slice(values),
         wgpu::TexelCopyBufferLayout {
@@ -37,13 +58,106 @@ fn depth_texture(gpu: &GpuContext, size: [u32; 2], values: &[f32]) -> wgpu::Text
             bytes_per_row: Some(size[0] * 4),
             rows_per_image: Some(size[1]),
         },
-        wgpu::Extent3d {
-            width: size[0],
-            height: size[1],
-            depth_or_array_layers: 1,
-        },
+        extent,
     );
-    texture
+    let depth = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("hiz test depth"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let layout = gpu
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hiz test depth writer"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+    let module = gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hiz test depth writer"),
+            source: wgpu::ShaderSource::Wgsl(DEPTH_WRITE_WGSL.into()),
+        });
+    let pipeline_layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hiz test depth writer"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+    let pipeline = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("hiz test depth writer"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+    let upload_view = upload.create_view(&Default::default());
+    let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("hiz test depth writer"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&upload_view),
+        }],
+    });
+    let depth_view = depth.create_view(&Default::default());
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("hiz test depth writer"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    gpu.queue.submit([encoder.finish()]);
+    depth
 }
 
 fn read_buffer(gpu: &GpuContext, source: &wgpu::Buffer, bytes: u64) -> Result<Vec<u8>> {
@@ -133,6 +247,24 @@ fn read_mip(
     Ok(values)
 }
 
+fn direct_max(size: [u32; 2], values: &[f32], rect: [i32; 4]) -> Option<f32> {
+    let [x0, y0, x1, y1] = rect;
+    if x0 < 0 || y0 < 0 || x0 >= x1 || y0 >= y1 || x1 as u32 > size[0] || y1 as u32 > size[1] {
+        return None;
+    }
+    let mut greatest = 0.0f32;
+    for y in y0 as u32..y1 as u32 {
+        for x in x0 as u32..x1 as u32 {
+            let value = values[(y * size[0] + x) as usize];
+            greatest = greatest.max(if (0.0..=1.0).contains(&value) {
+                value
+            } else {
+                1.0
+            });
+        }
+    }
+    Some(greatest)
+}
 fn run_case(
     gpu: &GpuContext,
     kernel: &HiZKernel,
@@ -164,6 +296,12 @@ fn run_case(
             let actual = u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into()?);
             let expected = reference_visibility(size, &expected, *query)?;
             assert_eq!(actual, expected, "query {i} size {size:?}");
+            if let Some(brute_max) = direct_max(size, values, query.rect)
+                && (0.0..=1.0).contains(&query.nearest_depth)
+                && query.nearest_depth <= brute_max
+            {
+                assert_eq!(actual, 1, "false occlusion at query {i} size {size:?}");
+            }
         }
     }
     Ok(())
@@ -287,7 +425,7 @@ fn input_contract_rejects_wrong_depth_and_viewport() -> Result<()> {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Depth32Float,
-        usage: wgpu::TextureUsages::COPY_DST,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
     assert!(
@@ -333,5 +471,26 @@ fn nonzero_viewport_reads_only_requested_depth_region() -> Result<()> {
         let actual = u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into()?);
         assert_eq!(actual, reference_visibility([3, 5], &expected, *query)?);
     }
+    Ok(())
+}
+#[test]
+#[ignore = "requires a real GPU adapter"]
+fn restricted_compute_workgroups_reject_before_pipeline_creation() -> Result<()> {
+    let options = WgpuOptions::default();
+    let instance = GpuContext::instance();
+    let adapter = pollster::block_on(GpuContext::request_adapter(&instance, None, &options))?;
+    let composed = GpuContext::compose_device(&options, &adapter)?;
+    let mut descriptor = composed.descriptor("hiz restricted compute limits");
+    descriptor.required_limits.max_compute_workgroup_size_x = 32;
+    descriptor
+        .required_limits
+        .max_compute_invocations_per_workgroup = 32;
+    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))?;
+    let gpu = GpuContext::from_device(instance, adapter, device, queue);
+    let error = HiZKernel::new(&gpu)
+        .err()
+        .context("restricted device accepted Hi-Z")?;
+    assert!(error.to_string().contains("workgroup"), "{error}");
+    gpu.wait_idle()?; // rejected cleanly, without uncaptured validation errors
     Ok(())
 }

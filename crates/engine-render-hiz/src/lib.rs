@@ -164,6 +164,21 @@ impl HiZKernel {
         );
         let limits = gpu.device.limits();
         ensure!(
+            limits.max_compute_workgroup_size_x >= 64
+                && limits.max_compute_workgroup_size_y >= 8
+                && limits.max_compute_workgroup_size_z >= 1
+                && limits.max_compute_invocations_per_workgroup >= 64,
+            "Hi-Z compute kernels require workgroups up to 64x1x1 and 8x8x1"
+        );
+        ensure!(
+            limits.max_bind_groups >= 1 && limits.max_bindings_per_bind_group >= 4,
+            "one bind group with four bindings required"
+        );
+        ensure!(
+            limits.max_uniform_buffer_binding_size >= 16,
+            "16-byte uniform buffer binding required"
+        );
+        ensure!(
             limits.max_storage_textures_per_shader_stage >= 1,
             "one storage texture binding required"
         );
@@ -645,21 +660,49 @@ mod tests {
     }
 
     #[test]
-    fn query_is_conservative_for_each_rect() {
-        let size = [9, 7];
-        let mut depth = vec![0.2; 63];
-        depth[8 + 6 * 9] = 0.8;
-        let levels = reference_pyramid(size, &depth).unwrap();
-        for y0 in 0..7 {
-            for x0 in 0..9 {
-                for y1 in y0 + 1..=7 {
-                    for x1 in x0 + 1..=9 {
-                        let query = VisibilityQuery::new([x0, y0, x1, y1], 0.5, false);
-                        let exact_max = (y0..y1)
-                            .flat_map(|y| (x0..x1).map(move |x| depth[(y * 9 + x) as usize]))
-                            .fold(0.0f32, f32::max);
-                        if exact_max >= 0.5 {
-                            assert_eq!(reference_visibility(size, &levels, query).unwrap(), 1);
+    fn query_never_culls_a_directly_visible_depth_sample() {
+        for size in [[3, 5], [9, 7], [1, 17], [17, 1]] {
+            for variant in 0..3 {
+                let mut depth: Vec<f32> = (0..size[0] * size[1])
+                    .map(|i| match variant {
+                        0 => 0.2,
+                        1 => (i * 37 % 97) as f32 / 100.0,
+                        _ => 0.1,
+                    })
+                    .collect();
+                if variant == 2 {
+                    *depth.last_mut().unwrap() = 0.8;
+                }
+                let levels = reference_pyramid(size, &depth).unwrap();
+                for y0 in 0..size[1] {
+                    for x0 in 0..size[0] {
+                        for y1 in y0 + 1..=size[1] {
+                            for x1 in x0 + 1..=size[0] {
+                                // This reads the original base depth directly,
+                                // independent of the mip/query footprint mapping.
+                                let mut exact_max = 0.0f32;
+                                for y in y0..y1 {
+                                    for x in x0..x1 {
+                                        exact_max =
+                                            exact_max.max(depth[(y * size[0] + x) as usize]);
+                                    }
+                                }
+                                for nearest in [0.0, 0.2, 0.5, exact_max, 1.0] {
+                                    let query = VisibilityQuery::new(
+                                        [x0 as i32, y0 as i32, x1 as i32, y1 as i32],
+                                        nearest,
+                                        false,
+                                    );
+                                    if nearest <= exact_max {
+                                        assert_eq!(
+                                            reference_visibility(size, &levels, query).unwrap(),
+                                            1,
+                                            "size={size:?} variant={variant} rect={:?} nearest={nearest} exact_max={exact_max}",
+                                            query.rect
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                 }

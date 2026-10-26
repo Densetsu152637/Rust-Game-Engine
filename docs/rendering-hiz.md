@@ -33,8 +33,10 @@ single-mip view and writes a distinct storage single-mip view.
 
 The pyramid is capped at 4096 pixels per edge and 96 MiB total. Query capacity
 is capped at 65,536; its input/output buffer sizes and dispatch dimensions
-are checked against the device limits. `R32Float` storage and sampled usage
-are checked against adapter format features before the pipelines are created.
+are checked against the device limits. Kernel creation also checks the 8×8
+reduction and 64×1 query workgroup limits before creating pipelines.
+`R32Float` storage, sampled, and copy usage are checked against adapter
+format features before the pipelines are created.
 
 ## Visibility queries
 
@@ -61,5 +63,6 @@ CPU references and unit tests cover odd footprints, invalid depth and
 query conservatism. Ignored `gpu_hiz` tests request a real adapter and compare
 every mip and query result against the CPU reference for 3×5, 9×7, 1×17 and
 17×1 views, plus resize, replacement on later frames, independent views and
-input errors. At this source checkpoint, build, lint, CPU tests, and GPU tests have
-not yet run.
+input errors and a restricted compute-limit device. Tests upload `R32Float`
+samples, then write `Depth32Float` through a depth-only pass. Build, lint,
+CPU tests, and GPU tests have not yet run at this source checkpoint.
