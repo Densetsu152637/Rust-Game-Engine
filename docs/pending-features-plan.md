@@ -1,8 +1,10 @@
 # Pending engine features
 
 Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
-Initial plan commit: `7d614e9`. Current local integration: `ebc765c` (not yet
-published; final integrated checks remain pending).
+Initial plan commit: `7d614e9`. Main contains accepted audio/server changes through
+`ebc765c`. Larger branches are assembled in `codex/pending-integration`, currently
+`8e6701f` with reviewed XR support. Nothing has been published this session;
+final integrated checks remain pending.
 
 This is the implementation record for the pending-feature request. Existing
 spatial audio, first-round rendering, physics, UI and networking are the baseline.
@@ -85,6 +87,10 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   ownership and morph-before-skin order.
 - Acceptance: `cargo test -p engine-animation`, project pose/deformation tests,
   degenerate/unreachable chains, rest/proportion mapping, graph diagnostics.
+- Outcome: graph/blend milestone `71cc1c4` accepted after independent source
+  review, 125 focused tests, fmt and scoped Clippy. IK source and regression
+  tests are ready for review/validation; retargeting remains pending. Integration
+  waits for the external AI foundation handoff.
 
 ### 5. Editor scene recovery and graph authoring
 
@@ -112,7 +118,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 7. Platform services
 
-- Status: in progress (XR review, ML implementation, server validation).
+- Status: in progress (ML/video validation; XR review and server work accepted).
 - Objective: review OpenXR `daa2888`, finish ML WIP `609ccb2`, implement
   existing self-hosted services and real video decode/playback. The user clarified
   that services means completing/validating the existing server, not adding cloud
@@ -126,9 +132,12 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Outcomes: existing-server work accepted at `099a88`, integrated as `ebc765c`;
   fixed late authentication/expired-request admission before dispatch. Its 119
   tests (including five real QUIC/TLS CLI tests), fmt and scoped Clippy passed.
-  XR review found five defects and a sixth image-operation retry defect; fixes
-  are under independent source review and await execution checks. ML initial
-  inference tests pass, but further boundary and project-adapter checks remain.
+  XR repair `3e8c09a` resolves six reviewed defects; 39 unit tests, one compile-fail
+  doctest, eight project tests, three Vulkan GPU tests, fmt and scoped Clippy
+  passed. Integrated as `8e6701f`; combined workspace checks remain pending.
+  Headset interoperability and macOS execution remain unverified. ML core tests
+  pass, including reviewed output-contract and stale-handle repairs; project
+  adapter validation is running.
   Video implementation uses an explicit FFmpeg executable backend with a shared
   audio/caption clock; frame resampling and dependency requirements must be
   documented and tested before acceptance.
@@ -185,10 +194,11 @@ external worktrees are not cleanup targets.
 | codex-audio-streams | `91b961c` | Audio source/clock; `codex/audio-streams` | active |
 | codex-animation-graph | `834c047` | Graph/blends; `codex/animation-graph` | active |
 | codex-render-contracts | `91b961c` | Shared shadows; `codex/render-contracts` | active |
+| codex-pending-integration | `697e36f` | Root integration and final checks; `codex/pending-integration` | active |
 | parity-editor-scene | `9e4a063` | Resume scene WIP; existing `claude/parity-editor-scene` | active, retain |
 | parity-platform-services-ml | `609ccb2` | Complete ML; existing `claude/parity-platform-services-ml` | active, retain |
 | parity-platform-services-services | `7d614e9` | Existing server; existing `claude/parity-platform-services-services` | integrated, retained for existing owner |
-| parity-platform-services-xr | `daa2888` | Reviewed repairs; existing `claude/parity-platform-services-xr` | active, retain |
+| parity-platform-services-xr | `daa2888` | Reviewed repairs; existing `claude/parity-platform-services-xr` | integrated, retained for existing owner |
 | parity-platform-services-video | `dc061859` | Video/audio/caption integration; existing `claude/parity-platform-services-video` | active, retain |
 
 Manual and reused paths are `D:/Git-Worktrees/Rust-Game-Engine/<name>`; managed
