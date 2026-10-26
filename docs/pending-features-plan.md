@@ -83,7 +83,8 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   as `b41c636`. Its 335 tests, scoped strict Clippy and fmt passed after independent
   review fixes. Authored streamed/procedural sources are source-reviewed at
   `5cdf40c`, including durable worker failures and shared emitter integration;
-  execution is pending in the combined native/runtime batch.
+  native audio execution passed 355 tests (two hardware/cost tests ignored) at
+  integrated revision `775fb33`; project runtime checks remain in progress.
 
 ### 4. Animation graph, blend spaces, IK and retargeting
 
@@ -101,7 +102,8 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   including the reviewed initial-control repair. Retargeting `ee8192d` passed
   source review and is assembled for validation. The first combined compile found
   a stale joint-field reference; `9839386` corrects it to the target loop index.
-  The graph milestone and committed AI foundation
+  All 28 native animation tests, including retargeting, pass at `775fb33`;
+  project retargeting checks remain in progress. The graph milestone and committed AI foundation
   are assembled at `b62ef9e`; the external manager retains remaining AI work.
 
 ### 5. Editor scene recovery and graph authoring
@@ -118,7 +120,9 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Outcome: scene `7d215a7` accepted and integrated as `f52cf2f`; 113 tests, scoped
   strict Clippy and fmt passed after picker review fixes. Generic graph canvas and
   actual editor shell wiring plus typed MCP settings are source-reviewed at
-  `bea8c12` and assembled for combined compilation/tests.
+  `bea8c12` and assembled for combined validation. All six native graph-editor
+  tests pass at `7fc0c85`, including real egui palette, drag, wiring, delete and
+  undo gestures. Combined shell and MCP settings tests remain pending.
 
 ### 6. Render integration seams
 
@@ -168,7 +172,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 8. Remaining animation/editor/audio integrations
 
-- Status: in progress (hot reload validation, morph integration, sequencer and procedural graph source); other slices remain pending and
+- Status: in progress (hot reload and morph accepted; native audio, voice and sequencer tests pass); runtime integration checks remain and
   depend on relevant earlier stages.
 - Objective: morph import/animation/deformation, cinematics timeline/sequencer,
   editor hot reload/tooling, procedural audio graph, microphone/voice codec,
@@ -189,10 +193,10 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   existing explicit-cleanup policy. Morph `93cf862` is accepted and integrated as
   `8d9b88b`: 51 focused tests and strict Clippy/fmt passed, including actual morph
   deformation before skinning and graph/IK compatibility.
-  Sequencer source is preserved at `7b96bb9` and remains unbuilt. It must run before
+  Sequencer source is assembled at `d422209`; seven native tests pass at `7fc0c85`. It runs before
   simulation and native scrubbing must immediately refresh skin deformation.
-  Procedural audio source `bfae437` passed source critique; actual DSP/producer
-  tests and authored integration remain pending. These source checkpoints are
+  Procedural audio `5cdf40c` passed source critique and all 355 audio native tests,
+  including DSP/producer failure tests. Authored runtime validation remains pending. These source checkpoints are
   incomplete milestones, not accepted features.
 - New source decisions: atomic procedural reset controls are source-reviewed at
   `9f7a312`. Extend the existing AudioEmitter/AudioSources lifecycle for resident
@@ -202,10 +206,12 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   device-free; hardware tests remain opt-in and separate from synthetic ingress.
   Voice source `a9f68cb` includes reviewed capture recovery, encoder-state purge,
   drained-speaker cleanup and mute bounds. Verified portable CMake and existing
-  MSVC are ready; native Opus linking and behavior checks remain pending.
+  MSVC built and linked native Opus successfully. Nine voice tests pass at
+  `7fc0c85`, including actual codec-to-mixer playback, PLC, capture conversion and
+  lifecycle behavior. The microphone test remains ignored.
   Sequencer shared integration is source-reviewed at `d422209`, including early
   scheduling, immediate deformation refresh and startup/transition cleanup;
-  compilation and runtime tests remain unrun.
+  native compilation and tests pass; project runtime tests remain in progress.
   Physics/audio source `d705f174` passed review: accepted targeted 3D contact events
   reach audio after pose synchronization; optional box-collider acoustic geometry
   honors mask/material/mobility and removal. Other collider-only shapes are
@@ -213,7 +219,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 9. Rendering round two
 
-- Status: in progress (material graph source); remaining effects depend on
+- Status: in progress (material graph native tests pass; Hi-Z kernel source underway); remaining effects depend on
   stage 6 and relevant World/material contracts.
 - Objective: IBL/probes/lightmaps; SSR/DOF/motion blur; AA/vendor-neutral upscale;
   atmosphere/fog/clouds/decals/GPU particles; Hi-Z with LOD; HDR display output;
@@ -229,8 +235,8 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   existing shader field for authored graph assets. Root serializes graph registry
   and runtime material adapters. The compiler must validate one output sink with
   reverse reachability, not GraphKind's forward single-root rule.
-  Source `725e545` and its mesh/sprite authored adapters passed review; native and
-  GPU execution remain pending. Distinct graph-color/physical-control regressions
+  Source `725e545` and its mesh/sprite authored adapters passed review; six native
+  tests pass at `7fc0c85`. Authored runtime and four real GPU tests remain pending. Distinct graph-color/physical-control regressions
   cover the reviewed unlit-color repair.
 - Shared pipeline prerequisites: one owner must add render-size scene-colour
   ping-pong after opaque/sky and before transparents, adapt every later consumer
