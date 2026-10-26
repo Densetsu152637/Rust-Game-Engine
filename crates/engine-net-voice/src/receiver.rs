@@ -6,7 +6,7 @@ use engine_network::PeerId;
 use std::collections::BTreeMap;
 
 /// Creates one decoder per speaker.
-pub type CodecFactory = Box<dyn Fn() -> Box<dyn VoiceCodec> + Send>;
+pub type CodecFactory = Box<dyn Fn() -> Result<Box<dyn VoiceCodec>> + Send>;
 
 /// One decoded (or concealed) frame for the audio mixer.
 #[derive(Clone, Debug, PartialEq)]
@@ -17,6 +17,8 @@ pub struct VoiceOutput {
     pub position: Option<[f32; 3]>,
     /// True when the frame was synthesized by packet-loss concealment.
     pub concealed: bool,
+    /// The final frame of a talkspurt has left the jitter buffer.
+    pub end_of_talkspurt: bool,
 }
 
 struct Speaker {
@@ -35,15 +37,22 @@ pub struct VoiceReceiver {
     concealment: Box<dyn Concealment>,
     speakers: BTreeMap<PeerId, Speaker>,
     decode_errors: u64,
+    sample_rate: u32,
+    frame_samples: usize,
 }
 impl VoiceReceiver {
     pub fn new(limits: VoiceLimits, jitter: JitterConfig, factory: CodecFactory) -> Result<Self> {
         limits.validate()?;
         jitter.validate()?;
-        let probe = factory();
+        let probe = factory()?;
         if probe.frame_samples() == 0 || probe.frame_samples() > limits.max_frame_samples {
             return Err(VoiceError::Invalid("codec frame size outside voice limits"));
         }
+        if probe.sample_rate() == 0 {
+            return Err(VoiceError::Invalid("codec sample rate is zero"));
+        }
+        let sample_rate = probe.sample_rate();
+        let frame_samples = probe.frame_samples();
         Ok(Self {
             limits,
             jitter,
@@ -51,6 +60,8 @@ impl VoiceReceiver {
             concealment: Box::new(FadeConcealment::default()),
             speakers: BTreeMap::new(),
             decode_errors: 0,
+            sample_rate,
+            frame_samples,
         })
     }
     /// Replaces the fallback used when the codec has no native concealment.
@@ -69,6 +80,12 @@ impl VoiceReceiver {
     pub fn remove_speaker(&mut self, speaker: PeerId) {
         self.speakers.remove(&speaker);
     }
+    /// True once a speaker's buffered talkspurt has stopped.
+    pub fn speaker_idle(&self, speaker: PeerId) -> bool {
+        self.speakers
+            .get(&speaker)
+            .is_some_and(|s| !s.buffer.is_playing() && s.buffer.stats().buffered_frames == 0)
+    }
 
     /// Accepts one downlink payload that arrived at `now_ms`. Pass only payloads received from
     /// `SERVER_PEER`: the speaker ID inside is trusted because the router stamps it. New
@@ -79,7 +96,12 @@ impl VoiceReceiver {
             if self.speakers.len() >= self.limits.max_speakers {
                 return Err(VoiceError::Invalid("voice speaker cap reached"));
             }
-            let codec = (self.factory)();
+            let codec = (self.factory)()?;
+            if codec.sample_rate() != self.sample_rate
+                || codec.frame_samples() != self.frame_samples
+            {
+                return Err(VoiceError::Invalid("decoder profile differs from receiver"));
+            }
             let buffer = JitterBuffer::new(
                 self.jitter,
                 self.limits.max_buffered_frames,
@@ -112,8 +134,10 @@ impl VoiceReceiver {
             };
             let mut pcm = Vec::with_capacity(frame_samples);
             let mut concealed = false;
+            let mut end_of_talkspurt = false;
             match playout {
                 Playout::Frame(packet) => {
+                    end_of_talkspurt = packet.end_of_talkspurt && !speaker.buffer.is_playing();
                     speaker.position = packet.position;
                     if speaker.codec.decode(&packet.payload, &mut pcm).is_ok()
                         && pcm.len() == frame_samples
@@ -146,6 +170,7 @@ impl VoiceReceiver {
                 pcm,
                 position: speaker.position,
                 concealed,
+                end_of_talkspurt,
             });
         }
         out

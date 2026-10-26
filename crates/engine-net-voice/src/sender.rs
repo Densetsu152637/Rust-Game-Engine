@@ -30,6 +30,11 @@ impl VoiceSender {
     pub fn frame_samples(&self) -> usize {
         self.codec.frame_samples()
     }
+    /// Advances media time for capture samples that were not sent (mute or overflow).
+    /// Sequence numbers advance only for transmitted packets.
+    pub fn advance_timestamp(&mut self, samples: u32) {
+        self.timestamp = self.timestamp.wrapping_add(samples);
+    }
     /// Encodes one frame. `position` is an optional claim the server may ignore.
     /// Set `end_of_talkspurt` on the final frame before going silent.
     pub fn encode_frame(

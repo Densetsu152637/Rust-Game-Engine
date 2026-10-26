@@ -1,0 +1,17 @@
+[package]
+name = "engine-voice-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+description = "Native microphone, Opus and PCM stream bridge for engine voice chat"
+
+[dependencies]
+engine-audio = { path = "../engine-audio" }
+engine-net-voice = { path = "../engine-net-voice" }
+engine-network = { path = "../engine-network" }
+cpal = "=0.18.2"
+opusic-c = { version = "=1.6.1", features = ["bundled"] }
+
+[lints]
+workspace = true

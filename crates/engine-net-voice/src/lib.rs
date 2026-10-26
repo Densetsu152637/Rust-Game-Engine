@@ -4,6 +4,7 @@
 //! and reassembles them on listeners through per-speaker jitter buffers with loss concealment.
 //! Capture, encoding codecs (e.g. Opus) and spatial mixing belong to the audio domain; they plug
 //! in through [`VoiceCodec`], [`Concealment`] and the positions carried by [`VoiceOutput`].
+//! The optional `engine-voice-audio` crate supplies a native Opus/PCM stream bridge.
 //! Packets travel on [`VOICE_LANE`] with [`VOICE_DELIVERY`] over any
 //! `engine_network::MessageEndpoint`.
 mod codec;
