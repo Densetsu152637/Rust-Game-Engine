@@ -66,12 +66,14 @@ every mip and query result against the CPU reference for 3×5, 9×7, 1×17 and
 input errors and a restricted compute-limit device. Tests upload `R32Float`
 samples, then write `Depth32Float` through a depth-only pass. Build, lint,
 CPU tests, and GPU tests have not yet run at this source checkpoint.
+
 ## Opt-in indirect draw adapter prototype
 
 `engine-render-pipeline::visibility::HiZIndirect` consumes the real GPU
 `VisibilityOutput` from `HiZKernel::encode`. The caller provides one
-`GpuInstance` per mask entry and ordered `VisibilityBatch` ranges with
-`GpuMesh` handles. An instance and its mask always share the same index.
+`GpuInstance` per mask entry and ordered, contiguous
+`VisibilityBatch` ranges with `GpuMesh` handles that cover every candidate
+exactly once. An instance and its mask always share the same index.
 The adapter compacts survivors in each range in source order and emits both
 native draw and indexed-draw argument buffers. `IndirectOutput::draw_batch`
 binds that batch's compacted group-3 range, sets its mesh buffers, and calls
@@ -82,18 +84,20 @@ testing disabled; the generated `instance_count` still omits masked draws.
 The output `GpuInstance` ABI is the existing 208-byte `engine::mesh`
 group-3 record. Each batch starts at a record offset that is a common multiple
 of 208 bytes and the device's minimum storage-buffer offset alignment. A
-zero-candidate batch receives a legal nonzero binding and a zero-instance
-command. Every indirect command uses `first_instance = 0`, so the adapter
-does not require `INDIRECT_FIRST_INSTANCE`. The output buffers retain
-`COPY_SRC` for readback and diagnostic consumers; argument buffers have
+zero-candidate batch at the current cursor receives a legal nonzero
+binding and a zero-instance command. Every indirect command uses
+`first_instance = 0`, so the adapter does not require
+`INDIRECT_FIRST_INSTANCE`. The output buffers retain `COPY_SRC` for readback and diagnostic consumers; argument buffers have
 `STORAGE | INDIRECT | COPY_SRC`.
 
 This prototype accepts at most 65,536 instances, 256 batches and 1,024
 candidates per batch. The compute shader runs one 64-lane workgroup per
 batch, scans a fixed 16 blocks and preserves stable source order. Kernel
-creation checks indirect-execution support and six compute storage bindings.
-Encoding checks ranges, mask count and buffer usage, byte arithmetic,
-alignment, binding sizes, dispatch count and device limits before encoding
+creation checks indirect-execution support, six compute storage bindings,
+and four bind groups required for group 3.
+Encoding rejects overlapping, gapped, reordered and incomplete batch ranges.
+It also checks mask count, buffer usage, byte arithmetic, alignment,
+binding sizes, dispatch count and device limits before encoding
 work. Errors are explicit; the caller owns direct-draw fallback for the
 whole affected frame. The current built-in mesh path remains direct.
 
@@ -101,7 +105,7 @@ Ignored real-GPU tests build masks through `HiZKernel::encode`, compare
 compacted IDs and both argument formats with a CPU reference, and render
 indexed and nonindexed diagnostic tiles with depth disabled. They cover
 mixed, all-visible, zero-visible and empty batches, aligned multibatch
-bindings, and a restricted storage-binding device. Source formatting and
-metadata checks do not establish GPU behavior; these tests remain unrun
-until the shared validation slot. The trusted-depth stage, projected bounds,
-authored LOD/hysteresis and native frame-pipeline consumer are still pending.
+bindings, and restricted storage-binding and bind-group devices. Source
+formatting and metadata checks do not establish GPU behavior; these tests
+remain unrun until the shared validation slot. The trusted-depth stage,
+projected bounds, authored LOD/hysteresis and native frame-pipeline consumer are still pending.

@@ -248,6 +248,24 @@ fn actual_hiz_masks_compact_and_draw_indexed_and_nonindexed_tiles() -> Result<()
             .encode(&gpu, &mut encoder, &masks, &records[..3], &batches, &group)
             .is_err()
     );
+    let overlapping = [
+        VisibilityBatch {
+            mesh: plain.clone(),
+            instances: 0..2,
+        },
+        VisibilityBatch {
+            mesh: indexed.clone(),
+            instances: 1..4,
+        },
+    ];
+    let error = adapter
+        .encode(&gpu, &mut encoder, &masks, &records, &overlapping, &group)
+        .err()
+        .context("overlapping batch plan accepted")?;
+    assert!(
+        error.to_string().contains("ordered contiguous partition"),
+        "{error}"
+    );
     let output = adapter.encode(&gpu, &mut encoder, &masks, &records, &batches, &group)?;
     let target_view = target.create_view(&Default::default());
     {
@@ -455,5 +473,23 @@ fn oversized_batch_returns_fallback_error_without_encoding_draws() -> Result<()>
     );
     gpu.queue.submit([encoder.finish()]); // the preceding Hi-Z work remains valid
     gpu.wait_idle()?;
+    Ok(())
+}
+#[test]
+#[ignore = "requires a real GPU adapter"]
+fn restricted_bind_groups_reject_before_pipeline_creation() -> Result<()> {
+    let options = WgpuOptions::default();
+    let instance = GpuContext::instance();
+    let adapter = pollster::block_on(GpuContext::request_adapter(&instance, None, &options))?;
+    let composed = GpuContext::compose_device(&options, &adapter)?;
+    let mut descriptor = composed.descriptor("hiz indirect restricted bind groups");
+    descriptor.required_limits.max_bind_groups = 3;
+    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))?;
+    let gpu = GpuContext::from_device(instance, adapter, device, queue);
+    let error = HiZIndirect::new(&gpu)
+        .err()
+        .context("three-bind-group device accepted group-3 indirect draws")?;
+    assert!(error.to_string().contains("four bind groups"), "{error}");
+    gpu.wait_idle()?; // constructor rejected before invalid pipeline creation
     Ok(())
 }

@@ -19,8 +19,9 @@ const INDEXED_BYTES: u64 = 20;
 const META_BYTES: u64 = 16;
 const _: () = assert!(std::mem::size_of::<GpuInstance>() == 208);
 
-/// One stable source range sharing a mesh. Ranges may be empty; an empty
-/// batch still emits a valid zero-instance indirect command.
+/// One stable source range sharing a mesh. Batches must form an ordered,
+/// contiguous partition of every input mask/instance. An empty range at
+/// the current cursor still emits a valid zero-instance indirect command.
 #[derive(Clone)]
 pub struct VisibilityBatch {
     pub mesh: Arc<GpuMesh>,
@@ -135,8 +136,8 @@ impl HiZIndirect {
         ensure!(
             limits.max_storage_buffers_per_shader_stage >= 6
                 && limits.max_bindings_per_bind_group >= 6
-                && limits.max_bind_groups >= 1,
-            "indirect compaction requires six storage bindings"
+                && limits.max_bind_groups >= 4,
+            "indirect compaction requires six storage bindings and four bind groups for group 3"
         );
         ensure!(
             limits.min_storage_buffer_offset_alignment > 0,
@@ -186,7 +187,8 @@ impl HiZIndirect {
 
     /// Consume the exact GPU mask returned by `HiZKernel::encode` in the
     /// same ordered command stream. `instances[i]` corresponds to mask
-    /// entry `i`; batch ranges index both arrays. On any error the caller
+    /// entry `i`; batch ranges index both arrays and must cover every entry
+    /// exactly once in order. On any error the caller
     /// should use its normal direct draw path for the whole frame.
     pub fn encode(
         &self,
@@ -210,6 +212,11 @@ impl HiZIndirect {
             masks.count as usize == instances.len(),
             "mask and instance counts differ"
         );
+        let source_ranges: Vec<_> = batches
+            .iter()
+            .map(|batch| batch.instances.clone())
+            .collect();
+        validate_partition(instances.len(), &source_ranges)?;
         ensure!(
             masks.buffer.usage().contains(wgpu::BufferUsages::STORAGE),
             "mask needs STORAGE usage"
@@ -425,14 +432,33 @@ impl HiZIndirect {
     }
 }
 
-/// CPU reference of stable survivors, independent of the GPU scan.
-pub fn reference_ranges(masks: &[u32], ranges: &[Range<u32>]) -> Result<Vec<Vec<u32>>> {
-    let mut result = Vec::with_capacity(ranges.len());
+/// Each candidate maps to exactly one mesh batch in the supplied order.
+/// Empty batches are valid only at the current cursor.
+fn validate_partition(total: usize, ranges: &[Range<u32>]) -> Result<()> {
+    ensure!(
+        total <= u32::MAX as usize,
+        "candidate count exceeds u32 indexing"
+    );
+    let mut cursor = 0u32;
     for range in ranges {
         ensure!(
-            range.start <= range.end && range.end as usize <= masks.len(),
-            "batch range exceeds masks"
+            range.start == cursor && range.start <= range.end && range.end as usize <= total,
+            "batch ranges must be an ordered contiguous partition of all candidates"
         );
+        cursor = range.end;
+    }
+    ensure!(
+        cursor as usize == total,
+        "batch ranges must cover every candidate"
+    );
+    Ok(())
+}
+
+/// CPU reference of stable survivors, independent of the GPU scan.
+pub fn reference_ranges(masks: &[u32], ranges: &[Range<u32>]) -> Result<Vec<Vec<u32>>> {
+    validate_partition(masks.len(), ranges)?;
+    let mut result = Vec::with_capacity(ranges.len());
+    for range in ranges {
         result.push(range.clone().filter(|&i| masks[i as usize] != 0).collect());
     }
     Ok(result)
@@ -452,10 +478,27 @@ mod tests {
 
     #[test]
     fn reference_keeps_stable_survivors_and_empty_batches() {
-        let ranges = [0..3, 3..6, 6..6];
+        let ranges = [0..3, 3..3, 3..6, 6..6];
         let survivors = reference_ranges(&[0, 1, 1, 1, 0, 1], &ranges).unwrap();
-        assert_eq!(survivors, vec![vec![1, 2], vec![3, 5], vec![]]);
-        assert!(reference_ranges(&[1], &[0..2]).is_err());
+        assert_eq!(survivors, vec![vec![1, 2], vec![], vec![3, 5], vec![]]);
+        assert_eq!(reference_ranges(&[], &[]).unwrap(), Vec::<Vec<u32>>::new());
+        assert_eq!(reference_ranges(&[], &[0..0]).unwrap(), vec![vec![]]);
+    }
+
+    #[test]
+    fn rejects_overlaps_gaps_reordering_and_incomplete_coverage() {
+        let masks = [1, 1, 1, 1];
+        for ranges in [
+            vec![0..2, 1..4],       // duplicate 1
+            vec![0..1, 2..4],       // omit 1
+            vec![2..4, 0..2],       // reordered
+            vec![0..2, 2..1, 1..4], // reversed
+            vec![0..2],             // omit tail
+            vec![],                 // omit every candidate
+            vec![0..5],             // beyond input
+        ] {
+            assert!(reference_ranges(&masks, &ranges).is_err(), "{ranges:?}");
+        }
     }
 
     #[test]
