@@ -28,6 +28,7 @@ struct BoundPlayer {
     targets: Vec<Entity>,
     player: Player,
     capture: Option<Capture>,
+    key_origin: Option<[f64; 3]>,
 }
 #[derive(Resource, Default)]
 pub(super) struct Sequences {
@@ -83,12 +84,13 @@ impl Sequences {
                     targets,
                     player,
                     capture: None,
+                    key_origin: None,
                 },
             );
         }
         self.acquire(world)
     }
-    fn acquire(&mut self, world: &World) -> Result<()> {
+    fn acquire(&mut self, world: &mut World) -> Result<()> {
         let mut claims = BTreeSet::new();
         let mut cuts = false;
         for (owner, bound) in &self.players {
@@ -119,11 +121,14 @@ impl Sequences {
         // All conflicts have been checked before acquiring baseline values.
         for bound in self.players.values_mut() {
             if bound.player.state() != State::Stopped && bound.capture.is_none() {
-                bound.capture = Some(Capture::new(
+                let capture = Capture::new(
                     world,
                     &bound.targets,
                     bound.player.timeline(),
-                )?);
+                    bound.key_origin,
+                )?;
+                bound.key_origin = capture.key_origin();
+                bound.capture = Some(capture);
             }
         }
         Ok(())
@@ -258,5 +263,16 @@ pub fn reset(world: &mut World) {
     }
     if let Some(mut events) = world.get_resource_mut::<SequenceEvents>() {
         events.0.clear();
+    }
+}
+
+/// Coordinates calls this exactly once per actual origin shift, with root values it moved.
+pub(crate) fn origin_shifted(world: &mut World, from: [f64; 3], to: [f64; 3], roots: &RootRebases) {
+    if let Some(mut sequences) = world.get_resource_mut::<Sequences>() {
+        for bound in sequences.players.values_mut() {
+            if let Some(capture) = &mut bound.capture {
+                capture.origin_shifted(from, to, roots);
+            }
+        }
     }
 }

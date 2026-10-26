@@ -326,6 +326,7 @@ pub(super) fn shift(
         .collect();
     let target = WorldOrigin { offset: to };
     let mut exact = BTreeMap::new();
+    let mut rebased = crate::sequencer::RootRebases::new();
     for &entity in &roots {
         let local = world.get::<Transform>(entity).map(|t| t.position);
         let Some(local) = local else { continue };
@@ -339,6 +340,7 @@ pub(super) fn shift(
         };
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
             transform.position = moved;
+            rebased.insert(entity, (local, moved));
         }
         report.roots += 1;
     }
@@ -368,6 +370,7 @@ pub(super) fn shift(
     }
     world.resource_mut::<WorldOrigin>().offset = to;
     world.resource_mut::<Coordinates>().applied = Some(to);
+    crate::sequencer::origin_shifted(world, from, to, &rebased);
     crate::transforms::refresh_world_transforms(world)?;
     let tick = world.resource::<Coordinates>().ticks;
     let shifts = {

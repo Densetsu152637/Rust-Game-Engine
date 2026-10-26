@@ -71,3 +71,9 @@ pub fn post_transforms(world: &mut World, _dt: f32) -> Result<()> {
     service::sync_absolute(world);
     Ok(())
 }
+
+/// Latch the frame of a newly acquired cinematic capture. Later direct origin writes
+/// must shift that captured frame just like a rebase through the native coordinates API.
+pub(crate) fn capture_origin(world: &mut World) -> [f64; 3] {
+    service::applied_origin(world)
+}

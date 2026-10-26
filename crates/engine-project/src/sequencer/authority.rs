@@ -1,3 +1,4 @@
+use super::origin::RootTranslation;
 use super::*;
 use crate::{
     Transform,
@@ -171,18 +172,52 @@ pub(super) fn write(
     }
     Ok(())
 }
+fn parent(world: &World, target: Entity) -> Result<Option<Entity>> {
+    world
+        .get::<crate::Parent>(target)
+        .map(|parent| {
+            crate::services::find_entity(world, &parent.0)
+                .ok_or_else(|| invalid("Sequence parent no longer exists"))
+        })
+        .transpose()
+}
 #[derive(Default)]
 pub(super) struct Capture {
     fields: BTreeMap<(Entity, Property), (Value, Value)>,
     cameras: BTreeMap<Entity, (bool, bool)>,
+    parents: BTreeMap<Entity, Option<Entity>>,
+    translations: BTreeMap<Entity, RootTranslation>,
+    key_origin: Option<[f64; 3]>,
 }
 impl Capture {
-    pub fn new(world: &World, targets: &[Entity], timeline: &CompiledTimeline) -> Result<Self> {
-        let mut result = Self::default();
+    pub fn new(
+        world: &mut World,
+        targets: &[Entity],
+        timeline: &CompiledTimeline,
+        key_origin: Option<[f64; 3]>,
+    ) -> Result<Self> {
+        let mut result = Self {
+            key_origin,
+            ..Self::default()
+        };
         for track in &timeline.document().tracks {
             let (binding, property) = track.target();
             let target = targets[binding];
             let value = read(world, target, property)?;
+            if property != Property::CameraFov {
+                let parent = parent(world, target)?;
+                result.parents.insert(target, parent);
+                if property == Property::Translation
+                    && parent.is_none()
+                    && let Value::Vector(baseline) = value
+                {
+                    let current = crate::world::coordinates::capture_origin(world);
+                    let key = *result.key_origin.get_or_insert(current);
+                    result
+                        .translations
+                        .insert(target, RootTranslation::new(key, current, baseline)?);
+                }
+            }
             result.fields.insert((target, property), (value, value));
         }
         if !timeline.document().camera_cuts.is_empty() {
@@ -206,7 +241,36 @@ impl Capture {
         }
         Ok(result)
     }
+    pub fn key_origin(&self) -> Option<[f64; 3]> {
+        self.key_origin
+    }
+    pub fn origin_shifted(&mut self, from: [f64; 3], to: [f64; 3], roots: &RootRebases) {
+        for (target, frame) in &mut self.translations {
+            let Some(actual) = roots.get(target) else {
+                frame.invalidate();
+                continue;
+            };
+            if let Some((before, last)) = self.fields.get_mut(&(*target, Property::Translation))
+                && let Some(shifted) = frame.shifted(from, to, *actual, *last)
+            {
+                *before = shifted.0;
+                *last = shifted.1;
+            }
+        }
+    }
     pub fn validate(&self, world: &World) -> Result<()> {
+        for (target, captured) in &self.parents {
+            if parent(world, *target)? != *captured {
+                return Err(invalid(
+                    "Sequence target parent changed; stop and reacquire",
+                ));
+            }
+        }
+        if self.translations.values().any(|frame| !frame.valid()) {
+            return Err(invalid(
+                "Sequence translation lost ownership during origin shift",
+            ));
+        }
         for ((target, property), (_, last)) in &self.fields {
             if read(world, *target, *property)? != *last {
                 return Err(invalid("An external writer changed a sequence-owned field"));
@@ -249,9 +313,19 @@ impl Capture {
             .map_err(mapped)?;
         for sample in samples {
             let target = targets[sample.binding];
-            write(world, target, sample.property, sample.value)?;
+            let value = match (
+                sample.property,
+                sample.value,
+                self.translations.get(&target),
+            ) {
+                (Property::Translation, Value::Vector(value), Some(frame)) => {
+                    Value::Vector(frame.sample(value)?)
+                }
+                _ => sample.value,
+            };
+            write(world, target, sample.property, value)?;
             if let Some((_, last)) = self.fields.get_mut(&(target, sample.property)) {
-                *last = sample.value;
+                *last = value;
             }
         }
         let selected = player
@@ -270,7 +344,17 @@ impl Capture {
     pub fn restore(self, world: &mut World) {
         // Do not overwrite a new owner or externally changed value during cancellation.
         for ((target, property), (before, last)) in self.fields {
-            if read(world, target, property).is_ok_and(|value| value == last) {
+            let parent_unchanged = self.parents.get(&target).is_none_or(|captured| {
+                parent(world, target).is_ok_and(|current| current == *captured)
+            });
+            let origin_owned = self
+                .translations
+                .get(&target)
+                .is_none_or(RootTranslation::valid);
+            if parent_unchanged
+                && (property != Property::Translation || origin_owned)
+                && read(world, target, property).is_ok_and(|value| value == last)
+            {
                 let _ = write(world, target, property, before);
             }
         }

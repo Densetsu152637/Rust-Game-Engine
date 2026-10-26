@@ -233,3 +233,13 @@ crates/engine-project/tests/coordinates.rs (13 tests, numbers printed with `--no
   blocks with a reason; invalid settings are rejected.
 - crates/engine-project/tests/streaming.rs: streamed content is shifted exactly once.
 - View-space render matrices at 1e6 and 1e7 m match the origin scene within 6.1e-5.
+## Cinematic capture integration
+
+The existing root-shift loop sends actual before/after positions to active cinematic
+translation captures. Captures retain their authored key origin and f64 baseline, recognize
+legitimate rebases without releasing ownership, and project subsequent root samples into the
+applied frame. Child-local tracks do not shift their keys. This notification neither advances
+cinematic clocks nor changes World-only origin shifting. Root capture acquisition latches the
+applied origin through the coordinates service, just as a native coordinates API call does.
+See [cinematic sequences](cinematics.md#floating-origins-and-local-frames) for frame lifetime,
+external-write conflicts and f32 precision limits.
