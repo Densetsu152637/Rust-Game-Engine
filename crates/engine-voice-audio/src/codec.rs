@@ -118,3 +118,9 @@ impl VoiceCodec for OpusCodec {
         true
     }
 }
+impl Drop for OpusCodec {
+    fn drop(&mut self) {
+        self.input.fill(0.);
+        self.output.fill(0.);
+    }
+}

@@ -35,6 +35,21 @@ impl VoiceSender {
     pub fn advance_timestamp(&mut self, samples: u32) {
         self.timestamp = self.timestamp.wrapping_add(samples);
     }
+    /// Replaces codec state without restarting packet sequence or media time.
+    /// The replacement must use the same negotiated PCM profile.
+    pub fn replace_codec(&mut self, codec: Box<dyn VoiceCodec>) -> Result<()> {
+        if codec.sample_rate() != self.codec.sample_rate()
+            || codec.frame_samples() != self.codec.frame_samples()
+        {
+            return Err(VoiceError::Invalid(
+                "replacement codec profile differs from sender",
+            ));
+        }
+        self.scratch.fill(0);
+        self.scratch.clear();
+        self.codec = codec;
+        Ok(())
+    }
     /// Encodes one frame. `position` is an optional claim the server may ignore.
     /// Set `end_of_talkspurt` on the final frame before going silent.
     pub fn encode_frame(

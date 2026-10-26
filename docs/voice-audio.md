@@ -23,14 +23,16 @@ partition invariant but does not provide a strong anti-alias filter on downsampl
 
 The input callback never encodes or sends. It try-locks a preallocated 9600-frame
 (up to 200 ms) ring once; contention and overflow drop input while retaining a
-monotonic sample clock. A pump returns at most eight packets. Drop statistics are
-available from `CaptureSession::stats`. Muting and stop discard queued and partial
-PCM; the caller may send the returned encoded silence end packet to terminate the
-remote talkspurt. Resume explicitly reopens the microphone and advances media
+monotonic sample clock. A pump returns at most eight packets. Captured, dropped and
+contention statistics are available from `CaptureSession::stats`. Muting and stop
+discard queued and partial PCM and replace the encoder state before producing a
+silent end packet; the caller may send that packet to terminate the remote
+talkspurt. Resume explicitly reopens the microphone and advances media
 time for elapsed silence. Application code should pump regularly, normally at
 20 ms intervals. No raw microphone audio is written to files by this crate.
 
-Construct `VoicePlayback` with an `AudioControl`, endpoint budget and speaker cap.
+Construct `VoicePlayback` with an `AudioControl`, endpoint budget and speaker cap
+of 1–64.
 Call `receive_server_downlink` only for payloads from authenticated `SERVER_PEER`;
 the function validates packet shape but cannot authenticate transport origin.
 Call `tick` with monotonically increasing milliseconds at approximately 20 ms
@@ -41,6 +43,9 @@ speaker under backpressure; later frames can be dropped. End packets finish a
 stream after pending PCM drains. Idle, timeout, mute, disconnect and drop release
 speaker streams and decoder state. The server controls whether downlink positions
 are disclosed; see [networking-voice.md](networking-voice.md).
+Per-speaker mutes are bounded by the speaker cap; adding one beyond the cap
+returns an error. `disconnect` clears session-scoped mutes, while local playback
+mute stops active voices and preserves the per-speaker selections until disconnect.
 
 The bridge does not create `engine-project` components or start the microphone
 automatically. Applications own microphone consent, packet transport, listener

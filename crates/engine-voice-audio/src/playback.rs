@@ -1,7 +1,7 @@
 use crate::{BridgeError, FRAME_SAMPLES, OpusCodec, Result, SAMPLE_RATE, payload_cap};
 use engine_audio::{
-    AudioControl, Bus, PlayOptions, StreamConfig, StreamGeneration, StreamState, StreamWriter,
-    VoiceHandle,
+    AudioControl, Bus, PlayOptions, StreamConfig, StreamGeneration, StreamSnapshot, StreamState,
+    StreamWriter, VoiceHandle,
 };
 use engine_net_voice::{DownlinkPacket, JitterConfig, VoiceCodec, VoiceLimits, VoiceReceiver};
 use engine_network::PeerId;
@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const STREAM_FRAMES: usize = FRAME_SAMPLES * 4;
 const TIMEOUT_MS: f64 = 2_000.;
 const MAX_TICKS_PER_CALL: usize = 8;
+const MAX_BRIDGE_SPEAKERS: usize = 64;
 struct SpeakerStream {
     handle: VoiceHandle,
     writer: StreamWriter,
@@ -45,8 +46,8 @@ impl VoicePlayback {
         endpoint_unreliable_payload: usize,
         max_speakers: usize,
     ) -> Result<Self> {
-        if max_speakers == 0 {
-            return Err(BridgeError::Invalid("max_speakers must be positive"));
+        if !(1..=MAX_BRIDGE_SPEAKERS).contains(&max_speakers) {
+            return Err(BridgeError::Invalid("max_speakers must be in 1..=64"));
         }
         let cap = payload_cap(endpoint_unreliable_payload)?;
         let limits = VoiceLimits {
@@ -76,6 +77,12 @@ impl VoicePlayback {
     }
     pub fn active_streams(&self) -> usize {
         self.streams.len()
+    }
+    pub fn stream_snapshot(&self, speaker: PeerId) -> Result<Option<StreamSnapshot>> {
+        match self.streams.get(&speaker) {
+            Some(stream) => Ok(Some(stream.writer.snapshot()?)),
+            None => Ok(None),
+        }
     }
     /// Supply only packets whose transport peer is the authenticated SERVER_PEER.
     /// This method does not authenticate packet origin itself.
@@ -197,12 +204,12 @@ impl VoicePlayback {
                 .filter_map(|(&id, stream)| {
                     (stream.closing
                         && stream.len == 0
-                        && self
-                            .audio
-                            .stream_snapshot(stream.handle)
-                            .ok()
-                            .flatten()
-                            .is_some_and(|s| s.state == StreamState::Drained))
+                        && self.writer.snapshot().map_or(true, |s| {
+                            matches!(
+                                s.state,
+                                StreamState::Drained | StreamState::Stopped | StreamState::Failed
+                            )
+                        }))
                     .then_some(id)
                 })
                 .collect();
@@ -232,18 +239,23 @@ impl VoicePlayback {
         }
         Ok(())
     }
-    pub fn mute_speaker(&mut self, speaker: PeerId, muted: bool) {
+    /// The mute list is session-scoped and bounded by the negotiated speaker cap.
+    pub fn mute_speaker(&mut self, speaker: PeerId, muted: bool) -> Result<()> {
         if muted {
+            if !self.muted.contains(&speaker) && self.muted.len() >= self.limits.max_speakers {
+                return Err(BridgeError::Invalid("voice mute cap reached"));
+            }
             self.muted.insert(speaker);
             self.remove_speaker(speaker);
         } else {
             self.muted.remove(&speaker);
         }
+        Ok(())
     }
     pub fn set_local_muted(&mut self, muted: bool) {
         self.all_muted = muted;
         if muted {
-            self.disconnect();
+            self.stop_all();
         }
     }
     pub fn remove_speaker(&mut self, speaker: PeerId) {
@@ -253,9 +265,17 @@ impl VoicePlayback {
         }
     }
     pub fn disconnect(&mut self) {
+        self.stop_all();
+        self.muted.clear();
+        self.all_muted = false;
+    }
+    fn stop_all(&mut self) {
         let speakers: Vec<_> = self.receiver.speakers().collect();
         for speaker in speakers {
             self.remove_speaker(speaker);
+        }
+        for (_, stream) in std::mem::take(&mut self.streams) {
+            self.audio.stop(stream.handle);
         }
         self.last_tick_ms = None;
     }

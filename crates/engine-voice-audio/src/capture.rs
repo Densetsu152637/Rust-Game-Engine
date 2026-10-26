@@ -119,6 +119,7 @@ impl InputSample for u16 {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CaptureStats {
+    pub captured_input_frames: u64,
     pub dropped_input_frames: u64,
     pub contended_callbacks: u64,
     pub skipped_output_frames: u64,
@@ -130,6 +131,7 @@ pub struct CaptureSession {
     ingress: Arc<Ingress>,
     stream: Option<cpal::Stream>,
     sender: VoiceSender,
+    payload_cap: usize,
     input_rate: u32,
     drained: Box<[Sample]>,
     previous: Option<Sample>,
@@ -139,6 +141,7 @@ pub struct CaptureSession {
     last_stop: Option<Instant>,
     skipped: u64,
     ever_sent: bool,
+    needs_encoder_reset: bool,
 }
 impl CaptureSession {
     pub fn new(endpoint_unreliable_payload: usize, channel: u8) -> Result<Self> {
@@ -153,6 +156,7 @@ impl CaptureSession {
             ingress: Arc::new(Ingress::new()),
             stream: None,
             sender,
+            payload_cap: cap,
             input_rate: SAMPLE_RATE,
             drained: vec![Sample::default(); RING_FRAMES].into_boxed_slice(),
             previous: None,
@@ -162,6 +166,7 @@ impl CaptureSession {
             last_stop: None,
             skipped: 0,
             ever_sent: false,
+            needs_encoder_reset: false,
         })
     }
     pub fn is_active(&self) -> bool {
@@ -169,6 +174,7 @@ impl CaptureSession {
     }
     pub fn stats(&self) -> CaptureStats {
         CaptureStats {
+            captured_input_frames: self.ingress.clock.load(Ordering::Relaxed),
             dropped_input_frames: self.ingress.dropped.load(Ordering::Relaxed),
             contended_callbacks: self.ingress.contended.load(Ordering::Relaxed),
             skipped_output_frames: self.skipped,
@@ -184,6 +190,9 @@ impl CaptureSession {
                     "microphone callback stopped; call stop before restart".into(),
                 ))
             };
+        }
+        if self.needs_encoder_reset {
+            self.reset_encoder()?;
         }
         let device = cpal::default_host()
             .default_input_device()
@@ -248,25 +257,29 @@ impl CaptureSession {
                 return Err(e);
             }
         };
+        self.begin_capture(rate);
         if let Err(e) = stream.play() {
             self.ingress.active.store(false, Ordering::Release);
+            self.last_stop = Some(Instant::now());
             return Err(device_error(e));
         }
+        self.stream = Some(stream);
+        Ok(())
+    }
+    fn begin_capture(&mut self, rate: u32) {
         if let Some(stopped) = self.last_stop.take() {
             let elapsed = stopped.elapsed().as_secs_f64();
             self.sender
-                .advance_timestamp((elapsed * f64::from(SAMPLE_RATE)).min(u32::MAX as f64) as u32);
+                .advance_timestamp((elapsed * f64::from(SAMPLE_RATE)) as u32);
         }
         self.input_rate = rate;
         self.previous = None;
         self.next_output = 0;
-        self.stream = Some(stream);
-        Ok(())
     }
     /// Stops native capture and clears all held microphone samples. Returns an encoded
     /// silent end frame for the caller to send, when this talkspurt sent audio.
     pub fn stop(&mut self) -> Result<Option<Vec<u8>>> {
-        if self.stream.is_none() {
+        if self.stream.is_none() && !self.ingress.active.load(Ordering::Acquire) {
             return Ok(None);
         }
         self.ingress.active.store(false, Ordering::Release);
@@ -285,11 +298,19 @@ impl CaptureSession {
         self.drained.fill(Sample::default());
         self.partial_len = 0;
         self.last_stop = Some(Instant::now());
+        self.needs_encoder_reset = true;
+        self.reset_encoder()?;
         if !std::mem::take(&mut self.ever_sent) {
             return Ok(None);
         }
         let packet = self.sender.encode_frame(&[0; FRAME_SAMPLES], None, true)?;
         Ok(Some(packet))
+    }
+    fn reset_encoder(&mut self) -> Result<()> {
+        self.sender
+            .replace_codec(Box::new(OpusCodec::encoder(self.payload_cap)?))?;
+        self.needs_encoder_reset = false;
+        Ok(())
     }
     pub fn set_muted(&mut self, muted: bool) -> Result<Option<Vec<u8>>> {
         if muted {
@@ -301,7 +322,7 @@ impl CaptureSession {
     }
     /// Returns at most eight packets; unprocessed ring samples remain bounded by 200 ms.
     pub fn pump(&mut self) -> Result<Vec<Vec<u8>>> {
-        if self.stream.is_none() {
+        if !self.ingress.active.load(Ordering::Acquire) {
             return Ok(Vec::new());
         }
         self.pump_ingress()
@@ -345,8 +366,7 @@ impl CaptureSession {
                 if gap > RING_FRAMES as u64 {
                     self.sender.advance_timestamp(self.partial_len as u32);
                     self.partial_len = 0;
-                    let target = sample.index.saturating_mul(SAMPLE_RATE as u64)
-                        / u64::from(self.input_rate);
+                    let target = output_at_or_after(sample.index, self.input_rate);
                     let skipped = target.saturating_sub(self.next_output);
                     self.sender.advance_timestamp(skipped as u32);
                     self.skipped += skipped;
@@ -358,6 +378,13 @@ impl CaptureSession {
                     }
                 }
             }
+        }
+        if self.previous.is_none() {
+            let target = output_at_or_after(sample.index, self.input_rate);
+            let skipped = target.saturating_sub(self.next_output);
+            self.sender.advance_timestamp(skipped as u32);
+            self.skipped += skipped;
+            self.next_output = target;
         }
         self.interpolate(sample, packets)
     }
@@ -390,6 +417,11 @@ impl CaptureSession {
         self.previous = Some(sample);
         Ok(())
     }
+}
+fn output_at_or_after(input_index: u64, input_rate: u32) -> u64 {
+    let numerator = u128::from(input_index) * u128::from(SAMPLE_RATE);
+    let rate = u128::from(input_rate);
+    ((numerator + rate - 1) / rate).min(u128::from(u64::MAX)) as u64
 }
 impl Drop for CaptureSession {
     fn drop(&mut self) {
@@ -432,7 +464,15 @@ fn device_error(e: impl std::fmt::Display) -> BridgeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_net_voice::UplinkPacket;
+    use engine_net_voice::{UplinkPacket, VoiceCodec};
+    fn start_synthetic(session: &mut CaptureSession, rate: u32) -> u64 {
+        session.ingress.clock.store(0, Ordering::Release);
+        session.ingress.ring.lock().unwrap().clear();
+        let epoch = session.ingress.epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        session.begin_capture(rate);
+        session.ingress.active.store(true, Ordering::Release);
+        epoch
+    }
     #[test]
     fn callback_downmix_formats_epoch_overflow_and_contention() {
         let ingress = Ingress::new();
@@ -457,14 +497,12 @@ mod tests {
     }
     fn synthetic(partition: usize) -> Vec<Vec<u8>> {
         let mut session = CaptureSession::new(1200, 0).unwrap();
-        session.input_rate = 44_100;
-        session.ingress.active.store(true, Ordering::Release);
-        session.ingress.epoch.store(1, Ordering::Release);
+        let epoch = start_synthetic(&mut session, 44_100);
         let pcm: Vec<f32> = (0..4_410).map(|i| (i as f32 * 0.01).sin() * 0.4).collect();
         let mut packets = Vec::new();
         for chunk in pcm.chunks(partition) {
-            session.ingress.push(chunk, 1, 1);
-            packets.extend(session.pump_ingress().unwrap());
+            session.ingress.push(chunk, 1, epoch);
+            packets.extend(session.pump().unwrap());
         }
         packets
     }
@@ -479,5 +517,68 @@ mod tests {
             let packet = UplinkPacket::decode(bytes, &limits).unwrap();
             assert_eq!(packet.timestamp, at as u32 * FRAME_SAMPLES as u32);
         }
+    }
+    #[test]
+    fn lost_first_callback_and_long_gap_realign_44100_clock() {
+        let mut session = CaptureSession::new(1200, 0).unwrap();
+        let epoch = start_synthetic(&mut session, 44_100);
+        let held = session.ingress.ring.lock().unwrap();
+        session.ingress.push(&[0f32; 441], 1, epoch);
+        drop(held);
+        session.ingress.push(&vec![0.25f32; 2_000], 1, epoch);
+        let first_packets = session.pump().unwrap();
+        assert!(!first_packets.is_empty());
+        let first = UplinkPacket::decode(&first_packets[0], &VoiceLimits::default()).unwrap();
+        assert_eq!(first.timestamp, 480);
+        let held = session.ingress.ring.lock().unwrap();
+        session.ingress.push(&vec![0f32; RING_FRAMES + 1], 1, epoch);
+        drop(held);
+        session.ingress.push(&vec![0.25f32; 2_000], 1, epoch);
+        let later = session.pump().unwrap();
+        assert!(
+            !later.is_empty(),
+            "resampler must resume after the fractional-rate gap"
+        );
+        let after = UplinkPacket::decode(&later[0], &VoiceLimits::default()).unwrap();
+        assert!(after.timestamp > first.timestamp + FRAME_SAMPLES as u32);
+    }
+    #[test]
+    fn stop_mute_purges_pcm_and_fresh_end_codec_preserves_resume_clock() {
+        let mut session = CaptureSession::new(1200, 0).unwrap();
+        let epoch = start_synthetic(&mut session, SAMPLE_RATE);
+        let tone: Vec<f32> = (0..FRAME_SAMPLES * 2)
+            .map(|i| (i as f32 * 0.08).sin() * 0.7)
+            .collect();
+        session.ingress.push(&tone, 1, epoch);
+        let sent = session.pump().unwrap();
+        assert!(!sent.is_empty());
+        session.ingress.push(&[0.9f32; 100], 1, epoch); // unsent microphone PCM
+        let end_bytes = session.stop().unwrap().unwrap();
+        assert!(!session.ingress.active.load(Ordering::Acquire));
+        assert_eq!(session.ingress.ring.lock().unwrap().len, 0);
+        assert!(session.drained.iter().all(|s| s.value == 0.));
+        assert!(session.partial.iter().all(|&s| s == 0));
+        assert!(session.previous.is_none());
+        session.ingress.push(&tone, 1, epoch); // callback from prior epoch
+        assert!(session.pump().unwrap().is_empty());
+        assert_eq!(session.ingress.ring.lock().unwrap().len, 0);
+        let end = UplinkPacket::decode(&end_bytes, &VoiceLimits::default()).unwrap();
+        assert!(end.end_of_talkspurt);
+        let mut clean = OpusCodec::encoder(1000).unwrap();
+        let mut silent = Vec::new();
+        clean.encode(&[0; FRAME_SAMPLES], &mut silent).unwrap();
+        assert_eq!(
+            end.payload, silent,
+            "old Opus history leaked into end packet"
+        );
+        session.last_stop = Some(Instant::now() - Duration::from_secs(1));
+        let resumed = start_synthetic(&mut session, SAMPLE_RATE);
+        session
+            .ingress
+            .push(&vec![0.2f32; FRAME_SAMPLES + 1], 1, resumed);
+        let next_bytes = session.pump().unwrap();
+        let next = UplinkPacket::decode(&next_bytes[0], &VoiceLimits::default()).unwrap();
+        assert_eq!(next.sequence, end.sequence + 1);
+        assert!(next.timestamp >= end.timestamp + FRAME_SAMPLES as u32 + 47_900);
     }
 }
