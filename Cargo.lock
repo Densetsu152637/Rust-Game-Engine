@@ -1941,6 +1941,7 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "bytemuck",
+ "engine-render-hiz",
  "engine-render-wgpu",
  "glam 0.34.1",
  "naga",

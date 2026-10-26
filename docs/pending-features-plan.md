@@ -393,3 +393,31 @@ will use its own target/validation-build. The old morph cache is retained only a
 evidence. Full integration cargo fmt --all hit Windows command-line error 206;
 affected packages formatted individually. Whole-workspace formatting still needs
 a successful package-batched check or the shorter main path.
+### Assembled rendering followups awaiting execution
+
+Authored depth/motion adapter `313c0ca` passed source review and is assembled via
+`09c8dbf`, with its local dependency locked in `ec88509`. Optional Camera3D
+settings reach native per-view controls; absent settings disable them and explicit
+feature-filter false takes precedence. Project and desktop pixel regressions are
+written but unrun.
+
+World shared-shadow adoption `c803ea1` passed source review after repairs and is
+assembled via `6fb2d85`. Terrain and foliage use the shared light atlas; per-tile
+instance buffers prevent queued uploads from overwriting earlier light views.
+Foliage previews color LOD hysteresis without advancing it. GPU water casting is
+opt-in opaque depth; transparent CPU water explicitly reports unsupported casting.
+The new schema is closed and includes cast_shadows. GPU receiver tests cover
+cross-material shadows, disjoint light tiles, alpha gaps, retained LOD silhouette
+and wave-driven water shadows. These tests still require execution.
+
+Hi-Z draw adapter `c2dc5cf` passed source review and is assembled. It consumes the
+actual visibility mask and emits stable compacted instance ranges and real
+indexed/nonindexed indirect draws. Exact ordered batch coverage and four-bind-group
+capability checks fail before writes. This is an opt-in native adapter: trusted
+occluder stages, projected bounds, generic LOD and actual frame submission wiring
+remain pending. No skipped-draw or performance claim is established yet.
+
+All 55 workspace packages passed individual formatting checks at `51b89f8`.
+Subsequent authored adapters were separately formatted by their owners; final
+integrated formatting and runtime gates remain required. Main's isolated workspace
+test build continues at `598e395`; it is not a passing test result yet.
