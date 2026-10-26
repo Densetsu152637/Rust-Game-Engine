@@ -241,54 +241,82 @@ fn sample_cube_view(gpu: &GpuContext, resources: &GpuIndirectResources) -> Resul
     Ok(())
 }
 
-// Independent f64 uniform-light-direction quadrature. The production LUT uses
-// f32 GGX importance sampling of half vectors; it is not used as this oracle.
-fn reference(nv: f64, roughness: f64) -> [f64; 2] {
+// Independent f64 light-direction integration of the actual shader clamps.
+fn reference(nv: f64, roughness: f64, resolution: u32) -> [f64; 2] {
     let a2 = roughness.max(0.045).powi(4);
+    let shader_nv = nv.max(0.0001);
     let vx = (1.0 - nv * nv).sqrt();
-    let g = |c: f64| 2.0 * c / (c + (a2 + (1.0 - a2) * c * c).sqrt());
-    let mut sum = [0.0; 2];
-    for y in 0..192 {
-        let nl = (y as f64 + 0.5) / 192.0;
-        for x in 0..384 {
-            let phi = std::f64::consts::TAU * (x as f64 + 0.5) / 384.0;
-            let radial = (1.0 - nl * nl).sqrt();
-            let hx = vx + radial * phi.cos();
-            let hy = radial * phi.sin();
-            let hz = nv + nl;
-            let inverse = (hx * hx + hy * hy + hz * hz).sqrt().recip();
-            let nh = hz * inverse;
-            let vh = (vx * hx + nv * hz) * inverse;
-            let d = a2 / (std::f64::consts::PI * (nh * nh * (a2 - 1.0) + 1.0).powi(2));
-            let weight = d * g(nv) * g(nl) / (4.0 * nv);
-            let fc = (1.0 - vh).clamp(0.0, 1.0).powi(5);
-            sum[0] += weight * (1.0 - fc);
-            sum[1] += weight * fc;
+    let gv = 2.0 * shader_nv / (shader_nv + (a2 + (1.0 - a2) * shader_nv * shader_nv).sqrt());
+    let mut result = [0.0; 2];
+    // Independent LIGHT-direction quadrature, with explicit change-of-variable
+    // Jacobians. Cluster z around the mirror ray's z=nv, and azimuth around pi,
+    // so low-roughness grazing lobes cannot fall between a uniform phi grid.
+    // Symmetry about y=0 lets [0,pi] represent the full azimuth with factor 2.
+    for side in 0..2 {
+        let span = if side == 0 { nv } else { 1.0 - nv };
+        for y in 0..resolution {
+            let t = (y as f64 + 0.5) / f64::from(resolution);
+            let nl = if side == 0 {
+                nv - span * t * t
+            } else {
+                nv + span * t * t
+            };
+            let dz = 2.0 * span * t;
+            let radial = (1.0 - nl * nl).max(0.0).sqrt();
+            for x in 0..resolution {
+                let u = (x as f64 + 0.5) / f64::from(resolution);
+                let phi = std::f64::consts::PI * (1.0 - u.powi(4));
+                let dphi = 4.0 * std::f64::consts::PI * u.powi(3);
+                let hx = vx + radial * phi.cos();
+                let hy = radial * phi.sin();
+                let hz = nv + nl;
+                let inverse = (hx * hx + hy * hy + hz * hz).sqrt().max(0.000001).recip();
+                let nh = (hz * inverse).max(0.0);
+                let vh = ((vx * hx + nv * hz) * inverse).max(0.0);
+                let denom = nh * nh * (a2 - 1.0) + 1.0;
+                let d = a2 / (std::f64::consts::PI * denom * denom).max(0.0000001);
+                let gl = 2.0 * nl / (nl + (a2 + (1.0 - a2) * nl * nl).sqrt()).max(0.000001);
+                let weight =
+                    d * gv * gl * nl / (4.0 * shader_nv * nl).max(0.000001) * 2.0 * dz * dphi;
+                let fc = (1.0 - vh).clamp(0.0, 1.0).powi(5);
+                result[0] += weight * (1.0 - fc);
+                result[1] += weight * fc;
+            }
         }
     }
-    sum.map(|v| v * std::f64::consts::TAU / (192.0 * 384.0))
+    result.map(|v| v / f64::from(resolution).powi(2))
 }
 
 #[test]
 #[ignore = "requires a real GPU; reads the uploaded BRDF LUT against CPU quadrature"]
 fn uploaded_brdf_lut_matches_independent_cpu_integral() -> Result<()> {
     let gpu = gpu()?;
-    let lut = BrdfLut::prepare(16, 2048)?;
+    let lut = BrdfLut::prepare(15, 4096)?;
     let resources = GpuIndirectResources::prepare(&gpu, &[], &[], &lut)?;
     let actual = read_rgba16f(&gpu, &resources.brdf.texture)?;
-    assert_eq!(actual.size, [16, 16]);
+    assert_eq!(actual.size, [15, 15]);
     for (pixel, expected) in actual.pixels.iter().zip(lut.values()) {
         assert!((pixel[0] - expected[0]).abs() < 0.002);
         assert!((pixel[1] - expected[1]).abs() < 0.002);
         assert_eq!((pixel[2], pixel[3]), (0.0, 1.0));
     }
-    for (x, y) in [(3, 8), (7, 12), (14, 15)] {
-        let expected = reference((x as f64 + 0.5) / 16.0, (y as f64 + 0.5) / 16.0);
+    // With size 15, row 0 exercises the shader's .045 floor, row 1 is .1.
+    // The first x column is grazing; all use the actual uploaded half texture.
+    for (x, y) in [(0, 0), (12, 0), (0, 1), (12, 1), (3, 8), (7, 12), (14, 14)] {
+        let nv = (x as f64 + 0.5) / 15.0;
+        let roughness = (y as f64 + 0.5) / 15.0;
+        let coarse = reference(nv, roughness, 512);
+        let fine = reference(nv, roughness, 1024);
         let pixel = actual.pixel(x, y);
         for c in 0..2 {
             assert!(
-                (f64::from(pixel[c]) - expected[c]).abs() < 0.015,
-                "BRDF ({x},{y}): {pixel:?} {expected:?}"
+                (fine[c] - coarse[c]).abs() < 0.001 + 0.01 * fine[c].abs(),
+                "unresolved GPU oracle ({x},{y}): {coarse:?} -> {fine:?}"
+            );
+            // 0.001 additionally covers half upload quantization.
+            assert!(
+                (f64::from(pixel[c]) - fine[c]).abs() < 0.003 + 0.04 * fine[c].abs(),
+                "regularized BRDF ({x},{y}): {pixel:?} {fine:?}"
             );
         }
     }

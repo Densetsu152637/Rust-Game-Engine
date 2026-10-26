@@ -70,8 +70,14 @@ allocator, cache eviction policy or a budget for all unrelated engine textures.
 
 `BrdfLut::prepare` computes split-sum coefficients A/B for `F0*A+B`. It follows the
 existing engine BRDF's perceptual roughness floor 0.045, GGX distribution,
-separable Smith masking and Schlick Fresnel. It importance-samples half vectors
-with a deterministic bit-reversal sequence. Texel centers are x=NdotV and
+separable Smith masking and Schlick Fresnel, including the existing shader's
+numerical regularization: NdotV >= 1e-4, distribution denominator >= 1e-7,
+half-vector length and local Smith denominator >= 1e-6, and final specular
+denominator >= 1e-6. Geometry retains the actual view direction before the NdotV
+floor. It importance-samples ideal GGX half vectors with a deterministic
+bit-reversal sequence, then multiplies by D_shader/D_ideal: the regularized
+shader's distribution cannot cancel against the ideal sampling PDF. No shared
+BRDF shader is changed by this native preparation. Texel centers are x=NdotV and
 y=roughness at `(i+0.5)/size`. Size is 8..128, samples 64..4096, with at most
 16,777,216 sample evaluations. This approximation is BRDF preparation, not lighting
 baking. The LUT uploads as R=A, G=B, B=0, A=1 in `Rgba16Float`.
@@ -93,8 +99,17 @@ readback to establish completion. There is no camera/history/scene-stage couplin
 
 CPU source tests in `tests/indirect.rs` cover invalid data, dimensions/mips, signed
 diffuse evaluation, exposure overflow, atomic budgets, transformed deterministic
-probe selection, limits and BRDF comparison against independent f64 uniform-light
-hemisphere quadrature (production samples half vectors in f32).
+probe selection, limits and BRDF comparison against independent f64 light-direction quadrature of the actual regularized
+shader (production samples half vectors in f32). Low-roughness .045/.1 cases
+include grazing NdotV down to 5e-5, below the shader's view floor. The oracle
+clusters light-direction z and azimuth near the mirror ray using explicit
+change-of-variable Jacobians; it has no ideal-GGX PDF cancellation. Its 512/1024
+midpoint grids must agree within 0.001 + 1% per coefficient before comparison.
+The bounded 4096-sample production comparison allows 0.002 + 4% per coefficient;
+GPU-upload comparison adds 0.001 for half quantization. These are declared
+acceptance tolerances, not measured errors: the new tests remain unrun. The GPU
+LUT fixture uses size 15 so its first two rows test roughness floored to .045
+and exactly .1, including the first (grazing) view-angle column.
 
 Ignored GPU source tests in `tests/gpu_indirect.rs` copy and read every uploaded
 cube face/mip, read a non-square HDR lightmap, sample axes/off-axis directions and fractional LOD through the actual Cube view in a

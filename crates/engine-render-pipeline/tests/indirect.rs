@@ -127,41 +127,57 @@ fn probes_use_the_declared_local_space_and_reject_bad_boundaries() {
     assert!(select_probe(&[], Vec3::splat(f32::NAN)).is_err());
 }
 
-/// Independent uniform-solid-angle quadrature over LIGHT directions in f64.
-/// Production integrates over importance-sampled HALF vectors in f32.
-fn brdf_reference(nv: f64, roughness: f64) -> [f64; 2] {
-    let alpha2 = roughness.max(0.045).powi(4);
+/// Independent f64 LIGHT-direction integral of the ACTUAL regularized shader.
+fn brdf_reference(nv: f64, roughness: f64, resolution: u32) -> [f64; 2] {
+    let a2 = roughness.max(0.045).powi(4);
+    let shader_nv = nv.max(0.0001);
     let vx = (1.0 - nv * nv).sqrt();
-    let smith = |c: f64| 2.0 * c / (c + (alpha2 + (1.0 - alpha2) * c * c).sqrt());
-    let (nz, np) = (192, 384);
+    let gv = 2.0 * shader_nv / (shader_nv + (a2 + (1.0 - a2) * shader_nv * shader_nv).sqrt());
     let mut result = [0.0; 2];
-    for z in 0..nz {
-        let nl = (z as f64 + 0.5) / nz as f64;
-        let radial = (1.0 - nl * nl).sqrt();
-        for p in 0..np {
-            let phi = std::f64::consts::TAU * (p as f64 + 0.5) / np as f64;
-            let lx = radial * phi.cos();
-            let ly = radial * phi.sin();
-            let inv = ((vx + lx).powi(2) + ly * ly + (nv + nl).powi(2))
-                .sqrt()
-                .recip();
-            let nh = (nv + nl) * inv;
-            let vh = (vx * (vx + lx) + nv * (nv + nl)) * inv;
-            let d = alpha2 / (std::f64::consts::PI * (nh * nh * (alpha2 - 1.0) + 1.0).powi(2));
-            let weight = d * smith(nv) * smith(nl) / (4.0 * nv);
-            let fc = (1.0 - vh).clamp(0.0, 1.0).powi(5);
-            result[0] += weight * (1.0 - fc);
-            result[1] += weight * fc;
+    // Independent LIGHT-direction quadrature, with explicit change-of-variable
+    // Jacobians. Cluster z around the mirror ray's z=nv, and azimuth around pi,
+    // so low-roughness grazing lobes cannot fall between a uniform phi grid.
+    // Symmetry about y=0 lets [0,pi] represent the full azimuth with factor 2.
+    for side in 0..2 {
+        let span = if side == 0 { nv } else { 1.0 - nv };
+        for y in 0..resolution {
+            let t = (y as f64 + 0.5) / f64::from(resolution);
+            let nl = if side == 0 {
+                nv - span * t * t
+            } else {
+                nv + span * t * t
+            };
+            let dz = 2.0 * span * t;
+            let radial = (1.0 - nl * nl).max(0.0).sqrt();
+            for x in 0..resolution {
+                let u = (x as f64 + 0.5) / f64::from(resolution);
+                let phi = std::f64::consts::PI * (1.0 - u.powi(4));
+                let dphi = 4.0 * std::f64::consts::PI * u.powi(3);
+                let hx = vx + radial * phi.cos();
+                let hy = radial * phi.sin();
+                let hz = nv + nl;
+                let inverse = (hx * hx + hy * hy + hz * hz).sqrt().max(0.000001).recip();
+                let nh = (hz * inverse).max(0.0);
+                let vh = ((vx * hx + nv * hz) * inverse).max(0.0);
+                let denom = nh * nh * (a2 - 1.0) + 1.0;
+                let d = a2 / (std::f64::consts::PI * denom * denom).max(0.0000001);
+                let gl = 2.0 * nl / (nl + (a2 + (1.0 - a2) * nl * nl).sqrt()).max(0.000001);
+                let weight =
+                    d * gv * gl * nl / (4.0 * shader_nv * nl).max(0.000001) * 2.0 * dz * dphi;
+                let fc = (1.0 - vh).clamp(0.0, 1.0).powi(5);
+                result[0] += weight * (1.0 - fc);
+                result[1] += weight * fc;
+            }
         }
     }
-    result.map(|v| v * std::f64::consts::TAU / f64::from(nz * np))
+    result.map(|v| v / f64::from(resolution).powi(2))
 }
 
 #[test]
 fn split_sum_matches_independent_hemisphere_integration() {
     for (nv, roughness) in [(0.25, 0.5), (0.5, 0.75), (0.9, 1.0)] {
         let actual = integrate_brdf(nv, roughness, 4096).unwrap();
-        let expected = brdf_reference(f64::from(nv), f64::from(roughness));
+        let expected = brdf_reference(f64::from(nv), f64::from(roughness), 256);
         for c in 0..2 {
             assert!(
                 (f64::from(actual[c]) - expected[c]).abs() < 0.012,
@@ -180,4 +196,33 @@ fn split_sum_matches_independent_hemisphere_integration() {
             .flatten()
             .all(|v| v.is_finite() && *v >= 0.0)
     );
+}
+
+#[test]
+fn low_roughness_and_grazing_match_actual_shader_regularization() {
+    // 512/1024 midpoint grids independently check oracle convergence. The
+    // comparison allows 0.002 absolute + 4% relative error for bounded 4096
+    // QMC samples; this is far below the omitted regularization's response.
+    for (nv, roughness) in [
+        (0.00005, 0.045),
+        (0.01, 0.045),
+        (0.9, 0.045),
+        (0.00005, 0.1),
+        (0.05, 0.1),
+        (0.9, 0.1),
+    ] {
+        let coarse = brdf_reference(f64::from(nv), f64::from(roughness), 512);
+        let fine = brdf_reference(f64::from(nv), f64::from(roughness), 1024);
+        let actual = integrate_brdf(nv, roughness, 4096).unwrap();
+        for c in 0..2 {
+            assert!(
+                (fine[c] - coarse[c]).abs() < 0.001 + 0.01 * fine[c].abs(),
+                "unresolved oracle ({nv},{roughness}): {coarse:?} -> {fine:?}"
+            );
+            assert!(
+                (f64::from(actual[c]) - fine[c]).abs() < 0.002 + 0.04 * fine[c].abs(),
+                "shader regularization ({nv},{roughness}): {actual:?} vs {fine:?}"
+            );
+        }
+    }
 }
