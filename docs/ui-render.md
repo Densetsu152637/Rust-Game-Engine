@@ -163,8 +163,16 @@ is not applied twice.
 
 One presentation sequence pins text and colour-filter data before scene/NGX work
 and retains it for every output, even if extraction publishes a newer UI frame.
-The snapshot is released on success/error. Late output uses separate overlay-only
-view state and does not advance the scene's temporal history.
+The snapshot is released on success/error. Participants are resolved with the
+camera's effective feature overrides, then begun in execution order and ended
+in reverse order exactly once (including a partially failing begin). Disabled
+features acquire no snapshot. Known capability, blocker and sticky-failure
+checks run before snapshot acquisition, so an unavailable FG request can fall
+back natively without calling presentation hooks. Scene-only features, such as
+the lazily installed RT prepasses, may be appended while presentation is pinned;
+new Overlay/Composite registration is rejected until the sequence ends.
+Late output uses separate overlay-only view state and does not advance the
+scene's temporal history.
 
 If interpolation fails after the scene rendered, its valid real colour remains
 available in a poisoned stage. Only the real output is late-composited/presented;
@@ -174,6 +182,19 @@ further same-request evaluations; a retry replaces a poisoned generator.
 The new integration has not been executed against NGX in this source checkpoint.
 Synthetic GPU regressions exercise the same late-composition API, but they do
 not establish hardware FG image quality or pacing.
+
+The follow-up repair checkpoint adds unexecuted regressions in
+`engine-render-pipeline/tests/gpu_pipeline.rs` for enabled participants, begin
+failure cleanup, output failure cleanup and stable lazy scene registration.
+Ignored native-adapter tests in `engine-desktop` exercise the actual `RtHost`
+preparation on its first scene and on later activation during a pinned sequence,
+and unavailable-FG native fallback with a failing presentation hook. Another
+actual-host test renders a UI-free real source, injects interpolation failure at
+the shared completion boundary, checks once-only alpha pixels, one scene-pass
+execution and retained scene camera history. It bypasses NGX evaluation and
+therefore provides no evidence that hardware generation ran. These tests, and
+all earlier UI checkpoint tests, still require compilation and GPU execution
+under the manager's build slot.
 
 ## Status and telemetry
 

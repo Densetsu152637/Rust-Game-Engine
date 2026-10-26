@@ -408,10 +408,16 @@ impl ScenePipeline {
 
     /// Prepare every feature of `features` on this device, then add them.
     /// Fails without changes on a preparation error or a name conflict.
+    /// During presentation, scene-only features may still be appended (for
+    /// example lazy RT prepasses). Existing participant indices remain stable;
+    /// adding presentation features would change the pinned set and is rejected.
     pub fn add_features(&mut self, mut features: FeatureRegistry) -> Result<()> {
         ensure!(
-            !self.presentation_sequence,
-            "cannot register features during a presentation sequence"
+            !self.presentation_sequence
+                || features
+                    .descriptors()
+                    .all(|d| !matches!(d.stage, Stage::Overlay | Stage::Composite)),
+            "cannot register presentation features during a presentation sequence"
         );
         let setup = FeatureSetup {
             gpu: &self.gpu,
@@ -895,16 +901,23 @@ impl ScenePipeline {
     }
 
     /// Pin presentation data before producing a UI-free scene or generated
-    /// frames. The host must end the sequence on every Result path.
-    pub fn begin_presentation_sequence(&mut self) -> Result<()> {
+    /// frames. Only effective enabled participants acquire snapshots, in their
+    /// execution order. The host must end the sequence on every Result path.
+    pub fn begin_presentation_sequence(
+        &mut self,
+        overrides: &crate::FeatureOverrides,
+    ) -> Result<()> {
         ensure!(
             !self.presentation_sequence,
             "presentation sequence already active"
         );
+        let resolved = self.registry.resolve(overrides);
         self.presentation_sequence = true;
         self.presentation_sequence_features.clear();
         let result = (|| {
-            for (index, entry) in self.registry.features.iter_mut().enumerate() {
+            for state in resolved.states.iter().filter(|state| state.runs()) {
+                let index = state.index;
+                let entry = &mut self.registry.features[index];
                 if matches!(entry.descriptor.stage, Stage::Overlay | Stage::Composite)
                     && let FeatureBody::Owned(feature) = &mut entry.body
                 {
@@ -941,12 +954,13 @@ impl ScenePipeline {
     /// sequence. Releases a locally created sequence on success and error.
     pub fn with_presentation_sequence<T>(
         &mut self,
+        overrides: &crate::FeatureOverrides,
         body: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
         if self.presentation_sequence {
             return body(self);
         }
-        self.begin_presentation_sequence()?;
+        self.begin_presentation_sequence(overrides)?;
         let result = body(self);
         self.end_presentation_sequence();
         result

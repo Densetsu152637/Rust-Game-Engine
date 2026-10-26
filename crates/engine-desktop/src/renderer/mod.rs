@@ -508,7 +508,7 @@ impl GpuRenderer {
         let scene = self.scene.as_mut().expect("created above");
         let sprites = &mut self.sprites;
         let mut last_report = None;
-        let stats = scene.with_presentation_sequence(|scene| {
+        let stats = scene.with_presentation_sequence(&overrides, |scene| {
             let mut stats = RenderStats::default();
             for output in outputs {
                 let built =
@@ -1090,7 +1090,35 @@ impl GpuRenderer {
             .sprites
             .scene_viewport(frame, (self.info.width, self.info.height))?;
         self.framegen.discard_frames();
-        self.pipeline()?.begin_presentation_sequence()?;
+        let output = [viewport.width, viewport.height];
+        #[cfg(feature = "dlss")]
+        let prior = self
+            .framegen
+            .stage
+            .as_ref()
+            .map_or((output, output), |s| (s.output, s.render));
+        #[cfg(not(feature = "dlss"))]
+        let prior = (output, output);
+        // Known capability/blocker failures must fall back before acquiring any
+        // presentation snapshots. In particular, a disabled extension's hook
+        // cannot prevent native rendering on a device without FG support.
+        if let Some(reason) = self.framegen.precheck(
+            request,
+            &self.upscaler.device,
+            self.presentation_blocker(frame).as_deref(),
+            prior,
+        ) {
+            self.framegen.fallback(request, &reason);
+            return Ok(None);
+        }
+        let overrides = FeatureOverrides(
+            frame
+                .camera3d
+                .as_ref()
+                .map(|c| c.camera.render_features.clone())
+                .unwrap_or_default(),
+        );
+        self.pipeline()?.begin_presentation_sequence(&overrides)?;
         let result = self.render_generated_frame(frame, request, viewport, world);
         self.scene
             .as_mut()
@@ -1135,21 +1163,6 @@ impl GpuRenderer {
         viewport: crate::PixelRect,
         world: Option<&World>,
     ) -> Result<Option<RenderStats>> {
-        let output = [viewport.width, viewport.height];
-        let prior = self
-            .framegen
-            .stage
-            .as_ref()
-            .map_or((output, output), |s| (s.output, s.render));
-        if let Some(reason) = self.framegen.precheck(
-            request,
-            &self.upscaler.device,
-            self.presentation_blocker(frame).as_deref(),
-            prior,
-        ) {
-            self.framegen.fallback(request, &reason);
-            return Ok(None);
-        }
         let mut stage = self.take_stage();
         let result = self.generate_with_stage(&mut stage, frame, request, viewport, world);
         self.upscaler.dlss = Some(stage);
@@ -1389,14 +1402,14 @@ impl GpuRenderer {
                 target,
             })
             .collect();
-        let success = self.framegen.complete_evaluation(
-            camera,
-            std::time::Instant::now(),
+        let (success, ui_stats) = self.complete_generated_source(
+            frame,
+            &outputs,
+            world,
             request,
             sizes,
             failure.as_deref(),
-        );
-        let ui_stats = self.composite_presentations(frame, &outputs, world)?;
+        )?;
         sprite::add_stats(&mut stats, ui_stats);
         // Interpolation failure still presents the already-rendered real frame;
         // keeping the stage's textures avoids a second scene/history advance.
@@ -1410,6 +1423,34 @@ impl GpuRenderer {
         self.framegen.presentable = presentable;
         self.framegen.active(request, maximum);
         Ok(Some(stats))
+    }
+
+    /// Complete an already rendered source, then present it even if NGX failed.
+    /// Kept outside the SDK wrapper so tests can exercise the actual host's
+    /// retained-colour/history path without claiming a successful NGX evaluation.
+    #[cfg(any(feature = "dlss", test))]
+    fn complete_generated_source(
+        &mut self,
+        frame: &SceneRenderFrame,
+        outputs: &[PresentationOutput<'_>],
+        world: Option<&World>,
+        request: FrameGenerationSettings,
+        sizes: ([u32; 2], [u32; 2]),
+        failure: Option<&str>,
+    ) -> Result<(bool, RenderStats)> {
+        let camera = frame
+            .camera3d
+            .as_ref()
+            .context("frame generation requires a Camera3D")?;
+        let success = self.framegen.complete_evaluation(
+            camera,
+            std::time::Instant::now(),
+            request,
+            sizes,
+            failure,
+        );
+        let stats = self.composite_presentations(frame, outputs, world)?;
+        Ok((success, stats))
     }
 
     /// Presentable generated frames of the last [`Self::render_generated`].
@@ -1716,5 +1757,352 @@ mod tests {
         assert_eq!(opaque.source, "view_override");
         assert_eq!(status.unknown_overrides, ["nope.x"]);
         assert!(status.features.iter().any(|f| f.name == "engine.sprites"));
+    }
+
+    struct HostProbe {
+        stage: Stage,
+        fail_begin: bool,
+        calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    }
+    impl engine_render_pipeline::PipelineFeature for HostProbe {
+        fn descriptor(&self) -> engine_render_pipeline::FeatureDescriptor {
+            engine_render_pipeline::FeatureDescriptor::new("test.host_probe", self.stage)
+                .replayable()
+        }
+        fn begin_presentation_sequence(&mut self) -> Result<()> {
+            self.calls.lock().unwrap().push("begin");
+            ensure!(!self.fail_begin, "intentional snapshot failure");
+            Ok(())
+        }
+        fn end_presentation_sequence(&mut self) {
+            self.calls.lock().unwrap().push("end");
+        }
+        fn encode(&mut self, _: &mut engine_render_pipeline::FeatureContext<'_>) -> Result<()> {
+            self.calls.lock().unwrap().push("encode");
+            Ok(())
+        }
+    }
+
+    fn presentation_test_scene() -> SceneRenderFrame {
+        use engine_project::{
+            Camera2D,
+            rendering3d::{Camera3D, CameraInstance3D},
+        };
+        let mut frame: SceneRenderFrame = RenderFrame {
+            camera: Camera2D {
+                logical_size: [64, 64],
+                ..Default::default()
+            },
+            draws: vec![],
+        }
+        .into();
+        frame.camera3d = Some(CameraInstance3D {
+            camera: Camera3D::default(),
+            world: Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 3.0)).to_cols_array_2d(),
+        });
+        frame
+    }
+
+    #[test]
+    #[ignore = "requires a native GPU adapter"]
+    fn unavailable_fg_prechecks_before_hooks_and_disabled_hook_allows_native_fallback() -> Result<()>
+    {
+        let gpu = pollster::block_on(GpuContext::headless())?;
+        let target = crate::OffscreenTarget::new(&gpu, 64, 64)?;
+        let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default())?;
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        renderer.pipeline()?.register(HostProbe {
+            stage: Stage::Overlay,
+            fail_begin: true,
+            calls: calls.clone(),
+        })?;
+        let mut frame = presentation_test_scene();
+        frame.camera3d.as_mut().unwrap().camera.frame_generation = FrameGenerationSettings {
+            mode: FrameGenerationMode::DlssFg,
+            multiplier: 2,
+        };
+        // The enabled hook would fail if snapshots were acquired before the
+        // known unavailable-device check. Native rendering may still encode it.
+        assert!(renderer.render_generated(&frame)?.is_none());
+        assert!(calls.lock().unwrap().is_empty());
+        renderer.render_scene(&frame, &target.view, None)?;
+        assert_eq!(*calls.lock().unwrap(), ["encode"]);
+        calls.lock().unwrap().clear();
+        frame
+            .camera3d
+            .as_mut()
+            .unwrap()
+            .camera
+            .render_features
+            .insert("test.host_probe".into(), false);
+        renderer.render_scene(&frame, &target.view, None)?;
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "disabled hooks neither pin nor encode"
+        );
+        assert_eq!(
+            renderer.frame_generation_status().state,
+            engine_project::rendering3d::FrameGenerationState::Fallback
+        );
+        renderer.gpu.check_errors()
+    }
+
+    #[test]
+    #[ignore = "requires a native GPU adapter"]
+    fn first_rt_frame_and_rt_enabled_later_register_inside_pinned_presentation() -> Result<()> {
+        let gpu = pollster::block_on(GpuContext::headless())?;
+        let target = crate::OffscreenTarget::new(&gpu, 64, 64)?;
+        for first_frame_rt in [true, false] {
+            let mut renderer = GpuRenderer::new(gpu.clone(), target.info, RenderLimits::default())?;
+            // Exercise the real RtHost lazy preparation, with a deterministic
+            // raster tier; this test does not require hardware RT or NGX.
+            renderer
+                .rt
+                .set_unavailable(engine_render_rt::RayTracingStatus {
+                    tier: engine_render_rt::RayTracingTier::Unavailable,
+                    cause: None,
+                    reason: Some("lifecycle regression uses raster tier".into()),
+                    adapter: None,
+                });
+            let mut frame = presentation_test_scene();
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            renderer.pipeline()?.register(HostProbe {
+                stage: Stage::Overlay,
+                fail_begin: false,
+                calls: calls.clone(),
+            })?;
+            for enable_rt in if first_frame_rt {
+                vec![true]
+            } else {
+                vec![false, true]
+            } {
+                frame.ray_tracing = enable_rt.then(|| {
+                    let mut settings = engine_project::raytracing::RayTracing::default();
+                    settings.ambient_occlusion.enabled = true;
+                    settings
+                });
+                let mut view = scene3d::camera_view(
+                    frame.camera3d.as_ref().unwrap(),
+                    ViewId::MAIN,
+                    [64, 64],
+                    [64, 64],
+                )?;
+                view.presentation = Presentation::SceneOnly;
+                let overrides = view.features.clone();
+                renderer
+                    .pipeline()?
+                    .begin_presentation_sequence(&overrides)?;
+                let output = renderer.output_target(
+                    &target.view,
+                    crate::PixelRect {
+                        x: 0,
+                        y: 0,
+                        width: 64,
+                        height: 64,
+                    },
+                );
+                let result = renderer.draw_3d(&frame, view, &output, None, false, None);
+                renderer.pipeline()?.end_presentation_sequence();
+                result?;
+                assert_eq!(
+                    renderer
+                        .pipeline()?
+                        .registry()
+                        .descriptor(rt_names::AO)
+                        .is_some(),
+                    enable_rt
+                );
+            }
+            let expected = if first_frame_rt {
+                vec!["begin", "end"]
+            } else {
+                vec!["begin", "end", "begin", "end"]
+            };
+            assert_eq!(*calls.lock().unwrap(), expected);
+        }
+        gpu.check_errors()
+    }
+
+    #[test]
+    #[ignore = "requires a native GPU adapter"]
+    fn interpolation_failure_composites_retained_real_source_without_a_second_scene_render()
+    -> Result<()> {
+        use engine_project::{
+            content::{Mesh, Vertex},
+            rendering3d::{MeshDraw3D, MeshMaterial},
+        };
+        let gpu = pollster::block_on(GpuContext::headless())?;
+        let target = crate::OffscreenTarget::new(&gpu, 64, 64)?;
+        let mut renderer = GpuRenderer::new(gpu.clone(), target.info, RenderLimits::default())?;
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("retained source regression"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: target.info.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let source = OutputTarget {
+            view: texture.create_view(&Default::default()),
+            format: target.info.format,
+            size: [64, 64],
+            viewport: Viewport::full([64, 64]),
+        };
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        renderer.pipeline()?.register(HostProbe {
+            stage: Stage::Prepare,
+            fail_begin: false,
+            calls: calls.clone(),
+        })?;
+        let mut frame = presentation_test_scene();
+        let vertices = |positions: &[[f32; 3]], color: [f32; 4]| -> Vec<Vertex> {
+            positions
+                .iter()
+                .map(|&position| Vertex {
+                    position,
+                    uv: [0.0; 2],
+                    color,
+                })
+                .collect()
+        };
+        frame.meshes.push(MeshDraw3D {
+            id: "red".into(),
+            mesh: Arc::new(Mesh {
+                vertices: vertices(
+                    &[[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
+                    [1.0; 4],
+                ),
+                normals: vec![],
+                indices: vec![0, 1, 2],
+            }),
+            texture: None,
+            metallic_roughness_texture: None,
+            normal_texture: None,
+            model: Mat4::IDENTITY.to_cols_array_2d(),
+            material: MeshMaterial {
+                unlit: true,
+                tint: [1.0, 0.0, 0.0, 1.0],
+                ..Default::default()
+            },
+            shader: None,
+        });
+        frame.sprites.draws.push(engine_project::runtime::Draw {
+            id: "ui".into(),
+            mesh: Arc::new(Mesh {
+                vertices: vertices(
+                    &[
+                        [0.0, 0.0, 0.5],
+                        [64.0, 0.0, 0.5],
+                        [64.0, 64.0, 0.5],
+                        [0.0, 64.0, 0.5],
+                    ],
+                    [0.0, 0.0, 1.0, 0.5],
+                ),
+                normals: vec![],
+                indices: vec![0, 1, 2, 0, 2, 3],
+            }),
+            texture: None,
+            layer: 0,
+            space: engine_project::runtime::DrawSpace::Ui,
+            clip: None,
+            state: Default::default(),
+            motion: None,
+            offset: [0.0; 3],
+        });
+        let request = FrameGenerationSettings {
+            mode: FrameGenerationMode::DlssFg,
+            multiplier: 2,
+        };
+        let mut view = scene3d::camera_view(
+            frame.camera3d.as_ref().unwrap(),
+            ViewId::MAIN,
+            [64, 64],
+            [64, 64],
+        )?;
+        view.presentation = Presentation::SceneOnly;
+        let current = view.clip_from_world();
+        renderer
+            .pipeline()?
+            .begin_presentation_sequence(&view.features)?;
+        let drawn = renderer.draw_3d(&frame, view, &source, None, false, None);
+        if let Err(error) = drawn {
+            renderer.pipeline()?.end_presentation_sequence();
+            return Err(error);
+        }
+        let before = engine_render_wgpu::read_texture_rgba(&gpu, &texture, 64, 64)?;
+        let output = OutputTarget {
+            view: target.view.clone(),
+            format: target.info.format,
+            size: [64, 64],
+            viewport: Viewport::full([64, 64]),
+        };
+        let completed = renderer.complete_generated_source(
+            &frame,
+            &[PresentationOutput {
+                source: PresentationInput {
+                    view: &source.view,
+                    size: [64, 64],
+                },
+                target: &output,
+            }],
+            None,
+            request,
+            ([64, 64], [64, 64]),
+            Some("injected interpolation failure"),
+        );
+        renderer.pipeline()?.end_presentation_sequence();
+        assert!(!completed?.0);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            ["encode"],
+            "late UI must not rerender the scene"
+        );
+        assert_eq!(renderer.framegen.history.frame(), 1);
+        assert_eq!(
+            renderer
+                .pipeline()?
+                .previous_clip_from_world(ViewId::MAIN, Mat4::IDENTITY, false),
+            current
+        );
+        let after = target.read_rgba(&gpu)?;
+        let at = (32 * 64 + 32) * 4;
+        assert!(before[at] > 100, "source contains the real red mesh");
+        let decode = |n: u8| {
+            let x = n as f32 / 255.0;
+            if x <= 0.04045 {
+                x / 12.92
+            } else {
+                ((x + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let encode = |x: f32| {
+            let y = if x <= 0.0031308 {
+                x * 12.92
+            } else {
+                1.055 * x.powf(1.0 / 2.4) - 0.055
+            };
+            (y * 255.0).round() as i16
+        };
+        for c in 0..3 {
+            let expected = encode(decode(before[at + c]) * 0.5 + if c == 2 { 0.5 } else { 0.0 });
+            assert!(
+                (after[at + c] as i16 - expected).abs() <= 3,
+                "UI alpha applies exactly once at channel {c}"
+            );
+        }
+        assert_eq!(renderer.generated_frame_count(), 0);
+        assert_eq!(
+            renderer.frame_generation_status().state,
+            engine_project::rendering3d::FrameGenerationState::Fallback
+        );
+        gpu.check_errors()
     }
 }
