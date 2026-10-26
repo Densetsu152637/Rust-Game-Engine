@@ -1,0 +1,19 @@
+[package]
+name = "engine-render-post-effects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Depth of field and motion blur render features for the 3D pipeline."
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+engine-render-pipeline = { path = "../engine-render-pipeline" }
+glam.workspace = true
+wgpu = { workspace = true, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "gles", "wgsl"] }
+
+[dev-dependencies]
+engine-render-wgpu.workspace = true
+
+[lints]
+workspace = true
