@@ -8,8 +8,8 @@
 //! default, also requires the final document to pass full validation.
 use crate::{
     diagnostic::{GraphDiagnostic, codes},
-    kind::GraphKind,
-    model::{GraphDocument, GraphEdge, GraphNode, GraphVariable, NodeId, PortRef},
+    kind::{GraphKind, NodeTypeDef},
+    model::{GraphDocument, GraphEdge, GraphNode, GraphVariable, NodeId, Port, PortRef},
     validate::{Strictness, validate},
 };
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,9 @@ pub const MAX_EDITS: usize = 1024;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GraphEdit {
-    /// Adds a node whose ports are copied from the registry declaration.
+    /// Adds a node whose ports are copied from the registry declaration. `ports`
+    /// lists extra ports beyond the declared ones and is accepted only for
+    /// extensible node types.
     AddNode {
         id: NodeId,
         node_type: String,
@@ -31,6 +33,8 @@ pub enum GraphEdit {
         params: BTreeMap<String, Value>,
         #[serde(default)]
         position: Option<[f32; 2]>,
+        #[serde(default)]
+        ports: Vec<Port>,
     },
     /// Removes a node and every edge attached to it.
     RemoveNode {
@@ -57,6 +61,13 @@ pub enum GraphEdit {
     SetPosition {
         node: NodeId,
         position: Option<[f32; 2]>,
+    },
+    /// Replaces the extra ports of an extensible node; the declared ports are
+    /// always kept. An empty list restores the declared ports. Removing a port
+    /// that still has an edge is rejected.
+    SetPorts {
+        node: NodeId,
+        ports: Vec<Port>,
     },
     AddVariable {
         variable: GraphVariable,
@@ -163,6 +174,27 @@ fn fail(code: &str, path: String, message: impl Into<String>) -> Vec<GraphDiagno
     vec![GraphDiagnostic::new(code, path, message)]
 }
 
+/// Declared ports followed by `extra`; extra ports need an extensible type.
+fn with_extra_ports(
+    def: &NodeTypeDef,
+    extra: &[Port],
+    id: &NodeId,
+) -> Result<Vec<Port>, Vec<GraphDiagnostic>> {
+    if !extra.is_empty() && !def.extensible {
+        return Err(fail(
+            codes::NODE_PORTS_MISMATCH,
+            format!("/nodes/{id}"),
+            format!(
+                "node type {} is not extensible; it takes no extra ports",
+                def.name
+            ),
+        ));
+    }
+    let mut ports = def.declared_ports();
+    ports.extend(extra.iter().cloned());
+    Ok(ports)
+}
+
 fn node_index(doc: &GraphDocument, id: &NodeId) -> Result<usize, Vec<GraphDiagnostic>> {
     doc.nodes.iter().position(|n| n.id == *id).ok_or_else(|| {
         fail(
@@ -184,18 +216,16 @@ fn mutate(
             node_type,
             params,
             position,
+            ports: extra,
         } => {
-            let ports = kind
-                .registry
-                .get(node_type)
-                .map(|def| def.declared_ports())
-                .ok_or_else(|| {
-                    fail(
-                        codes::NODE_UNKNOWN_TYPE,
-                        format!("/nodes/{id}"),
-                        format!("kind {} has no node type {node_type:?}", kind.name),
-                    )
-                })?;
+            let def = kind.registry.get(node_type).ok_or_else(|| {
+                fail(
+                    codes::NODE_UNKNOWN_TYPE,
+                    format!("/nodes/{id}"),
+                    format!("kind {} has no node type {node_type:?}", kind.name),
+                )
+            })?;
+            let ports = with_extra_ports(def, extra, id)?;
             doc.nodes.push(GraphNode {
                 id: id.clone(),
                 node_type: node_type.clone(),
@@ -265,6 +295,20 @@ fn mutate(
         GraphEdit::SetPosition { node, position } => {
             let index = node_index(doc, node)?;
             doc.nodes[index].position = *position;
+        }
+        GraphEdit::SetPorts { node, ports } => {
+            let index = node_index(doc, node)?;
+            let def = kind
+                .registry
+                .get(&doc.nodes[index].node_type)
+                .ok_or_else(|| {
+                    fail(
+                        codes::NODE_UNKNOWN_TYPE,
+                        format!("/nodes/{node}"),
+                        "the node has an unknown type",
+                    )
+                })?;
+            doc.nodes[index].ports = with_extra_ports(def, ports, node)?;
         }
         GraphEdit::AddVariable { variable } => doc.variables.push(variable.clone()),
         GraphEdit::RemoveVariable { name } => {

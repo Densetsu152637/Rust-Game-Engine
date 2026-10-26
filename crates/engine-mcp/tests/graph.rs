@@ -65,7 +65,7 @@ fn graph_schema_lists_kinds_and_describes_node_types() {
         tree["node_types"][0].get("ports").is_none(),
         "the overview is brief"
     );
-    assert_eq!(overview["edit_operations"].as_array().unwrap().len(), 10);
+    assert_eq!(overview["edit_operations"].as_array().unwrap().len(), 11);
     assert!(
         overview["diagnostic_codes"]
             .as_array()

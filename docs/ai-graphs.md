@@ -3,7 +3,7 @@
 Behavior trees, state trees, visual scripts and the animation, audio and material
 graphs of other domains share one data model, the `engine-graph` crate. A graph is a
 project asset of kind `graph`: one JSON document whose `kind` field selects the graph
-kind (`behavior_tree`, `state_tree` and `dialogue` today) that gives its nodes meaning. One generic
+kind (`behavior_tree`, `state_tree`, `dialogue` and `script_graph` today) that gives its nodes meaning. One generic
 node-graph editor widget, one validator and one set of MCP tools therefore serve every
 graph domain.
 
@@ -11,7 +11,8 @@ graph domain.
 types and runtimes: `engine-ai` defines the `behavior_tree` and `state_tree` kinds and
 compiles them ([Behavior trees](ai-behavior-trees.md), [State trees](ai-state-trees.md));
 `engine-gameplay` defines the `dialogue` kind
-([Inventory, quests and dialogue](gameplay-inventory-quests-dialogue.md)); `engine-project` keeps the registry of kinds and binds graph assets to the project and
+([Inventory, quests and dialogue](gameplay-inventory-quests-dialogue.md)); `engine-script` defines the
+`script_graph` kind and its VM ([Visual scripting](visual-scripting.md)); `engine-project` keeps the registry of kinds and binds graph assets to the project and
 runtime.
 
 ## Document format
@@ -132,12 +133,13 @@ full validation.
 
 | `op` | Fields | Effect |
 | --- | --- | --- |
-| `add_node` | `id`, `node_type`, `params`, `position` | Adds a node with the type's declared ports. |
+| `add_node` | `id`, `node_type`, `params`, `position`, `ports` | Adds a node with the type's declared ports; `ports` (optional) lists extra ports and is accepted only for `extensible` node types. |
 | `remove_node` | `id` | Removes the node and every edge attached to it. |
 | `connect` | `from`, `to`, `index` | Adds an edge; `index` is the position among the edges already leaving `from` (child order); omitted means last. |
 | `disconnect` | `from`, `to` | Removes one edge. |
 | `set_param` | `node`, `name`, `value` | Sets one parameter; `null` removes it so the default applies. |
 | `set_position` | `node`, `position` | Moves the node on the canvas (`null` clears). |
+| `set_ports` | `node`, `ports` | Replaces the extra ports of an `extensible` node; declared ports are kept, `[]` restores them, and a port that still has an edge cannot be removed. |
 | `add_variable` / `set_variable` | `variable` | Declares / replaces a variable. |
 | `remove_variable` | `name` | Removes a variable (rejected while a parameter references it). |
 | `set_metadata` | `key`, `value` | Sets an entry; `null` removes it. |

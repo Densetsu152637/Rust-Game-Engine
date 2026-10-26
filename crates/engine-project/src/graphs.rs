@@ -21,9 +21,18 @@ use std::{collections::BTreeMap, path::Path, sync::OnceLock};
 /// Diagnostic code for a document whose `kind` no domain registered.
 pub const KIND_UNKNOWN: &str = "graph.kind.unknown";
 
+/// A project-aware semantic check of one graph kind, registered next to the kind.
+///
+/// It runs after the kind's own (project-free) rules pass, in [`load_graph`] and in
+/// the MCP `graph_validate` tool when a project is open. It may read the project
+/// (declared functions, the component catalog) but must be pure: it never runs
+/// game code and never changes anything.
+pub type ProjectCheck = fn(&Project, &GraphDocument) -> Vec<GraphDiagnostic>;
+
 /// Every registered graph kind, by name.
 pub struct GraphKinds {
     kinds: BTreeMap<String, GraphKind>,
+    project_checks: BTreeMap<String, ProjectCheck>,
 }
 
 impl GraphKinds {
@@ -37,6 +46,10 @@ impl GraphKinds {
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.kinds.keys().map(String::as_str)
     }
+    /// The project-aware check registered for the kind `name`, if any.
+    pub fn project_check(&self, name: &str) -> Option<ProjectCheck> {
+        self.project_checks.get(name).copied()
+    }
 }
 
 /// The kinds shipped with the engine. Append other domains' kinds here.
@@ -46,8 +59,14 @@ fn build() -> GraphKinds {
         engine_ai::state_tree::kind(),
         engine_gameplay::dialogue::kind(),
     ];
+    // Project-aware checks, by kind name: `(kind, check)`.
+    let project_checks: [(&str, ProjectCheck); 0] = [];
     GraphKinds {
         kinds: kinds.into_iter().map(|k| (k.name.clone(), k)).collect(),
+        project_checks: project_checks
+            .into_iter()
+            .map(|(name, check)| (name.to_owned(), check))
+            .collect(),
     }
 }
 
@@ -76,6 +95,17 @@ pub fn validate_document(document: &GraphDocument, level: Strictness) -> Vec<Gra
             ),
         )],
     }
+}
+
+/// Runs the project-aware check of `document`'s kind; empty when the kind has none.
+///
+/// Call it after [`validate_document`] returned no diagnostics.
+pub fn project_diagnostics(project: &Project, document: &GraphDocument) -> Vec<GraphDiagnostic> {
+    let mut diagnostics = kinds()
+        .project_check(&document.kind)
+        .map_or_else(Vec::new, |check| check(project, document));
+    diagnostics.truncate(engine_graph::MAX_DIAGNOSTICS);
+    diagnostics
 }
 
 /// Converts graph diagnostics into a project error located in `file`.
@@ -110,7 +140,13 @@ pub fn load_graph(project: &Project, id: &str) -> Result<GraphDocument> {
     let asset = project.require_asset(id, "graph")?;
     let file = project.resolve_asset(id)?;
     let bytes = crate::schema::read_bounded(&file, MAX_DOCUMENT_BYTES as u64)?;
-    load_document(&bytes, &asset.path)
+    let document = load_document(&bytes, &asset.path)?;
+    let diagnostics = project_diagnostics(project, &document);
+    if diagnostics.is_empty() {
+        Ok(document)
+    } else {
+        Err(into_error(diagnostics, &asset.path))
+    }
 }
 
 /// Project validation of a `graph` asset.

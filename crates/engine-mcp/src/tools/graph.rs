@@ -129,7 +129,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                     (details.op_index) with coded diagnostics. Operations (see graph_schema): \
                     add_node, remove_node, connect (optional index = position among the edges \
                     leaving the port, which is child order), disconnect, set_param (null removes), \
-                    set_position, add_variable, remove_variable, set_variable, set_metadata. \
+                    set_position, set_ports (extensible nodes), add_variable, remove_variable, set_variable, set_metadata. \
                     Target an existing graph with `asset` (id) or `path`, and pass the \
                     `expected_revision` from graph_validate or the previous graph_edit; a stale \
                     revision fails with revision_conflict. To create a graph give a new `path` and \
@@ -205,8 +205,8 @@ fn unknown_kind(name: &str) -> ToolFailure {
 
 fn edit_operations() -> Value {
     json!([
-        {"op": "add_node", "fields": {"id": "string, unique", "node_type": "string", "params": "object, optional", "position": "[x, y], optional"},
-         "description": "Adds a node; its ports are copied from the node type."},
+        {"op": "add_node", "fields": {"id": "string, unique", "node_type": "string", "params": "object, optional", "position": "[x, y], optional", "ports": "array of {name, direction, type, multiple?}, optional; extensible node types only"},
+         "description": "Adds a node; its ports are copied from the node type, followed by any extra `ports` (extensible node types only)."},
         {"op": "remove_node", "fields": {"id": "string"},
          "description": "Removes a node and every edge attached to it."},
         {"op": "connect", "fields": {"from": "{node, port}", "to": "{node, port}", "index": "integer, optional"},
@@ -217,6 +217,8 @@ fn edit_operations() -> Value {
          "description": "Sets one node parameter."},
         {"op": "set_position", "fields": {"node": "string", "position": "[x, y] or null"},
          "description": "Moves a node on the editor canvas."},
+        {"op": "set_ports", "fields": {"node": "string", "ports": "array of {name, direction, type, multiple?}; [] restores the declared ports"},
+         "description": "Replaces the extra ports of an extensible node (for example a script_graph call or return node); declared ports are kept and an extra port that still has an edge cannot be removed."},
         {"op": "add_variable", "fields": {"variable": "{name, type, default?, description?}"},
          "description": "Declares a variable (a blackboard key for behavior trees)."},
         {"op": "remove_variable", "fields": {"name": "string"},
