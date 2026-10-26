@@ -32,6 +32,88 @@ impl Default for Projection3D {
         }
     }
 }
+
+pub const DEPTH_OF_FIELD_FEATURE: &str = "effects.dof";
+pub const MOTION_BLUR_FEATURE: &str = "effects.motion_blur";
+
+/// Optional view-space focus and bounded screen-space blur for one camera.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct DepthOfField3D {
+    pub focus_distance: f32,
+    pub focus_range: f32,
+    pub max_radius_pixels: f32,
+    pub edge_tolerance: f32,
+}
+
+impl Default for DepthOfField3D {
+    fn default() -> Self {
+        Self {
+            focus_distance: 5.0,
+            focus_range: 3.0,
+            max_radius_pixels: 8.0,
+            edge_tolerance: 0.5,
+        }
+    }
+}
+
+impl DepthOfField3D {
+    pub fn validate(&self) -> Result<()> {
+        if !self.focus_distance.is_finite()
+            || self.focus_distance <= 0.0
+            || !self.focus_range.is_finite()
+            || self.focus_range <= 0.0
+            || !self.max_radius_pixels.is_finite()
+            || !(0.0..=24.0).contains(&self.max_radius_pixels)
+            || !self.edge_tolerance.is_finite()
+            || self.edge_tolerance < 0.0
+        {
+            return Err(Error::new(
+                "camera3d.depth_of_field.invalid",
+                "Depth of field needs positive finite focus distance/range, radius in 0..24 pixels and finite nonnegative edge tolerance",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Optional shutter blur along current-to-previous motion for one camera.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MotionBlur3D {
+    pub shutter_scale: f32,
+    pub max_radius_pixels: f32,
+    pub edge_tolerance: f32,
+}
+
+impl Default for MotionBlur3D {
+    fn default() -> Self {
+        Self {
+            shutter_scale: 0.5,
+            max_radius_pixels: 16.0,
+            edge_tolerance: 0.5,
+        }
+    }
+}
+
+impl MotionBlur3D {
+    pub fn validate(&self) -> Result<()> {
+        if !self.shutter_scale.is_finite()
+            || !(0.0..=2.0).contains(&self.shutter_scale)
+            || !self.max_radius_pixels.is_finite()
+            || !(0.0..=24.0).contains(&self.max_radius_pixels)
+            || !self.edge_tolerance.is_finite()
+            || self.edge_tolerance < 0.0
+        {
+            return Err(Error::new(
+                "camera3d.motion_blur.invalid",
+                "Motion blur needs finite shutter scale in 0..2, radius in 0..24 pixels and finite nonnegative edge tolerance",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Camera3D {
@@ -44,12 +126,19 @@ pub struct Camera3D {
     pub upscaler: UpscalerSettings,
     /// Frame generation request; [`FrameGenerationStatus`] reports what ran.
     pub frame_generation: FrameGenerationSettings,
+    /// Absent means off. `render_features["effects.dof"] = false` also disables it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth_of_field: Option<DepthOfField3D>,
+    /// Absent means off. `render_features["effects.motion_blur"] = false` also disables it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub motion_blur: Option<MotionBlur3D>,
     /// Per-camera render feature overrides by stable feature name
     /// (`engine.opaque`, `world.terrain`, ...): `false` disables a feature in
     /// this camera's view, `true` enables one that is off by default. Names of
     /// features the renderer does not have are reported, not rejected
     /// (features register natively at runtime). [`RenderPipelineStatus`]
-    /// reports the resolved state.
+    /// reports the resolved state. Explicit values take precedence over
+    /// automatic enabling by optional depth-of-field or motion-blur settings.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub render_features: BTreeMap<String, bool>,
 }
@@ -62,6 +151,8 @@ impl Default for Camera3D {
             lighting: SceneLighting::default(),
             upscaler: UpscalerSettings::default(),
             frame_generation: FrameGenerationSettings::default(),
+            depth_of_field: None,
+            motion_blur: None,
             render_features: BTreeMap::new(),
         }
     }
@@ -112,7 +203,8 @@ pub const MAX_REPORTED_RENDER_FEATURES: usize = 256;
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 pub struct RenderPipelineStatus {
     pub state: RenderPipelineState,
-    /// The authored overrides of the active camera.
+    /// The effective overrides of the active camera, including optional
+    /// depth-of-field and motion-blur settings when authored.
     pub overrides: BTreeMap<String, bool>,
     /// Registered features in execution order with their state in the view.
     pub features: Vec<RenderFeatureView>,
@@ -464,7 +556,28 @@ pub struct UpscalerControl {
     pub status: UpscalerStatus,
 }
 impl Camera3D {
+    /// Effective per-view overrides, including optional camera effects.
+    /// Explicit authored `render_features` values always win.
+    pub fn effective_render_features(&self) -> BTreeMap<String, bool> {
+        let mut features = self.render_features.clone();
+        if self.depth_of_field.is_some() {
+            features
+                .entry(DEPTH_OF_FIELD_FEATURE.into())
+                .or_insert(true);
+        }
+        if self.motion_blur.is_some() {
+            features.entry(MOTION_BLUR_FEATURE.into()).or_insert(true);
+        }
+        features
+    }
+
     pub fn validate(&self) -> Result<()> {
+        if let Some(settings) = self.depth_of_field {
+            settings.validate()?;
+        }
+        if let Some(settings) = self.motion_blur {
+            settings.validate()?;
+        }
         self.lighting.validate()?;
         self.frame_generation.validate()?;
         if self.render_features.len() > MAX_RENDER_FEATURE_OVERRIDES

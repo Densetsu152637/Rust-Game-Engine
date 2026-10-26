@@ -69,7 +69,7 @@ pub(crate) fn camera_view(
     let world = Mat4::from_cols_array_2d(&camera.world);
     let mut view = ViewData::new(id, world, projection, render, output)?;
     view.ambient = Vec3::splat(camera.camera.lighting.ambient);
-    view.features = FeatureOverrides(camera.camera.render_features.clone());
+    view.features = FeatureOverrides(camera.camera.effective_render_features());
     Ok(view)
 }
 

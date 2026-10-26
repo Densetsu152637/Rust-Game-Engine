@@ -257,7 +257,7 @@ impl Runtime {
             .ok_or_else(|| Error::new("render.texture.unknown", id))
     }
     /// The renderer-reported render feature state of the active camera.
-    /// Before any 3D frame (for example headless runs) the authored
+    /// Before any 3D frame (for example headless runs) the effective
     /// overrides are reported with state `not_rendered` and whatever feature
     /// list the host published; `None` without an active 3D camera.
     pub fn render_pipeline_status(&self) -> Option<RenderPipelineStatus> {
@@ -267,7 +267,7 @@ impl Runtime {
             .get_resource::<RenderPipelineControl>()
             .map(|control| control.status.clone())
             .unwrap_or_default();
-        status.overrides = camera.render_features.clone();
+        status.overrides = camera.effective_render_features();
         Some(status)
     }
     /// The renderer-reported ray-traced lighting of the active camera view.

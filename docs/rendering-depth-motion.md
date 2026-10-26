@@ -1,15 +1,23 @@
 # Depth of field and motion blur feature slice
 
 `engine-render-post-effects` supplies two executable HDR `PostProcess` features:
-`effects.dof` and `effects.motion_blur`. They are disabled by default. The host
-registers `DepthOfFieldFeature::new(controls.clone())` and
-`MotionBlurFeature::new(controls.clone())` with `ScenePipeline`, sets each
-view's `FeatureOverrides` entry to `true`, and updates its `PostEffects`
-control handle with `set_dof` and `set_motion_blur`. `None` removes a view's
-settings. A feature with no settings, zero radius, or zero shutter does not
-request a post destination. The host adapter for authored project components
-and editor controls is an integration task; this crate does not change those
-schemas.
+`effects.dof` and `effects.motion_blur`. They are disabled by default. The
+desktop renderer registers both once and updates their per-view `PostEffects`
+controls before rendering. A native host can register
+`DepthOfFieldFeature::new(controls.clone())` and
+`MotionBlurFeature::new(controls.clone())` with `ScenePipeline` and set the
+controls directly. `None` removes a view's settings. A feature with no
+settings, zero radius, or zero shutter does not request a post destination.
+
+Authoring lives on `Camera3D`: optional `depth_of_field` and `motion_blur`
+objects. Omit or set either to `null` to disable it. A present object enables
+its feature for that camera unless `Camera3D.render_features` explicitly sets
+`effects.dof` or `effects.motion_blur` to `false`. The renderer updates or
+clears the native controls for each view on every frame, including after a
+camera switch or authored removal. A camera cut passes `reset_history` to
+the motion pass. The fields are serialized and validated by `engine-project`
+before extraction and GPU submission. The optional `PostProcess` component
+continues to control exposure, bloom, grading and tonemapping independently.
 
 Both features read the current HDR colour, which may still be render sized if
 the upscale feature is disabled, and call `post_process_io()` for a distinct
@@ -70,6 +78,9 @@ provides, typically zero. This blur is spatial and uses no temporal history.
 
 The crate's tests cover parameter rejection, per-view independence, and
 GPU readbacks from an actual pipeline frame with depth and motion producers.
+`engine-project/tests/render_post_effects.rs` covers authored load, validation,
+roundtrip and snapshots. `engine-desktop/tests/gpu_post_effects.rs` exercises
+the camera-to-native adapter with pixel readbacks, disable/re-enable and resize.
 The ignored GPU suite requires a native adapter and is run with
 `cargo test -p engine-render-post-effects --test gpu_effects -- --ignored
 --test-threads=1`. Per-view resize rebuilds no effect-owned textures; each
