@@ -326,12 +326,23 @@ pub(super) fn shift(
         .collect();
     let target = WorldOrigin { offset: to };
     let mut exact = BTreeMap::new();
+    let mut rebased = crate::sequencer::RootRebases::new();
     for &entity in &roots {
         let local = world.get::<Transform>(entity).map(|t| t.position);
         let Some(local) = local else { continue };
+        let absolute_before = world.get::<AbsolutePosition>(entity).cloned();
         let moved = match world.get::<AbsolutePosition>(entity) {
             Some(absolute) if absolute.exact_for(local) => {
-                let moved = target.local(absolute.position);
+                let residual = absolute.residual_for(local);
+                let moved: [f64; 3] =
+                    std::array::from_fn(|i| absolute.position[i] - to[i] + residual[i]);
+                if moved
+                    .iter()
+                    .any(|v| !v.is_finite() || v.abs() > f64::from(f32::MAX))
+                {
+                    return Err(invalid("Root position is outside finite local range"));
+                }
+                let moved = moved.map(|v| v as f32);
                 exact.insert(entity, moved);
                 moved
             }
@@ -339,6 +350,15 @@ pub(super) fn shift(
         };
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
             transform.position = moved;
+            rebased.insert(
+                entity,
+                crate::sequencer::RootRebase {
+                    before: local,
+                    after: moved,
+                    absolute_before,
+                    absolute_after: None,
+                },
+            );
         }
         report.roots += 1;
     }
@@ -362,12 +382,27 @@ pub(super) fn shift(
         if let Some(mut absolute) = world.get_mut::<AbsolutePosition>(entity) {
             if !keep {
                 absolute.position = target.absolute(local);
+                absolute.mark_local(local, to);
+            } else {
+                let residual = rebased
+                    .get(&entity)
+                    .and_then(|rebase| {
+                        rebase
+                            .absolute_before
+                            .as_ref()
+                            .map(|before| before.residual_for(rebase.before))
+                    })
+                    .unwrap_or([0.; 3]);
+                absolute.mark_applied(local, residual);
             }
-            absolute.applied = Some(local);
+        }
+        if let Some(rebase) = rebased.get_mut(&entity) {
+            rebase.absolute_after = world.get::<AbsolutePosition>(entity).cloned();
         }
     }
     world.resource_mut::<WorldOrigin>().offset = to;
     world.resource_mut::<Coordinates>().applied = Some(to);
+    crate::sequencer::origin_shifted(world, from, to, &rebased);
     crate::transforms::refresh_world_transforms(world)?;
     let tick = world.resource::<Coordinates>().ticks;
     let shifts = {
@@ -408,7 +443,7 @@ pub(super) fn sync_absolute(world: &mut World) {
     for (transform, mut absolute) in query.iter_mut(world) {
         if absolute.applied.is_some() && !absolute.exact_for(transform.position) {
             absolute.position = origin.absolute(transform.position);
-            absolute.applied = Some(transform.position);
+            absolute.mark_local(transform.position, origin.offset);
         }
     }
 }

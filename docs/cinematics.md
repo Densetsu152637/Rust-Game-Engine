@@ -166,6 +166,55 @@ errors follow the normal runtime stop path. Mutating the scene camera set while 
 is an error: stop the sequence, modify cameras, then reacquire. Changing a binding to resolve
 to a different live entity requires reauthoring/restarting; silent live rebinding is rejected.
 
+## Floating origins and local frames
+
+Root translation tracks retain their absolute trajectory through the
+[coordinates service](world-coordinates.md), including automatic threshold shifts,
+`rebase_now` and reconciled direct origin writes. Their authored keys remain f32 local
+positions in the origin frame first acquired by that authored player. Subsequent samples
+subtract origins first and then add the local key in f64 before one checked f32 conversion.
+This ordering retains small f32 local motion when both origins are large and equal. Plain or
+stale-local baselines retain their original local value and capture origin for the same reason. Stop/replay
+of the same player retains that key frame; replacing its authored configuration establishes
+a new frame. Each acquisition captures a fresh baseline, so Stop restores that baseline
+expressed relative to the current origin. If an existing `engine.AbsolutePosition` is fresh
+for that local pose, its exact f64 baseline is retained instead of reconstructing it from the
+rounded Transform. A stale component uses the current local pose and applied origin.
+
+The coordinates service notifies captures only during an actual shift and supplies the
+root positions it moved. A capture accepts that shift only if the pre-shift value matched
+its last write. This recognizes multiple rebases between ticks or native commands without
+mistaking ordinary external writes for coordinate changes. Existing exact-position state is
+guarded alongside the root Transform: samples and Stop synchronize its position and freshness
+together, and legitimate coordinates-service updates are recognized through before/after
+snapshots. Foreign component writes, insertion or removal reject ownership and cleanup leaves
+both fields untouched. A sequence never inserts or removes an AbsolutePosition component. The notification changes neither
+clock nor marker delivery and cannot fail the coordinates operation. An invalid or
+unrepresentable capture instead fails the next sequence operation and follows normal
+cancellation cleanup. Pending raw origin writes are not treated as already-applied shifts.
+Acquiring a root translation latches its applied frame, so later direct origin writes must
+be reconciled, even before the first tick.
+
+Translation tracks on children remain parent-local and receive no origin subtraction.
+Their root ancestor shifts normally. Captures record immediate parent entity identity;
+reparenting or replacing that parent while a capture is active is an ownership error.
+Cleanup skips fields whose parent frame changed instead of restoring a stale local baseline.
+Stop and reauthor before deliberately changing a track's coordinate frame.
+
+Only bookkeeping and origin deltas use f64. Keys, curve interpolation, written transforms
+and rendered positions retain existing f32 precision. Moving the origin far from a target
+can therefore round its local position; a subsequent sample reprojects the retained path,
+and the baseline is not repeatedly rounded across shifts while held by a capture. No
+sub-f32 precision or arbitrary-delta regrouping guarantee is claimed. Nonfinite values or
+values outside finite f32 range fail explicitly rather than writing infinity. Existing exact-
+position components also obey their f64 precision and absolute-coordinate bound. Their absolute
+output is calculated separately: rounding below the f64 ULP cannot erase a representable local
+Transform sample or a local-derived baseline. While exact state still corresponds to its last
+applied absolute value, World rebasing also preserves the separately recorded local residual
+instead of re-deriving it from each rounded output. Trusted baselines retain that residual, so Stop and later released
+World shifts keep representable local detail. Residual projection remains subject to the new
+frame's f32 precision. A direct native absolute-position mutation changes its private applied
+identity and suppresses residual reuse; its new absolute target remains authoritative.
 ## Limits and validation
 
 A timeline allows 128 bindings, 256 tracks, 4096 total keys, 1024 markers and 1024 cuts, with
@@ -181,7 +230,7 @@ Focused validation commands (run serially with the project's Rust toolchain):
 
 ```text
 cargo test -j1 -p engine-sequencer
-cargo test -j1 -p engine-project --test sequencer --test sequencer_skinning
+cargo test -j1 -p engine-project --test sequencer --test sequencer_skinning --test sequencer_coordinates
 ```
 
 Tests cover native exact keys, interpolated tracks, reverse/loop seams and ties, seek policies,
@@ -191,3 +240,11 @@ Imported-skin tests verify same-tick joint deformation, animated-rig anchor comp
 graph target conflicts, and seek/stop deformation with immediate render extraction and no tick.
 Integration cases also cover startup failure cleanup, scene-generation rebinding and preservation
 of current graph, morph and physics state during native scrubs.
+Floating-origin regressions cover manual and automatic shifts during active/paused playback,
+seek/Stop/replay, child-local invariance, repeated shifts and external-write/reparent conflicts.
+Near-limit exact-position tests also verify sample/rebase/Stop/replay baselines, stale-component
+freshness checks, and preservation of external Transform and AbsolutePosition ownership.
+Large equal-origin tests retain 1e-5 local keys and small local baselines, including fresh and
+stale exact-position components whose f64 absolute value cannot encode that tiny offset.
+Immediate tiny-key rebases and released post-Stop shifts are checked without a correcting
+sequence sample; native absolute-position mutations are checked in active and released states.

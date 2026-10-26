@@ -1,9 +1,12 @@
 //! Authored cinematic timelines with explicit scene pose authority.
 mod authority;
+mod origin;
 mod playback;
 use crate::{ComponentDescriptor, Error, Result};
 use bevy_ecs::prelude::*;
 use engine_sequencer::{Player, Timeline};
+pub(crate) use origin::{RootRebase, RootRebases};
+pub(crate) use playback::origin_shifted;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeSet;

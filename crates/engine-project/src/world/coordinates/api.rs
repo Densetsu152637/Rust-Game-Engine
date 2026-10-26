@@ -76,6 +76,8 @@ pub fn set_absolute_position(world: &mut World, entity: Entity, position: [f64; 
             Some(mut absolute) => {
                 absolute.position = position;
                 absolute.applied = applied;
+                absolute.applied_absolute = applied.map(|_| position);
+                absolute.residual = [0.; 3];
             }
             None => {
                 world.entity_mut(entity).insert(candidate);
