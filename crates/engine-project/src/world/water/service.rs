@@ -948,6 +948,12 @@ pub fn update_water_render(world: &mut World) -> Result<()> {
             }
         } else {
             body.render_path = "cpu-mesh";
+            if body.component.cast_shadows {
+                body.notes.push(
+                    "cast_shadows requires the GPU water renderer; transparent CPU surface meshes cannot write the engine shadow atlas"
+                        .into(),
+                );
+            }
             let mesh = surface_mesh(&body, shore.as_deref().map(|v| v.as_slice()));
             body.mesh_counts = (mesh.vertices.len(), mesh.indices.len() / 3);
             let geometry = GeometryOverride(Arc::new(mesh));
@@ -957,7 +963,7 @@ pub fn update_water_render(world: &mut World) -> Result<()> {
                 transparent: true,
                 roughness: optics.roughness,
                 metallic: 0.0,
-                cast_shadows: body.component.cast_shadows,
+                cast_shadows: false,
                 ..MeshMaterial::default()
             };
             // The mesh is parented by authored id: a body without a registered one (it would

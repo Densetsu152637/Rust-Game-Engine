@@ -508,6 +508,9 @@ fn opted_in_water_casts_animated_opaque_depth() -> Result<()> {
     );
     world.resource_mut::<WaterRenderSet>().items[0].surface =
         Arc::new(surface(lake(4.0), gerstner(), 1.3));
+    world.resource_mut::<WaterRenderSet>().items[0].cast_shadows = false;
+    let (bare1, _) = renderer.render_with_lights(&view, &receiver, Some(&world), &light)?;
+    world.resource_mut::<WaterRenderSet>().items[0].cast_shadows = true;
     let (cast1, _) = renderer.render_with_lights(&view, &receiver, Some(&world), &light)?;
     let mut shadowed = 0;
     let mut animated = 0;
@@ -521,12 +524,15 @@ fn opted_in_water_casts_animated_opaque_depth() -> Result<()> {
                 continue;
             }
             let a = luminance(pixel(&bare, x, y));
+            let a1 = luminance(pixel(&bare1, x, y));
             let b = luminance(pixel(&cast0, x, y));
             let c = luminance(pixel(&cast1, x, y));
             if a > 0.02 && b < a * 0.8 {
                 shadowed += 1;
             }
-            if (b - c).abs() > 0.01 {
+            // Directly visible water changes colour as waves move. Require the
+            // no-caster images to be stable, leaving ground-receiver changes.
+            if (a - a1).abs() < 0.005 && (b - c).abs() > 0.01 {
                 animated += 1;
             }
         }

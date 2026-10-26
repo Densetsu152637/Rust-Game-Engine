@@ -170,7 +170,9 @@ while the `WaterGpuRenderer` marker resource exists (`engine_world_render::insta
 it). Otherwise it has one CPU surface mesh entity: `MeshRenderer` + `GeometryOverride` (the
 grid over `half_extent` displaced exactly like the model, vertex colours shallow/deep by
 shoreline attenuation plus crest and shore foam, per-vertex normals; rivers: the ribbon) +
-a transparent `MeshMaterial` (tint alpha 0.75, the optics roughness, authored `cast_shadows`). A
+a transparent `MeshMaterial` (tint alpha 0.75, the optics roughness). CPU fallback surfaces
+do not cast even with `cast_shadows: true`: the native opaque shadow pass skips transparent
+materials, and the water status reports that the GPU water renderer is required. A
 GPU-path body has no mesh entity and a CPU-path body is not in `WaterRenderSet`. A `gpu` body
 without the renderer draws nothing and its status says so. The CPU fallback has no
 refraction, absorption or underwater fog (`UnderwaterView` still reports the camera state for

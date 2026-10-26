@@ -373,7 +373,8 @@ pub(super) fn water_descriptor() -> ComponentDescriptor {
             "density":number(0.01, 100.0, "fluid density in body-density units"),
             "render_mode":{"type":"string","enum":["auto","cpu","gpu"]},
             "grid_resolution":{"type":"integer","minimum":8,"maximum":256},
-            "visible":{"type":"boolean"}
+            "visible":{"type":"boolean"},
+            "cast_shadows":{"type":"boolean","description":"opaque depth-only water shadows; cannot transmit light"}
         }}),
         defaults: serde_json::to_value(WaterBodyComponent::default()).expect("finite defaults"),
         requires: vec!["Transform".into()],

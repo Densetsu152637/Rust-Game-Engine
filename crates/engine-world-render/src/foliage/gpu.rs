@@ -788,8 +788,12 @@ impl Shared {
             let set_index = self.order.len();
             self.order.push(item.id.clone());
             let set = self.sets.get(&item.id).expect("synced");
-            for (_, cell) in item.field.cells() {
-                for instance in &cell.instances {
+            // Preview the same hysteretic choice the later colour pass will make,
+            // without advancing its per-view tracker during any shadow tile.
+            let mut tracker = set.trackers.get(&ctx.view.id).cloned().unwrap_or_default();
+            for (key, cell) in item.field.cells() {
+                let levels = tracker.levels_mut(key, cell.revision, cell.instances.len());
+                for (index, instance) in cell.instances.iter().enumerate() {
                     let t = usize::from(instance.type_index);
                     let (Some(render_type), Some(gpu_type)) = (item.types.get(t), set.types.get(t))
                     else {
@@ -806,7 +810,8 @@ impl Shared {
                         continue;
                     }
                     let distance = position.distance(camera);
-                    let level = match render_type.bands.select(distance, LodLevel::Culled) {
+                    let previous = LodLevel::from_code(levels[index]);
+                    let level = match render_type.bands.select(distance, previous) {
                         LodLevel::Culled => LodLevel::Mesh((gpu_type.meshes.len() - 1) as u8),
                         level => level,
                     };

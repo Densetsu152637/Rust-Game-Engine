@@ -243,7 +243,9 @@ Verified on this machine (RTX 5080, Vulkan,
   part 10.5 px against 9.76 px predicted by `WindParams::sway_offset` (tolerance 1.1 px).
 
 The new shadow path has a separate ignored GPU readback for a camera-culled alpha leaf,
-its native receiver, and wind animation; it has not yet been run on the integrated revision.
+lit cutout gaps, its native receiver, wind animation, and a second disjoint light tile
+that must not overwrite the first tile's instance data. It has not yet been run on the
+integrated revision.
 
 ### Limits
 

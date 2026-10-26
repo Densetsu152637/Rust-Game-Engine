@@ -52,6 +52,7 @@ crest plus shoreline foam. `world.water.underwater` fogs the view by distance wh
 is below a surface. `water::register` returns a `WaterRenderStatusHandle`.
 Authored `cast_shadows` defaults false; when enabled, `world.water.shadow` writes opaque depth
 from the displaced surface. Shared depth shadows cannot represent coloured transmission.
+The transparent CPU fallback reports the flag as unsupported and keeps shadow casting off.
 
 With the renderer installed, `render_mode: auto` terrains and water bodies stop spawning CPU
 fallback entities (the `TerrainGpuRenderer` / `WaterGpuRenderer` markers), so nothing is drawn

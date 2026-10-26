@@ -80,7 +80,8 @@ pub struct FoliageFeature {
 /// Foliage depth into each allocated shared shadow atlas tile.
 pub struct FoliageShadowFeature {
     shared: Arc<Mutex<Shared>>,
-    batcher: InstanceBatcher<FoliageInstance>,
+    /// Separate retained buffer per tile, since queue writes precede encoder submission.
+    batchers: Vec<InstanceBatcher<FoliageInstance>>,
     status: FoliageRenderStatusHandle,
 }
 
@@ -144,25 +145,30 @@ impl PipelineFeature for FoliageShadowFeature {
         FeatureDescriptor::new(names::FOLIAGE_SHADOW, Stage::Shadow).after(engine_names::SHADOWS)
     }
     fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
+        self.batchers.clear();
         lock(&self.shared)?.prepare(setup)
     }
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
         let views = ctx.shadow_views()?.to_vec();
+        self.batchers.truncate(views.len());
+        self.batchers.resize_with(views.len(), || {
+            InstanceBatcher::new("world.foliage.shadow instances")
+        });
         let mut shared = lock(&self.shared)?;
         let mut stats = engine_render_pipeline::DrawStats::default();
         let mut uploads = 0;
         for (tile, view) in views.iter().enumerate() {
-            let frame = shared.collect_shadow(ctx, &mut self.batcher, view.view.clip_from_world)?;
+            let batcher = &mut self.batchers[tile];
+            let frame = shared.collect_shadow(ctx, batcher, view.view.clip_from_world)?;
             uploads += frame.uploads;
             if frame.instances == 0 {
                 continue;
             }
-            self.batcher
-                .finish(&ctx.gpu.device, &ctx.gpu.queue, Grouping::ByKey)?;
+            batcher.finish(&ctx.gpu.device, &ctx.gpu.queue, Grouping::ByKey)?;
             let (indices, offset) = shared.shadow_index(view.index)?;
             let mut pass = ctx.shadow_pass("world.foliage.shadow", tile)?;
             pass.set_bind_group(3, &indices, &[offset]);
-            stats += shared.draw(&mut pass, ctx.view_bind_group, &self.batcher, true)?;
+            stats += shared.draw(&mut pass, ctx.view_bind_group, batcher, true)?;
         }
         ctx.record_draws(stats);
         self.status.update(|s| s.uploads += uploads);
@@ -175,7 +181,7 @@ pub(crate) fn register(features: &mut PipelineFeatures) -> Result<FoliageRenderS
     let color = FoliageFeature::new(status.clone());
     let shadow = FoliageShadowFeature {
         shared: color.shared.clone(),
-        batcher: InstanceBatcher::new("world.foliage.shadow instances"),
+        batchers: Vec::new(),
         status: status.clone(),
     };
     features.register(shadow)?;

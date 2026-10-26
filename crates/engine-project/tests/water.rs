@@ -32,6 +32,45 @@ fn water(data: Value) -> (&'static str, Value) {
 fn calm_lake() -> Value {
     json!({"kind":"lake","half_extent":[20,20],"waves":{"model":"none"}})
 }
+
+#[test]
+fn water_shadow_policy_loads_with_defaults_and_authored_value() {
+    for cast_shadows in [None, Some(false), Some(true)] {
+        let mut data = calm_lake();
+        if let Some(value) = cast_shadows {
+            data["cast_shadows"] = json!(value);
+        }
+        let _loaded = scene(
+            vec![entity("lake", [0.0; 3], custom(&[water(data)]))],
+            vec![],
+            &[],
+        );
+    }
+}
+
+#[test]
+fn cpu_water_reports_unsupported_shadow_casting() {
+    let mut data = calm_lake();
+    data["render_mode"] = json!("cpu");
+    data["cast_shadows"] = json!(true);
+    let mut s = scene(
+        vec![entity("lake", [0.0; 3], custom(&[water(data)]))],
+        vec![],
+        &[],
+    )
+    .start();
+    s.ticks(1);
+    let world = s.runtime.app().world();
+    let status = water::status(world, s.runtime.entity("lake").unwrap()).unwrap();
+    assert_eq!(status.render_path, "cpu-mesh");
+    assert!(
+        status
+            .notes
+            .iter()
+            .any(|n| n.contains("requires the GPU water renderer"))
+    );
+    assert!(!surface_meshes(&s.runtime)[0].material.cast_shadows);
+}
 fn body(density: f32) -> (&'static str, Value) {
     (
         "engine.PhysicsBody3D",

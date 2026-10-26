@@ -485,7 +485,8 @@ fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
         .to_vec(),
     }));
     let mut field = FoliageField::new(32.0)?;
-    field.insert(instance(0, 11.0, 0.0))?;
+    field.insert(instance(0, 25.0, 0.0))?;
+    field.insert(instance(0, -25.0, 0.0))?;
     let wind = WindParams {
         strength: 2.0,
         direction_degrees: 0.0,
@@ -527,7 +528,7 @@ fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
     }];
     let lights = LightList {
         lights: vec![
-            Light::directional(Vec3::new(-1.0, -1.0, 0.0).normalize(), Vec3::ONE, 1.0)
+            Light::directional(Vec3::new(-1.0, -0.25, 0.0).normalize(), Vec3::ONE, 1.0)
                 .with_shadow(ShadowSettings::default()),
         ],
     };
@@ -536,6 +537,27 @@ fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
     disabled.features.set(names::FOLIAGE_SHADOW, false);
     let bare = render_scene(&gpu, &mut pipeline, &world, &disabled, &receiver, &lights)?;
     let cast0 = render_scene(&gpu, &mut pipeline, &world, &view0, &receiver, &lights)?;
+    // A disjoint spot tile sees only the left leaf. Its tiny intensity leaves the
+    // right receiver unchanged; if tile uploads alias, it overwrites the sun's
+    // instance buffer and erases the right leaf's shadow.
+    let mut two_lights = lights.clone();
+    two_lights.lights.push(
+        Light::spot(
+            Vec3::new(-25.0, 8.0, 0.0),
+            Vec3::NEG_Y,
+            Vec3::ONE,
+            0.00001,
+            25.0,
+            0.2,
+            0.35,
+        )
+        .with_shadow(ShadowSettings::default()),
+    );
+    let cast_two = render_scene(&gpu, &mut pipeline, &world, &view0, &receiver, &two_lights)?;
+    assert_eq!(
+        cast_two.report.lighting.shadow_views,
+        cast0.report.lighting.shadow_views + 1
+    );
     let cast1 = render_scene(
         &gpu,
         &mut pipeline,
@@ -550,6 +572,8 @@ fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
         "caster should be outside colour frustum"
     );
     let mut darker = 0;
+    let mut cutout_lit = 0;
+    let mut lost_with_second_tile = 0;
     let mut animated = 0;
     for ix in 0..49 {
         for iz in 0..33 {
@@ -563,8 +587,21 @@ fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
             let a = pixel(&bare.pixels, x, y);
             let b = pixel(&cast0.pixels, x, y);
             let c = pixel(&cast1.pixels, x, y);
+            let d = pixel(&cast_two.pixels, x, y);
             if a[0] > b[0].saturating_add(20) {
                 darker += 1;
+                if d[0] > b[0].saturating_add(15) {
+                    lost_with_second_tile += 1;
+                }
+            }
+            // At the same projected shadow length, the transparent half of the
+            // alpha card must leave some receiver samples lit.
+            if (4.0..=7.0).contains(&(2.0 + ix as f32 * 0.125))
+                && (-0.8..=0.8).contains(&(-2.0 + iz as f32 * 0.125))
+                && a[0] > 30
+                && a[0].abs_diff(b[0]) <= 5
+            {
+                cutout_lit += 1;
             }
             if b != c {
                 animated += 1;
@@ -576,5 +613,61 @@ fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
         "offscreen alpha foliage cast no receiver shadow"
     );
     assert!(animated > 0, "foliage shadow ignored wind time");
+    assert!(cutout_lit > 0, "alpha cutout left no lit receiver samples");
+    assert_eq!(
+        lost_with_second_tile, 0,
+        "later disjoint spot tile overwrote the sun caster buffer"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn shadow_toggle_preserves_foliage_colour_pose_at_lod_hysteresis_edge() -> Result<()> {
+    let gpu = gpu()?;
+    let mut pipeline = ScenePipeline::new(gpu.clone())?;
+    let mut features = PipelineFeatures::default();
+    let status = engine_world_render::register_all(&mut features)?.foliage;
+    pipeline.add_features(features.0)?;
+    let kind = render_type(
+        "post",
+        vec![quad(0.8, 4.0), quad(0.8, 2.0)],
+        [30, 200, 30],
+        None,
+        &[20.0],
+        None,
+        100.0,
+    );
+    let mut field = FoliageField::new(32.0)?;
+    field.insert(instance(0, 0.0, 0.0))?;
+    let world = world_with(FoliageRenderItem {
+        owner: Entity::PLACEHOLDER,
+        id: "post".into(),
+        types: vec![kind],
+        field: Arc::new(field),
+        wind: WindParams::default(),
+    });
+    let lights = LightList {
+        lights: vec![
+            Light::directional(Vec3::new(0.0, -1.0, -1.0).normalize(), Vec3::ONE, 1.0)
+                .with_shadow(ShadowSettings::default()),
+        ],
+    };
+    let near = make_view(Vec3::new(0.0, 2.0, 19.0), Vec3::new(0.0, 2.0, 0.0), 0.0);
+    render_scene(&gpu, &mut pipeline, &world, &near, &[], &lights)?;
+    let far = make_view(Vec3::new(0.0, 2.0, 21.0), Vec3::new(0.0, 2.0, 0.0), 0.0);
+    let mut disabled = far.clone();
+    disabled.features.set(names::FOLIAGE_SHADOW, false);
+    let bare = render_scene(&gpu, &mut pipeline, &world, &disabled, &[], &lights)?;
+    assert_eq!(status.get().batches[0].level, LodLevel::Mesh(0));
+    let cast = render_scene(&gpu, &mut pipeline, &world, &far, &[], &lights)?;
+    assert_eq!(status.get().batches[0].level, LodLevel::Mesh(0));
+    let coverage = |pixels: &[u8]| {
+        pixels
+            .chunks_exact(4)
+            .map(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(coverage(&bare.pixels), coverage(&cast.pixels));
     Ok(())
 }

@@ -96,7 +96,9 @@ pub struct TerrainNormalsFeature {
 /// Terrain depth into the shared atlas (`Shadow` stage after `engine.shadows`).
 pub struct TerrainShadowFeature {
     shared: Arc<Mutex<Shared>>,
-    batcher: InstanceBatcher<TerrainInstance>,
+    /// One retained instance buffer per atlas tile: writes for a later tile must not
+    /// overwrite draws already recorded into the current command encoder.
+    batchers: Vec<InstanceBatcher<TerrainInstance>>,
     status: TerrainRenderStatusHandle,
 }
 /// Terrain motion vectors (`world.terrain.motion`, `Opaque` stage after `world.terrain`).
@@ -128,7 +130,7 @@ impl TerrainFeature {
         TerrainFeatures {
             shadow: TerrainShadowFeature {
                 shared: shared.clone(),
-                batcher: InstanceBatcher::new("world.terrain.shadow instances"),
+                batchers: Vec::new(),
                 status: status.clone(),
             },
             normals: TerrainNormalsFeature {
@@ -256,11 +258,16 @@ impl PipelineFeature for TerrainShadowFeature {
         FeatureDescriptor::new(names::TERRAIN_SHADOW, Stage::Shadow).after(engine_names::SHADOWS)
     }
     fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
+        self.batchers.clear();
         lock(&self.shared)?.prepare(setup)
     }
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
         let mut shared = lock(&self.shared)?;
         let views = ctx.shadow_views()?.to_vec();
+        self.batchers.truncate(views.len());
+        self.batchers.resize_with(views.len(), || {
+            InstanceBatcher::new("world.terrain.shadow instances")
+        });
         shared.set_shadowed(ctx.view.id, !views.is_empty());
         self.status.update(|s| {
             s.shadow_pass = false;
@@ -270,9 +277,10 @@ impl PipelineFeature for TerrainShadowFeature {
         let mut stats = DrawStats::default();
         let mut uploads = 0;
         for (tile, view) in views.iter().enumerate() {
+            let batcher = &mut self.batchers[tile];
             let frame = shared.collect(
                 ctx,
-                &mut self.batcher,
+                batcher,
                 PassKind::Shadow,
                 Some(view.view.clip_from_world),
             )?;
@@ -280,14 +288,13 @@ impl PipelineFeature for TerrainShadowFeature {
             if frame.nodes == 0 {
                 continue;
             }
-            self.batcher
-                .finish(&ctx.gpu.device, &ctx.gpu.queue, Grouping::ByKey)?;
+            batcher.finish(&ctx.gpu.device, &ctx.gpu.queue, Grouping::ByKey)?;
             let (indices, offset) = shared.shadow_index(view.index)?;
             let mut pass = ctx.shadow_pass("world.terrain.shadow", tile)?;
             stats += shared.draw(
                 &mut pass,
                 view_group,
-                &self.batcher,
+                batcher,
                 PassKind::Shadow,
                 Some((&indices, &[offset])),
             )?;
