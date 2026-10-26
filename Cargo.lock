@@ -1465,11 +1465,14 @@ dependencies = [
  "engine-audio",
  "engine-core",
  "engine-dlss",
+ "engine-physics-render",
  "engine-project",
  "engine-render",
  "engine-render-pipeline",
  "engine-render-rt",
  "engine-render-wgpu",
+ "engine-terrain",
+ "engine-world-render",
  "epaint_default_fonts",
  "gilrs",
  "glam 0.34.1",
@@ -1530,6 +1533,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-foliage"
+version = "0.1.0"
+dependencies = [
+ "engine-pcg",
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-locale"
 version = "0.1.0"
 dependencies = [
@@ -1554,8 +1567,16 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "engine-foliage",
+ "engine-mesh-lod",
+ "engine-pcg",
  "engine-project",
+ "engine-streaming",
+ "engine-terrain",
+ "engine-tilemap",
+ "engine-water",
  "epaint_default_fonts",
+ "glam 0.34.1",
  "regex",
  "serde",
  "serde_json",
@@ -1654,6 +1675,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-pcg"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-physics"
 version = "0.1.0"
 dependencies = [
@@ -1698,6 +1728,7 @@ dependencies = [
  "engine-core",
  "engine-destruction",
  "engine-fluids",
+ "engine-foliage",
  "engine-locale",
  "engine-navigation",
  "engine-net-predict",
@@ -1705,8 +1736,13 @@ dependencies = [
  "engine-net-replication",
  "engine-net-voice",
  "engine-network",
+ "engine-pcg",
  "engine-physics",
+ "engine-streaming",
+ "engine-terrain",
  "engine-text",
+ "engine-tilemap",
+ "engine-water",
  "engine-xpbd",
  "epaint_default_fonts",
  "fs2",
@@ -1768,6 +1804,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-streaming"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "engine-terrain"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-text"
 version = "0.1.0"
 dependencies = [
@@ -1782,6 +1835,14 @@ dependencies = [
  "unicode-linebreak",
  "unicode-script",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "engine-tilemap"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1823,6 +1884,35 @@ dependencies = [
  "glam 0.34.1",
  "image",
  "naga",
+ "serde_json",
+ "tempfile",
+ "wgpu",
+]
+
+[[package]]
+name = "engine-water"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "engine-world-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "bytemuck",
+ "engine-core",
+ "engine-foliage",
+ "engine-project",
+ "engine-render-pipeline",
+ "engine-render-wgpu",
+ "engine-terrain",
+ "engine-water",
+ "glam 0.34.1",
  "serde_json",
  "tempfile",
  "wgpu",

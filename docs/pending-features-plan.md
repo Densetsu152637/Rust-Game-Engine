@@ -46,12 +46,17 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Status: in progress.
 - Objective: finish batch B and final checks for tilemaps, PCG, streaming,
   terrain, foliage, water and large-world coordinates.
-- Existing revisions: parent `5ada8a3`; unchecked batch B `38d687f`.
+- Handoff revision: 255035b, including checked batch B 38d687f.
 - Owned paths: existing World manager's worktrees and World feature crates/docs.
 - Acceptance: project PCG/streaming/tilemap regression tests, MCP tilemap tests,
   relevant GPU tests, and required integrated checks.
-- Handoff: request/consume completed commits; historical 4,679-test evidence is
-  not validation of batch B or the eventual combined revision.
+- Handoff: request/consume completed commits; the manager reported 4,705 passing workspace tests and three build-timeout failures
+  whose isolated suite passed 14/14; that branch-only evidence is
+  not validation of the merged revision. World is now integrated into local main;
+  merged-revision workspace, MCP/tooling and GPU gates remain pending. Networking
+  and World registrations are both retained; recomputed CLI tool totals are
+  read 31, write 62, exec 34, write+exec 65. The Claude manager retains cleanup
+  of its own worktree/branches after main ancestry is confirmed.
 
 ### 2. AI-gameplay completion (external owner)
 

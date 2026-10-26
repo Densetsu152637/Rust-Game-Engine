@@ -27,6 +27,7 @@ pub mod simulation;
 pub mod transforms;
 pub mod ui;
 pub mod ui_tree;
+pub mod world;
 pub mod world_text;
 
 pub use catalog::{ComponentCatalog, ComponentDescriptor, CustomValue, register_component};
@@ -73,6 +74,13 @@ impl Error {
                 message: message.into(),
             }],
         }
+    }
+    /// Prefixes every diagnostic message with `context` (for example an entity or cell name).
+    pub fn with_context(mut self, context: &str) -> Self {
+        for diagnostic in &mut self.diagnostics {
+            diagnostic.message = format!("{context}: {}", diagnostic.message);
+        }
+        self
     }
     pub fn at(mut self, file: impl Into<PathBuf>, path: impl Into<String>) -> Self {
         if let Some(diagnostic) = self.diagnostics.first_mut() {

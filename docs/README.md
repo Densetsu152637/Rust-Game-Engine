@@ -172,4 +172,33 @@
 - [MCP server](mcp.md): the stdio protocol, read/write/exec tools, resources,
   access levels and limits.
 
+## World building
+
+- [World building overview](world.md): the `engine_project::world` module, its
+  per-feature component, install and tick-hook contract, and the render adapter.
+- [2D tilemaps](world-tilemap.md): tilesets, chunked layers, rule tiles, merged
+  collision, the `engine.Tilemap` component, the tile render data handed to the sprite
+  path, native painting API and MCP tilemap tools.
+- [Procedural content generation](pcg.md): seeded noise, the node graph and executor
+  (`engine-pcg`), `engine.PcgVolume` runtime generation and the `pcg_*` MCP tools.
+- [Level streaming](streaming.md): world partition cells, streaming sources, hysteresis
+  and budgets, data layers, HLOD proxies, `engine.WorldPartition`, the native API and
+  the `streaming_*` MCP tools (`engine-streaming`).
+- [Heightmap terrain](terrain.md): the `.terrain` heightfield asset (`engine-terrain`),
+  crack-free CDLOD geomorphing, sculpt/paint/hole brushes, `engine.Terrain` collider
+  tiles, PCG surfaces and navigation input, the CPU chunk fallback, the `world.terrain`
+  GPU feature (`engine-world-render`) and the `terrain_*` MCP tools.
+- [Foliage and vegetation](world-foliage.md): foliage types, deterministic scatter and
+  brush painting over terrain or PCG surfaces (`engine-foliage`), LOD bands with
+  hysteresis and impostors, wind, `engine.Foliage`, the CPU cluster fallback, the
+  `world.foliage` GPU feature and the `foliage_*` MCP tools.
+- [Large-world coordinates](world-coordinates.md): floating-origin rebasing with f64
+  absolute positions, `engine.LargeWorld` and `engine.AbsolutePosition`, how physics,
+  navigation, streaming, terrain, foliage and PCG follow a shift, the `world.origin_shifted`
+  event, telemetry and the camera-relative rendering property.
+- [Ocean, lake and river water](world-water.md): Gerstner waves and the Tessendorf FFT
+  ocean (`engine-water`), spline rivers with a flow field, `engine.WaterBody` shoreline
+  attenuation over terrain, `engine.Buoyancy`, underwater fog, the CPU surface fallback,
+  the `world.water` GPU features and the `water_*` MCP tools.
+
 Per-crate details are in `crates/*/README.md`.

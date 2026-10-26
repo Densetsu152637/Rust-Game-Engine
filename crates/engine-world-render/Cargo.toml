@@ -1,0 +1,27 @@
+[package]
+name = "engine-world-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Render features for world building (world.terrain, world.foliage, world.water) through the render extension API."
+
+[dependencies]
+anyhow.workspace = true
+bevy_ecs.workspace = true
+bytemuck.workspace = true
+engine-core.workspace = true
+engine-foliage = { path = "../engine-foliage" }
+engine-project = { path = "../engine-project" }
+engine-render-pipeline = { path = "../engine-render-pipeline" }
+engine-terrain = { path = "../engine-terrain" }
+engine-water = { path = "../engine-water" }
+glam.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+engine-render-wgpu.workspace = true
+serde_json = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

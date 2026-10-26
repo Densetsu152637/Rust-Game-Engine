@@ -25,7 +25,7 @@ in flat fields of the body component (and in the engine-physics `Shape` enum var
 | `cylinder` | `radius`, `half_height` | 3D | Y axis; uniform world scale. |
 | `convex_hull` | `points` | 2D, 3D | Hull of 3 (2D) / 4 (3D) to 4096 points; interior points are ignored. Collinear, coplanar or zero-volume sets are rejected. Points scale per axis. |
 | `trimesh` | `vertices`, `indices` | 2D, 3D | Fixed or kinematic only. 3..=65536 vertices, 1..=131072 triangles, every index < vertex count. |
-| `heightfield` | `heights`, `heightfield_scale` (3D also `heightfield_rows`, `heightfield_columns`) | 2D, 3D | Fixed or kinematic only. See below. |
+| `heightfield` | `heights`, `heightfield_scale` (3D also `heightfield_rows`, `heightfield_columns`, `heightfield_holes`) | 2D, 3D | Fixed or kinematic only. See below. |
 | `compound` | `parts` | 2D, 3D | 1..=64 rigid parts; uniform world scale. |
 
 Heightfields are centred on the body origin. In 2D, `heights` (2..=1048576 samples) are
@@ -35,6 +35,9 @@ Z, each holding `heightfield_columns` samples along X (both at least 2, product 
 1048576 and equal to `heights.len()`); the grid spans `heightfield_scale[0]` x
 `heightfield_scale[2]` meters and heights are multiplied by `heightfield_scale[1]`. 3D
 heightfields fix internal edges so rolling bodies do not bump at triangle seams.
+`heightfield_holes` (3D) lists removed cells by row-major index over
+`(heightfield_rows - 1) x (heightfield_columns - 1)`; both triangles of a listed cell are
+removed, so bodies and queries pass through it. An index outside the grid is rejected.
 
 Compound `parts` each carry `shape` (`box`, `ball`, `capsule`, `cylinder` in 3D, or
 `convex_hull`), a body-local `position` and `rotation` (radians in 2D, quaternion in 3D),

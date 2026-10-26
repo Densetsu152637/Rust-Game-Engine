@@ -20,7 +20,7 @@ fn tool_names(root: &Path, config: ServerConfig) -> Vec<String> {
         .collect()
 }
 
-const WRITE_TOOLS: [&str; 15] = [
+const WRITE_TOOLS: [&str; 31] = [
     "scene_edit",
     "entity_create",
     "entity_update",
@@ -36,6 +36,22 @@ const WRITE_TOOLS: [&str; 15] = [
     "locale_add_locale",
     "ui_edit",
     "network_settings_set",
+    "tilemap_create_tileset",
+    "tilemap_create",
+    "tilemap_define_rules",
+    "tilemap_paint",
+    "pcg_create",
+    "pcg_edit",
+    "pcg_run",
+    "streaming_partition",
+    "streaming_hlod",
+    "terrain_create",
+    "terrain_sculpt",
+    "terrain_paint",
+    "terrain_holes",
+    "terrain_navmesh",
+    "foliage_scatter",
+    "foliage_paint",
 ];
 
 fn bytes(root: &Path, relative: &str) -> Vec<u8> {
@@ -89,7 +105,7 @@ fn read_only_servers_hide_and_reject_every_write_tool() {
 fn write_servers_list_read_tools_then_write_tools() {
     let dir = fixture();
     let names = tool_names(dir.path(), writable());
-    assert_eq!(names.len(), 38);
+    assert_eq!(names.len(), 62);
     // Registration order: the 12 original read tools, the 8 original write
     // tools, the navigation pair (bake writes, query only reads), the
     // acoustics tools (inspect and query read, bake writes), the physics pair
@@ -97,7 +113,7 @@ fn write_servers_list_read_tools_then_write_tools() {
     // UI authoring tools (inspect and preview read, edit writes), then the
     // networking tools (inspect reads, settings_set writes).
     let read_only_names = tool_names(dir.path(), read_only());
-    assert_eq!(read_only_names.len(), 23);
+    assert_eq!(read_only_names.len(), 31);
     assert_eq!(names[..12], read_only_names[..12]);
     assert_eq!(names[12..20], WRITE_TOOLS[..8]);
     assert_eq!(names[20], "navigation_bake");
@@ -123,8 +139,45 @@ fn write_servers_list_read_tools_then_write_tools() {
     assert_eq!(read_only_names[14], "acoustics_query");
     assert_eq!(read_only_names[15], "physics_query");
     assert_eq!(read_only_names[16], "physics_debug");
+    // The world-building families follow networking (write-mode names from 38,
+    // read-only names from 23, world write tools from WRITE_TOOLS[15]).
+    // Tilemap: four writers, then its two read-only tools.
+    assert_eq!(names[38..42], WRITE_TOOLS[15..19]);
+    assert_eq!(names[42..44], ["tilemap_info", "tilemap_query"]);
+    assert_eq!(read_only_names[23..25], ["tilemap_info", "tilemap_query"]);
+    // Then the pcg family.
+    assert_eq!(
+        names[44..48],
+        ["pcg_create", "pcg_edit", "pcg_validate", "pcg_run"]
+    );
+    assert_eq!(read_only_names[25], "pcg_validate");
+    // Then the streaming family: two writers, then its read-only tool.
+    assert_eq!(
+        names[48..51],
+        ["streaming_partition", "streaming_hlod", "streaming_info"]
+    );
+    assert_eq!(read_only_names[26], "streaming_info");
+    // Then the terrain family: five writers, then its read-only info tool.
+    assert_eq!(names[51..56], WRITE_TOOLS[24..29]);
+    assert_eq!(names[56], "terrain_info");
+    assert_eq!(read_only_names[27], "terrain_info");
+    // Then the foliage family: two writers, then its read-only info tool.
+    assert_eq!(
+        names[57..60],
+        ["foliage_scatter", "foliage_paint", "foliage_info"]
+    );
+    assert_eq!(names[57..59], WRITE_TOOLS[29..]);
+    assert_eq!(read_only_names[28], "foliage_info");
+    // Then the water family: two read-only tools (bodies are authored with component_set).
+    assert_eq!(names[60..62], ["water_sample", "water_spectrum"]);
+    assert_eq!(read_only_names[29..31], ["water_sample", "water_spectrum"]);
     assert_eq!(WRITE_TOOLS[8], "navigation_bake");
     assert_eq!(WRITE_TOOLS[9], "acoustics_bake");
+    assert_eq!(WRITE_TOOLS[19..22], ["pcg_create", "pcg_edit", "pcg_run"]);
+    assert_eq!(
+        WRITE_TOOLS[22..24],
+        ["streaming_partition", "streaming_hlod"]
+    );
 }
 
 #[test]
@@ -154,6 +207,11 @@ fn write_tool_annotations_are_accurate() {
     expect("component_remove", true, true);
     expect("file_write", true, true);
     expect("asset_import_model", false, false);
+    expect("terrain_create", false, false);
+    expect("terrain_sculpt", true, false);
+    expect("terrain_navmesh", false, false);
+    expect("foliage_scatter", false, false);
+    expect("foliage_paint", true, false);
     expect("ui_edit", true, false);
     for tool in tools
         .iter()

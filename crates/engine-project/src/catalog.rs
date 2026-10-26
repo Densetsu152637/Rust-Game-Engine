@@ -44,6 +44,7 @@ impl ComponentCatalog {
         let mut result = Self::default();
         for d in crate::simulation::component_descriptors()
             .into_iter()
+            .chain(crate::world::component_descriptors())
             .chain(crate::ui_tree::descriptors())
             .chain([
                 crate::accessibility::descriptor(),
@@ -118,7 +119,9 @@ impl ComponentCatalog {
                     let id = reference
                         .as_str()
                         .ok_or_else(|| invalid("Entity reference must be a string"))?;
-                    if !scene.entities.iter().any(|e| e.id == id) {
+                    // The empty string is the schema-friendly "no reference" of string fields
+                    // (`engine.Foliage.terrain`, `engine.LargeWorld.anchor`, ...).
+                    if !id.is_empty() && !scene.entities.iter().any(|e| e.id == id) {
                         return Err(invalid(format!("Unknown entity reference {id}")));
                     }
                 }

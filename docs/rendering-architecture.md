@@ -123,6 +123,16 @@ resource before launch; the desktop runner and `render_screenshot` hand it to
 the renderer (`GpuRenderer::set_features`). This replaced `NativeRenderPass`:
 such passes are now `Overlay`-stage features.
 
+Desktop defaults: before the runtime starts, the windowed runner and
+`render_screenshot` call `engine_desktop::install_default_render_features`, which
+installs the world (`engine-world-render`: `world.terrain*`, `world.foliage`,
+`world.water*`) and physics (`engine-physics-render`: `physics.*`) extraction and
+merges their features into `PipelineFeatures`, skipping any group of which the
+game registered a feature itself (no duplicate names). They are inert without
+matching components, add no prepass, overlay or `needs`, and are disabled per
+camera through `Camera3D.render_features`. Headless runs only list them in the
+preview status. The UI features (`engine-ui-render`) are not a default.
+
 ### FeatureContext
 
 | Member | Meaning |

@@ -118,6 +118,15 @@ Failed routes stop movement and emit `navigation.failed` with `target` and
 Invalid assets/configuration fail the simulation boundary rather than becoming
 successful routes. Incrementing `repath` retries a failed route.
 
+Navigation meshes, `target` and `waypoints` are **absolute** world coordinates; they equal
+local `Transform` coordinates while `WorldOrigin.offset` is zero, so worlds that never rebase
+are unaffected. With [large-world coordinates](world-coordinates.md) the runtime queries the
+mesh at `offset + local`, keeps each follower's path in the local frame of the origin that
+was current when it was planned and converts to the current frame when it writes the
+`Transform`, so a follower walks on unchanged across an origin shift. `navigation.arrived`
+also carries `absolute` (f64). The mesh itself is f32, so a navigation mesh far from the
+absolute origin (beyond about 100 km) has the f32 resolution of its coordinates.
+
 Runtime limits are 1,024 followers, 16 cached meshes, 262,144 cached polygons,
 and one million reserved nearest-scan/search operations per sync; exhaustion
 emits a route budget failure. Meshes stay immutable/cached for the scene;

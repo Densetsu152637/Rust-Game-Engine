@@ -5,11 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+engine-foliage = { path = "../engine-foliage" }
+engine-mesh-lod = { path = "../engine-mesh-lod" }
+engine-pcg = { path = "../engine-pcg" }
 engine-project = { path = "../engine-project" }
+engine-streaming = { path = "../engine-streaming" }
+engine-terrain = { path = "../engine-terrain" }
+engine-tilemap = { path = "../engine-tilemap" }
+engine-water = { path = "../engine-water" }
 base64.workspace = true
 blake3 = "1"
+glam.workspace = true
 regex.workspace = true
-serde = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 

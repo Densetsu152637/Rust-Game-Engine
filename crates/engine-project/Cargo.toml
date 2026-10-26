@@ -13,15 +13,21 @@ engine-net-voice = { path = "../engine-net-voice" }
 engine-core = { path = "../engine-core" }
 engine-destruction = { path = "../engine-destruction" }
 engine-fluids = { path = "../engine-fluids" }
+engine-foliage = { path = "../engine-foliage" }
 engine-audio = { path = "../engine-audio" }
 engine-acoustics = { path = "../engine-acoustics" }
 engine-physics = { path = "../engine-physics" }
 engine-animation = { path = "../engine-animation" }
 engine-navigation = { path = "../engine-navigation" }
 engine-locale = { path = "../engine-locale" }
+engine-pcg = { path = "../engine-pcg" }
+engine-streaming = { path = "../engine-streaming" }
 engine-text = { path = "../engine-text" }
 unicode-linebreak = "=0.1.5"
 engine-xpbd = { path = "../engine-xpbd" }
+engine-tilemap = { path = "../engine-tilemap" }
+engine-terrain = { path = "../engine-terrain" }
+engine-water = { path = "../engine-water" }
 bevy_ecs = "=0.20.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
