@@ -550,7 +550,7 @@ pub fn reference_pyramid(size: [u32; 2], depth: &[f32]) -> Result<Vec<Vec<f32>>>
         depth.len() == size[0] as usize * size[1] as usize,
         "depth length differs from size"
     );
-    let mut levels = Vec::with_capacity(dimensions.len());
+    let mut levels: Vec<Vec<f32>> = Vec::with_capacity(dimensions.len());
     levels.push(
         depth
             .iter()
