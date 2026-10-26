@@ -28,6 +28,14 @@ pub(super) enum Node {
         y: String,
         space: BlendSpace2D,
     },
+    Ik {
+        input: usize,
+        chain: [usize; 3],
+        limits: crate::ik::BendLimits,
+        target: String,
+        pole: String,
+        weight: String,
+    },
     Machine {
         inputs: Vec<usize>,
         initial: usize,
@@ -38,6 +46,7 @@ impl Node {
     pub fn inputs(&self) -> Vec<usize> {
         match self {
             Self::Output(i) => vec![*i],
+            Self::Ik { input, .. } => vec![*input],
             Self::Clip { .. } => vec![],
             Self::Blend { a, b, .. } => vec![*a, *b],
             Self::One { inputs, .. } | Self::Two { inputs, .. } | Self::Machine { inputs, .. } => {
@@ -117,6 +126,11 @@ impl Graph {
         }
         compile_semantics(document).map_err(|error| vec![error])
     }
+    pub fn requires_skeleton(&self) -> bool {
+        self.nodes
+            .iter()
+            .any(|node| matches!(node, Node::Ik { .. }))
+    }
     pub fn clip_ids(&self) -> impl Iterator<Item = &str> {
         self.clips.iter().map(String::as_str)
     }
@@ -136,25 +150,33 @@ fn parsed<T: serde::de::DeserializeOwned>(
         .map_err(|e| problem(&format!("{path}/params/{name}"), e.to_string()))
 }
 pub(super) fn valid_parameter(default: &Value, value: &Value) -> bool {
-    if default.is_boolean() {
-        value.is_boolean()
-    } else {
+    let number = |value: &Value| {
         value
             .as_f64()
             .is_some_and(|v| v.is_finite() && v.abs() <= f64::from(f32::MAX))
+    };
+    if default.is_boolean() {
+        value.is_boolean()
+    } else if default.is_array() {
+        value
+            .as_array()
+            .is_some_and(|v| v.len() == 3 && v.iter().all(number))
+    } else {
+        number(value)
     }
 }
 pub(super) fn compile_semantics(document: &GraphDocument) -> Result<Graph, GraphDiagnostic> {
     let kind = super::kind();
     let mut parameters = BTreeMap::new();
     for variable in &document.variables {
-        let default = variable.default.clone().unwrap_or_else(|| {
-            if variable.ty == PortType::Bool {
-                Value::Bool(false)
-            } else {
-                Value::from(0.)
-            }
-        });
+        let default = variable
+            .default
+            .clone()
+            .unwrap_or_else(|| match variable.ty {
+                PortType::Bool => Value::Bool(false),
+                PortType::Vec3 => serde_json::json!([0., 0., 0.]),
+                _ => Value::from(0.),
+            });
         if !valid_parameter(&default, &default) {
             return Err(problem(
                 &format!("/variables/{}", variable.name),
@@ -264,6 +286,43 @@ pub(super) fn compile_semantics(document: &GraphDocument) -> Result<Graph, Graph
                         .map_err(|e| problem(&path, e.to_string()))?,
                 }
             }
+            "ik_two_bone" => {
+                let vector = |name: &str| -> Result<String, GraphDiagnostic> {
+                    let variable: String = parsed(&p, name, &path)?;
+                    if !parameters.get(&variable).is_some_and(Value::is_array) {
+                        return Err(problem(&path, "IK requires a vec3 parameter"));
+                    }
+                    Ok(variable)
+                };
+                let chain = [
+                    parsed(&p, "root", &path)?,
+                    parsed(&p, "mid", &path)?,
+                    parsed(&p, "end", &path)?,
+                ];
+                if chain.iter().collect::<BTreeSet<_>>().len() != 3 {
+                    return Err(problem(&path, "IK joint indices must be distinct"));
+                }
+                let weight = parameter("weight")?;
+                if !parameters[&weight]
+                    .as_f64()
+                    .is_some_and(|v| (0.0..=1.).contains(&v))
+                {
+                    return Err(problem(&path, "IK weight default must be in 0..1"));
+                }
+                let limits = crate::ik::BendLimits::new(
+                    parsed(&p, "min_bend", &path)?,
+                    parsed(&p, "max_bend", &path)?,
+                )
+                .map_err(|e| problem(&path, e.to_string()))?;
+                Node::Ik {
+                    input: input("input")?,
+                    chain,
+                    limits,
+                    target: vector("target")?,
+                    pole: vector("pole")?,
+                    weight,
+                }
+            }
             "state_machine" => {
                 let states: Vec<String> = parsed(&p, "states", &path)?;
                 let inputs = incoming("states");
@@ -298,6 +357,7 @@ pub(super) fn compile_semantics(document: &GraphDocument) -> Result<Graph, Graph
                             .get(&t.parameter)
                             .ok_or_else(|| problem(&path, "unknown transition parameter"))?;
                         if from == to
+                            || default.is_array()
                             || !valid_parameter(default, &t.value)
                             || (default.is_boolean()
                                 && !matches!(t.op, Operator::Eq | Operator::Ne))
