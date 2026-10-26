@@ -438,3 +438,17 @@ from serialization. Runtime regressions cover immediate and repeated rebases,
 paused/seek/Stop/replay, parent changes, near-limit baselines, tiny local keys and
 native absolute mutations. Execution is still pending, including the existing
 coordinate service suite, to validate the combined ownership and precision rules.
+
+Merged main `598e395` passed the complete locked workspace test command: 5,015
+passed, zero failed, 153 ignored across 331 reported suites. Its separate World
+and default-desktop GPU gates are running. Strict workspace Clippy and formatting
+also passed on that unchanged main revision; this evidence does not validate the
+newer pending-integration feature set.
+
+Native IBL/probe shading `94fa04b` passed source review and is assembled at
+`2c1c665`. Per-view optional native lighting reaches actual built-in/graph-template
+mesh shading, with bounded material variants and unchanged instance ABI. Its
+GPU oracle sources cover HDR response, rotation, specular mip/BRDF response,
+probe blending/priority, screen-lighting precedence, and view lifecycle. Authored
+loading, World IBL shading and lightmap UV2/consumption remain pending. All new
+IBL numerical and GPU execution checks remain unrun.
