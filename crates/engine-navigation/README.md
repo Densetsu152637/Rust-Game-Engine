@@ -38,10 +38,13 @@ transition. `NavMesh::nearest` projects onto geometric polygons; `find_path`
 returns bounded, portal-smoothed 3D paths. See [Navigation](../../docs/navigation.md)
 for settings, limitations and shared runtime/MCP integration.
 
-There is no crowd simulation or dynamic obstacle carving. Integrations should
-rebake changed geometry and submit movement to the appropriate kinematic controller.
+`Crowd` adds deterministic ORCA steering, formations and static segments; `NavOverlay` adds
+runtime obstacle carving and off-mesh links consumed by `NavMesh::find_route`. See
+[Crowds, carving and off-mesh links](../../docs/ai-crowds.md). The baked mesh itself is
+immutable; structural geometry changes still require a rebake.
 
 Validation: `cargo test -p engine-navigation` checks weighted detours,
 deterministic output, unreachable goals, budget exhaustion, corner blocking,
 directed graph costs, invalid input, multisegment following, layered/ramped/stepped
-surfaces, small holes across coordinate scales, and radius/headroom clearance.
+surfaces, small holes across coordinate scales, and radius/headroom clearance. Crowd, carving and link behaviour is covered by
+`tests/crowd.rs` and `tests/overlay.rs`.
