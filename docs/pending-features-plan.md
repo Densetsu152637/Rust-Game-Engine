@@ -1,0 +1,168 @@
+# Pending engine features
+
+Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
+
+This is the implementation record for the pending-feature request. Existing
+spatial audio, first-round rendering, physics, UI and networking are the baseline.
+Their remaining limitations still apply. This plan supersedes older plan prose
+only for the pending work listed here; feature documentation remains authoritative
+for implemented behavior. See [testing](testing.md), [architecture](architecture.md),
+[rendering architecture](rendering-architecture.md), and [scripting](scripting.md).
+
+## Goals and constraints
+
+- Every requested feature has executable native/runtime behavior and focused
+  tests; a schema, interface or mock alone does not establish implementation.
+- The integrated revision passes `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets --locked -- -D warnings`, and
+  `cargo test --workspace --locked`, plus the example checks in `testing.md`.
+- Rendering changes have relevant real GPU readback evidence. Microphone, VR,
+  playback timing and OS-specific behavior are reported separately from headless
+  tests; unavailable checks remain unverified.
+- Scripting receives an independent scoped security review, with reproducible
+  findings fixed and tested before final integration.
+- Reviewed commits are integrated without discarding existing work; final
+  publication satisfies repository review/CI requirements.
+
+The user set a limit of eight parallel workers for this session. The user also
+confirmed that prior World and AI-gameplay managers are still running elsewhere.
+They retain those areas and their existing worktrees. This chat owns Animation,
+Editor, platform services, Audio and second-round Rendering. Do not resolve or
+commit the other managers' dirty worktrees. Consume their completed revisions
+after handoff. Root owns this record, cross-stream contracts and integration.
+
+## Stages
+
+### 1. World completion (external owner)
+
+- Status: in progress.
+- Objective: finish batch B and final checks for tilemaps, PCG, streaming,
+  terrain, foliage, water and large-world coordinates.
+- Existing revisions: parent `5ada8a3`; unchecked batch B `38d687f`.
+- Owned paths: existing World manager's worktrees and World feature crates/docs.
+- Acceptance: project PCG/streaming/tilemap regression tests, MCP tilemap tests,
+  relevant GPU tests, and required integrated checks.
+- Handoff: request/consume completed commits; historical 4,679-test evidence is
+  not validation of batch B or the eventual combined revision.
+
+### 2. AI-gameplay completion (external owner)
+
+- Status: in progress.
+- Objective: perception, EQS, smart objects, predicted abilities,
+  inventory/quests/dialogue, Rhai, visual scripts and security review.
+- Existing revision: `834c047` includes engine-graph, BT/ST and crowds.
+- Owned paths: existing AI manager's worktrees, engine-ai/engine-graph and
+  gameplay project adapters. Perception/EQS/smart-object drafts were dirty at
+  inspection and remain with that manager.
+- Acceptance: native and runtime behavior tests, prediction confirm/reject and
+  replay tests, bounded script execution/adversarial tests, independent review.
+- Handoff: downstream animation/editor consume committed engine-graph APIs;
+  coordinate any graph registry changes at integration.
+
+### 3. Audio streaming and media clock
+
+- Status: pending; depends on baseline only.
+- Objective: bounded streamed PCM sources, pause/seek/underrun/EOF semantics,
+  source clock epochs, incremental compressed decoding and cancellation.
+- Owned paths: engine-audio and focused audio documentation/tests.
+- Contract: preserve clip playback; callbacks do not decode or block. A global
+  submitted-device-frame counter is not a per-source presentation clock.
+- Acceptance: deterministic offline mixed output and clock/seek/backpressure
+  tests; codec fixtures and malformed input limits; device checks separately.
+
+### 4. Animation graph, blend spaces, IK and retargeting
+
+- Status: pending; depends on committed engine-graph foundation.
+- Objective: executable pose graph and state transitions, 1D/2D blends,
+  validated IK solvers/retarget maps and project runtime integration.
+- Owned paths: engine-animation, animation-specific project modules/tests/docs.
+- Contract: one authoritative pose writer per target; preserve physics/ragdoll
+  ownership and morph-before-skin order.
+- Acceptance: `cargo test -p engine-animation`, project pose/deformation tests,
+  degenerate/unreachable chains, rest/proportion mapping, graph diagnostics.
+
+### 5. Editor scene recovery and graph authoring
+
+- Status: pending; depends on engine-graph foundation.
+- Objective: finish scene WIP `9e4a063`, multi-selection/gizmos/picking/settings,
+  then reusable node/port canvas with graph-kind palettes, edits, undo and save.
+- Owned paths: engine-editor, engine-editor-settings, editor docs/tests.
+- Contract: scene edits use SceneDocument transactions; graph edits use
+  engine-graph validation and atomic edits. No duplicate document semantics.
+- Acceptance: real egui interaction tests, one undo per gesture, parented
+  transforms, cancelled/stale gestures, graph persistence and validation.
+
+### 6. Render integration seams
+
+- Status: pending; depends on baseline and committed World rendering contracts.
+- Objective: shared shadow targets/writer API, terrain and foliage casters,
+  ordered UI overlays and final compositing including Frame Generation, and
+  the two UI pipeline hooks. Establish scene-effects and temporal-resolve seams.
+- Owned paths: engine-render-pipeline, world-render adapter, UI-render and DLSS
+  integration; root serializes shared pipeline edits.
+- Acceptance: fake/native caster GPU readback, actual terrain/foliage shadows,
+  ordered UI pixels and compositing contract tests; hardware FG separately.
+
+### 7. Platform services
+
+- Status: pending.
+- Objective: review OpenXR `daa2888`, finish ML WIP `609ccb2`, implement
+  self-hosted services and real video decode/playback.
+- Owned paths: platform feature crates/adapters and focused docs/tests.
+- Depends on: stage 3 for video A/V clock integration. Existing CaptionClock
+  and texture streams are reused; no independent drifting subtitle clock.
+- Acceptance: XR lifecycle/graphics review and tests; real model fixture
+  inference; loopback service behavior; decoded video textures plus audio-driven
+  frame/caption scheduling, seek/pause/EOF and malformed-input tests.
+
+### 8. Remaining animation/editor/audio integrations
+
+- Status: pending; depends on relevant earlier stages.
+- Objective: morph import/animation/deformation, cinematics timeline/sequencer,
+  editor hot reload/tooling, procedural audio graph, microphone/voice codec,
+  streamed voice playback and physics3D-reactive spatial audio.
+- Owned paths: scoped assets/animation/project/editor/tooling/audio/voice modules.
+- Contracts: reload preserves last-good running generation on candidate failure;
+  procedural graphs compile outside callbacks; capture/voice use existing
+  bounded networking APIs; physics audio reuses acoustic/spatial propagation.
+- Acceptance: actual morph+skin vertices; deterministic timeline seek/events;
+  successful and failed reloads; graph PCM; codec/capture lifecycle and voice
+  loopback; collision-driven audio and collider acoustic geometry behavior.
+
+### 9. Rendering round two
+
+- Status: pending; depends on stage 6 and relevant World/material contracts.
+- Objective: IBL/probes/lightmaps; SSR/DOF/motion blur; AA/vendor-neutral upscale;
+  atmosphere/fog/clouds/decals/GPU particles; Hi-Z with LOD; HDR display output;
+  material graph; 2D lighting/tilemap rendering.
+- Owned paths: feature crates/shaders, pipeline integration and renderer docs.
+- Contract: rendering and World share one documented tilemap render format;
+  temporal consumers share valid depth/motion/history and reset semantics.
+- Acceptance: per-feature GPU readbacks showing output differences and resource
+  lifetime/resize behavior, CPU input validation, integration tests; HDR display
+  presentation remains separate from encoding/math checks.
+
+### 10. Final integration, review and publication
+
+- Status: pending; depends on stages 1–9.
+- Objective: combine reviewed commits, run required workspace/example checks,
+  resolve cross-stream conflicts, align docs and publish validated work.
+- Acceptance: goals above, required repository reviews/CI, clean owned changes,
+  explicit hardware limitations and reconciliation of every task worktree.
+- Outcome: not yet established. No incomplete stage is considered merged.
+
+## Session worktree record
+
+Managed worktree creations are pending; root will fill final paths/branches once
+the host returns completion. Existing external worktrees are not cleanup targets.
+
+| Host name | Base | Assigned purpose | State |
+| --- | --- | --- | --- |
+| world-completion | `5ada8a3` | Render seams against World; no World batch-B ownership | planned |
+| gameplay-completion | `834c047` | Editor recovery/graph authoring; no AI ownership | planned |
+| audio-foundation | `91b961c` | Streamed audio and media clock | planned |
+| animation-features | `834c047` | Animation graph and pose features | planned |
+
+Root creates branches after initialization, accepts handoffs, integrates and
+retires these checkouts. Every worker reports exact tested SHA, logs, residuals
+and stopped processes. New plan stages/records are added before dispatch.
