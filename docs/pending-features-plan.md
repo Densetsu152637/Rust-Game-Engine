@@ -3,7 +3,7 @@
 Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
 Initial plan commit: `7d614e9`. Main contains accepted audio/server changes through
 `ebc765c`. Larger branches are assembled in `codex/pending-integration`, currently
-`8e6701f` with reviewed XR support. Nothing has been published this session;
+`b62ef9e` with reviewed XR and animation graph support. Nothing has been published this session;
 final integrated checks remain pending.
 
 This is the implementation record for the pending-feature request. Existing
@@ -89,8 +89,9 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   degenerate/unreachable chains, rest/proportion mapping, graph diagnostics.
 - Outcome: graph/blend milestone `71cc1c4` accepted after independent source
   review, 125 focused tests, fmt and scoped Clippy. IK source and regression
-  tests are ready for review/validation; retargeting remains pending. Integration
-  waits for the external AI foundation handoff.
+  tests are ready for validation after an initialization-order review fix;
+  retargeting remains pending. The graph milestone and committed AI foundation
+  are assembled at `b62ef9e`; the external manager retains remaining AI work.
 
 ### 5. Editor scene recovery and graph authoring
 
@@ -144,7 +145,8 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 8. Remaining animation/editor/audio integrations
 
-- Status: pending; depends on relevant earlier stages.
+- Status: in progress (hot-reload tooling); other slices remain pending and
+  depend on relevant earlier stages.
 - Objective: morph import/animation/deformation, cinematics timeline/sequencer,
   editor hot reload/tooling, procedural audio graph, microphone/voice codec,
   streamed voice playback and physics3D-reactive spatial audio.
@@ -155,6 +157,9 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Acceptance: actual morph+skin vertices; deterministic timeline seek/events;
   successful and failed reloads; graph PCM; codec/capture lifecycle and voice
   loopback; collision-driven audio and collider acoustic geometry behavior.
+- Handoff: hot reload prepares a candidate while the old game runs, then activates
+  through the existing generation barrier. Tooling source is in progress; editor
+  action wiring waits for scene-editor handoff to avoid concurrent ownership.
 
 ### 9. Rendering round two
 
@@ -196,6 +201,7 @@ external worktrees are not cleanup targets.
 | codex-render-contracts | `91b961c` | Shared shadows; `codex/render-contracts` | active |
 | codex-pending-integration | `697e36f` | Root integration and final checks; `codex/pending-integration` | active |
 | parity-editor-scene | `9e4a063` | Resume scene WIP; existing `claude/parity-editor-scene` | active, retain |
+| parity-editor-hotreload | `319c7df` | Runtime generation replacement; existing `claude/parity-editor-hotreload` | active, retain |
 | parity-platform-services-ml | `609ccb2` | Complete ML; existing `claude/parity-platform-services-ml` | active, retain |
 | parity-platform-services-services | `7d614e9` | Existing server; existing `claude/parity-platform-services-services` | integrated, retained for existing owner |
 | parity-platform-services-xr | `daa2888` | Reviewed repairs; existing `claude/parity-platform-services-xr` | integrated, retained for existing owner |
