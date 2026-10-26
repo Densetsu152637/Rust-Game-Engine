@@ -263,3 +263,9 @@ and shutdown. Subjective audibility, loop seams and device-disconnect behavior o
 physical hardware need separate listening/manual validation. The fault unit test
 injects the same failure transition used by the real error callback; it does not
 prove a physical disconnect occurred.
+
+## Streaming PCM
+
+`AudioControl::play_stream` adds bounded incremental PCM sources without changing
+clip playback. See [streaming and clock contracts](../../docs/audio-streaming.md)
+for queue backpressure, generation-safe seek, EOF/starvation and source clocks.

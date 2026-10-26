@@ -7,11 +7,25 @@ use crate::dsp::{
     render::AcousticEngine,
     voice::{Context, Send, VoiceDsp},
 };
+use crate::stream::{StreamConfig, StreamGeneration, StreamPlayback, StreamSnapshot, StreamWriter};
 use crate::{
     Attenuation, AudioConfig, AudioError, Bus, Clip, Listener, PlayOptions, Result, SpatialOptions,
     allocate_handle, gain,
 };
 use std::sync::{Arc, Mutex, MutexGuard};
+
+enum VoiceInput {
+    Clip(Arc<Clip>),
+    Stream(StreamPlayback),
+}
+impl VoiceInput {
+    fn finished(&self, cursor: f64, looped: bool) -> bool {
+        match self {
+            Self::Clip(c) => !looped && cursor >= c.frames() as f64,
+            Self::Stream(s) => s.ended(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VoiceHandle(pub(crate) u64);
@@ -35,7 +49,7 @@ pub struct VoiceSnapshot {
 }
 pub(crate) struct Voice {
     pub(crate) handle: VoiceHandle,
-    clip: Arc<Clip>,
+    input: VoiceInput,
     options: PlayOptions,
     cursor: f64,
     paused: bool,
@@ -172,7 +186,7 @@ impl Mixer {
         }
         let retired = &mut self.retired;
         self.voices.retain_mut(|v| {
-            let finished = !v.options.looped && v.cursor >= v.clip.frames() as f64;
+            let finished = v.input.finished(v.cursor, v.options.looped);
             let alive = !finished || v.dsp.as_ref().is_some_and(|d| !d.drained());
             if !alive
                 && let Some(dsp) = v.dsp.take()
@@ -242,7 +256,7 @@ impl Mixer {
                     let Some(dsp) = &mut voice.dsp else {
                         continue;
                     };
-                    if produced < n {
+                    if produced < n && voice.input.finished(voice.cursor, voice.options.looped) {
                         dsp.end_input();
                     }
                     let send = match dsp.hero {
@@ -327,7 +341,22 @@ fn render_legacy(
     volume: f32,
     spatial: [f32; 2],
 ) {
-    let clip = &voice.clip;
+    let clip = match &mut voice.input {
+        VoiceInput::Clip(clip) => clip,
+        VoiceInput::Stream(stream) => {
+            stream.render(rate, voice.options.pitch, out.len(), |i, sample| {
+                let sample = if voice.options.spatial.enabled {
+                    [(sample[0] + sample[1]) * 0.5; 2]
+                } else {
+                    sample
+                };
+                for c in 0..2 {
+                    out[i][c] += sample[c] * volume * spatial[c];
+                }
+            });
+            return;
+        }
+    };
     let frames = clip.frames();
     let step = f64::from(clip.sample_rate()) / f64::from(rate) * f64::from(voice.options.pitch);
     for frame in out {
@@ -367,7 +396,14 @@ fn render_legacy(
 /// on the legacy spatial path); returns the frames produced before a one-shot
 /// clip ended. The rest of `out` stays zero.
 fn read_mono(voice: &mut Voice, rate: u32, out: &mut [f32]) -> usize {
-    let clip = &voice.clip;
+    let clip = match &mut voice.input {
+        VoiceInput::Clip(clip) => clip,
+        VoiceInput::Stream(stream) => {
+            return stream.render(rate, voice.options.pitch, out.len(), |i, sample| {
+                out[i] = (sample[0] + sample[1]) * 0.5;
+            });
+        }
+    };
     let frames = clip.frames();
     let step = f64::from(clip.sample_rate()) / f64::from(rate) * f64::from(voice.options.pitch);
     let samples = clip.samples();
@@ -439,7 +475,7 @@ impl AudioControl {
         let acoustic = dsp.is_some();
         mixer.voices.push(Voice {
             handle,
-            clip,
+            input: VoiceInput::Clip(clip),
             options,
             cursor: 0.0,
             paused: false,
@@ -451,6 +487,84 @@ impl AudioControl {
             mixer.reapply_frame();
         }
         Ok(handle)
+    }
+    /// Starts a bounded PCM queue. All producer work runs outside the audio callback.
+    pub fn play_stream(
+        &self,
+        config: StreamConfig,
+        mut options: PlayOptions,
+    ) -> Result<(VoiceHandle, StreamWriter)> {
+        options.validate()?;
+        if options.looped {
+            return Err(AudioError::new(
+                "audio.stream.loop",
+                "Stream loops require producer seek/replay",
+            ));
+        }
+        options.gain = gain(options.gain);
+        let mut mixer = self.control()?;
+        mixer.ready()?;
+        if mixer.voices.len() >= mixer.config.max_voices {
+            return Err(AudioError::new(
+                "audio.voice.limit",
+                "Concurrent voice limit reached",
+            ));
+        }
+        let (stream, writer) = StreamPlayback::new(config)?;
+        let handle = VoiceHandle(allocate_handle()?);
+        let (dsp, capped) = mixer.attach_dsp(&options, None, false);
+        let acoustic = dsp.is_some();
+        mixer.voices.push(Voice {
+            handle,
+            input: VoiceInput::Stream(stream),
+            options,
+            cursor: 0.,
+            paused: false,
+            dsp,
+            capped,
+        });
+        if acoustic {
+            mixer.reapply_frame();
+        }
+        Ok((handle, writer))
+    }
+    pub fn stream_snapshot(&self, handle: VoiceHandle) -> Result<Option<StreamSnapshot>> {
+        let m = self.lock()?;
+        match m
+            .voices
+            .iter()
+            .find(|v| v.handle == handle)
+            .map(|v| &v.input)
+        {
+            Some(VoiceInput::Stream(s)) => s.snapshot().map(Some),
+            _ => Ok(None),
+        }
+    }
+    /// Invalidates buffered PCM and old producer work; decoding must resume at `source_frame`.
+    pub fn seek_stream(&self, handle: VoiceHandle, source_frame: u64) -> Result<StreamGeneration> {
+        let mut m = self.control()?;
+        m.ready()?;
+        let index = m
+            .voices
+            .iter()
+            .position(|v| v.handle == handle)
+            .ok_or_else(|| AudioError::new("audio.stream.unknown", "Unknown stream voice"))?;
+        let VoiceInput::Stream(s) = &mut m.voices[index].input else {
+            return Err(AudioError::new(
+                "audio.stream.unknown",
+                "Voice is not streamed",
+            ));
+        };
+        let generation = s.seek(source_frame)?;
+        // Recreate delay/filter state on the control thread so pre-seek audio cannot leak.
+        let options = m.voices[index].options.clone();
+        let old = m.voices[index].dsp.take();
+        drop(old);
+        let (dsp, capped) = m.attach_dsp(&options, None, false);
+        m.voices[index].dsp = dsp;
+        m.voices[index].capped = capped;
+        m.reapply_frame();
+        Ok(generation)
     }
     pub fn stop(&self, handle: VoiceHandle) -> bool {
         self.control().is_ok_and(|mut m| {
@@ -472,6 +586,9 @@ impl AudioControl {
                 .find(|v| v.handle == handle)
                 .is_some_and(|v| {
                     v.paused = paused;
+                    if let VoiceInput::Stream(s) = &v.input {
+                        s.pause(paused);
+                    }
                     true
                 })
         })
@@ -495,6 +612,12 @@ impl AudioControl {
         let Some(index) = m.voices.iter().position(|v| v.handle == handle) else {
             return Ok(false);
         };
+        if options.looped && matches!(m.voices[index].input, VoiceInput::Stream(_)) {
+            return Err(AudioError::new(
+                "audio.stream.loop",
+                "Stream loops require producer seek/replay",
+            ));
+        }
         let existing = m.voices[index].dsp.take();
         let had = existing.is_some();
         let was_capped = m.voices[index].capped;
@@ -537,7 +660,10 @@ impl AudioControl {
                 } else {
                     VoiceState::Playing
                 },
-                cursor: v.cursor,
+                cursor: match &v.input {
+                    VoiceInput::Clip(_) => v.cursor,
+                    VoiceInput::Stream(s) => s.snapshot().map_or(v.cursor, |s| s.source_frame),
+                },
                 options: v.options.clone(),
             })
     }

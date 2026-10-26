@@ -10,10 +10,14 @@ mod device;
 mod dsp;
 mod mixer;
 mod sources;
+mod stream;
 
 pub use clip::{Clip, decode_wav, load_wav};
 pub use mixer::{AudioControl, VoiceHandle, VoiceSnapshot, VoiceState};
 pub use sources::{AudioSources, ObserverHandle, SourceAction, SourceHandle};
+pub use stream::{
+    MAX_STREAM_FRAMES, StreamConfig, StreamGeneration, StreamSnapshot, StreamState, StreamWriter,
+};
 
 use std::sync::{
     Arc, Mutex,
