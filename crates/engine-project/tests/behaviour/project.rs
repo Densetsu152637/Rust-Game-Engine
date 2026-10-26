@@ -148,7 +148,7 @@ table! { fails;
     asset_empty_id_is_rejected => (|p| p.add_asset("", "texture", "white.ppm"), "project.asset.id.duplicate");
     asset_overlong_id_is_rejected => (|p| p.add_asset(&"i".repeat(257), "script", "other.rs"), "project.asset.id.duplicate");
     asset_control_character_id_is_rejected => (|p| p.add_asset("a\u{7}b", "script", "other.rs"), "project.asset.id.duplicate");
-    asset_unknown_kind_is_rejected => (|p| p.add_asset("v", "video", "white.ppm"), "project.asset.kind");
+    asset_unknown_kind_is_rejected => (|p| p.add_asset("v", "unknown_asset_kind", "white.ppm"), "project.asset.kind");
     asset_kind_is_case_sensitive => (|p| p.add_asset("v", "Texture", "white.ppm"), "project.asset.kind");
     asset_empty_kind_is_rejected => (|p| p.add_asset("v", "", "white.ppm"), "project.asset.kind");
     asset_unknown_field_is_rejected => (|p| p.manifest["assets"][0]["extra"] = json!(1), "project.document.malformed");
