@@ -401,3 +401,77 @@ fn stale_absolute_component_is_not_used_as_an_exact_capture_baseline() {
     assert_eq!(local_x(&rt, "camera"), 67.);
     assert_eq!(absolute_x(&rt, "camera"), 99.);
 }
+
+fn tiny_runtime(exact_component: bool, autoplay: bool) -> (tempfile::TempDir, Runtime) {
+    let dir = fixture(false);
+    let path = dir.path().join("scene.json");
+    let mut scene: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    scene["entities"][0]["components"]["Transform"]["position"] = json!([4e-5, 0, 4]);
+    if exact_component {
+        scene["entities"][0]["components"]["custom"] =
+            json!({"engine.AbsolutePosition":{"version":1,"data":{"position":[NEAR_ORIGIN,0,4]}}});
+    }
+    let config = &mut scene["entities"][3]["components"]["custom"]["engine.SequencePlayer"]["data"];
+    config["autoplay"] = json!(autoplay);
+    config["timeline"]["tracks"][0]["channel"]["keys"] =
+        json!([{"time":0,"value":[1e-5,0,4]},{"time":2,"value":[3e-5,0,4]}]);
+    fs::write(path, scene.to_string()).unwrap();
+    let mut rt = Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    rt.app_mut()
+        .world_mut()
+        .resource_mut::<WorldOrigin>()
+        .offset = [NEAR_ORIGIN, 0., 0.];
+    rt.start().unwrap();
+    (dir, rt)
+}
+#[test]
+fn tiny_local_keys_and_baseline_survive_a_large_equal_initial_origin() {
+    let (_dir, mut rt) = tiny_runtime(false, true);
+    assert_eq!(local_x(&rt, "camera"), 1e-5_f32);
+    rt.tick(0.5, InputSnapshot::default()).unwrap();
+    assert!((local_x(&rt, "camera") - 1.5e-5_f32).abs() < 1e-10);
+    control(
+        &mut rt,
+        Command::Seek {
+            position: 1.,
+            events: SeekEvents::Silent,
+        },
+    )
+    .unwrap();
+    assert!((local_x(&rt, "camera") - 2e-5_f32).abs() < 1e-10);
+    control(&mut rt, Command::Stop).unwrap();
+    assert_eq!(local_x(&rt, "camera"), 4e-5_f32);
+}
+#[test]
+fn exact_component_f64_rounding_does_not_erase_small_local_samples_or_stale_baselines() {
+    use coordinates::AbsolutePosition;
+    for stale in [false, true] {
+        let (_dir, mut rt) = tiny_runtime(true, !stale);
+        let camera = rt.entity("camera").unwrap();
+        if stale {
+            rt.app_mut()
+                .world_mut()
+                .get_mut::<Transform>(camera)
+                .unwrap()
+                .position[0] = 4e-5_f32;
+            control(&mut rt, Command::Play).unwrap();
+        }
+        assert_eq!(local_x(&rt, "camera"), 1e-5_f32);
+        // Absolute f64 cannot represent these tiny offsets at this origin. Its rounded
+        // value and freshness still must not replace the independently sampled f32 local.
+        assert_eq!(
+            rt.app()
+                .world()
+                .get::<AbsolutePosition>(camera)
+                .unwrap()
+                .position[0],
+            NEAR_ORIGIN
+        );
+        rt.tick(0.5, InputSnapshot::default()).unwrap();
+        assert!((local_x(&rt, "camera") - 1.5e-5_f32).abs() < 1e-10);
+        rt.tick(0.5, InputSnapshot::default()).unwrap();
+        assert!((local_x(&rt, "camera") - 2e-5_f32).abs() < 1e-10);
+        control(&mut rt, Command::Stop).unwrap();
+        assert_eq!(local_x(&rt, "camera"), if stale { 4e-5_f32 } else { 0. });
+    }
+}

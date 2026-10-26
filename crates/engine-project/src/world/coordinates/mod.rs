@@ -80,28 +80,26 @@ pub(crate) fn capture_origin(world: &mut World) -> [f64; 3] {
 
 /// Exact baseline when the coordinates service still owns its matching local value.
 pub(crate) struct TranslationSnapshot {
-    pub absolute: [f64; 3],
+    pub exact: Option<[f64; 3]>,
+    pub local: [f32; 3],
     pub component: Option<AbsolutePosition>,
 }
 pub(crate) fn capture_translation(
     world: &World,
     entity: Entity,
-    origin: [f64; 3],
     local: [f32; 3],
 ) -> Result<TranslationSnapshot> {
     let component = world.get::<AbsolutePosition>(entity).cloned();
     if let Some(absolute) = &component {
         absolute.check()?;
     }
-    let absolute = component
+    let exact = component
         .as_ref()
         .filter(|absolute| absolute.exact_for(local))
-        .map_or_else(
-            || WorldOrigin { offset: origin }.absolute(local),
-            |absolute| absolute.position,
-        );
+        .map(|absolute| absolute.position);
     Ok(TranslationSnapshot {
-        absolute,
+        exact,
+        local,
         component,
     })
 }
@@ -112,30 +110,33 @@ pub(crate) fn write_captured_translation(
     entity: Entity,
     expected: &Option<AbsolutePosition>,
     local: [f32; 3],
-    absolute: [f64; 3],
+    absolute: Option<[f64; 3]>,
 ) -> Result<Option<AbsolutePosition>> {
     if world.get::<crate::Parent>(entity).is_some()
         || world.get::<AbsolutePosition>(entity) != expected.as_ref()
+        || expected.is_some() != absolute.is_some()
     {
         return Err(crate::Error::new(
             "sequence.invalid",
             "Sequence exact-position ownership changed",
         ));
     }
-    if local.iter().any(|v| !v.is_finite()) || absolute.iter().any(|v| !v.is_finite()) {
+    if local.iter().any(|v| !v.is_finite()) || absolute.iter().flatten().any(|v| !v.is_finite()) {
         return Err(crate::Error::new(
             "sequence.invalid",
             "Nonfinite sequence translation",
         ));
     }
-    if expected.is_some() {
+    if let Some(absolute) = absolute {
         AbsolutePosition::new(absolute).check()?;
     }
     let mut transform = world
         .get_mut::<crate::Transform>(entity)
         .ok_or_else(|| crate::Error::new("sequence.invalid", "Sequence transform removed"))?;
     transform.position = local;
-    if let Some(mut component) = world.get_mut::<AbsolutePosition>(entity) {
+    if let (Some(mut component), Some(absolute)) =
+        (world.get_mut::<AbsolutePosition>(entity), absolute)
+    {
         component.position = absolute;
         component.applied = Some(local);
         return Ok(Some(component.clone()));

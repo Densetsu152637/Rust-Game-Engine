@@ -213,9 +213,8 @@ impl Capture {
                 {
                     let current = crate::world::coordinates::capture_origin(world);
                     let key = *result.key_origin.get_or_insert(current);
-                    let baseline = crate::world::coordinates::capture_translation(
-                        world, target, current, baseline,
-                    )?;
+                    let baseline =
+                        crate::world::coordinates::capture_translation(world, target, baseline)?;
                     result
                         .translations
                         .insert(target, RootTranslation::new(key, current, baseline)?);

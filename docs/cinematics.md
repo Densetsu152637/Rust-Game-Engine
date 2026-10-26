@@ -172,7 +172,9 @@ Root translation tracks retain their absolute trajectory through the
 [coordinates service](world-coordinates.md), including automatic threshold shifts,
 `rebase_now` and reconciled direct origin writes. Their authored keys remain f32 local
 positions in the origin frame first acquired by that authored player. Subsequent samples
-subtract the current applied origin in f64 before one checked f32 conversion. Stop/replay
+subtract origins first and then add the local key in f64 before one checked f32 conversion.
+This ordering retains small f32 local motion when both origins are large and equal. Plain or
+stale-local baselines retain their original local value and capture origin for the same reason. Stop/replay
 of the same player retains that key frame; replacing its authored configuration establishes
 a new frame. Each acquisition captures a fresh baseline, so Stop restores that baseline
 expressed relative to the current origin. If an existing `engine.AbsolutePosition` is fresh
@@ -204,7 +206,10 @@ and rendered positions retain existing f32 precision. Moving the origin far from
 can therefore round its local position; a subsequent sample reprojects the retained path,
 and the baseline is not repeatedly rounded across shifts while held by a capture. No
 sub-f32 precision or arbitrary-delta regrouping guarantee is claimed. Nonfinite values or
-values outside finite f32 range fail explicitly rather than writing infinity.
+values outside finite f32 range fail explicitly rather than writing infinity. Existing exact-
+position components also obey their f64 precision and absolute-coordinate bound. Their absolute
+output is calculated separately: rounding below the f64 ULP cannot erase a representable local
+Transform sample or a local-derived baseline.
 ## Limits and validation
 
 A timeline allows 128 bindings, 256 tracks, 4096 total keys, 1024 markers and 1024 cuts, with
@@ -234,3 +239,5 @@ Floating-origin regressions cover manual and automatic shifts during active/paus
 seek/Stop/replay, child-local invariance, repeated shifts and external-write/reparent conflicts.
 Near-limit exact-position tests also verify sample/rebase/Stop/replay baselines, stale-component
 freshness checks, and preservation of external Transform and AbsolutePosition ownership.
+Large equal-origin tests retain 1e-5 local keys and small local baselines, including fresh and
+stale exact-position components whose f64 absolute value cannot encode that tiny offset.

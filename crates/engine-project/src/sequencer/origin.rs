@@ -15,12 +15,20 @@ pub(crate) type RootRebases = BTreeMap<Entity, RootRebase>;
 
 pub(super) struct RootSample {
     pub local: [f32; 3],
-    pub absolute: [f64; 3],
+    pub absolute: Option<[f64; 3]>,
+}
+#[derive(Clone, Copy)]
+enum Baseline {
+    Exact([f64; 3]),
+    Local {
+        position: [f32; 3],
+        origin: [f64; 3],
+    },
 }
 pub(super) struct RootTranslation {
     key_origin: [f64; 3],
     current_origin: [f64; 3],
-    baseline_absolute: [f64; 3],
+    baseline: Baseline,
     absolute_component: Option<AbsolutePosition>,
     conflicted: bool,
 }
@@ -30,28 +38,56 @@ impl RootTranslation {
         current_origin: [f64; 3],
         baseline: TranslationSnapshot,
     ) -> Result<Self> {
-        checked_local(baseline.absolute)?;
-        Ok(Self {
+        let result = Self {
             key_origin,
             current_origin,
-            baseline_absolute: baseline.absolute,
+            baseline: baseline.exact.map_or(
+                Baseline::Local {
+                    position: baseline.local,
+                    origin: current_origin,
+                },
+                Baseline::Exact,
+            ),
             absolute_component: baseline.component,
             conflicted: false,
-        })
+        };
+        result.baseline_sample()?;
+        Ok(result)
     }
-    fn projected(&self, absolute: [f64; 3]) -> Result<RootSample> {
-        if self.absolute_component.is_some() {
-            AbsolutePosition::new(absolute).check()?;
-        }
+    fn local_sample(&self, value: [f32; 3], origin: [f64; 3]) -> Result<RootSample> {
+        // Subtract origins before adding the f32 value. Adding a tiny local key to a
+        // large absolute origin first would lose representable local detail in f64.
         let local = checked_local(std::array::from_fn(|i| {
-            absolute[i] - self.current_origin[i]
+            f64::from(value[i]) + (origin[i] - self.current_origin[i])
         }))?;
+        let absolute = if self.absolute_component.is_some() {
+            let absolute = std::array::from_fn(|i| origin[i] + f64::from(value[i]));
+            AbsolutePosition::new(absolute).check()?;
+            Some(absolute)
+        } else {
+            None
+        };
         Ok(RootSample { local, absolute })
     }
+    fn baseline_sample(&self) -> Result<RootSample> {
+        match self.baseline {
+            Baseline::Local { position, origin } => self.local_sample(position, origin),
+            Baseline::Exact(absolute) => {
+                if self.absolute_component.is_some() {
+                    AbsolutePosition::new(absolute).check()?;
+                }
+                let local = checked_local(std::array::from_fn(|i| {
+                    absolute[i] - self.current_origin[i]
+                }))?;
+                Ok(RootSample {
+                    local,
+                    absolute: self.absolute_component.as_ref().map(|_| absolute),
+                })
+            }
+        }
+    }
     pub fn sample(&self, value: [f32; 3]) -> Result<RootSample> {
-        self.projected(std::array::from_fn(|i| {
-            f64::from(value[i]) + self.key_origin[i]
-        }))
+        self.local_sample(value, self.key_origin)
     }
     pub fn write(&mut self, world: &mut World, target: Entity, sample: RootSample) -> Result<()> {
         self.absolute_component = coordinates::write_captured_translation(
@@ -64,7 +100,7 @@ impl RootTranslation {
         Ok(())
     }
     pub fn restore(&mut self, world: &mut World, target: Entity) -> Result<()> {
-        self.write(world, target, self.projected(self.baseline_absolute)?)
+        self.write(world, target, self.baseline_sample()?)
     }
     pub fn component_owned(&self, world: &World, target: Entity) -> bool {
         world.get::<AbsolutePosition>(target) == self.absolute_component.as_ref()
@@ -91,14 +127,13 @@ impl RootTranslation {
             self.conflicted = true;
         }
         self.current_origin = to;
-        let baseline =
-            match checked_local(std::array::from_fn(|i| self.baseline_absolute[i] - to[i])) {
-                Ok(value) => value,
-                Err(_) => {
-                    self.conflicted = true;
-                    return None;
-                }
-            };
+        let baseline = match self.baseline_sample() {
+            Ok(sample) => sample.local,
+            Err(_) => {
+                self.conflicted = true;
+                return None;
+            }
+        };
         if self.conflicted {
             return None;
         }
