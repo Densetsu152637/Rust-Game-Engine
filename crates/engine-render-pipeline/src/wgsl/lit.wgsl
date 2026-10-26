@@ -52,7 +52,7 @@ struct Output {
     surface.roughness = material.options.z * select(1.0, mr.g, maps.z > 0.5);
     surface.normal = n;
     let direct = engine_direct_lighting(surface, input.world, v, input.position.xy, material.options.w > 0.5);
-    let ambient = engine_indirect_lighting(surface, v, input.position.xy);
+    let ambient = engine_material_indirect_lighting(surface, v, input.position.xy);
     let shaded = direct + ambient;
     let result = select(shaded, color.rgb, material.options.x > 0.5);
     return vec4<f32>(result, color.a);

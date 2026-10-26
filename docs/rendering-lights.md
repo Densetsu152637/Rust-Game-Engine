@@ -290,7 +290,9 @@ writes. The six `gpu_pipeline` regression tests also pass.
 
 ## Limits
 
-- No image-based lighting; the ambient term is a constant unless the ray-traced GI,
+- Authored image-based lighting is not integrated. A source-only native per-view
+  IBL/probe material adapter is described in [indirect lighting](rendering-indirect.md).
+  Without that configuration the ambient term is a constant unless the ray-traced GI,
   AO or reflection features write the screen-lighting inputs
   ([rendering-raytracing.md](rendering-raytracing.md#frame-integration)).
 - Area light specular is a representative-point approximation; area shadows

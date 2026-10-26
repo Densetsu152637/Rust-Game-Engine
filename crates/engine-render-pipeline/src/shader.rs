@@ -83,6 +83,10 @@ impl ShaderComposer {
             MaterialTarget::Sprite => SPRITE_MATERIAL_WGSL,
         };
         modules.insert("engine::material".to_owned(), material.to_owned());
+        modules.insert(
+            "engine::material_bindings".to_owned(),
+            include_str!("wgsl/material_bindings.wgsl").to_owned(),
+        );
         Self { modules }
     }
 
@@ -226,7 +230,21 @@ pub fn material_bindings(target: MaterialTarget) -> &'static [(u32, u32)] {
 /// points, every resource binding one that `engine::material` provides and
 /// declared once. Returns the composed source.
 pub fn compose_material(source: &str, target: MaterialTarget) -> Result<String> {
-    let composer = ShaderComposer::for_target(target);
+    compose_material_mode(source, target, false)
+}
+
+pub(crate) fn compose_mesh_material(source: &str, indirect: bool) -> Result<String> {
+    compose_material_mode(source, MaterialTarget::Mesh, indirect)
+}
+
+fn compose_material_mode(source: &str, target: MaterialTarget, indirect: bool) -> Result<String> {
+    let mut composer = ShaderComposer::for_target(target);
+    if indirect {
+        composer.modules.insert(
+            "engine::material".to_owned(),
+            crate::indirect::MATERIAL_WGSL.to_owned(),
+        );
+    }
     let composed = composer.compose(source)?;
     let module = validate_wgsl(&composed)?;
     for (name, stage) in [
@@ -241,7 +259,10 @@ pub fn compose_material(source: &str, target: MaterialTarget) -> Result<String> 
             "material shaders need a `{name}` {stage:?} entry point"
         );
     }
-    let allowed = material_bindings(target);
+    let mut allowed = material_bindings(target).to_vec();
+    if indirect {
+        allowed.extend_from_slice(&[(1, 4), (1, 5), (1, 6), (1, 7), (2, 1)]);
+    }
     let mut seen = BTreeSet::new();
     for (_, global) in module.global_variables.iter() {
         let Some(binding) = &global.binding else {
@@ -270,6 +291,29 @@ pub fn compose_material(source: &str, target: MaterialTarget) -> Result<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_indirect_and_legacy_material_contracts_compose_without_extra_groups() {
+        let native = compose_mesh_material(LIT_WGSL, true).unwrap();
+        assert!(native.contains("engine_environment0"));
+        assert!(native.contains("engine_resolve_indirect_lighting"));
+        let module = validate_wgsl(&native).unwrap();
+        assert!(
+            module
+                .global_variables
+                .iter()
+                .all(|(_, v)| v.binding.as_ref().is_none_or(|b| b.group <= 3))
+        );
+        for target in [MaterialTarget::Mesh, MaterialTarget::Sprite] {
+            let legacy = compose_material(LIT_WGSL, target).unwrap();
+            assert!(!legacy.contains("var engine_environment0"));
+            let custom = LIT_WGSL.replace(
+                "engine_material_indirect_lighting",
+                "engine_indirect_lighting",
+            );
+            compose_material(&custom, target).unwrap();
+        }
+    }
 
     #[test]
     fn imports_resolve_recursively_once_each() {

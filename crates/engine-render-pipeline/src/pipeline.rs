@@ -1,6 +1,6 @@
 //! The 3D frame: per-view state, stage execution and host hooks.
 
-use crate::builtin::mesh::{MeshRenderer, MeshViewState, SceneMesh};
+use crate::builtin::mesh::{MeshPreparation, MeshRenderer, MeshViewState, SceneMesh};
 use crate::builtin::passes::{OutputPass, UpscalePass};
 use crate::context::{
     FeatureContext, FeatureSetup, FrameIo, HdrSource, OutputTarget, PipelineLayouts,
@@ -271,6 +271,7 @@ fn layouts(device: &wgpu::Device) -> PipelineLayouts {
             label: Some("engine::material uniforms"),
             entries: &[dynamic_uniform(0, 32), dynamic_uniform(2, 16)],
         }),
+        indirect_material: crate::indirect::material_layouts(device),
     }
 }
 
@@ -316,6 +317,7 @@ pub struct ScenePipeline {
     composite_copy: OutputPass,
     upscale: UpscalePass,
     views: HashMap<ViewId, ViewState>,
+    indirect: HashMap<ViewId, std::sync::Arc<crate::indirect::IndirectScene>>,
     shadow_alignment: u32,
     lighting: LightingRenderer,
     atlas: ShadowAtlasConfig,
@@ -358,6 +360,7 @@ impl ScenePipeline {
             composite_copy,
             upscale,
             views: HashMap::new(),
+            indirect: HashMap::new(),
             shadow_alignment,
             lighting,
             atlas: ShadowAtlasConfig::default(),
@@ -455,7 +458,48 @@ impl ScenePipeline {
 
     /// Drop a view's targets and history (for example a closed viewport).
     pub fn forget_view(&mut self, view: ViewId) {
+        self.indirect.remove(&view);
         self.views.remove(&view);
+    }
+
+    /// Configure native material IBL for one view. None restores legacy ambient.
+    /// Rejected settings leave the prior configuration unchanged. Resources must
+    /// belong to this pipeline device; replacement releases stale material groups.
+    pub fn set_indirect(
+        &mut self,
+        view: ViewId,
+        scene: Option<std::sync::Arc<crate::indirect::IndirectScene>>,
+    ) -> Result<()> {
+        ensure!(
+            view != OVERLAY_ONLY,
+            "presentation-only view cannot receive scene IBL"
+        );
+        if let Some(scene) = scene {
+            if self
+                .indirect
+                .get(&view)
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, &scene))
+            {
+                return Ok(());
+            }
+            crate::indirect::check_material_limits(&self.gpu.device.limits())?;
+            crate::indirect::check_capabilities(&self.gpu)?;
+            ensure!(
+                self.layouts.indirect_material.is_some(),
+                "indirect material layout unavailable"
+            );
+            ensure!(
+                scene.resources().device() == &self.gpu.device,
+                "indirect resources belong to another device"
+            );
+            self.indirect.insert(view, scene);
+        } else if self.indirect.remove(&view).is_none() {
+            return Ok(());
+        }
+        if let Some(state) = self.views.get_mut(&view) {
+            state.mesh.invalidate_material_bindings();
+        }
+        Ok(())
     }
 
     /// Render-size targets of `view`'s last frame.
@@ -510,15 +554,23 @@ impl ScenePipeline {
             .entry(view.id)
             .or_insert_with(|| ViewState::new(gpu, layouts, lighting));
 
+        let indirect = self.indirect.get(&view.id);
+        if view.reset_history && indirect.is_some() {
+            state.mesh.invalidate_material_bindings();
+        }
         // CPU validation and uploads first: nothing is encoded on failure.
         self.mesh
             .prepare(
                 &self.gpu,
                 layouts,
                 &mut state.mesh,
-                frame.meshes,
-                view.camera_position(),
-                view.reset_history,
+                MeshPreparation {
+                    meshes: frame.meshes,
+                    camera: view.camera_position(),
+                    reset_history: view.reset_history,
+                    indirect: indirect.map(|s| s.as_ref()),
+                    ambient: view.ambient,
+                },
             )
             .context("preparing scene meshes")?;
         let mut targets = match state.targets.take() {

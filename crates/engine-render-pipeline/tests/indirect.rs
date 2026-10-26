@@ -226,3 +226,26 @@ fn low_roughness_and_grazing_match_actual_shader_regularization() {
         }
     }
 }
+
+#[test]
+fn native_indirect_metadata_rejects_bad_rotations_intensities_and_limits() {
+    use glam::Quat;
+    assert_eq!(INDIRECT_UNIFORM_BYTES, 448);
+    assert!(EnvironmentLighting::new(0, Quat::IDENTITY, 1.0).is_ok());
+    assert!(EnvironmentLighting::new(0, Quat::from_xyzw(0.0, 0.0, 0.0, 0.0), 1.0).is_err());
+    assert!(EnvironmentLighting::new(0, Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0), 1.0).is_err());
+    for intensity in [-1.0, f32::NAN, f32::INFINITY, 1001.0] {
+        assert!(EnvironmentLighting::new(0, Quat::IDENTITY, intensity).is_err());
+    }
+    assert!(check_material_limits(&wgpu::Limits::default()).is_ok());
+    let textures = wgpu::Limits {
+        max_sampled_textures_per_shader_stage: 10,
+        ..Default::default()
+    };
+    assert!(check_material_limits(&textures).is_err());
+    let dynamic = wgpu::Limits {
+        max_dynamic_uniform_buffers_per_pipeline_layout: 2,
+        ..Default::default()
+    };
+    assert!(check_material_limits(&dynamic).is_err());
+}

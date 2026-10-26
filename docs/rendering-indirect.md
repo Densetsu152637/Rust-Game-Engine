@@ -1,8 +1,8 @@
 # Native indirect-lighting resource preparation
 
-Source milestone: native input validation and immutable float GPU resources.
-The module is `engine_render_pipeline::indirect`. It does **not** install IBL in
-materials or provide an authored project adapter. No tests in this milestone
+Source milestone: native input validation, immutable float GPU resources and
+optional per-view material IBL/probe consumption. The module is
+`engine_render_pipeline::indirect`. No authored project adapter is installed. No tests in this milestone
 have been executed by its implementer; GPU tests require an explicit real adapter.
 
 ## Input and precision contract
@@ -86,8 +86,8 @@ baking. The LUT uploads as R=A, G=B, B=0, A=1 in `Rgba16Float`.
 array layers. Unsupported capability returns an error naming the missing resource
 requirement; a future renderer may report constant-ambient fallback. No successful
 material feature status is fabricated. No optional feature is requested after the
-device has been created. Material-layout texture/sampler/uniform limits remain a
-separate integration gate because this milestone creates no material layout.
+device has been created. The native material adapter additionally validates its optional layout limits;
+the legacy material layouts remain available on a restricted device.
 
 `GpuIndirectResources` owns environment cubes, lightmaps, shared LUT and a linear
 clamp sampler. They can be shared across views/resizes and dropped through normal
@@ -121,10 +121,98 @@ cargo test -p engine-render-pipeline --test indirect
 cargo test -p engine-render-pipeline --test gpu_indirect -- --ignored --test-threads=1 --nocapture
 ```
 
-Still required: material bind groups/uniforms and shading composition, diffuse
-rotation and reflection evaluation, screen GI/reflection precedence, real UV2,
-per-draw probe/lightmap batch identity, native host extraction, float asset loading,
-project asset kinds/components/schema/snapshot/reload adapters, authored fixtures,
-and integrated material GPU readbacks. Existing sprite materials must retain a
-valid neutral implementation, and material graph template regressions must run.
-These resource tests do not establish that user-facing IBL/probes/lightmaps render.
+## Native material adapter (source, GPU verification pending)
+
+Configure each view independently:
+
+```rust,ignore
+let prepared = Arc::new(GpuIndirectResources::prepare(&gpu, &environments, &[], &lut)?);
+let global = EnvironmentLighting::new(0, glam::Quat::IDENTITY, 1.0)?;
+let scene = Arc::new(IndirectScene::new(prepared, Some(global), probes)?);
+pipeline.set_indirect(ViewId::MAIN, Some(scene))?;
+// Explicitly restore legacy ambient/screen lighting:
+pipeline.set_indirect(ViewId::MAIN, None)?;
+```
+
+`IndirectScene::new` validates environment indices, unique probe IDs and bounded
+resource/probe counts. `EnvironmentLighting` requires a finite unit quaternion
+(local environment axes to world axes) and intensity in 0..1000. Intensity includes
+any desired camera exposure; the renderer does not add another exposure. The
+shader rotates normals and reflected directions by the inverse rotation. Samples
+use supplied diffuse irradiance/pi coefficients and GGX-prefiltered specular mips,
+with split-sum BRDF coefficients. Diffuse carries nonmetallic weight and roughness
+Fresnel energy weight; specular uses metallic F0 and material roughness. No sky
+background, automatic probe capture, convolution or scene baking is implied.
+
+Probe choice is evaluated at each draw's transformed origin. One highest-priority
+local box blends against global lighting using the validated smooth boundary
+weight; absent global data blends against the existing constant ambient instead.
+Large meshes do not interpolate across several probes, and reflection parallax is
+not box-corrected. A missing environment is different from an explicit zero-intensity
+one: missing data retains legacy ambient; zero intensity intentionally supplies dark
+indirect lighting. Finite input validation does not guarantee arbitrary accumulated
+lighting fits the final half-float HDR target; callers still choose sensible exposure.
+
+The pipeline keeps `SceneFrame`, `SceneMesh`, `EngineInstance` (208 bytes), group 0
+and group 3 unchanged. It selects an optional material pipeline variant using the
+same four groups. Legacy groups 1/2 are retained for all existing feature shaders.
+The native variant adds these bindings:
+
+| Group/binding | Resource |
+| --- | --- |
+| 1/4, 1/5 | global/local specular cube, or a shared black cube |
+| 1/6 | BRDF LUT |
+| 1/7 | linear clamp environment sampler |
+| 2/1 | 448-byte dynamic uniform: two diffuse coefficient sets, inverse rotations, weights, mip bounds and intensity flags |
+
+Material limits are 11 sampled textures, 3 samplers and 4 uniform bindings per
+fragment stage, plus 3 dynamic uniform bindings. A restricted device keeps the
+legacy pipeline; `set_indirect` returns a named error before changing the previous
+configuration. Cross-device resource sets are rejected. No fifth group, instance
+ABI change or mandatory new optional GPU feature is introduced.
+
+The built-in material calls `engine_material_indirect_lighting`. Material graphs
+inherit that call through their existing built-in template, without graph registry
+or compiler edits. Raw custom shaders using the old `engine_indirect_lighting`
+continue to receive ambient/screen lighting only. Opt into IBL by calling the new
+material helper from raw `#import engine::material` source. Already composed legacy
+source contains its neutral helper and remains neutral. The sprite implementation
+of the new helper delegates to its existing unlit/ambient implementation and adds
+no resource bindings. World terrain/foliage shaders and their layouts are unchanged;
+this first adapter does not automatically add IBL to their custom shading paths.
+
+Screen GI replaces the selected diffuse term rather than being added again. Screen
+AO multiplies that diffuse term. An eligible screen reflection blends from IBL
+specular to screen radiance with the existing roughness cutoff/fade; at full weight
+it replaces IBL. With no IBL, this is the previous ambient/AO/GI/reflection behavior.
+Direct lighting/shadows and explicit unlit materials retain their existing roles.
+
+Per-view caches use resource IDs plus actual resolved coefficients/rotations/weights
+in material identity, so differently illuminated draws cannot share the first draw's
+uniforms. At most 4096 distinct indirect materials are admitted per view; overflow
+fails before encoding. Uniform offsets/stride use device alignment and buffer/dynamic
+offset budgets. Resolution happens one draw at a time; retained indirect uniforms
+and texture groups are bounded by distinct material count, not an unbounded copy
+of SH data per instance. Immutable prepared resources are shared across views/resizes.
+Replacement/toggle releases stale material groups; camera reset clears those groups
+without discarding lighting configuration. `forget_view` drops its configuration
+and all view caches. Setting the same immutable Arc again leaves caches intact.
+
+Ignored `gpu_indirect_shading` test sources render native lit meshes and read actual
+scene HDR pixels. They cover constant HDR irradiance, independently integrated
+metallic specular/roughness response, supplied mip selection, cube/diffuse rotation,
+probe priority/tie/boundary blending, per-view isolation, resize/forget, missing/empty
+data and toggling, legacy custom neutrality, screen GI/AO/reflection precedence,
+invalid scene references and distinct-material limits. Source-only compiler tests
+compose native, legacy and sprite variants; metadata tests cover bad rotations,
+intensities and restricted limits. These tests have NOT run in this milestone:
+
+```text
+cargo test -p engine-render-pipeline --test gpu_indirect_shading -- --ignored --test-threads=1 --nocapture
+```
+
+Still required for the full rendering request: executed CPU/GPU validation and
+source review; authored project/desktop extraction, float asset loading and schemas;
+real UV2 and lightmap material consumption; relevant World material integration;
+authored fixtures and runtime resource reload/status adapters. Native shaded test
+sources do not establish user-facing authored IBL/probes/lightmaps acceptance.
