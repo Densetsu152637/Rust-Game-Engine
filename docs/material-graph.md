@@ -41,6 +41,15 @@ range; `mix_vec3.factor` is clamped to 0–1. These guards bound generated
 expression results; lighting and user-supplied GPU uniforms still follow the
 existing material contract.
 
+A project catalog stores the document as a `graph` asset. Set
+`MeshMaterial.shader` to that asset ID on a mesh or sprite entity.
+`Project::load` validates the graph and scene reference, and
+`Runtime::extract_scene_frame` compiles the graph source into both
+`MeshDraw3D.shader` and sprite `MaterialSnapshot.shader` snapshots.
+The renderer then composes and checks that source against its target's
+material contract. Regular `shader` assets remain supported by the same
+field. Graphs of another kind are rejected as material shader references.
+
 The node vocabulary is fixed. Authored documents cannot supply raw WGSL,
 resource bindings, custom uniforms, displacement, or arbitrary texture slots.
 The compiler emits expressions in node-ID topological order so JSON node and

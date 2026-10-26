@@ -1652,6 +1652,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-material-graph"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "engine-graph",
+ "engine-render-pipeline",
+ "engine-render-wgpu",
+ "glam 0.34.1",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
 name = "engine-mcp"
 version = "0.1.0"
 dependencies = [
@@ -1815,6 +1829,7 @@ dependencies = [
  "engine-fluids",
  "engine-graph",
  "engine-locale",
+ "engine-material-graph",
  "engine-ml",
  "engine-navigation",
  "engine-net-predict",

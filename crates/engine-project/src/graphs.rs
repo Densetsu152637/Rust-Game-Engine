@@ -45,6 +45,7 @@ fn build() -> GraphKinds {
         engine_ai::behavior_tree::kind(),
         engine_animation::graph::kind(),
         engine_ai::state_tree::kind(),
+        engine_material_graph::material_kind(),
     ];
     GraphKinds {
         kinds: kinds.into_iter().map(|k| (k.name.clone(), k)).collect(),
@@ -116,6 +117,10 @@ pub fn load_graph(project: &Project, id: &str) -> Result<GraphDocument> {
 /// Project validation of a `graph` asset.
 pub(crate) fn validate_asset(project: &Project, id: &str) -> Result<()> {
     let document = load_graph(project, id)?;
+    if document.kind == engine_material_graph::KIND {
+        engine_material_graph::compile_material(&document)
+            .map_err(|diagnostics| into_error(diagnostics, &project.assets[id].path))?;
+    }
     if document.kind == "animation" {
         let graph = engine_animation::graph::Graph::compile(&document)
             .map_err(|d| into_error(d, Path::new(id)))?;
