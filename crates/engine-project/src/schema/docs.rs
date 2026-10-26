@@ -111,6 +111,13 @@ fn motion_blur_schema() -> Value {
     }), &[]), {"type":"null"}],"description":"Optional motion blur; absent or null disables it. Camera3D.render_features.effects.motion_blur=false takes precedence."})
 }
 
+fn spatial_aa_schema() -> Value {
+    json!({"oneOf":[closed(json!({
+        "edge_threshold":{"type":"number","minimum":0,"maximum":1,"default":0.12,"description":"Relative local HDR-luma contrast threshold."},
+        "strength":{"type":"number","minimum":0,"maximum":1,"default":0.75,"description":"Edge-directed blend fraction; zero skips the pass."}
+    }), &[]), {"type":"null"}],"description":"Optional current-frame spatial AA; absent or null disables it. Camera3D.render_features.effects.spatial_aa=false takes precedence."})
+}
+
 /// All authored component documents.
 pub fn component_docs() -> Vec<ComponentDoc> {
     let mut docs = builtin_docs();
@@ -124,10 +131,10 @@ fn builtin_docs() -> Vec<ComponentDoc> {
     vec![
         ComponentDoc {
             name: "Camera3D",
-            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field` and `motion_blur` enable bounded native post effects unless `render_features` explicitly disables them.",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them.",
             requires: &["Transform"],
             schema: closed(
-                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
+                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
                     "description":"Per-camera render feature overrides by stable feature name (for example engine.opaque, engine.shadows, engine.sprites, the UI features ui.sdf_text, ui.world and ui.color_filter of engine-ui-render, or a native feature such as world.terrain): false disables the feature in this camera view, true enables a feature that is off by default. Required features (engine.output) cannot be disabled. Unknown names are reported in the run report's render_pipeline.unknown_overrides."},"projection":{"oneOf":[
                     closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
                     closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])

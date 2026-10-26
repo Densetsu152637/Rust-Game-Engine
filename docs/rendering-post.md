@@ -176,6 +176,25 @@ the snapshot (reading it blocks the GPU); use `ScenePipeline::auto_exposure`.
 before anything is encoded. `names::POST` / `names::TONEMAP` are the feature
 names.
 
+### Camera spatial antialiasing
+
+`Camera3D.spatial_aa` optionally enables `effects.spatial_aa`; an absent or
+`null` setting leaves it off. Its `edge_threshold` and `strength` are finite
+numbers in 0..=1 (defaults 0.12 and 0.75). An explicit
+`Camera3D.render_features["effects.spatial_aa"] = false` takes precedence.
+The desktop renderer clears controls when the camera setting is removed,
+disabled or replaced, including between views and after resize.
+
+The current-frame HDR pass runs after upscale, bloom/grading, depth of field
+and motion blur, before tonemapping and UI. It estimates local luma contrast
+and an edge tangent from a 3×3 neighborhood, then blends a bounded set of
+samples along that tangent. Pixels below the threshold return the original
+color; the pass keeps the original alpha. It handles a render-size HDR source
+when built-in upscale is disabled by sampling from the source's actual size.
+This is a spatial filter: it has no jitter, motion-vector resolve or color
+history. It can soften fine geometry and does not recover subpixel detail
+missing from the input. It is not FSR, XeSS or temporal antialiasing.
+
 ## Measured results
 
 RTX 5080, Vulkan, `--ignored --test-threads=1`

@@ -46,7 +46,9 @@ use engine_render_pipeline::{
     OverlayBatch, OverlayItem, PipelineFeatures, Presentation, PresentationInput, SceneFrame,
     ScenePipeline, SceneTextures, Stage, ViewData, ViewId, ViewKind, ViewReport, Viewport, names,
 };
-use engine_render_post_effects::{DepthOfFieldFeature, MotionBlurFeature, PostEffects};
+use engine_render_post_effects::{
+    DepthOfFieldFeature, MotionBlurFeature, PostEffects, SpatialAaFeature,
+};
 use engine_render_wgpu::{WgpuBackend, WgpuOptions};
 use glam::Mat4;
 use std::sync::Arc;
@@ -443,6 +445,7 @@ impl GpuRenderer {
                 ScenePipeline::new(self.gpu.clone()).context("creating the 3D render pipeline")?;
             scene.register(DepthOfFieldFeature::new(self.post_effects.clone()))?;
             scene.register(MotionBlurFeature::new(self.post_effects.clone()))?;
+            scene.register(SpatialAaFeature::new(self.post_effects.clone()))?;
             self.scene = Some(scene);
         }
         Ok(self.scene.as_mut().expect("created above"))
@@ -680,6 +683,7 @@ impl GpuRenderer {
     ) -> Result<RenderStats> {
         self.post_effects.set_dof(ViewId::MAIN, None)?;
         self.post_effects.set_motion_blur(ViewId::MAIN, None)?;
+        self.post_effects.set_spatial_aa(ViewId::MAIN, None)?;
         let size = (self.info.width, self.info.height);
         self.sprites.validate_scene(frame, size)?;
         let built = self.sprites.build_overlay(frame, size)?;
@@ -1677,6 +1681,7 @@ pub fn preview_pipeline_status(
     let mut registry = engine_render_pipeline::builtin_registry()?;
     registry.register(DepthOfFieldFeature::new(PostEffects::default()))?;
     registry.register(MotionBlurFeature::new(PostEffects::default()))?;
+    registry.register(SpatialAaFeature::new(PostEffects::default()))?;
     if let Some(features) = features {
         registry.absorb(features.0.descriptor_copy()?)?;
     }

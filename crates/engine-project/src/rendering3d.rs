@@ -35,6 +35,40 @@ impl Default for Projection3D {
 
 pub const DEPTH_OF_FIELD_FEATURE: &str = "effects.dof";
 pub const MOTION_BLUR_FEATURE: &str = "effects.motion_blur";
+pub const SPATIAL_AA_FEATURE: &str = "effects.spatial_aa";
+
+/// Optional edge-directed spatial AA for one camera. Absent means disabled.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpatialAa3D {
+    pub edge_threshold: f32,
+    pub strength: f32,
+}
+
+impl Default for SpatialAa3D {
+    fn default() -> Self {
+        Self {
+            edge_threshold: 0.12,
+            strength: 0.75,
+        }
+    }
+}
+
+impl SpatialAa3D {
+    pub fn validate(&self) -> Result<()> {
+        if !self.edge_threshold.is_finite()
+            || !(0.0..=1.0).contains(&self.edge_threshold)
+            || !self.strength.is_finite()
+            || !(0.0..=1.0).contains(&self.strength)
+        {
+            return Err(Error::new(
+                "camera3d.spatial_aa.invalid",
+                "Spatial AA needs finite edge_threshold and strength in 0..=1",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Optional view-space focus and bounded screen-space blur for one camera.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -132,6 +166,9 @@ pub struct Camera3D {
     /// Absent means off. `render_features["effects.motion_blur"] = false` also disables it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motion_blur: Option<MotionBlur3D>,
+    /// Absent means off. `render_features["effects.spatial_aa"] = false` wins.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spatial_aa: Option<SpatialAa3D>,
     /// Per-camera render feature overrides by stable feature name
     /// (`engine.opaque`, `world.terrain`, ...): `false` disables a feature in
     /// this camera's view, `true` enables one that is off by default. Names of
@@ -153,6 +190,7 @@ impl Default for Camera3D {
             frame_generation: FrameGenerationSettings::default(),
             depth_of_field: None,
             motion_blur: None,
+            spatial_aa: None,
             render_features: BTreeMap::new(),
         }
     }
@@ -568,6 +606,9 @@ impl Camera3D {
         if self.motion_blur.is_some() {
             features.entry(MOTION_BLUR_FEATURE.into()).or_insert(true);
         }
+        if self.spatial_aa.is_some() {
+            features.entry(SPATIAL_AA_FEATURE.into()).or_insert(true);
+        }
         features
     }
 
@@ -576,6 +617,9 @@ impl Camera3D {
             settings.validate()?;
         }
         if let Some(settings) = self.motion_blur {
+            settings.validate()?;
+        }
+        if let Some(settings) = self.spatial_aa {
             settings.validate()?;
         }
         self.lighting.validate()?;
