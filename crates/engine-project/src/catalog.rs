@@ -51,6 +51,7 @@ impl ComponentCatalog {
                 crate::world_text::descriptor(),
             ])
             .chain(crate::acoustics::descriptors())
+            .chain(crate::ai::descriptors())
             .chain(crate::networking::descriptors())
             .chain(descriptors)
         {

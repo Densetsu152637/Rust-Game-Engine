@@ -45,7 +45,7 @@ clients take the same `command` and `args`.
 
 | Level | Flag | Tools | What it can do |
 | --- | --- | --- | --- |
-| Read | always on | 22 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
+| Read | always on | 25 read tools, resources | Inspect the project and read or search its text files. Never changes anything. |
 | Write | `--allow-write` | `entity_create`, `entity_update`, `entity_delete`, `component_set`, `component_remove`, `file_write` | Change scenes and text files inside the project root. |
 | Exec | `--allow-exec` | `project_build`, `project_run_headless`, `render_screenshot` | Compile and run the project's native game code. |
 
@@ -155,6 +155,8 @@ All carry `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`.
 | `locale_pseudo_preview` | `text` or `key` (+ `locale`, `args`), `options` | Pseudo-localized text (accents, expansion, markers, RTL mirror) with placeables and markup preserved. |
 | `ui_inspect` | `scene`, `entity` (required), `viewport`, `theme`, `locale`, `states`, `font`, `point`, `offset`, `limit` | The computed layout of an entity's `engine.UiRoot` in paint order (boxes, parent, children, widget kind), nodes without a box, layout issues (overflow, zero size, clipped away, unreachable focus, non-focusable navigation targets), an optional hit test, and the `ui_hash` for `ui_edit`. See [UI authoring tools](#ui-authoring-tools). |
 | `ui_preview` | `scene`, `entity` (required), `viewport`, `scale`, `theme`, `locale`, `states`, `font`, `background`, `sampling` | A PNG of the entity's `engine.UiRoot` from the headless CPU rasterizer, returned as MCP image content with size and digest. At most 2048 x 2048 pixels and within the output message limit; coverage text only. |
+| `graph_schema` | `kind`, `node_type` | The graph kinds (for example `behavior_tree`) and, for one kind, every node type with ports, parameter schemas (type, default, bounds, choices), category and description; also the `graph_edit` operations and the stable diagnostic codes. Pure metadata. See [Graph documents](ai-graphs.md). |
+| `graph_validate` | `asset`, `path` or `document` (exactly one), `level` | Coded diagnostics (`code`, `path`, `message`) for a graph asset, file or inline document at the `complete` (default) or `structure` level, plus `valid`, `kind`, counts and, for files, the `revision` that `graph_edit` expects. Works on an asset that is currently invalid. |
 | `file_list` | `path`, `recursive`, `extension`, `glob`, `offset`, `limit` | Sorted, paged entries (`file`/`dir`, size). `glob` (at most 512 bytes, otherwise `invalid_argument`) supports `*`, `**` and `?`; a pattern without `/` matches file names. |
 | `file_read` | `path`, `start_line`, `end_line` | UTF-8 text (line endings preserved), `total_lines`, `hash` of the whole file, and `next_start_line` when the output was cut. |
 | `search_text` | `query`, `regex`, `case_sensitive`, `path`, `extension`, `glob` (at most 512 bytes), `max_results`, `context_lines` | Matches with path, line, column and text (optionally context), plus counts of scanned, binary and oversized files and why the search stopped. Case-insensitive substring by default. |
@@ -183,6 +185,8 @@ nothing). They return `scene`, `scene_id`, `saved`, `previous_revision`, the new
 | `locale_remove_message` | `locale`, `id` (required), `file`, `expected_hash` | yes / no | Removes one message or term and its attached comment from a locale's `.ftl` file. |
 | `locale_add_locale` | `locale`, `path` (required), `asset_id`, `copy_from` | no / no | Creates a new `.ftl` file (never overwrites), registers it as a `string_table` asset and in the `locale_config` (creating `localization.json` if the project has none). |
 | `ui_edit` | `entity`, `operations` (required), `expected_hash`, plus the scene arguments | yes / no | Applies a batch of UI document operations (add, remove, move, duplicate, rename nodes; patch widget, style, node flags, classes, accessibility, bindings, root fields) to the entity's `engine.UiRoot` atomically, validated as a whole and saved through the scene revision check. See [UI authoring tools](#ui-authoring-tools). |
+
+| `graph_edit` | `asset` or `path`, `kind`, `expected_revision`, `edits` (1-1024) | yes / no | Applies graph edit operations (add/remove node, connect/disconnect, set param, set position, add/remove/set variable, set metadata) to a graph asset atomically. Every operation is validated and the result must pass complete validation, otherwise nothing is written (`details.op_index` names the failing operation); a stale `expected_revision` fails with `revision_conflict`. A new `path` plus `kind` creates a graph and returns the asset entry for `project.json`. See [Graph documents](ai-graphs.md#mcp-tools). |
 
 All write tools carry `readOnlyHint: false` and `openWorldHint: false`.
 

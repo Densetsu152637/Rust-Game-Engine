@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 18] = [
+const KINDS: [&str; 19] = [
     "script",
     "mesh",
     "texture",
@@ -30,6 +30,7 @@ const KINDS: [&str; 18] = [
     "navigation",
     "acoustics",
     "lut",
+    "graph",
 ];
 const MAX_USES: usize = 200;
 
@@ -240,6 +241,11 @@ fn details(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> Result<Val
                 "materials":model.scene.materials.len(),"images":model.scene.images.len(),"skins":model.scene.skins.len(),
                 "clips":model.scene.clips.len(),"fingerprint":blake3::Hash::from(model.scene.fingerprint.0).to_hex().to_string()})
         }
+        "graph" => {
+            let document = engine_project::graphs::load_graph(project, &asset.id)?;
+            json!({"kind": document.kind, "nodes": document.nodes.len(),
+                "edges": document.edges.len(), "variables": document.variables.len()})
+        }
         "navigation" => {
             let mesh = engine_project::simulation::load_navmesh(project, &asset.id)?;
             json!({"polygons":mesh.polygon_count(),"settings":mesh.settings()})
@@ -338,6 +344,16 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
                     .and_then(Value::as_str)
                 {
                     fields.push((component, "navmesh", navmesh));
+                }
+            }
+            for field in ["graph", "navmesh"] {
+                if let Some(id) = c
+                    .custom
+                    .get("engine.BehaviorTreeAgent")
+                    .and_then(|v| v.data.get(field))
+                    .and_then(Value::as_str)
+                {
+                    fields.push(("engine.BehaviorTreeAgent", field, id));
                 }
             }
             for (component, field, id) in fields {
