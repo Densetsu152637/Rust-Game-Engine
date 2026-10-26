@@ -232,11 +232,12 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
     let render_pipeline = telemetry("render_pipeline", &snapshot["render_pipeline"]);
     let ray_tracing = telemetry("ray_tracing", &snapshot["ray_tracing"]);
     let acoustics = telemetry("acoustics", &snapshot["acoustics"]);
+    let xr = telemetry("xr", &snapshot["xr"]);
     json!({
         "upscaler": upscaler, "frame_generation": frame_generation,
         "localization": localization, "ui_render": ui_render,
         "render_pipeline": render_pipeline, "ray_tracing": ray_tracing,
-        "acoustics": acoustics,
+        "acoustics": acoustics, "xr": xr,
         "profile": profile, "profile_frames_truncated": profile_frames_truncated,
         "network": network, "input_devices": input_devices, "telemetry_omitted": telemetry_omitted,
         "event_trace":event_trace, "event_count":report["event_trace"]["count"].as_u64().unwrap_or(0),

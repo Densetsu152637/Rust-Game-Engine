@@ -392,6 +392,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.UiWorldPanel",
         "engine.Vehicle3D",
         "engine.WorldText",
+        "engine.XrSettings",
     ]);
     assert_eq!(names, expected);
     assert!(result["scene_rules"].as_array().unwrap().len() >= 4);

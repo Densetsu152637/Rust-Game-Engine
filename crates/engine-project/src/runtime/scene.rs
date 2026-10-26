@@ -43,6 +43,9 @@ pub struct RuntimeSnapshot {
     /// Acoustic propagation state; absent without an `engine.AcousticEnvironment`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustics: Option<engine_acoustics::AcousticStatus>,
+    /// XR host status; `not_attached` when XR is enabled without a host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xr: Option<crate::xr::XrStatusReport>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -208,6 +211,7 @@ impl Runtime {
             ray_tracing: self.ray_tracing_status(),
             ui_render: self.ui_render_status(),
             acoustics: self.acoustics_status(),
+            xr: crate::xr::status(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self

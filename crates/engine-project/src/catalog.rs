@@ -49,6 +49,7 @@ impl ComponentCatalog {
                 crate::accessibility::descriptor(),
                 crate::captions::descriptor(),
                 crate::world_text::descriptor(),
+                crate::xr::descriptor(),
             ])
             .chain(crate::acoustics::descriptors())
             .chain(crate::networking::descriptors())
@@ -96,6 +97,9 @@ impl ComponentCatalog {
         if name == crate::world_text::WORLD_TEXT_COMPONENT {
             serde_json::from_value::<crate::world_text::WorldText>(value.data.clone())?
                 .validate()?;
+        }
+        if name == crate::xr::XR_SETTINGS_COMPONENT {
+            serde_json::from_value::<crate::xr::XrSettings>(value.data.clone())?.validate()?;
         }
         crate::acoustics::validate_component(name, &value.data)?;
         crate::networking::validate_component(name, &value.data)?;

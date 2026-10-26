@@ -65,6 +65,9 @@
   spatio-temporal denoiser, effect settings/status, the reference path tracer, and the
   frame integration (`engine.rt.*` features, the `RayTracing` component, raster
   fallbacks and per-effect status).
+- [PC VR (OpenXR)](xr.md): `engine-xr` runtime discovery and honest status,
+  session lifecycle, controller actions and `XR:` bindings, tracking, haptics,
+  Vulkan swapchains and the `engine.XrSettings` component.
 - [Asset pipeline](asset-pipeline.md): bounded glTF/GLB import, dependency
   fingerprints, ownership and reload behavior.
 - [Authored simulation](simulation.md): 2D/3D rigid bodies, animation and navigation

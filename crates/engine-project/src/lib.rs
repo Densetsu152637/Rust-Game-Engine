@@ -28,6 +28,7 @@ pub mod transforms;
 pub mod ui;
 pub mod ui_tree;
 pub mod world_text;
+pub mod xr;
 
 pub use catalog::{ComponentCatalog, ComponentDescriptor, CustomValue, register_component};
 pub use content::GeometryOverride;
