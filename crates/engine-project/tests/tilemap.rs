@@ -126,17 +126,18 @@ fn project_validates_tile_assets_and_component() {
         level_json(|_| {}),
     );
     assert!(Project::load(unknown.dir.path().join("project.json")).is_err());
-    // Semantic failures (missing tileset asset) surface as a tick diagnostic.
+    // Semantic failures (missing tileset asset) skip that tilemap with a reason; the tick
+    // and the rest of the world keep running.
     let missing = Fixture::new(
         json!({"at":[0,0,0],"player":[0,0,0],"data":{"tileset":"nope"}}),
         level_json(|_| {}),
     );
     let mut runtime = missing.runtime();
-    let error = runtime.tick(0.1, InputSnapshot::default()).unwrap_err();
-    assert!(
-        error.to_string().contains("project.asset.unknown"),
-        "{error}"
-    );
+    runtime.tick(0.1, InputSnapshot::default()).unwrap();
+    let owner = runtime.entity("world").unwrap();
+    let reason = tilemap::failure(runtime.app().world(), owner).expect("a reason");
+    assert!(reason.contains("project.asset.unknown"), "{reason}");
+    assert!(tilemap::status(runtime.app().world(), owner).is_none());
 }
 
 #[test]
@@ -447,9 +448,9 @@ fn collision_options_are_applied_and_capacity_is_reported() {
         dense,
     );
     let mut rt = fixture.runtime();
-    let error = rt.tick(0.1, InputSnapshot::default()).unwrap_err();
-    assert!(
-        error.to_string().contains("tilemap.collision.capacity"),
-        "{error}"
-    );
+    // The capacity error skips that tilemap's sync with a reason instead of failing the tick.
+    rt.tick(0.1, InputSnapshot::default()).unwrap();
+    let owner = rt.entity("world").unwrap();
+    let reason = tilemap::failure(rt.app().world(), owner).expect("a reason");
+    assert!(reason.contains("tilemap.collision.capacity"), "{reason}");
 }

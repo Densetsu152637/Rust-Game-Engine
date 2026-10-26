@@ -457,7 +457,7 @@ pub fn sync_foliage(world: &mut World) -> Result<()> {
         };
         let known = world.resource::<Foliages>().states.contains_key(&entity);
         if !known && world.resource::<Foliages>().states.len() >= MAX_FOLIAGES {
-            let message = format!("At most {MAX_FOLIAGES} foliage entities");
+            let message = format!("foliage.capacity: At most {MAX_FOLIAGES} foliage entities");
             fail(world, entity, &id, message);
             continue;
         }

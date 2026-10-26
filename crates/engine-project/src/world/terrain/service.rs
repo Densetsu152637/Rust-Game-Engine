@@ -120,6 +120,9 @@ struct Cpu {
     histogram: Vec<usize>,
     budget_limited: bool,
 }
+/// Registered surface name, heightfield revision, world matrix and the `WorldOrigin.offset` the
+/// surface was built for.
+type SurfaceBuilt = (String, u64, [[f32; 4]; 4], [f64; 3]);
 struct State {
     asset: String,
     field: Arc<Heightfield>,
@@ -131,9 +134,7 @@ struct State {
     colliders: BTreeMap<[u32; 2], (Entity, bool)>,
     collision: Option<TerrainCollision>,
     pending_collision: Option<SampleRect>,
-    /// Registered surface name, heightfield revision, world matrix and the `WorldOrigin.offset`
-    /// the surface was built for.
-    surface: Option<(String, u64, [[f32; 4]; 4], [f64; 3])>,
+    surface: Option<SurfaceBuilt>,
     surface_note: Option<String>,
     render_path: &'static str,
     render_note: Option<String>,

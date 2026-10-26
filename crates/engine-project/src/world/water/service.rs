@@ -403,7 +403,7 @@ pub fn step_water(world: &mut World, dt: f32) -> Result<()> {
             failures.insert(
                 entity,
                 format!(
-                    "water.capacity: at most {MAX_WATER_BODIES} engine.WaterBody entities; \
+                    "water.capacity: At most {MAX_WATER_BODIES} engine.WaterBody entities; \
                      `{id}` is ignored"
                 ),
             );

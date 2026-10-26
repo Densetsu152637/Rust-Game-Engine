@@ -630,8 +630,9 @@ fn the_cpu_vertex_budget_bounds_the_merged_meshes_nearest_first() {
 #[test]
 fn a_missing_ground_reports_a_diagnostic_and_recovers_when_it_appears() {
     let mut data = foliage_data(vec![grass()]);
+    // `later` exists (references must resolve) but is not a terrain yet.
     data["terrain"] = json!("later");
-    let fixture = Fixture::new(data, vec![], vec![]);
+    let fixture = Fixture::new(data, vec![entity("later", [0.0; 3], json!({}))], vec![]);
     let mut runtime = fixture.runtime();
     tick(&mut runtime, 2);
     let entity = runtime.entity("plants").unwrap();

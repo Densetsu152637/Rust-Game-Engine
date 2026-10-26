@@ -185,7 +185,7 @@ pub(crate) fn candidates(
     let expected_total = (f64::from(rect[1][0]) - f64::from(rect[0][0]))
         * (f64::from(rect[1][1]) - f64::from(rect[0][1]))
         * f64::from(density);
-    if !(expected_total <= max_candidates as f64) {
+    if expected_total.is_nan() || expected_total > max_candidates as f64 {
         return Err(Error::new(
             "foliage.limit.candidates",
             format!(
