@@ -246,6 +246,8 @@ The new shadow path has a separate ignored GPU readback for a camera-culled alph
 lit cutout gaps, its native receiver, wind animation, and a second disjoint light tile
 that must not overwrite the first tile's instance data. It has not yet been run on the
 integrated revision.
+An additional receiver readback at an LOD hysteresis edge compares the shadow footprint
+with fixed long- and short-mesh references, alongside the colour pose toggle check.
 
 ### Limits
 

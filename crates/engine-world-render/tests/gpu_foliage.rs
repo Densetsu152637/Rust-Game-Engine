@@ -653,9 +653,9 @@ fn shadow_toggle_preserves_foliage_colour_pose_at_lod_hysteresis_edge() -> Resul
                 .with_shadow(ShadowSettings::default()),
         ],
     };
-    let near = make_view(Vec3::new(0.0, 2.0, 19.0), Vec3::new(0.0, 2.0, 0.0), 0.0);
+    let near = make_view(Vec3::new(0.0, 6.0, 19.0), Vec3::ZERO, 0.0);
     render_scene(&gpu, &mut pipeline, &world, &near, &[], &lights)?;
-    let far = make_view(Vec3::new(0.0, 2.0, 21.0), Vec3::new(0.0, 2.0, 0.0), 0.0);
+    let far = make_view(Vec3::new(0.0, 6.0, 21.0), Vec3::ZERO, 0.0);
     let mut disabled = far.clone();
     disabled.features.set(names::FOLIAGE_SHADOW, false);
     let bare = render_scene(&gpu, &mut pipeline, &world, &disabled, &[], &lights)?;
@@ -669,5 +669,107 @@ fn shadow_toggle_preserves_foliage_colour_pose_at_lod_hysteresis_edge() -> Resul
             .collect::<Vec<_>>()
     };
     assert_eq!(coverage(&bare.pixels), coverage(&cast.pixels));
+
+    // Compare the receiver shadow at the hysteresis edge with fixed-geometry
+    // references. The retained long mesh reaches z < -3; the short mesh cannot.
+    // This catches a shadow-only LOD mismatch even when colour coverage agrees.
+    let ground_vertex = |x: f32, z: f32| EngineVertex {
+        position: [x, 0.0, z],
+        uv: [0.0; 2],
+        color: [1.0; 4],
+        normal: Vec3::Y.to_array(),
+    };
+    let ground = GpuMesh::from_engine_vertices(
+        &gpu.device,
+        "foliage LOD shadow receiver",
+        &[
+            ground_vertex(-8.0, -8.0),
+            ground_vertex(-8.0, 8.0),
+            ground_vertex(8.0, 8.0),
+            ground_vertex(8.0, -8.0),
+        ],
+        &[0, 1, 2, 0, 2, 3],
+    )?;
+    let receiver = [SceneMesh {
+        id: "ground",
+        mesh: ground,
+        world_from_local: Mat4::IDENTITY,
+        shader: None,
+        params: MaterialParams::default(),
+        base_color: None,
+        metallic_roughness: None,
+        normal_map: None,
+    }];
+    let edge = render_scene(&gpu, &mut pipeline, &world, &far, &receiver, &lights)?;
+    let reference = |height: f32| -> Result<World> {
+        let mut field = FoliageField::new(32.0)?;
+        field.insert(instance(0, 0.0, 0.0))?;
+        Ok(world_with(FoliageRenderItem {
+            owner: Entity::PLACEHOLDER,
+            id: "post".into(),
+            types: vec![render_type(
+                "post",
+                vec![quad(0.8, height)],
+                [30, 200, 30],
+                None,
+                &[],
+                None,
+                100.0,
+            )],
+            field: Arc::new(field),
+            wind: WindParams::default(),
+        }))
+    };
+    let long = render_scene(
+        &gpu,
+        &mut pipeline,
+        &reference(4.0)?,
+        &far,
+        &receiver,
+        &lights,
+    )?;
+    let short = render_scene(
+        &gpu,
+        &mut pipeline,
+        &reference(2.0)?,
+        &far,
+        &receiver,
+        &lights,
+    )?;
+    let mut mismatched_long = 0;
+    let mut distinct_short = 0;
+    let mut receiver_samples = 0;
+    for ix in 0..9 {
+        for iz in 0..17 {
+            let (x, y) = pixel_of(
+                &far,
+                Vec3::new(-0.4 + ix as f32 * 0.1, 0.0, -3.8 + iz as f32 * 0.1),
+            );
+            if x >= SIZE[0] || y >= SIZE[1] {
+                continue;
+            }
+            let e = pixel(&edge.pixels, x, y);
+            let a = pixel(&long.pixels, x, y);
+            let b = pixel(&short.pixels, x, y);
+            if !covered(a) || !covered(b) {
+                continue;
+            }
+            receiver_samples += 1;
+            if e[0].abs_diff(a[0]) > 5 {
+                mismatched_long += 1;
+            }
+            if a[0].abs_diff(b[0]) > 15 {
+                distinct_short += 1;
+            }
+        }
+    }
+    assert!(
+        receiver_samples > 0 && distinct_short > 0,
+        "reference meshes did not produce distinct ground shadows"
+    );
+    assert_eq!(
+        mismatched_long, 0,
+        "edge shadow footprint differed from retained Mesh(0)"
+    );
     Ok(())
 }
