@@ -158,6 +158,9 @@ pub struct WaterBodyComponent {
     pub grid_resolution: u32,
     /// Whether the surface draws (queries and buoyancy are unaffected).
     pub visible: bool,
+    /// Opt into opaque depth-only shadows from the water surface. Depth shadows cannot
+    /// represent optical transmission; disabled by default for transparent water.
+    pub cast_shadows: bool,
 }
 impl Default for WaterBodyComponent {
     fn default() -> Self {
@@ -172,6 +175,7 @@ impl Default for WaterBodyComponent {
             render_mode: WaterRenderMode::Auto,
             grid_resolution: 64,
             visible: true,
+            cast_shadows: false,
         }
     }
 }

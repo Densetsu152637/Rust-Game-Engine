@@ -5,7 +5,7 @@ use bytemuck::{Pod, Zeroable};
 use engine_project::world::terrain::{ResolvedLayer, TerrainRenderItem, TerrainRenderSet};
 use engine_render_pipeline::{
     DEPTH_FORMAT, DrawStats, ENGINE_VERTEX_LAYOUT, EngineVertex, FeatureContext, FeatureSetup,
-    GpuContext, GpuMesh, HDR_FORMAT, InstanceBatcher, MAX_CASCADES, MOTION_FORMAT, NORMALS_FORMAT,
+    GpuContext, GpuMesh, HDR_FORMAT, InstanceBatcher, MAX_SHADOWS, MOTION_FORMAT, NORMALS_FORMAT,
     ViewId, frustum_planes, sphere_in_frustum,
 };
 use engine_terrain::{Heightfield, LodLayout, LodSettings, LodViewer, MAX_LAYERS};
@@ -17,9 +17,6 @@ const SHADER: &str = include_str!("terrain.wgsl");
 /// Edge of every layer albedo texture in the array.
 pub const ALBEDO_SIZE: u32 = 256;
 const ALBEDO_MIPS: u32 = 9;
-/// Edge in texels of every layer of a view's terrain shadow map (one `Depth32Float` layer per
-/// cascade of the first directional light, [`MAX_CASCADES`] layers: 16 MiB per view).
-pub const SHADOW_MAP_SIZE: u32 = 1024;
 
 /// Per-node instance data (`@location(4..=6)` of the terrain vertex shader).
 #[repr(C)]
@@ -50,27 +47,22 @@ struct TerrainUniform {
 
 struct Prepared {
     layout: wgpu::BindGroupLayout,
-    shadow_layout: wgpu::BindGroupLayout,
     color: wgpu::RenderPipeline,
     normals: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
     motion: wgpu::RenderPipeline,
     clamp: wgpu::Sampler,
     repeat: wgpu::Sampler,
-    compare: wgpu::Sampler,
-    /// Receiver group of views without a terrain shadow map this frame (disabled).
-    no_shadow: wgpu::BindGroup,
-    /// The shadow pass's cascade index (dynamic offset `cascade * cascade_stride`).
-    cascades: wgpu::BindGroup,
-    cascade_stride: u32,
-    _resources: (wgpu::Texture, wgpu::Buffer, wgpu::Buffer),
+    /// Shadow-view index, using dynamic offsets into the uniform buffer.
+    shadow_indices: wgpu::BindGroup,
+    shadow_index_stride: u32,
+    _shadow_indices: wgpu::Buffer,
 }
 
 /// Which pass a node collection is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PassKind {
-    /// Terrain depth into the terrain shadow map: no camera frustum culling (terrain outside
-    /// the view casts into it).
+    /// Terrain depth into an allocated engine shadow tile.
     Shadow,
     Normals,
     /// The colour pass; advances the view's motion history.
@@ -90,15 +82,6 @@ struct ViewerState {
 struct History {
     previous: ViewerState,
     current: ViewerState,
-}
-
-/// The terrain shadow map of one view.
-struct ViewShadow {
-    layers: Vec<wgpu::TextureView>,
-    bind: wgpu::BindGroup,
-    /// Rendered in this frame's Shadow stage and not yet used by the colour pass.
-    fresh: bool,
-    _resources: (wgpu::Texture, wgpu::Buffer),
 }
 
 #[derive(Clone, PartialEq)]
@@ -142,8 +125,8 @@ pub(crate) struct Shared {
     terrains: BTreeMap<String, GpuTerrain>,
     patches: HashMap<u32, Arc<GpuMesh>>,
     order: Vec<String>,
-    shadows: HashMap<ViewId, ViewShadow>,
     history: HashMap<(ViewId, String), History>,
+    shadowed: HashSet<ViewId>,
     /// Views whose colour pass drew terrain this frame (the motion pass runs only then).
     colored: HashSet<ViewId>,
 }
@@ -238,68 +221,6 @@ fn uniform_entry(binding: u32, dynamic: bool) -> wgpu::BindGroupLayoutEntry {
         },
         count: None,
     }
-}
-
-/// A `layers`-layer `Depth32Float` array of `size`^2 texels.
-fn depth_array(gpu: &GpuContext, label: &str, size: u32, layers: u32) -> wgpu::Texture {
-    gpu.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: layers,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    })
-}
-
-/// The receiver group (`@group(2)` bindings 0-2 of the colour pass).
-fn shadow_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    map: &wgpu::Texture,
-    compare: &wgpu::Sampler,
-    params: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    let view = map.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::D2Array),
-        ..Default::default()
-    });
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("world.terrain shadow receiver"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(compare),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: params.as_entire_binding(),
-            },
-        ],
-    })
-}
-
-fn params_buffer(gpu: &GpuContext, label: &str, values: [f32; 4]) -> wgpu::Buffer {
-    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: 16,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    gpu.queue
-        .write_buffer(&buffer, 0, bytemuck::cast_slice(&values));
-    buffer
 }
 
 fn create_texture(
@@ -450,31 +371,8 @@ impl Shared {
                 },
             ],
         });
-        let comparison = wgpu::ShaderStages::FRAGMENT;
-        let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("world.terrain shadow receiver"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: comparison,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: comparison,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                    count: None,
-                },
-                uniform_entry(2, false),
-            ],
-        });
         let cascade_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("world.terrain shadow cascade"),
+            label: Some("world.terrain shadow view index"),
             entries: &[uniform_entry(3, true)],
         });
         let layout_of = |groups: &[Option<&wgpu::BindGroupLayout>]| {
@@ -485,11 +383,6 @@ impl Shared {
             })
         };
         let base = layout_of(&[Some(&setup.layouts.view), Some(&layout)]);
-        let receiving = layout_of(&[
-            Some(&setup.layouts.view),
-            Some(&layout),
-            Some(&shadow_layout),
-        ]);
         let casting = layout_of(&[
             Some(&setup.layouts.view),
             Some(&layout),
@@ -506,7 +399,7 @@ impl Shared {
         };
         let color = pipeline(
             device,
-            &receiving,
+            &base,
             &module,
             spec("world.terrain", "vs_main", "fs_main", Some(HDR_FORMAT)),
         );
@@ -566,32 +459,22 @@ impl Shared {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        let compare = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("world.terrain shadow"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            compare: Some(wgpu::CompareFunction::LessEqual),
-            ..Default::default()
-        });
-        let placeholder = depth_array(setup.gpu, "world.terrain no shadow", 1, 1);
-        let disabled = params_buffer(setup.gpu, "world.terrain no shadow", [0.0, 1.0, 0.0, 0.0]);
-        let no_shadow = shadow_group(device, &shadow_layout, &placeholder, &compare, &disabled);
         let cascade_stride = device.limits().min_uniform_buffer_offset_alignment.max(16);
         let cascade_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("world.terrain shadow cascades"),
-            size: u64::from(cascade_stride * MAX_CASCADES),
+            label: Some("world.terrain shadow indices"),
+            size: u64::from(cascade_stride) * MAX_SHADOWS as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        for cascade in 0..MAX_CASCADES {
+        for cascade in 0..MAX_SHADOWS as u32 {
             setup.gpu.queue.write_buffer(
                 &cascade_buffer,
                 u64::from(cascade * cascade_stride),
                 bytemuck::cast_slice(&[cascade, 0, 0, 0]),
             );
         }
-        let cascades = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("world.terrain shadow cascades"),
+        let shadow_indices = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("world.terrain shadow indices"),
             layout: &cascade_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 3,
@@ -604,24 +487,21 @@ impl Shared {
         });
         self.prepared = Some(Prepared {
             layout,
-            shadow_layout,
             color,
             normals,
             shadow,
             motion,
             clamp,
             repeat,
-            compare,
-            no_shadow,
-            cascades,
-            cascade_stride,
-            _resources: (placeholder, disabled, cascade_buffer),
+            shadow_indices,
+            shadow_index_stride: cascade_stride,
+            _shadow_indices: cascade_buffer,
         });
         self.terrains.clear();
         self.patches.clear();
         self.order.clear();
-        self.shadows.clear();
         self.history.clear();
+        self.shadowed.clear();
         self.colored.clear();
         Ok(())
     }
@@ -870,6 +750,7 @@ impl Shared {
         ctx: &FeatureContext<'_>,
         batcher: &mut InstanceBatcher<TerrainInstance>,
         kind: PassKind,
+        shadow_clip: Option<Mat4>,
     ) -> Result<FrameDraw> {
         if self.prepared.is_none() {
             bail!("world.terrain is not prepared");
@@ -900,7 +781,7 @@ impl Shared {
         self.terrains.retain(|id, _| live.contains(&id.as_str()));
         self.history
             .retain(|(_, id), _| live.contains(&id.as_str()));
-        let planes = frustum_planes(ctx.view.clip_from_world());
+        let planes = frustum_planes(shadow_clip.unwrap_or_else(|| ctx.view.clip_from_world()));
         let camera = ctx.view.camera_position();
         let view_id = ctx.view.id;
         for item in &set.items {
@@ -953,7 +834,7 @@ impl Shared {
             let s = item.field.spacing();
             let mut drawn = 0;
             for node in &selection.nodes {
-                if kind != PassKind::Shadow {
+                {
                     let rect = terrain.layout.node_samples(node.key);
                     let lo = Vec3::new(rect.min[0] as f32 * s, range[0], rect.min[1] as f32 * s);
                     let hi = Vec3::new(
@@ -989,8 +870,7 @@ impl Shared {
         Ok(frame)
     }
 
-    /// Draws the batches `collect` produced with the pipeline of `kind`; `group2` is the
-    /// receiver (colour) or cascade (shadow) group with its dynamic offsets.
+    /// Draws the batches `collect` produced; `group2` selects a shared shadow view.
     pub(crate) fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -1025,87 +905,28 @@ impl Shared {
         Ok(stats)
     }
 
-    /// The layer views of `view`'s terrain shadow map (created on first use), marked as
-    /// holding this frame's terrain depth.
-    pub(crate) fn shadow_layers(
-        &mut self,
-        gpu: &GpuContext,
-        view: ViewId,
-    ) -> Result<Vec<wgpu::TextureView>> {
-        let prepared = self
-            .prepared
-            .as_ref()
-            .context("world.terrain is not prepared")?;
-        let shadow = self.shadows.entry(view).or_insert_with(|| {
-            let texture = depth_array(
-                gpu,
-                "world.terrain shadow map",
-                SHADOW_MAP_SIZE,
-                MAX_CASCADES,
-            );
-            let params = params_buffer(
-                gpu,
-                "world.terrain shadow",
-                [1.0, SHADOW_MAP_SIZE as f32, 0.0, 0.0],
-            );
-            let bind = shadow_group(
-                &gpu.device,
-                &prepared.shadow_layout,
-                &texture,
-                &prepared.compare,
-                &params,
-            );
-            let layers = (0..MAX_CASCADES)
-                .map(|layer| {
-                    texture.create_view(&wgpu::TextureViewDescriptor {
-                        label: Some("world.terrain shadow layer"),
-                        dimension: Some(wgpu::TextureViewDimension::D2),
-                        base_array_layer: layer,
-                        array_layer_count: Some(1),
-                        ..Default::default()
-                    })
-                })
-                .collect();
-            ViewShadow {
-                layers,
-                bind,
-                fresh: false,
-                _resources: (texture, params),
-            }
-        });
-        shadow.fresh = true;
-        Ok(shadow.layers.clone())
-    }
-
-    /// The cascade group and the dynamic offset of each cascade.
-    pub(crate) fn cascades(&self) -> Result<(wgpu::BindGroup, Vec<u32>)> {
+    /// Bind group and dynamic offset selecting one allocated shared shadow view.
+    pub(crate) fn shadow_index(&self, index: u32) -> Result<(wgpu::BindGroup, u32)> {
         let prepared = self
             .prepared
             .as_ref()
             .context("world.terrain is not prepared")?;
         Ok((
-            prepared.cascades.clone(),
-            (0..MAX_CASCADES)
-                .map(|c| c * prepared.cascade_stride)
-                .collect(),
+            prepared.shadow_indices.clone(),
+            index * prepared.shadow_index_stride,
         ))
     }
 
-    /// The colour pass's receiver group: `view`'s terrain shadow map when the Shadow stage
-    /// rendered it this frame (consumed), otherwise the disabled placeholder. Returns whether
-    /// the map is used.
-    pub(crate) fn take_receiver(&mut self, view: ViewId) -> Result<(wgpu::BindGroup, bool)> {
-        let prepared = self
-            .prepared
-            .as_ref()
-            .context("world.terrain is not prepared")?;
-        Ok(match self.shadows.get_mut(&view) {
-            Some(shadow) if shadow.fresh => {
-                shadow.fresh = false;
-                (shadow.bind.clone(), true)
-            }
-            _ => (prepared.no_shadow.clone(), false),
-        })
+    pub(crate) fn set_shadowed(&mut self, view: ViewId, enabled: bool) {
+        if enabled {
+            self.shadowed.insert(view);
+        } else {
+            self.shadowed.remove(&view);
+        }
+    }
+
+    pub(crate) fn take_shadowed(&mut self, view: ViewId) -> bool {
+        self.shadowed.remove(&view)
     }
 
     /// Records that `view`'s colour pass drew terrain this frame.

@@ -37,6 +37,7 @@ struct WaterUniform {
 @group(1) @binding(4) var scene_color: texture_2d<f32>;
 @group(1) @binding(5) var scene_depth: texture_depth_2d;
 @group(1) @binding(6) var linear_clamp: sampler;
+@group(2) @binding(0) var<uniform> shadow_index: vec4<u32>;
 
 struct Output {
     @builtin(position) position: vec4<f32>,
@@ -112,7 +113,7 @@ fn crest_foam(det: f32) -> f32 {
 }
 
 // position: unit grid vertex (x, z in 0..1) or, for rivers, the local ribbon vertex.
-@vertex fn vs_main(@location(0) position: vec3<f32>) -> Output {
+fn water_output(position: vec3<f32>) -> Output {
     let mode = u32(water.params.w);
     var local = position;
     var normal = vec3<f32>(0.0, 1.0, 0.0);
@@ -153,6 +154,18 @@ fn crest_foam(det: f32) -> f32 {
     out.foam = foam;
     return out;
 }
+
+@vertex fn vs_main(@location(0) position: vec3<f32>) -> Output {
+    return water_output(position);
+}
+
+@vertex fn vs_shadow(@location(0) position: vec3<f32>) -> Output {
+    var out = water_output(position);
+    out.position = engine_shadows[shadow_index.x].clip_from_world * vec4<f32>(out.world, 1.0);
+    return out;
+}
+
+@fragment fn fs_shadow(input: Output) {}
 
 fn world_at(uv: vec2<f32>, depth: f32) -> vec3<f32> {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);

@@ -57,6 +57,8 @@ pub struct WaterRenderItem {
     pub world_from_local: [[f32; 4]; 4],
     pub half_extent: [f32; 2],
     pub grid_resolution: u32,
+    /// Authored opaque depth-only shadow policy.
+    pub cast_shadows: bool,
     /// Per grid vertex `(amplitude factor, shoreline foam)`, row-major over
     /// `(grid_resolution + 1)^2` vertices; `None` without ground (open water).
     pub shore: Option<Arc<Vec<[f32; 2]>>>,
@@ -939,6 +941,7 @@ pub fn update_water_render(world: &mut World) -> Result<()> {
                     world_from_local: body.world_from_local.to_cols_array_2d(),
                     half_extent: body.component.half_extent,
                     grid_resolution: body.component.grid_resolution,
+                    cast_shadows: body.component.cast_shadows,
                     shore,
                     revision: body.revision,
                 });
@@ -954,7 +957,7 @@ pub fn update_water_render(world: &mut World) -> Result<()> {
                 transparent: true,
                 roughness: optics.roughness,
                 metallic: 0.0,
-                cast_shadows: false,
+                cast_shadows: body.component.cast_shadows,
                 ..MeshMaterial::default()
             };
             // The mesh is parented by authored id: a body without a registered one (it would

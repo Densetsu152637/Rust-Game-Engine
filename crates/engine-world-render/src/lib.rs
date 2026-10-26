@@ -32,30 +32,35 @@ pub mod names {
     /// Terrain normals into the normals target (`Prepass` stage, after
     /// `engine.prepass.normals`); runs only when another feature needs normals.
     pub const TERRAIN_NORMALS: &str = "world.terrain.normals";
-    /// Terrain depth into the view's terrain shadow map (`Shadow` stage, after
-    /// `engine.shadows`), one layer per cascade of the first directional light.
+    /// Terrain depth into allocated shared shadow tiles (`Shadow`, after `engine.shadows`).
     pub const TERRAIN_SHADOW: &str = "world.terrain.shadow";
     /// Terrain motion vectors (`Opaque` stage, after `world.terrain`); runs only when a
     /// feature or the host needs motion.
     pub const TERRAIN_MOTION: &str = "world.terrain.motion";
     /// Instanced foliage meshes and impostors with wind (`Opaque` stage, after `engine.opaque`).
     pub const FOLIAGE: &str = "world.foliage";
+    /// Foliage depth into allocated shared shadow atlas tiles.
+    pub const FOLIAGE_SHADOW: &str = "world.foliage.shadow";
     /// Water surfaces (`Transparent` stage, before `engine.transparent`).
     pub const WATER: &str = "world.water";
+    /// Opt-in opaque depth from displaced water into shared shadow atlas tiles.
+    pub const WATER_SHADOW: &str = "world.water.shadow";
     /// Underwater fog (`Transparent` stage, after `engine.transparent` and `world.water`).
     pub const WATER_UNDERWATER: &str = "world.water.underwater";
     /// The terrain module's features, in registration order.
     pub const TERRAIN_ALL: [&str; 4] = [TERRAIN_SHADOW, TERRAIN_NORMALS, TERRAIN, TERRAIN_MOTION];
     /// The water module's features, in registration order.
-    pub const WATER_ALL: [&str; 2] = [WATER, WATER_UNDERWATER];
+    pub const WATER_ALL: [&str; 3] = [WATER_SHADOW, WATER, WATER_UNDERWATER];
     /// Every feature [`crate::register`] registers.
-    pub const ALL: [&str; 7] = [
+    pub const ALL: [&str; 9] = [
         TERRAIN_SHADOW,
         TERRAIN_NORMALS,
         TERRAIN,
         TERRAIN_MOTION,
         FOLIAGE,
+        FOLIAGE_SHADOW,
         WATER,
+        WATER_SHADOW,
         WATER_UNDERWATER,
     ];
 }

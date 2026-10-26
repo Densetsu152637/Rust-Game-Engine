@@ -178,12 +178,22 @@ fn render(
     world: &World,
     view: &ViewData,
 ) -> Result<Frame> {
+    render_scene(gpu, pipeline, world, view, &[], &sun())
+}
+fn render_scene(
+    gpu: &GpuContext,
+    pipeline: &mut ScenePipeline,
+    world: &World,
+    view: &ViewData,
+    meshes: &[SceneMesh<'_>],
+    lights: &LightList,
+) -> Result<Frame> {
     let target = offscreen(gpu);
     let report = pipeline.render_view(
         &SceneFrame {
             view,
-            meshes: &[],
-            lights: &sun(),
+            meshes,
+            lights,
             world: Some(world),
         },
         &target.target,
@@ -438,5 +448,133 @@ fn wind_sway_changes_pixels_and_matches_the_cpu_model() -> Result<()> {
         "gpu {top_shift} vs cpu {predicted_top}"
     );
     assert!(top_shift.abs() > 4.0 * base_shift.abs().max(0.5));
+    Ok(())
+}
+
+/// A camera-culled leaf still casts, its alpha cutout leaves gaps, and wind moves its depth.
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
+    let gpu = gpu()?;
+    let mut pipeline = ScenePipeline::new(gpu.clone())?;
+    let mut features = PipelineFeatures::default();
+    let status = engine_world_render::register_all(&mut features)?.foliage;
+    pipeline.add_features(features.0)?;
+    let leaf = |y: f32, z: f32, u: f32| Vertex {
+        position: [0.0, y, z],
+        uv: [u, 1.0 - y / 6.0],
+        color: [1.0; 4],
+    };
+    let mesh = Arc::new(Mesh {
+        vertices: vec![
+            leaf(0.0, -1.0, 0.0),
+            leaf(0.0, 1.0, 1.0),
+            leaf(6.0, 1.0, 1.0),
+            leaf(6.0, -1.0, 0.0),
+        ],
+        normals: vec![Vec3::X.to_array(); 4],
+        indices: vec![0, 1, 2, 0, 2, 3],
+    });
+    let mut ty = render_type("leaf", vec![mesh], [100, 200, 100], None, &[], None, 100.0);
+    ty.texture = Some(Arc::new(Texture {
+        width: 2,
+        height: 2,
+        pixels: [
+            255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 0,
+        ]
+        .to_vec(),
+    }));
+    let mut field = FoliageField::new(32.0)?;
+    field.insert(instance(0, 11.0, 0.0))?;
+    let wind = WindParams {
+        strength: 2.0,
+        direction_degrees: 0.0,
+        ..WindParams::default()
+    };
+    let world = world_with(FoliageRenderItem {
+        owner: Entity::PLACEHOLDER,
+        id: "leaf".into(),
+        types: vec![ty],
+        field: Arc::new(field),
+        wind,
+    });
+    let ground_vertex = |x: f32, z: f32| EngineVertex {
+        position: [x, 0.0, z],
+        uv: [0.0; 2],
+        color: [1.0; 4],
+        normal: Vec3::Y.to_array(),
+    };
+    let ground = GpuMesh::from_engine_vertices(
+        &gpu.device,
+        "foliage receiver",
+        &[
+            ground_vertex(-20.0, -20.0),
+            ground_vertex(-20.0, 20.0),
+            ground_vertex(20.0, 20.0),
+            ground_vertex(20.0, -20.0),
+        ],
+        &[0, 1, 2, 0, 2, 3],
+    )?;
+    let receiver = [SceneMesh {
+        id: "ground",
+        mesh: ground,
+        world_from_local: Mat4::IDENTITY,
+        shader: None,
+        params: MaterialParams::default(),
+        base_color: None,
+        metallic_roughness: None,
+        normal_map: None,
+    }];
+    let lights = LightList {
+        lights: vec![
+            Light::directional(Vec3::new(-1.0, -1.0, 0.0).normalize(), Vec3::ONE, 1.0)
+                .with_shadow(ShadowSettings::default()),
+        ],
+    };
+    let view0 = make_view(Vec3::new(0.0, 8.0, 15.0), Vec3::ZERO, 0.0);
+    let mut disabled = view0.clone();
+    disabled.features.set(names::FOLIAGE_SHADOW, false);
+    let bare = render_scene(&gpu, &mut pipeline, &world, &disabled, &receiver, &lights)?;
+    let cast0 = render_scene(&gpu, &mut pipeline, &world, &view0, &receiver, &lights)?;
+    let cast1 = render_scene(
+        &gpu,
+        &mut pipeline,
+        &world,
+        &make_view(Vec3::new(0.0, 8.0, 15.0), Vec3::ZERO, 1.7),
+        &receiver,
+        &lights,
+    )?;
+    assert_eq!(
+        status.get().instances,
+        0,
+        "caster should be outside colour frustum"
+    );
+    let mut darker = 0;
+    let mut animated = 0;
+    for ix in 0..49 {
+        for iz in 0..33 {
+            let (x, y) = pixel_of(
+                &view0,
+                Vec3::new(2.0 + ix as f32 * 0.125, 0.0, -2.0 + iz as f32 * 0.125),
+            );
+            if x >= SIZE[0] || y >= SIZE[1] {
+                continue;
+            }
+            let a = pixel(&bare.pixels, x, y);
+            let b = pixel(&cast0.pixels, x, y);
+            let c = pixel(&cast1.pixels, x, y);
+            if a[0] > b[0].saturating_add(20) {
+                darker += 1;
+            }
+            if b != c {
+                animated += 1;
+            }
+        }
+    }
+    assert!(
+        darker > 0,
+        "offscreen alpha foliage cast no receiver shadow"
+    );
+    assert!(animated > 0, "foliage shadow ignored wind time");
     Ok(())
 }

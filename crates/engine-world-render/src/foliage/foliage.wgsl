@@ -23,6 +23,7 @@ struct WindData {
 @group(1) @binding(1) var foliage_albedo: texture_2d<f32>;
 @group(1) @binding(2) var foliage_sampler: sampler;
 @group(2) @binding(0) var<uniform> wind: WindData;
+@group(3) @binding(0) var<uniform> shadow_index: vec4<u32>;
 
 const TAU: f32 = 6.283185307179586;
 
@@ -61,14 +62,9 @@ fn foliage_bend(height_fraction: f32) -> f32 {
 
 // Mesh instances. Vertex slot 0: the engine vertex. Slot 1 (per instance): rotation
 // quaternion (x y z w), position (xyz) and wind phase (w), scale (xyz).
-@vertex fn vs_mesh(
-    @location(0) position: vec3<f32>,
-    @location(1) uv: vec2<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) normal: vec3<f32>,
-    @location(4) rotation: vec4<f32>,
-    @location(5) position_phase: vec4<f32>,
-    @location(6) scale: vec4<f32>,
+fn mesh_output(
+    position: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, normal: vec3<f32>,
+    rotation: vec4<f32>, position_phase: vec4<f32>, scale: vec4<f32>,
 ) -> VsOut {
     let origin = position_phase.xyz;
     var world = origin + foliage_rotate(rotation, position * scale.xyz);
@@ -85,14 +81,9 @@ fn foliage_bend(height_fraction: f32) -> f32 {
 
 // Impostors: a unit quad (x in -1..1, y in 0..1) turned about the vertical axis to face the
 // camera, `impostor.xy` metres at scale 1.
-@vertex fn vs_billboard(
-    @location(0) position: vec3<f32>,
-    @location(1) uv: vec2<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) normal: vec3<f32>,
-    @location(4) rotation: vec4<f32>,
-    @location(5) position_phase: vec4<f32>,
-    @location(6) scale: vec4<f32>,
+fn billboard_output(
+    position: vec3<f32>, uv: vec2<f32>, color: vec4<f32>, normal: vec3<f32>,
+    rotation: vec4<f32>, position_phase: vec4<f32>, scale: vec4<f32>,
 ) -> VsOut {
     let origin = position_phase.xyz;
     let to_camera = engine_camera_position() - origin;
@@ -114,6 +105,50 @@ fn foliage_bend(height_fraction: f32) -> f32 {
     out.uv = vec2<f32>((position.x + 1.0) * 0.5, 1.0 - position.y);
     out.color = vec4<f32>(1.0);
     return out;
+}
+
+@vertex fn vs_mesh(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>, @location(3) normal: vec3<f32>,
+    @location(4) rotation: vec4<f32>, @location(5) position_phase: vec4<f32>,
+    @location(6) scale: vec4<f32>,
+) -> VsOut {
+    return mesh_output(position, uv, color, normal, rotation, position_phase, scale);
+}
+
+@vertex fn vs_billboard(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>, @location(3) normal: vec3<f32>,
+    @location(4) rotation: vec4<f32>, @location(5) position_phase: vec4<f32>,
+    @location(6) scale: vec4<f32>,
+) -> VsOut {
+    return billboard_output(position, uv, color, normal, rotation, position_phase, scale);
+}
+
+@vertex fn vs_shadow_mesh(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>, @location(3) normal: vec3<f32>,
+    @location(4) rotation: vec4<f32>, @location(5) position_phase: vec4<f32>,
+    @location(6) scale: vec4<f32>,
+) -> VsOut {
+    var out = mesh_output(position, uv, color, normal, rotation, position_phase, scale);
+    out.position = engine_shadows[shadow_index.x].clip_from_world * vec4<f32>(out.world, 1.0);
+    return out;
+}
+
+@vertex fn vs_shadow_billboard(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>, @location(3) normal: vec3<f32>,
+    @location(4) rotation: vec4<f32>, @location(5) position_phase: vec4<f32>,
+    @location(6) scale: vec4<f32>,
+) -> VsOut {
+    var out = billboard_output(position, uv, color, normal, rotation, position_phase, scale);
+    out.position = engine_shadows[shadow_index.x].clip_from_world * vec4<f32>(out.world, 1.0);
+    return out;
+}
+
+@fragment fn fs_shadow(input: VsOut) {
+    if textureSample(foliage_albedo, foliage_sampler, input.uv).a < 0.5 { discard; }
 }
 
 @fragment fn fs_main(input: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {

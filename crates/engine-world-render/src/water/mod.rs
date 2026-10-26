@@ -75,6 +75,11 @@ pub struct WaterFeature {
     shared: Arc<Mutex<Shared>>,
     status: WaterRenderStatusHandle,
 }
+/// Opt-in opaque-depth water caster for the shared engine shadow atlas.
+pub struct WaterShadowFeature {
+    shared: Arc<Mutex<Shared>>,
+    status: WaterRenderStatusHandle,
+}
 /// The underwater fog pass (`world.water.underwater`).
 pub struct UnderwaterFeature {
     shared: Arc<Mutex<Shared>>,
@@ -119,6 +124,21 @@ impl PipelineFeature for WaterFeature {
     }
 }
 
+impl PipelineFeature for WaterShadowFeature {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new(names::WATER_SHADOW, Stage::Shadow).after(engine_names::SHADOWS)
+    }
+    fn prepare(&mut self, setup: &FeatureSetup<'_>) -> Result<()> {
+        lock(&self.shared)?.prepare(setup)
+    }
+    fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
+        let (frame, stats) = lock(&self.shared)?.draw_shadow(ctx)?;
+        ctx.record_draws(stats);
+        self.status.update(|s| s.uploads += frame.uploads);
+        Ok(())
+    }
+}
+
 impl PipelineFeature for UnderwaterFeature {
     fn descriptor(&self) -> FeatureDescriptor {
         FeatureDescriptor::new(names::WATER_UNDERWATER, Stage::Transparent)
@@ -147,6 +167,10 @@ impl PipelineFeature for UnderwaterFeature {
 pub fn register(features: &mut PipelineFeatures) -> Result<WaterRenderStatusHandle> {
     let status = WaterRenderStatusHandle::default();
     let (surface, underwater) = WaterFeature::pair(status.clone());
+    features.register(WaterShadowFeature {
+        shared: surface.shared.clone(),
+        status: status.clone(),
+    })?;
     features.register(surface)?;
     features.register(underwater)?;
     Ok(status)

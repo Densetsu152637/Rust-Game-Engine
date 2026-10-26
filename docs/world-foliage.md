@@ -223,7 +223,12 @@ engine_world_render::install(app); // extraction + both GPU markers
 ```
 
 The desktop host registers and installs it by default (`engine_desktop::install_default_render_features`);
-`Camera3D.render_features` can disable `world.foliage` per camera.
+`Camera3D.render_features` can disable `world.foliage` or `world.foliage.shadow` per camera.
+`world.foliage.shadow` writes alpha-cut mesh and impostor depth into each allocated engine
+shadow tile. It selects instances against the light view, independent of the camera colour
+frustum; distant camera-culled instances use the coarsest mesh as casters. The vertex stage
+uses the same wind and camera-facing impostor geometry as the colour pass. Enabling shadows
+does not advance foliage LOD history or wind time.
 
 Verified on this machine (RTX 5080, Vulkan,
 `cargo test -p engine-world-render --test gpu_foliage -- --ignored --test-threads=1`):
@@ -237,17 +242,12 @@ Verified on this machine (RTX 5080, Vulkan,
   change between the two times, the blade base moves 0.0 px (CPU model 0.05) and its upper
   part 10.5 px against 9.76 px predicted by `WindParams::sway_offset` (tolerance 1.1 px).
 
+The new shadow path has a separate ignored GPU readback for a camera-culled alpha leaf,
+its native receiver, and wind animation; it has not yet been run on the integrated revision.
+
 ### Limits
 
-- Opaque stage only. Foliage casts no shadows (it receives the engine atlas's): a feature
-  cannot render casters into the engine shadow atlas, because `FeatureContext` exposes
-  neither the atlas layer views nor the per-light shadow draw rectangles (`Atlas` /
-  `ShadowDraw` / `ViewLighting::atlas` are crate-private in
-  `engine-render-pipeline/src/lighting.rs`, and the `engine.shadows` node in
-  `pipeline.rs::run_builtin` clears each atlas page itself). Terrain works around this with its
-  own map, which only the terrain colour pass samples (see
-  [terrain.md](terrain.md#gpu-rendering-engine-world-render)); foliage neither casts into it nor
-  receives it. Foliage writes no normals or motion vectors (DLSS and TAA see it as static).
+- Foliage writes no normals or motion vectors (DLSS and TAA see it as static).
 - Culling is on the CPU per view over every instance of the visible cells (up to 262 144
   instances per field). No GPU culling, no Hi-Z occlusion.
 - The GPU path does not blend LOD levels (no cross-fade); impostors are a single card, not a

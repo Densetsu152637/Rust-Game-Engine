@@ -127,6 +127,7 @@ rejected; scene validation also runs every numeric check, so bad edits are refus
 | `render_mode` | `auto` | `auto`, `cpu`, `gpu` (see below) |
 | `grid_resolution` | 64 | drawn grid cells per side (8..=256) |
 | `visible` | true | drawing only; queries and buoyancy are unaffected |
+| `cast_shadows` | false | opt-in opaque depth-only shadows from the displaced surface |
 
 ### Runtime (`world::water` hooks)
 
@@ -169,7 +170,7 @@ while the `WaterGpuRenderer` marker resource exists (`engine_world_render::insta
 it). Otherwise it has one CPU surface mesh entity: `MeshRenderer` + `GeometryOverride` (the
 grid over `half_extent` displaced exactly like the model, vertex colours shallow/deep by
 shoreline attenuation plus crest and shore foam, per-vertex normals; rivers: the ribbon) +
-a transparent `MeshMaterial` (tint alpha 0.75, the optics roughness, no shadow casting). A
+a transparent `MeshMaterial` (tint alpha 0.75, the optics roughness, authored `cast_shadows`). A
 GPU-path body has no mesh entity and a CPU-path body is not in `WaterRenderSet`. A `gpu` body
 without the renderer draws nothing and its status says so. The CPU fallback has no
 refraction, absorption or underwater fog (`UnderwaterView` still reports the camera state for
@@ -243,6 +244,12 @@ last underwater body, notes).
   `mix(fog_color, scene exp(-absorption d), exp(-fog_density d))`. It runs in the
   Transparent stage instead of PostProcess because it needs render-size depth and the
   pre-upscale HDR colour (temporal upscalers then see fogged frames).
+- **`world.water.shadow`** (`Shadow`, after `engine.shadows`): when `cast_shadows` is true,
+  draws the same displaced grid or river ribbon into every allocated shared shadow tile.
+  Its wave time, ocean frame and shoreline attenuation match the colour surface. The atlas
+  stores only depth, so enabling this treats the water as an opaque shadow blocker; it does
+  not represent coloured transmission or partial absorption. The default is off for
+  transparent water.
 
 Verified on this machine (RTX 5080, Vulkan,
 `cargo test -p engine-world-render --test gpu_water -- --ignored --test-threads=1`, 160 x 120):
@@ -259,9 +266,13 @@ Verified on this machine (RTX 5080, Vulkan,
 - an FFT ocean (64^2) uploads one frame per new frame time (2 uploads for 2 frames), covers
   64.3 % and changes 5298 pixels over 2 s.
 
+The opt-in shadow path has a separate ignored GPU readback for a native receiver with
+`cast_shadows` disabled, enabled, and at a later wave time; it has not yet been run on the
+integrated revision.
+
 ### Limits
 
-- Water casts no shadows, writes no motion vectors and is not in the normals prepass.
+- Water writes no motion vectors and is not in the normals prepass.
 - Refraction and absorption see only what was drawn before `world.water` (opaque geometry);
   one water body does not refract another.
 - The sky reflection is the view's ambient colour (no environment map); RT reflections are
