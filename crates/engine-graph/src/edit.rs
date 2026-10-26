@@ -9,7 +9,7 @@
 use crate::{
     diagnostic::{GraphDiagnostic, codes},
     kind::GraphKind,
-    model::{GraphDocument, GraphEdge, GraphNode, GraphVariable, NodeId, PortRef},
+    model::{GraphDocument, GraphEdge, GraphNode, GraphVariable, NodeId, Port, PortRef},
     validate::{Strictness, validate},
 };
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ pub const MAX_EDITS: usize = 1024;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GraphEdit {
-    /// Adds a node whose ports are copied from the registry declaration.
+    /// Adds a node. Omitted ports are copied from the registry declaration.
     AddNode {
         id: NodeId,
         node_type: String,
@@ -31,6 +31,8 @@ pub enum GraphEdit {
         params: BTreeMap<String, Value>,
         #[serde(default)]
         position: Option<[f32; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ports: Option<Vec<Port>>,
     },
     /// Removes a node and every edge attached to it.
     RemoveNode {
@@ -57,6 +59,11 @@ pub enum GraphEdit {
     SetPosition {
         node: NodeId,
         position: Option<[f32; 2]>,
+    },
+    /// Replaces the ports of an extensible node, including its declared ports.
+    SetPorts {
+        node: NodeId,
+        ports: Vec<Port>,
     },
     AddVariable {
         variable: GraphVariable,
@@ -184,18 +191,16 @@ fn mutate(
             node_type,
             params,
             position,
+            ports,
         } => {
-            let ports = kind
-                .registry
-                .get(node_type)
-                .map(|def| def.declared_ports())
-                .ok_or_else(|| {
-                    fail(
-                        codes::NODE_UNKNOWN_TYPE,
-                        format!("/nodes/{id}"),
-                        format!("kind {} has no node type {node_type:?}", kind.name),
-                    )
-                })?;
+            let def = kind.registry.get(node_type).ok_or_else(|| {
+                fail(
+                    codes::NODE_UNKNOWN_TYPE,
+                    format!("/nodes/{id}"),
+                    format!("kind {} has no node type {node_type:?}", kind.name),
+                )
+            })?;
+            let ports = authored_ports(def, ports.as_deref(), id)?;
             doc.nodes.push(GraphNode {
                 id: id.clone(),
                 node_type: node_type.clone(),
@@ -266,6 +271,20 @@ fn mutate(
             let index = node_index(doc, node)?;
             doc.nodes[index].position = *position;
         }
+        GraphEdit::SetPorts { node, ports } => {
+            let index = node_index(doc, node)?;
+            let def = kind
+                .registry
+                .get(&doc.nodes[index].node_type)
+                .ok_or_else(|| {
+                    fail(
+                        codes::NODE_UNKNOWN_TYPE,
+                        format!("/nodes/{node}"),
+                        "node type is not registered",
+                    )
+                })?;
+            doc.nodes[index].ports = authored_ports(def, Some(ports), node)?;
+        }
         GraphEdit::AddVariable { variable } => doc.variables.push(variable.clone()),
         GraphEdit::RemoveVariable { name } => {
             let index = variable_index(doc, name)?;
@@ -284,6 +303,33 @@ fn mutate(
         }
     }
     Ok(())
+}
+
+fn authored_ports(
+    def: &crate::kind::NodeTypeDef,
+    ports: Option<&[Port]>,
+    node: &NodeId,
+) -> Result<Vec<Port>, Vec<GraphDiagnostic>> {
+    match ports {
+        Some(ports) if def.extensible => {
+            for declared in def.declared_ports() {
+                if !ports.contains(&declared) {
+                    return Err(fail(
+                        codes::NODE_PORTS_MISMATCH,
+                        format!("/nodes/{node}/ports/{}", declared.name),
+                        format!("node type {} declares this port as {declared:?}", def.name),
+                    ));
+                }
+            }
+            Ok(ports.to_vec())
+        }
+        Some(_) => Err(fail(
+            codes::NODE_PORTS_MISMATCH,
+            format!("/nodes/{node}/ports"),
+            format!("node type {} does not allow authored ports", def.name),
+        )),
+        None => Ok(def.declared_ports()),
+    }
 }
 
 fn variable_index(doc: &GraphDocument, name: &str) -> Result<usize, Vec<GraphDiagnostic>> {

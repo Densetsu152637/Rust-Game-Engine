@@ -205,8 +205,8 @@ fn unknown_kind(name: &str) -> ToolFailure {
 
 fn edit_operations() -> Value {
     json!([
-        {"op": "add_node", "fields": {"id": "string, unique", "node_type": "string", "params": "object, optional", "position": "[x, y], optional"},
-         "description": "Adds a node; its ports are copied from the node type."},
+        {"op": "add_node", "fields": {"id": "string, unique", "node_type": "string", "params": "object, optional", "position": "[x, y], optional", "ports": "array of {name, direction, type, multiple?}, optional for extensible node types"},
+         "description": "Adds a node; omitted ports are copied from the node type. Authored ports must preserve every declared port."},
         {"op": "remove_node", "fields": {"id": "string"},
          "description": "Removes a node and every edge attached to it."},
         {"op": "connect", "fields": {"from": "{node, port}", "to": "{node, port}", "index": "integer, optional"},
@@ -217,6 +217,8 @@ fn edit_operations() -> Value {
          "description": "Sets one node parameter."},
         {"op": "set_position", "fields": {"node": "string", "position": "[x, y] or null"},
          "description": "Moves a node on the editor canvas."},
+        {"op": "set_ports", "fields": {"node": "string", "ports": "array of {name, direction, type, multiple?}"},
+         "description": "Replaces ports on an extensible node; every declared port must remain unchanged."},
         {"op": "add_variable", "fields": {"variable": "{name, type, default?, description?}"},
          "description": "Declares a variable (a blackboard key for behavior trees)."},
         {"op": "remove_variable", "fields": {"name": "string"},
@@ -352,6 +354,13 @@ fn diagnostic_json(file: &str, d: &GraphDiagnostic) -> Value {
     json!({"code": d.code, "severity": "error", "file": file, "path": d.path, "message": d.message})
 }
 
+/// Project context is parsed with the normal bounds and path confinement, while
+/// asset validation is deferred so a broken graph can still be inspected.
+fn authoring_project(cx: &ToolContext<'_>) -> Option<engine_project::Project> {
+    let manifest = engine_project::confined_file(cx.root, Path::new("project.json")).ok()?;
+    engine_project::Project::load_for_graph_authoring(manifest).ok()
+}
+
 fn graph_validate(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
     let a = Args(args);
     let sources = ["asset", "path", "document"]
@@ -382,12 +391,20 @@ fn graph_validate(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcom
         parsed
     };
     let file = loaded.as_ref().map_or("", |l| l.relative.as_str());
+    let project = authoring_project(cx);
     let (diagnostics, document) = match parsed {
-        Ok(document) => (graphs::validate_document(&document, level), Some(document)),
+        Ok(document) => {
+            let diagnostics = match &project {
+                Some(project) => graphs::validate_document_with_project(project, &document, level),
+                None => graphs::validate_document(&document, level),
+            };
+            (diagnostics, Some(document))
+        }
         Err(diagnostic) => (vec![diagnostic], None),
     };
     let mut result = json!({
         "valid": diagnostics.is_empty(),
+        "project_context_loaded": project.is_some(),
         "level": if level == Strictness::Complete { "complete" } else { "structure" },
         "diagnostics": diagnostics.iter().map(|d| diagnostic_json(file, d)).collect::<Vec<_>>(),
     });
@@ -558,6 +575,20 @@ fn graph_edit(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcome {
 
     apply_edits(&mut document, &edits, kind, Strictness::Complete)
         .map_err(|failure| edit_failure(failure, &relative))?;
+
+    if let Some(project) = authoring_project(cx) {
+        let diagnostics =
+            graphs::validate_document_with_project(&project, &document, Strictness::Complete);
+        if !diagnostics.is_empty() {
+            return Err(edit_failure(
+                EditFailure {
+                    op_index: None,
+                    diagnostics,
+                },
+                &relative,
+            ));
+        }
+    }
 
     let text = document.to_json_pretty();
     if text.len() > MAX_DOCUMENT_BYTES {
