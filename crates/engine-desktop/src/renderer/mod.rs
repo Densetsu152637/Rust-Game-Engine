@@ -15,6 +15,7 @@ mod cache;
 mod framegen;
 mod material2d;
 mod post;
+mod post_effects;
 mod rt;
 mod scene3d;
 mod sprite;
@@ -45,6 +46,7 @@ use engine_render_pipeline::{
     OverlayBatch, OverlayItem, PipelineFeatures, Presentation, PresentationInput, SceneFrame,
     ScenePipeline, SceneTextures, Stage, ViewData, ViewId, ViewKind, ViewReport, Viewport, names,
 };
+use engine_render_post_effects::{DepthOfFieldFeature, MotionBlurFeature, PostEffects};
 use engine_render_wgpu::{WgpuBackend, WgpuOptions};
 use glam::Mat4;
 use std::sync::Arc;
@@ -128,6 +130,7 @@ pub struct GpuRenderer {
     lighting: LightingStatus,
     post: PostStatus,
     post_host: post::PostHost,
+    post_effects: PostEffects,
     rt: rt::RtHost,
     /// A camera cut requested for the next native view (`reset_history`).
     native_reset: bool,
@@ -346,6 +349,7 @@ impl GpuRenderer {
             lighting: LightingStatus::default(),
             post: PostStatus::default(),
             post_host: post::PostHost::default(),
+            post_effects: PostEffects::default(),
             rt: rt::RtHost::default(),
             native_reset: false,
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
@@ -435,9 +439,11 @@ impl GpuRenderer {
     /// The 3D render pipeline, created on first use.
     pub fn pipeline(&mut self) -> Result<&mut ScenePipeline> {
         if self.scene.is_none() {
-            self.scene = Some(
-                ScenePipeline::new(self.gpu.clone()).context("creating the 3D render pipeline")?,
-            );
+            let mut scene =
+                ScenePipeline::new(self.gpu.clone()).context("creating the 3D render pipeline")?;
+            scene.register(DepthOfFieldFeature::new(self.post_effects.clone()))?;
+            scene.register(MotionBlurFeature::new(self.post_effects.clone()))?;
+            self.scene = Some(scene);
         }
         Ok(self.scene.as_mut().expect("created above"))
     }
@@ -467,7 +473,7 @@ impl GpuRenderer {
             frame
                 .camera3d
                 .as_ref()
-                .map(|c| c.camera.render_features.clone())
+                .map(|c| c.camera.effective_render_features())
                 .unwrap_or_default(),
         );
         let blocked = self.scene.as_ref()?.presentation_blockers(&overrides);
@@ -492,7 +498,7 @@ impl GpuRenderer {
             frame
                 .camera3d
                 .as_ref()
-                .map(|c| c.camera.render_features.clone())
+                .map(|c| c.camera.effective_render_features())
                 .unwrap_or_default(),
         );
         for output in outputs {
@@ -672,6 +678,8 @@ impl GpuRenderer {
         target: &wgpu::TextureView,
         world: Option<&World>,
     ) -> Result<RenderStats> {
+        self.post_effects.set_dof(ViewId::MAIN, None)?;
+        self.post_effects.set_motion_blur(ViewId::MAIN, None)?;
         let size = (self.info.width, self.info.height);
         self.sprites.validate_scene(frame, size)?;
         let built = self.sprites.build_overlay(frame, size)?;
@@ -758,6 +766,7 @@ impl GpuRenderer {
         self.pipeline()?;
         let mut view = view;
         let post_status = self.post_host.prepare(frame, &mut view)?;
+        post_effects::prepare(&self.post_effects, frame, &mut view)?;
         self.rt.prepare(
             &self.gpu,
             self.scene.as_mut().expect("created above"),
@@ -803,7 +812,7 @@ impl GpuRenderer {
         let overrides = frame
             .camera3d
             .as_ref()
-            .map(|c| c.camera.render_features.clone())
+            .map(|c| c.camera.effective_render_features())
             .unwrap_or_default();
         if view.kind == ViewKind::Camera {
             *status = status_of(&report, RenderPipelineState::Rendered, &overrides);
@@ -842,7 +851,7 @@ impl GpuRenderer {
             view.kind = ViewKind::XrEye;
             if let Some(camera) = &frame.camera3d {
                 view.ambient = glam::Vec3::splat(camera.camera.lighting.ambient);
-                view.features = FeatureOverrides(camera.camera.render_features.clone());
+                view.features = FeatureOverrides(camera.camera.effective_render_features());
             }
             let output = OutputTarget {
                 view: eye.target.clone(),
@@ -1115,7 +1124,7 @@ impl GpuRenderer {
             frame
                 .camera3d
                 .as_ref()
-                .map(|c| c.camera.render_features.clone())
+                .map(|c| c.camera.effective_render_features())
                 .unwrap_or_default(),
         );
         self.pipeline()?.begin_presentation_sequence(&overrides)?;
@@ -1666,6 +1675,8 @@ pub fn preview_pipeline_status(
     overrides: &std::collections::BTreeMap<String, bool>,
 ) -> Result<RenderPipelineStatus> {
     let mut registry = engine_render_pipeline::builtin_registry()?;
+    registry.register(DepthOfFieldFeature::new(PostEffects::default()))?;
+    registry.register(MotionBlurFeature::new(PostEffects::default()))?;
     if let Some(features) = features {
         registry.absorb(features.0.descriptor_copy()?)?;
     }

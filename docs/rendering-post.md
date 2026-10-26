@@ -14,8 +14,10 @@ features:
 Both are disabled by default and switched on for a view that has
 `ViewData::post = Some(PostSettings)` (an explicit `FeatureOverrides` entry for
 either name wins). A view without settings runs exactly the old linear-clamp
-`engine.output`, so existing images do not change. Not in this release: SSAO,
-SSR, depth of field, motion blur, TAA/FXAA.
+`engine.output`, so existing images do not change. Depth of field and motion
+blur are separate optional HDR features documented in
+[rendering-depth-motion.md](rendering-depth-motion.md). Not in this release:
+SSAO, SSR, TAA/FXAA.
 
 ## Order of operations
 
