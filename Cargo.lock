@@ -1901,6 +1901,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-render-post-effects"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "engine-render-pipeline",
+ "engine-render-wgpu",
+ "glam 0.34.1",
+ "wgpu",
+]
+
+[[package]]
 name = "engine-render-rt"
 version = "0.1.0"
 dependencies = [
