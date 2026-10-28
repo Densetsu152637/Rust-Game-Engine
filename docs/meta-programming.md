@@ -3,6 +3,8 @@
 The project document, native runtime, MCP tools and editor controller share the
 `engine-project` model. Gameplay remains ordinary Cargo-compiled Rust. There is
 no embedded expression evaluator or code downloaded from component schemas.
+Data-driven [visual scripts](visual-scripting.md) run in a bounded VM and reach the game
+only through declared host functions, as described in [Scripting](scripting.md).
 
 ## Custom components
 

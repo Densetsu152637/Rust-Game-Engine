@@ -3,7 +3,7 @@
 Behavior trees, state trees and the animation, audio and material
 graphs of other domains share one data model, the `engine-graph` crate. A graph is a
 project asset of kind `graph`: one JSON document whose `kind` field selects the graph
-kind (`animation`, `audio`, `behavior_tree`, `dialogue`, `material` and `state_tree` today) that gives its nodes meaning. One generic
+kind (`animation`, `audio`, `behavior_tree`, `dialogue`, `material`, `script_graph` and `state_tree` today) that gives its nodes meaning. One generic
 node-graph editor widget, one validator and one set of MCP tools therefore serve every
 graph domain.
 
@@ -13,8 +13,8 @@ compiles them ([Behavior trees](ai-behavior-trees.md), [State trees](ai-state-tr
 `engine-animation` defines the [animation pose graph](animation-graph.md) kind;
 `engine-material-graph` defines the [material graph](material-graph.md) kind;
 `engine-gameplay` defines the `dialogue` kind
-([Inventory, quests and dialogue](gameplay-inventory-quests-dialogue.md));
-`engine-project` keeps the registry of kinds and binds graph assets to the project and
+([Inventory, quests and dialogue](gameplay-inventory-quests-dialogue.md)); `engine-script` defines the
+`script_graph` kind and its VM ([Visual scripting](visual-scripting.md)); `engine-project` keeps the registry of kinds and binds graph assets to the project and
 runtime.
 
 ## Document format

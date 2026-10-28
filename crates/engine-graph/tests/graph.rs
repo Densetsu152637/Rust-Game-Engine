@@ -1045,3 +1045,94 @@ fn port_refs_serialize_with_plain_node_ids() {
         json!({"from":{"node":"a","port":"out"},"to":{"node":"b","port":"in"}})
     );
 }
+
+#[test]
+fn extensible_nodes_take_full_port_lists_through_edits() {
+    let kind = kind();
+    let mut document = GraphDocument::new("test_flow");
+    let extra = json!({"name":"extra","direction":"in","type":"flow"});
+    let declared = json!({"name":"prev","direction":"in","type":"flow"});
+    let edits = vec![
+        edit(json!({"op":"add_node","id":"s","node_type":"start"})),
+        edit(
+            json!({"op":"add_node","id":"o","node_type":"open","ports":[declared.clone(),extra.clone()]}),
+        ),
+        edit(
+            json!({"op":"connect","from":{"node":"s","port":"next"},"to":{"node":"o","port":"extra"}}),
+        ),
+    ];
+    apply_edits(&mut document, &edits, &kind, Strictness::Structure).expect("full port edit");
+    let names: Vec<_> = document.nodes[1]
+        .ports
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(names, ["prev", "extra"], "declared ports come first");
+
+    // Removing a port that still carries an edge is rejected and changes nothing.
+    let before = document.clone();
+    let failure = apply_edits(
+        &mut document,
+        &[edit(
+            json!({"op":"set_ports","node":"o","ports":[declared.clone()]}),
+        )],
+        &kind,
+        Strictness::Structure,
+    )
+    .unwrap_err();
+    assert_eq!(failure.diagnostics[0].code, codes::EDGE_UNKNOWN_PORT);
+    assert_eq!(document, before);
+
+    // Replacing the extra ports works once the edge is gone.
+    let more = json!({"name":"more","direction":"out","type":"int"});
+    apply_edits(
+        &mut document,
+        &[
+            edit(json!({"op":"disconnect","from":{"node":"s","port":"next"},"to":{"node":"o","port":"extra"}})),
+            edit(json!({"op":"set_ports","node":"o","ports":[declared,more]})),
+        ],
+        &kind,
+        Strictness::Structure,
+    )
+    .expect("set_ports");
+    let names: Vec<_> = document.nodes[1]
+        .ports
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(names, ["prev", "more"]);
+}
+
+#[test]
+fn non_extensible_nodes_reject_extra_ports() {
+    let kind = kind();
+    let extra = json!({"name":"extra","direction":"in","type":"flow"});
+    let mut document = GraphDocument::new("test_flow");
+    let failure = apply_edits(
+        &mut document,
+        &[edit(
+            json!({"op":"add_node","id":"s","node_type":"start","ports":[extra.clone()]}),
+        )],
+        &kind,
+        Strictness::Structure,
+    )
+    .unwrap_err();
+    assert_eq!(failure.diagnostics[0].code, codes::NODE_PORTS_MISMATCH);
+    apply_edits(
+        &mut document,
+        &[edit(json!({"op":"add_node","id":"s","node_type":"start"}))],
+        &kind,
+        Strictness::Structure,
+    )
+    .unwrap();
+    let before = document.clone();
+    let failure = apply_edits(
+        &mut document,
+        &[edit(json!({"op":"set_ports","node":"s","ports":[extra]}))],
+        &kind,
+        Strictness::Structure,
+    )
+    .unwrap_err();
+    assert_eq!(failure.diagnostics[0].code, codes::NODE_PORTS_MISMATCH);
+    assert_eq!(document, before);
+}

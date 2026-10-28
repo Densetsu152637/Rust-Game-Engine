@@ -121,6 +121,14 @@ impl Project {
             } else {
                 crate::catalog::ComponentCatalog::new(Vec::new())?
             },
+            script_functions: if let Some(path) = &raw.script_functions {
+                crate::scripting::parse_declarations(&read_bounded(
+                    &confined_file(&root, path)?,
+                    crate::scripting::MAX_FUNCTIONS_BYTES,
+                )?)?
+            } else {
+                Vec::new()
+            },
             schema: 1,
             name: raw.name,
             root,
@@ -243,6 +251,7 @@ impl Project {
         crate::world::foliage::validate_scene(self, scene)?;
         crate::world::water::validate_scene(self, scene)?;
         crate::world::tilemap::validate_scene(self, scene)?;
+        crate::scripting::validate_scene(self, scene)?;
         Ok(())
     }
     /// Validate all declared scenes/content, not only the startup scene.

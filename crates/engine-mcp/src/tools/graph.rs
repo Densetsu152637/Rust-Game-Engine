@@ -113,6 +113,10 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                         "revision",
                         schema::string("Content hash to pass to graph_edit as expected_revision."),
                     ),
+                    (
+                        "project_checked",
+                        json!({"type": "boolean", "description": "True when the project-aware check of the kind also ran (a project is open and the kind has one, for example script_graph: declared host functions and the component catalog)."}),
+                    ),
                 ]),
                 annotations: Annotations::READ_ONLY,
                 access: AccessLevel::Read,
@@ -129,7 +133,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                     (details.op_index) with coded diagnostics. Operations (see graph_schema): \
                     add_node, remove_node, connect (optional index = position among the edges \
                     leaving the port, which is child order), disconnect, set_param (null removes), \
-                    set_position, add_variable, remove_variable, set_variable, set_metadata. \
+                    set_position, set_ports (extensible nodes), add_variable, remove_variable, set_variable, set_metadata. \
                     Target an existing graph with `asset` (id) or `path`, and pass the \
                     `expected_revision` from graph_validate or the previous graph_edit; a stale \
                     revision fails with revision_conflict. To create a graph give a new `path` and \
@@ -402,11 +406,18 @@ fn graph_validate(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcom
         }
         Err(diagnostic) => (vec![diagnostic], None),
     };
+    let project_checked = project.is_some()
+        && level == Strictness::Complete
+        && document.as_ref().is_some_and(|document| {
+            document.kind == engine_script::graph::KIND
+                && graphs::validate_document(document, level).is_empty()
+        });
     let mut result = json!({
         "valid": diagnostics.is_empty(),
         "project_context_loaded": project.is_some(),
         "level": if level == Strictness::Complete { "complete" } else { "structure" },
         "diagnostics": diagnostics.iter().map(|d| diagnostic_json(file, d)).collect::<Vec<_>>(),
+        "project_checked": project_checked,
     });
     if let Some(document) = &document {
         result["kind"] = json!(document.kind);

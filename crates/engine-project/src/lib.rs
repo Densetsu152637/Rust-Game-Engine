@@ -28,6 +28,7 @@ pub mod rendering3d;
 pub mod runtime;
 pub mod scheduled_events;
 pub mod schema;
+pub mod scripting;
 pub mod sequencer;
 pub mod services;
 pub mod simulation;

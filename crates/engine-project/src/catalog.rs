@@ -57,6 +57,7 @@ impl ComponentCatalog {
             ])
             .chain(crate::acoustics::descriptors())
             .chain(crate::ai::descriptors())
+            .chain(crate::scripting::descriptors())
             .chain(crate::networking::descriptors())
             .chain(descriptors)
         {
@@ -309,6 +310,7 @@ pub(crate) struct ComponentAdapter {
     pub version: u32,
     type_id: std::any::TypeId,
     insert: fn(&mut World, Entity, &Value) -> Result<()>,
+    prepare: fn(&Value) -> Result<Box<dyn FnOnce(&mut World, Entity) + Send + Sync>>,
     encode: fn(&World, Entity) -> Result<Option<Value>>,
 }
 #[derive(Resource, Default)]
@@ -355,6 +357,12 @@ where
                 world.entity_mut(entity).insert(value);
                 Ok(())
             },
+            prepare: |value| {
+                let value: T = serde_json::from_value(value.clone())?;
+                Ok(Box::new(move |world, entity| {
+                    world.entity_mut(entity).insert(value);
+                }))
+            },
             encode: |world, entity| {
                 world
                     .get::<T>(entity)
@@ -390,6 +398,86 @@ pub(crate) fn hydrate(
             (adapter.insert)(world, entity, &value.data)?;
         }
     }
+    Ok(())
+}
+/// Writes one component's data: through its native adapter, or into the dynamic
+/// storage of a data-only component. The value is validated against the catalog.
+pub(crate) enum PreparedComponentWrite {
+    DataOnly {
+        entity: Entity,
+        name: String,
+        value: CustomValue,
+    },
+    Native {
+        entity: Entity,
+        apply: Box<dyn FnOnce(&mut World, Entity) + Send + Sync>,
+    },
+}
+
+impl PreparedComponentWrite {
+    pub(crate) fn apply(self, world: &mut World) {
+        match self {
+            Self::DataOnly {
+                entity,
+                name,
+                value,
+            } => {
+                world
+                    .entity_mut(entity)
+                    .get_mut::<DynamicComponents>()
+                    .expect("prevalidated dynamic storage")
+                    .0
+                    .insert(name, value);
+            }
+            Self::Native { entity, apply } => apply(world, entity),
+        }
+    }
+}
+
+pub(crate) fn prepare_component_write(
+    world: &World,
+    entity: Entity,
+    name: &str,
+    value: CustomValue,
+) -> Result<PreparedComponentWrite> {
+    if world.get_entity(entity).is_err() {
+        return Err(invalid("Entity no longer exists"));
+    }
+    let project = world
+        .get_resource::<crate::runtime::ProjectResource>()
+        .ok_or_else(|| invalid("Runtime project unavailable"))?
+        .0
+        .clone();
+    project.component_catalog.validate(name, &value)?;
+    if project.component_catalog.0[name].data_only {
+        world
+            .get::<DynamicComponents>(entity)
+            .ok_or_else(|| invalid(format!("Entity has no dynamic storage for {name}")))?;
+        return Ok(PreparedComponentWrite::DataOnly {
+            entity,
+            name: name.to_owned(),
+            value,
+        });
+    }
+    let adapter = world
+        .get_resource::<ComponentRegistry>()
+        .and_then(|r| r.0.get(name))
+        .copied()
+        .ok_or_else(|| invalid(format!("No native adapter for {name}")))?;
+    Ok(PreparedComponentWrite::Native {
+        entity,
+        apply: (adapter.prepare)(&value.data)?,
+    })
+}
+
+pub(crate) fn write_component(
+    world: &mut World,
+    entity: Entity,
+    name: &str,
+    value: CustomValue,
+) -> Result<()> {
+    let prepared = prepare_component_write(world, entity, name, value)?;
+    prepared.apply(world);
     Ok(())
 }
 pub(crate) fn snapshot(world: &World, entity: Entity) -> Result<BTreeMap<String, CustomValue>> {

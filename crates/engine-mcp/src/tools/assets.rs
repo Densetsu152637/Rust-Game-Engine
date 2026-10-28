@@ -406,7 +406,11 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
                     fields.push(("engine.AudioEmitter", field, id));
                 }
             }
-            for agent in ["engine.BehaviorTreeAgent", "engine.StateTreeAgent"] {
+            for agent in [
+                "engine.BehaviorTreeAgent",
+                "engine.ScriptGraph",
+                "engine.StateTreeAgent",
+            ] {
                 for field in ["graph", "navmesh"] {
                     if let Some(id) = c
                         .custom
