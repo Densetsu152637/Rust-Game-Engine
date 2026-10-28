@@ -502,6 +502,58 @@ fn asset_list_rejects_unknown_kinds() {
 }
 
 #[test]
+fn authored_indirect_appears_in_asset_list_and_camera_uses() {
+    let dir = fixture();
+    let root = dir.path();
+    let mut faces = Vec::new();
+    for face in 0..6 {
+        let name = format!("sky-face-{face}.rgb32f");
+        fs::write(root.join("assets").join(&name), [0u8; 12]).unwrap();
+        faces.push(format!("assets/{name}"));
+    }
+    fs::write(
+        root.join("assets/sky.json"),
+        serde_json::to_vec(&json!({
+            "version":1,
+            "environments":[{"edge":1,"diffuse":[[0,0,0],[0,0,0],[0,0,0],
+                [0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0]],
+                "mips":[faces]}],
+            "global":{"environment":0,"rotation":[0,0,0,1],"intensity":1},
+            "probes":[]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let manifest = root.join("project.json");
+    let mut project: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    project["assets"].as_array_mut().unwrap().push(json!({
+        "id":"asset:sky","kind":"indirect","path":"assets/sky.json"
+    }));
+    fs::write(&manifest, serde_json::to_vec(&project).unwrap()).unwrap();
+    let scene_path = root.join("scenes/start.json");
+    let mut scene: Value = serde_json::from_slice(&fs::read(&scene_path).unwrap()).unwrap();
+    scene["entities"].as_array_mut().unwrap().push(json!({
+        "id":"ibl-camera","name":"IBL Camera","components":{
+            "Transform":{},"Camera3D":{"lighting":{"indirect":"asset:sky"}}
+        }
+    }));
+    fs::write(&scene_path, serde_json::to_vec(&scene).unwrap()).unwrap();
+
+    let listed = data(root, "asset_list", json!({"kind":"indirect"}));
+    assert_eq!(listed["count"], 1, "{listed}");
+    assert_eq!(listed["assets"][0]["id"], "asset:sky");
+    let info = data(root, "asset_info", json!({"asset":"asset:sky"}));
+    assert_eq!(info["asset"]["kind"], "indirect", "{info}");
+    assert!(
+        info["used_by"].as_array().unwrap().contains(&json!({
+            "scene":"scenes/start.json","entity":"ibl-camera",
+            "component":"Camera3D","field":"lighting.indirect"
+        })),
+        "{info}"
+    );
+}
+
+#[test]
 fn asset_info_describes_each_kind() {
     let dir = fixture();
     let texture = data(dir.path(), "asset_info", json!({"asset":"asset:texture"}));

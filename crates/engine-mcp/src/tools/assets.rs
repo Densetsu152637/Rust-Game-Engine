@@ -11,7 +11,7 @@ use engine_project::{Asset, Project, content, load_scene};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-const KINDS: [&str; 27] = [
+const KINDS: [&str; 28] = [
     "script",
     "mesh",
     "texture",
@@ -31,6 +31,7 @@ const KINDS: [&str; 27] = [
     "navigation",
     "acoustics",
     "lut",
+    "indirect",
     "graph",
     "tileset",
     "tilemap",
@@ -357,6 +358,13 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
                         fields.push(("MeshMaterial", field, reference));
                     }
                 }
+            }
+            if let Some(indirect) = c
+                .camera3d
+                .as_ref()
+                .and_then(|camera| camera.lighting.indirect.as_deref())
+            {
+                fields.push(("Camera3D", "lighting.indirect", indirect));
             }
             if let Some(s) = &c.sprite_renderer {
                 fields.push(("SpriteRenderer", "texture", &s.texture));
