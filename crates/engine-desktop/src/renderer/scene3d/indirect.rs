@@ -1,5 +1,5 @@
 //! Conversion and bounded device-local caching of authored indirect scenes.
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use engine_project::{indirect::IndirectAsset, rendering3d::SceneRenderFrame};
 use engine_render_pipeline::{
     GpuContext, ViewId,
@@ -16,7 +16,7 @@ const LUT_BYTES: u64 = 64 * 64 * 8;
 
 /// A named budget failure callers can report without mistaking fallback for IBL.
 #[derive(Debug)]
-pub(crate) struct ActiveIndirectBudgetExceeded {
+pub struct ActiveIndirectBudgetExceeded {
     pub used: u64,
     pub requested: u64,
 }
@@ -44,11 +44,48 @@ struct ViewScene {
 
 /// One renderer/device owns this cache. Resolve is transactional with respect
 /// to per-view state: call commit only after ScenePipeline::set_indirect succeeds.
-#[derive(Default)]
 pub(crate) struct AuthoredIndirectCache {
     sources: HashMap<usize, Prepared>,
     views: HashMap<ViewId, ViewScene>,
     lut: Option<BrdfLut>,
+    max_resident: u64,
+}
+
+impl Default for AuthoredIndirectCache {
+    fn default() -> Self {
+        Self {
+            sources: HashMap::new(),
+            views: HashMap::new(),
+            lut: None,
+            max_resident: MAX_RESIDENT,
+        }
+    }
+}
+
+fn resident_bytes(source: &IndirectAsset) -> Result<u64> {
+    ensure!(
+        source.environments.len() <= 17 && source.probes.len() <= 16,
+        "authored indirect source exceeds environment/probe count limits"
+    );
+    let mut bytes = LUT_BYTES;
+    for environment in &source.environments {
+        for faces in &environment.mips {
+            for face in faces {
+                let expected = u64::from(face.size) * u64::from(face.size);
+                ensure!(
+                    face.pixels.len() as u64 == expected,
+                    "authored indirect face texel count does not match its dimension"
+                );
+                let resident = expected
+                    .checked_mul(8)
+                    .ok_or_else(|| anyhow::anyhow!("authored indirect face size overflow"))?;
+                bytes = bytes
+                    .checked_add(resident)
+                    .ok_or_else(|| anyhow::anyhow!("authored indirect resident size overflow"))?;
+            }
+        }
+    }
+    Ok(bytes)
 }
 
 impl AuthoredIndirectCache {
@@ -72,14 +109,11 @@ impl AuthoredIndirectCache {
         self.sources
             .retain(|id, _| self.views.values().any(|v| v.source == *id));
         if !self.sources.contains_key(&key) {
-            let resident_bytes = source
-                .texture_bytes
-                .checked_add(LUT_BYTES)
-                .context("indirect resident size overflow")?;
+            let resident_bytes = resident_bytes(source)?;
             let used: u64 = self.sources.values().map(|item| item.resident_bytes).sum();
             if used
                 .checked_add(resident_bytes)
-                .is_none_or(|n| n > MAX_RESIDENT)
+                .is_none_or(|n| n > self.max_resident)
             {
                 return Err(ActiveIndirectBudgetExceeded {
                     used,
@@ -200,7 +234,12 @@ fn probe_local(absolute: [f64; 3], applied_origin: [f64; 3]) -> Result<[f32; 3]>
 
 #[cfg(test)]
 mod tests {
-    use super::probe_local;
+    use super::*;
+    use engine_project::{
+        Camera2D,
+        indirect::{EnvironmentLightingAsset, IndirectEnvironment, RadianceFace},
+        runtime::RenderFrame,
+    };
 
     #[test]
     fn absolute_probe_is_subtracted_in_f64_before_local_rounding() {
@@ -213,6 +252,55 @@ mod tests {
             probe_local(absolute, [999_999_999_000.0, 0.0, 0.0]).unwrap()[0],
             0.25
         );
+    }
+
+    #[test]
+    #[ignore = "requires a real GPU adapter"]
+    fn failed_budget_admission_keeps_previous_view_and_ignores_forged_byte_count() -> Result<()> {
+        let gpu = GpuContext::headless_with_options(&engine_render_wgpu::WgpuOptions::default())?;
+        let face = RadianceFace {
+            size: 1,
+            pixels: vec![[0.0; 3]],
+        };
+        let mut diffuse = [[0.0; 3]; 9];
+        diffuse[0] = [1.0, 0.0, 0.0];
+        let source = Arc::new(IndirectAsset {
+            environments: vec![IndirectEnvironment {
+                diffuse,
+                mips: vec![std::array::from_fn(|_| face.clone())],
+            }],
+            global: Some(EnvironmentLightingAsset {
+                environment: 0,
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                intensity: 1.0,
+            }),
+            probes: vec![],
+            decoded_bytes: 0,
+            texture_bytes: 0,
+        });
+        let mut frame = SceneRenderFrame::from(RenderFrame {
+            camera: Camera2D::default(),
+            draws: vec![],
+        });
+        frame.indirect = Some(source.clone());
+        let mut cache = AuthoredIndirectCache::default();
+        let first = cache.resolve(&gpu, ViewId::MAIN, &frame)?.unwrap();
+        cache.commit(ViewId::MAIN, &frame, Some(first.clone()));
+        assert!(
+            cache.sources[&(Arc::as_ptr(&source) as usize)].resident_bytes > LUT_BYTES,
+            "source.texture_bytes=0 must not undercount actual pixels"
+        );
+        cache.max_resident = cache.sources[&(Arc::as_ptr(&source) as usize)].resident_bytes + 1;
+        frame.indirect = Some(Arc::new((*source).clone()));
+        let error = cache.resolve(&gpu, ViewId::MAIN, &frame).err().unwrap();
+        assert!(
+            error
+                .downcast_ref::<ActiveIndirectBudgetExceeded>()
+                .is_some(),
+            "{error:#}"
+        );
+        assert!(Arc::ptr_eq(&cache.views[&ViewId::MAIN].scene, &first));
+        Ok(())
     }
 }
 fn lighting(

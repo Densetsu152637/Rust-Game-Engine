@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     path::PathBuf,
     sync::Arc,
 };
@@ -19,6 +20,7 @@ const MAX_EDGE: u32 = 256;
 const MAX_ENVIRONMENTS: usize = 17;
 const MAX_PROBES: usize = 16;
 const MAX_HALF: f32 = 65_504.0;
+const MAX_OPEN_FACES: usize = 4096;
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new("asset.indirect.invalid", message)
@@ -78,9 +80,13 @@ struct EnvironmentSource {
 }
 struct PreparedSource {
     source: Source,
-    paths: Vec<[PathBuf; 6]>,
+    faces: Vec<[PreparedFace; 6]>,
     decoded_bytes: u64,
     texture_bytes: u64,
+}
+struct PreparedFace {
+    path: PathBuf,
+    file: fs::File,
 }
 
 fn lighting_ok(value: &EnvironmentLightingAsset, count: usize) -> bool {
@@ -97,6 +103,7 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
     let mut prepared = Vec::new();
     let mut descriptor_total = 0u64;
     let mut decoded_total = 0u64;
+    let mut open_faces = 0usize;
     for asset in project.assets.values().filter(|a| a.kind == "indirect") {
         let descriptor = project.resolve_asset(&asset.id)?;
         let bytes = read_bounded(&descriptor, MAX_DESCRIPTOR_BYTES)?;
@@ -159,7 +166,7 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
                 return Err(invalid(format!("invalid indirect probe {}", probe.id)));
             }
         }
-        let mut paths = Vec::new();
+        let mut prepared_faces = Vec::new();
         let mut decoded_bytes = 0u64;
         let mut texture_bytes = 0u64;
         for environment in &source.environments {
@@ -178,19 +185,28 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
                 ));
             }
             for (level, faces) in environment.mips.iter().enumerate() {
+                open_faces = open_faces
+                    .checked_add(6)
+                    .ok_or_else(|| invalid("face count overflow"))?;
+                if open_faces > MAX_OPEN_FACES {
+                    return Err(invalid(
+                        "indirect assets reference more than 4096 face files",
+                    ));
+                }
                 let edge = environment.edge >> level;
                 let expected = u64::from(edge) * u64::from(edge) * 12;
                 let gpu_bytes = u64::from(edge) * u64::from(edge) * 8;
-                let resolved: [PathBuf; 6] = faces
+                let resolved: [PreparedFace; 6] = faces
                     .iter()
-                    .map(|face| -> Result<PathBuf> {
+                    .map(|face| -> Result<PreparedFace> {
                         let path = confined_file(&project.root, face)?;
-                        if fs::metadata(&path)?.len() != expected {
+                        let file = fs::File::open(&path)?;
+                        if file.metadata()?.len() != expected {
                             return Err(invalid(format!(
                                 "indirect face {face:?} needs exactly {expected} bytes"
                             )));
                         }
-                        Ok(path)
+                        Ok(PreparedFace { path, file })
                     })
                     .collect::<Result<Vec<_>>>()?
                     .try_into()
@@ -201,7 +217,7 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
                 texture_bytes = texture_bytes
                     .checked_add(6 * gpu_bytes)
                     .ok_or_else(|| invalid("indirect size overflow"))?;
-                paths.push(resolved);
+                prepared_faces.push(resolved);
             }
         }
         if decoded_bytes + 64 * 64 * 8 > MAX_INDIRECT_BYTES
@@ -219,29 +235,34 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
             asset.id.clone(),
             PreparedSource {
                 source,
-                paths,
+                faces: prepared_faces,
                 decoded_bytes,
                 texture_bytes,
             },
         ));
     }
     let mut result = BTreeMap::new();
-    for (id, prepared) in prepared {
+    for (id, mut prepared) in prepared {
         let mut path_index = 0;
         let mut environments = Vec::new();
         for environment in prepared.source.environments {
             let mut mips = Vec::new();
             for level in 0..environment.mips.len() {
                 let edge = environment.edge >> level;
-                let paths = &prepared.paths[path_index];
+                let faces = &mut prepared.faces[path_index];
                 path_index += 1;
-                let faces: [RadianceFace; 6] = paths
-                    .iter()
-                    .map(|path| -> Result<RadianceFace> {
-                        let bytes = read_bounded(path, u64::from(edge) * u64::from(edge) * 12)?;
+                let faces: [RadianceFace; 6] = faces
+                    .iter_mut()
+                    .map(|face| -> Result<RadianceFace> {
+                        let expected = u64::from(edge) * u64::from(edge) * 12;
+                        let mut bytes = Vec::new();
+                        (&mut face.file)
+                            .take(expected + 1)
+                            .read_to_end(&mut bytes)?;
                         if bytes.len() as u64 != u64::from(edge) * u64::from(edge) * 12 {
                             return Err(invalid(format!(
-                                "indirect face changed size during load: {path:?}"
+                                "indirect face changed size during load: {:?}",
+                                face.path
                             )));
                         }
                         let pixels = bytes
@@ -260,7 +281,8 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
                             .all(|v| v.is_finite() && (0.0..=MAX_HALF).contains(v))
                         {
                             return Err(invalid(format!(
-                                "nonfinite or out-of-range radiance in {path:?}"
+                                "nonfinite or out-of-range radiance in {:?}",
+                                face.path
                             )));
                         }
                         Ok(RadianceFace { size: edge, pixels })

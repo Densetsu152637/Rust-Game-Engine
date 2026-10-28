@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 mod indirect;
+pub use indirect::ActiveIndirectBudgetExceeded;
 pub(crate) use indirect::AuthoredIndirectCache;
 
 /// The built-in lit material (`engine::material` contract).

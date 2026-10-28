@@ -4,8 +4,8 @@ Source milestone: native input validation, immutable float GPU resources and
 optional per-view material IBL/probe consumption. The module is
 `engine_render_pipeline::indirect`. A project loader and desktop adapter accept
 externally prepared environment data for the built-in 3D mesh path. The desktop
-host lifecycle hook and assembled GPU verification remain pending in this
-source slice; authored rendering is not yet claimed.
+host now configures each view through the native pipeline. Assembled GPU
+verification remains pending in this source slice.
 
 ## Authored project input
 
@@ -37,8 +37,11 @@ halves the edge down to 1. All paths are project-relative and confined to the
 project root. The loader rejects unknown fields, incorrect lengths, nonfinite
 or negative radiance, radiance above 65504, invalid references/transforms,
 duplicate probe IDs, and incomplete mips. It preflights every descriptor and
-face length before bulk decoding: at most 1 MiB per descriptor, 16 MiB for all
-descriptors, and 128 MiB decoded RGB32F across all indirect assets. GPU
+face length before bulk decoding, retaining the opened face handles through
+decoding: at most 1 MiB per descriptor, 16 MiB for all descriptors, 4096 face
+files, and 128 MiB decoded RGB32F across all indirect assets. Concurrent
+modification of project files during loading remains unsupported; canonical
+path checks and opening a file are not an atomic cross-platform operation. GPU
 resources are separately bounded to 128 MiB across active view sets. The
 native integrator generates the BRDF LUT; supplied cube chains must already
 be GGX-prefiltered. This path does not capture probes, prefilter environments,
