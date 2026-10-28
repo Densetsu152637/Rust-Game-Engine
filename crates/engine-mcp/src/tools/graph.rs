@@ -113,6 +113,10 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                         "revision",
                         schema::string("Content hash to pass to graph_edit as expected_revision."),
                     ),
+                    (
+                        "project_checked",
+                        json!({"type": "boolean", "description": "True when the project-aware check of the kind also ran (a project is open and the kind has one, for example script_graph: declared host functions and the component catalog)."}),
+                    ),
                 ]),
                 annotations: Annotations::READ_ONLY,
                 access: AccessLevel::Read,
@@ -402,11 +406,18 @@ fn graph_validate(cx: &ToolContext<'_>, args: &Map<String, Value>) -> ToolOutcom
         }
         Err(diagnostic) => (vec![diagnostic], None),
     };
+    let project_checked = project.is_some()
+        && level == Strictness::Complete
+        && document.as_ref().is_some_and(|document| {
+            document.kind == engine_script::graph::KIND
+                && graphs::validate_document(document, level).is_empty()
+        });
     let mut result = json!({
         "valid": diagnostics.is_empty(),
         "project_context_loaded": project.is_some(),
         "level": if level == Strictness::Complete { "complete" } else { "structure" },
         "diagnostics": diagnostics.iter().map(|d| diagnostic_json(file, d)).collect::<Vec<_>>(),
+        "project_checked": project_checked,
     });
     if let Some(document) = &document {
         result["kind"] = json!(document.kind);

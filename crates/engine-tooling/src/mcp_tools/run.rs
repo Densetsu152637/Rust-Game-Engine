@@ -119,6 +119,8 @@ impl Tool for RunTool {
                     "Smart objects: {objects, slots, free, claimed, occupied, listed:[{entity, slots:[{name, tags, state, user}]}], dropped_events}; at most 16 objects listed. Null without an engine.SmartObject."})),
                 ("abilities", json!({"type":["object","null"], "description":
                     "Ability systems: {definitions, actors, active_effects, active_abilities, pending_predictions, dropped_events, listed:[{entity, attributes:[{name, base, current}], tags, effects:[{effect, stacks, remaining, predicted}], active, granted}]}; at most 16 actors, 16 attributes, tags and effects and 8 active abilities each. Null without an engine.AbilitySystem."})),
+                ("scripts", json!({"type":["object","null"], "description":
+                    "Script graph instances: {total, faults, skipped, instances:[{entity, graph, enabled, ticks, fault:{code, site, message, tick}|null, fuel_used, state_bytes, pending, variables}]}; at most 32 instances and 16 variables each. Null without an engine.ScriptGraph."})),
                 ("progression", json!({"type":["object","null"], "description":
                     "Inventories, quest logs and conversations: {inventories:[{entity, slots, used, weight, items, equipped}], quest_logs:[{entity, quests:[{quest, state, stage, objectives}], flags}], dialogues:[{npc, player, waiting}], dropped_events, dropped_rewards}; at most 16 entities per kind. Null without engine.Inventory, engine.QuestLog or engine.DialogueParticipant."})),
                 ("telemetry_omitted", json!({"type":"array","items":{"type":"string"}})),
@@ -254,6 +256,7 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
     let smart_objects = telemetry("smart_objects", &snapshot["smart_objects"]);
     let progression = telemetry("progression", &snapshot["progression"]);
     let abilities = telemetry("abilities", &snapshot["abilities"]);
+    let scripts = telemetry("scripts", &snapshot["scripts"]);
     json!({
         "upscaler": upscaler, "frame_generation": frame_generation,
         "localization": localization, "ui_render": ui_render,
@@ -263,6 +266,7 @@ pub(super) fn summarize(report: &Value, wanted: Option<&[&str]>, max_entities: u
         "perception": perception, "env_queries": env_queries, "smart_objects": smart_objects,
         "progression": progression,
         "abilities": abilities,
+        "scripts": scripts,
         "profile": profile, "profile_frames_truncated": profile_frames_truncated,
         "network": network, "input_devices": input_devices, "telemetry_omitted": telemetry_omitted,
         "event_trace":event_trace, "event_count":report["event_trace"]["count"].as_u64().unwrap_or(0),

@@ -133,7 +133,8 @@ errors, and future format changes must define an explicit, tested migration.
 
 Scenes additionally support local quaternion/scale transforms, entity parents,
 `EventBindings` and namespaced custom components. Project manifests may reference
-a declarative `componentSchemas` file and `prefab` scene-fragment assets. Defaults
+a declarative `componentSchemas` file, a `scriptFunctions` file that declares the host
+functions visual scripts may call ([Scripting](scripting.md#shared-script-core)) and `prefab` scene-fragment assets. Defaults
 preserve existing schema-1 scenes. See [components and scene commands](meta-programming.md)
 for formats, validation, cloning and runtime integration.
 

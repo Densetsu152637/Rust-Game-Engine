@@ -1724,6 +1724,7 @@ dependencies = [
  "engine-mesh-lod",
  "engine-pcg",
  "engine-project",
+ "engine-script",
  "engine-streaming",
  "engine-terrain",
  "engine-tilemap",

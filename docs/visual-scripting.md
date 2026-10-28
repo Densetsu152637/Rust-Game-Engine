@@ -43,7 +43,7 @@ exposed as a **host function** with a declared signature, see
   extra ports. Recursion is rejected at validation; the guest call depth is also
   limited to 16 frames at run time.
 
-Extra ports are written with the `set_ports` graph edit (or `add_node.ports`) on
+Extra ports are `{name, direction, type, multiple}` like any port; a `json` port has the type `{"custom": "script.json"}`, and a data out port that feeds several readers needs `"multiple": true`. They are written with the `set_ports` graph edit (or `add_node.ports`) on
 the four *extensible* node types: `function_entry`, `return`, `call_function` and
 `call`. Declared ports are always kept.
 

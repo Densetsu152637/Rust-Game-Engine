@@ -11,6 +11,7 @@ engine-foliage = { path = "../engine-foliage" }
 engine-mesh-lod = { path = "../engine-mesh-lod" }
 engine-pcg = { path = "../engine-pcg" }
 engine-project = { path = "../engine-project" }
+engine-script = { path = "../engine-script" }
 engine-streaming = { path = "../engine-streaming" }
 engine-terrain = { path = "../engine-terrain" }
 engine-tilemap = { path = "../engine-tilemap" }
