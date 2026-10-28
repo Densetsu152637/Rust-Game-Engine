@@ -1906,6 +1906,7 @@ dependencies = [
  "engine-network",
  "engine-pcg",
  "engine-physics",
+ "engine-script",
  "engine-sequencer",
  "engine-streaming",
  "engine-terrain",
@@ -1996,6 +1997,15 @@ dependencies = [
  "engine-render",
  "pollster 0.4.0",
  "wgpu",
+]
+
+[[package]]
+name = "engine-script"
+version = "0.1.0"
+dependencies = [
+ "engine-graph",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

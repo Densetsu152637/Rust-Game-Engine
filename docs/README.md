@@ -5,8 +5,11 @@
 - [Repository README](../README.md): workspace layout, prerequisites, build and test.
 - [Architecture](architecture.md): crate layering, one Rust type universe, the ECS
   graph scheduling model, render extraction and the desktop host.
-- [Native game crates](scripting.md): how external Rust crates register components,
-  systems and entity scripts, and how they are compiled into generations.
+- [Scripting](scripting.md): native Rust game crates (trusted), the shared script
+  core (typed host functions, capabilities, budgets, staged commits) and how
+  game code is compiled into generations or scripts are reloaded.
+- [Visual scripting](visual-scripting.md): the `script_graph` kind: entry, flow and
+  value nodes, functions, host calls, `engine.ScriptGraph`, limits, traps and codes.
 - [Project commands](commands.md): the `engine` command-line tool, JSON results and
   exit codes.
 - [Project and scene format](project-format.md): version 1 manifest, scene, asset and

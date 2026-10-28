@@ -29,6 +29,8 @@ pub struct Asset {
 #[derive(Clone, Debug)]
 pub struct Project {
     pub component_catalog: crate::catalog::ComponentCatalog,
+    /// Host functions graph scripts may call, from the `scriptFunctions` file.
+    pub script_functions: Vec<crate::scripting::ScriptFunctionDecl>,
     pub schema: u32,
     pub name: String,
     pub root: PathBuf,
@@ -45,6 +47,8 @@ pub struct Project {
 pub(super) struct Manifest {
     #[serde(default, rename = "componentSchemas")]
     pub(super) component_schemas: Option<PathBuf>,
+    #[serde(default, rename = "scriptFunctions")]
+    pub(super) script_functions: Option<PathBuf>,
     pub(super) schema: u32,
     pub(super) name: String,
     pub(super) startup_scene: PathBuf,

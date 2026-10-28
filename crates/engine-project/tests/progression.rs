@@ -577,6 +577,6 @@ fn project_validation_checks_definitions_and_references() {
     }
     assert_eq!(
         engine_project::graphs::kinds().names().collect::<Vec<_>>(),
-        ["behavior_tree", "dialogue", "state_tree"]
+        ["behavior_tree", "dialogue", "script_graph", "state_tree"]
     );
 }

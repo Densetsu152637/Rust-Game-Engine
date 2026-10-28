@@ -86,13 +86,17 @@ impl GraphKinds {
 
 /// The kinds shipped with the engine. Append other domains' kinds here.
 fn build() -> GraphKinds {
-    let kinds: [(GraphKind, Option<ProjectCheck>); 6] = [
+    let kinds: [(GraphKind, Option<ProjectCheck>); 7] = [
         (engine_ai::behavior_tree::kind(), None),
         (engine_animation::graph::kind(), None),
         (engine_audio::graph::kind(), None),
         (engine_ai::state_tree::kind(), None),
         (engine_material_graph::material_kind(), None),
         (engine_gameplay::dialogue::kind(), None),
+        (
+            engine_script::graph::kind(),
+            Some(crate::scripting::project_check),
+        ),
     ];
     GraphKinds {
         kinds: kinds

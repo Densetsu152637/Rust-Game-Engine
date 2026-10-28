@@ -81,6 +81,10 @@ pub struct RuntimeSnapshot {
     /// absent without an `engine.AbilitySystem`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abilities: Option<crate::gameplay::AbilitiesStatus>,
+    /// Script graph instances: faults, fuel use and variables per instance; absent
+    /// without an `engine.ScriptGraph`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scripts: Option<crate::scripting::ScriptsStatus>,
     pub ticks: u64,
     pub scene: Scene,
     pub live_entities: usize,
@@ -185,6 +189,7 @@ impl Runtime {
         crate::networking::validate(self.app.world())?;
         crate::sequencer::prepare(self.app.world_mut())?;
         crate::simulation::reset(self.app.world_mut())?;
+        crate::scripting::prepare(self.app.world_mut())?;
         crate::ai::prepare(self.app.world_mut())?;
         crate::refresh_world_transforms(self.app.world_mut())?;
         self.validate_event_bindings()?;
@@ -259,6 +264,7 @@ impl Runtime {
             smart_objects: crate::ai::smart_object_status(self.app.world()),
             progression: crate::gameplay::progression::status(self.app.world()),
             abilities: crate::gameplay::status(self.app.world()),
+            scripts: crate::scripting::status(self.app.world()),
             ticks: self.ticks,
             scene,
             live_entities: self

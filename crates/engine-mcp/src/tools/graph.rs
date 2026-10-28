@@ -129,7 +129,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
                     (details.op_index) with coded diagnostics. Operations (see graph_schema): \
                     add_node, remove_node, connect (optional index = position among the edges \
                     leaving the port, which is child order), disconnect, set_param (null removes), \
-                    set_position, add_variable, remove_variable, set_variable, set_metadata. \
+                    set_position, set_ports (extensible nodes), add_variable, remove_variable, set_variable, set_metadata. \
                     Target an existing graph with `asset` (id) or `path`, and pass the \
                     `expected_revision` from graph_validate or the previous graph_edit; a stale \
                     revision fails with revision_conflict. To create a graph give a new `path` and \
