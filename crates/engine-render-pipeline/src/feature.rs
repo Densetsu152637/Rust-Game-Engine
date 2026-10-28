@@ -24,6 +24,10 @@ pub enum Stage {
     Shadow,
     /// Depth/normal/motion prepasses at the render size.
     Prepass,
+    /// Certified current-frame camera occluders into a separate depth target.
+    OccluderDepth,
+    /// Conservative Hi-Z queries and native indirect draw preparation.
+    Visibility,
     /// Opaque geometry into HDR colour + depth (render size).
     Opaque,
     /// Sky and background, after opaque geometry (depth-tested at far depth).
@@ -47,10 +51,12 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [Stage; 12] = [
+    pub const ALL: [Stage; 14] = [
         Self::Prepare,
         Self::Shadow,
         Self::Prepass,
+        Self::OccluderDepth,
+        Self::Visibility,
         Self::Opaque,
         Self::Sky,
         Self::OpaqueEffects,
@@ -68,6 +74,8 @@ impl Stage {
             Self::Prepare => "prepare",
             Self::Shadow => "shadow",
             Self::Prepass => "prepass",
+            Self::OccluderDepth => "occluder_depth",
+            Self::Visibility => "visibility",
             Self::Opaque => "opaque",
             Self::Sky => "sky",
             Self::OpaqueEffects => "opaque_effects",

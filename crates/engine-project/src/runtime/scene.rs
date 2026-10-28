@@ -377,6 +377,8 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
     if let Some(v) = &c.mesh_renderer {
         e.insert(v.clone());
     }
+    if let Some(v) = &c.mesh_lods { e.insert(v.clone()); } else { e.remove::<crate::rendering3d::MeshLods>(); }
+    if let Some(v) = &c.hiz_occluder { e.insert(v.clone()); } else { e.remove::<crate::rendering3d::HiZOccluder>(); }
     if let Some(v) = &c.sprite_renderer {
         e.insert(v.clone());
     }

@@ -2,6 +2,7 @@
 //! instances and indirect commands. This is an opt-in adapter; it does not
 //! change the built-in mesh path or decide projected bounds/LOD.
 use crate::{GpuInstance, GpuMesh};
+pub mod project;
 use anyhow::{Result, ensure};
 use engine_render_hiz::VisibilityOutput;
 use engine_render_wgpu::GpuContext;
@@ -12,6 +13,20 @@ use wgpu::util::DeviceExt;
 pub const MAX_INDIRECT_INSTANCES: usize = 65_536;
 pub const MAX_INDIRECT_BATCHES: usize = 256;
 pub const MAX_INSTANCES_PER_BATCH: u32 = 1024;
+/// Hard per-view trusted depth budget; excess markers remain visible candidates.
+pub const MAX_OCCLUDERS: usize = 64;
+pub const MAX_OCCLUDER_TRIANGLES: u32 = 200_000;
+
+/// Optional per-draw camera visibility contract, in `SceneFrame.meshes` order.
+/// Bounds enclose every selectable LOD in local space. The caller certifies
+/// the vertex coverage of marked occluders; the pipeline also checks its
+/// built-in shader and opaque material. `shadow_mesh` is level-zero geometry.
+#[derive(Clone, Debug)]
+pub struct MeshVisibility {
+    pub bounds: Option<([f32; 3], [f32; 3])>,
+    pub occluder: bool,
+    pub shadow_mesh: Option<Arc<GpuMesh>>,
+}
 const LANES: u32 = 64;
 const INSTANCE_BYTES: u64 = std::mem::size_of::<GpuInstance>() as u64;
 const DRAW_BYTES: u64 = 16;

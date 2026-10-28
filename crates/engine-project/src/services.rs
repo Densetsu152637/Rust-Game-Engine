@@ -114,6 +114,8 @@ pub fn snapshot_entity(world: &World, entity: Entity) -> Result<SceneEntity> {
             transform: e.get::<Transform>().cloned(),
             script: e.get::<Script>().cloned(),
             mesh_renderer: e.get::<crate::MeshRenderer>().cloned(),
+            mesh_lods: e.get::<crate::rendering3d::MeshLods>().cloned(),
+            hiz_occluder: e.get::<crate::rendering3d::HiZOccluder>().cloned(),
             sprite_renderer: e.get::<crate::SpriteRenderer>().cloned(),
             camera_2d: e.get::<crate::Camera2D>().cloned(),
             collider_2d: e.get::<Collider2D>().cloned(),

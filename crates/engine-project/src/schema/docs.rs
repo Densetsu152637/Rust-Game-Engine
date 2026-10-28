@@ -1,13 +1,15 @@
 //! Shared built-in authoring component documentation.
 use serde_json::{Value, json};
 /// The component keys of an entity's `components` object, in schema order.
-pub const COMPONENT_NAMES: [&str; 16] = [
+pub const COMPONENT_NAMES: [&str; 18] = [
     "Camera3D",
     "MeshMaterial",
     "EventBindings",
     "Transform",
     "Script",
     "MeshRenderer",
+    "MeshLods",
+    "HiZOccluder",
     "SpriteRenderer",
     "Camera2D",
     "Collider2D",
@@ -201,6 +203,26 @@ fn builtin_docs() -> Vec<ComponentDoc> {
             example: json!({"mesh": "asset:player-mesh", "texture": "asset:player-texture"}),
         },
         ComponentDoc {
+            name: "MeshLods",
+            description: "Additional mesh assets, finest to coarsest, selected per camera with screen-height thresholds and hysteresis. MeshRenderer.mesh is level zero; shadows retain its base geometry.",
+            requires: &["MeshRenderer"],
+            schema: closed(
+                json!({"version":version(),
+                    "meshes":{"type":"array","maxItems":7,"items":{"type":"string","minLength":1},"default":[]},
+                    "thresholds":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"number","exclusiveMinimum":0,"maximum":1},"default":[1.0]},
+                    "hysteresis":{"type":"number","minimum":0,"exclusiveMaximum":1,"default":0.1}}),
+                &[],
+            ),
+            example: json!({"meshes":["asset:player-mesh-low"],"thresholds":[0.4,0.05],"hysteresis":0.1}),
+        },
+        ComponentDoc {
+            name: "HiZOccluder",
+            description: "Explicit permission to consider this MeshRenderer as a current-frame Hi-Z depth writer. Native opacity and geometry budget checks may still reject it. Camera3D render_features must enable engine.hiz.visibility.",
+            requires: &["MeshRenderer"],
+            schema: closed(json!({"version":version(),"enabled":{"type":"boolean","default":true}}), &[]),
+            example: json!({"enabled":true}),
+        },
+        ComponentDoc {
             name: "SpriteRenderer",
             description: "Draws a 2D sprite quad from a texture (whole texture, a source \
                 rectangle, or an animation of frames). Requires Transform.",
@@ -284,7 +306,7 @@ pub const SCENE_RULES: [&str; 7] = [
     "A scene may contain at most one Camera2D.",
     "SpriteRenderer, Collider2D, Camera3D, PointLight, SpotLight and AreaLight require a Transform on the same entity.",
     "Camera2D.follow must name an entity that has a Transform.",
-    "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture/normal_texture/metallic_roughness_texture) must be catalog asset IDs of the right kind; MeshMaterial.shader also accepts a graph asset with document kind material.",
+    "Asset references (Script.asset, MeshRenderer.mesh/texture, MeshLods.meshes, SpriteRenderer.texture, MeshMaterial.shader/texture/normal_texture/metallic_roughness_texture) must be catalog asset IDs of the right kind; MeshMaterial.shader also accepts a graph asset with document kind material.",
     "A scene may contain at most one `engine.AcousticEnvironment`; `engine.AudioEmitter` selects exactly one nonempty `clip` (`audio` asset) or `graph` (`graph` asset of kind `audio`) at runtime. File clips use bounded resident decoding by default or incremental decoding with `streamed: true`; graphs use bounded procedural streaming with atomic initial `parameters`. Nonresident sources reject `looped: true`; empty default emitter references remain structurally valid for authoring. `engine.AcousticGeometry.mesh` and `engine.AcousticVolume.mesh` must reference `mesh` assets, and `engine.AcousticEnvironment.geometry.asset` an `acoustics` asset.",
     "A scene may contain at most one `engine.NetworkSession`; `engine.NetworkReplication` requires `engine.NetworkReplica` on the same entity, and `engine.NetworkHitboxes` and `engine.NetworkVoice` require a Transform.",
 ];

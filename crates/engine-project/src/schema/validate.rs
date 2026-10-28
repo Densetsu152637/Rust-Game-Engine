@@ -95,6 +95,18 @@ impl Scene {
             {
                 return Err(bad("Invalid MeshRenderer"));
             }
+            if let Some(lods) = &c.mesh_lods {
+                lods.validate()?;
+                if c.mesh_renderer.is_none() || lods.meshes.iter().any(|mesh| !identifier(mesh)) {
+                    return Err(bad("MeshLods needs a MeshRenderer and valid mesh asset IDs"));
+                }
+            }
+            if let Some(marker) = &c.hiz_occluder {
+                marker.validate()?;
+                if c.mesh_renderer.is_none() {
+                    return Err(bad("HiZOccluder needs a MeshRenderer"));
+                }
+            }
             if (c.sprite_renderer.is_some() || c.collider_2d.is_some()) && c.transform.is_none() {
                 return Err(bad("SpriteRenderer and Collider2D require Transform"));
             }

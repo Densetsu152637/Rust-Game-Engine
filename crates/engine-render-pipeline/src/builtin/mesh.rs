@@ -12,6 +12,9 @@ use crate::shader::{
     LIT_WGSL, MOTION_WGSL, NORMALS_WGSL, SHADOW_WGSL, ShaderComposer, compose_mesh_material,
 };
 use crate::targets::{DEPTH_FORMAT, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT};
+use crate::visibility::{MeshVisibility, VisibilityBatch, IndirectOutput, MAX_INSTANCES_PER_BATCH, MAX_OCCLUDERS, MAX_OCCLUDER_TRIANGLES};
+use crate::visibility::project::project_bounds;
+use engine_render_hiz::VisibilityQuery;
 use anyhow::{Context, Result, ensure};
 use engine_render_wgpu::GpuContext;
 use glam::Mat4;
@@ -71,6 +74,9 @@ pub(crate) struct MeshPreparation<'a, 'm> {
     pub reset_history: bool,
     pub indirect: Option<&'a IndirectScene>,
     pub ambient: glam::Vec3,
+    pub visibility: Option<&'a [MeshVisibility]>,
+    pub clip_from_world: Mat4,
+    pub render_size: [u32; 2],
 }
 
 /// `EngineInstance` (208 bytes).
@@ -120,11 +126,22 @@ pub(crate) struct MeshViewState {
     previous_models: HashMap<String, Mat4>,
     pending_models: Option<HashMap<String, Mat4>>,
     opaque: Vec<Batch>,
+    opaque_instances: Vec<GpuInstance>,
+    queries: Vec<VisibilityQuery>,
+    visibility_batches: Vec<VisibilityBatch>,
+    indirect_ranges: Vec<std::ops::Range<usize>>,
+    indirect_output: Option<IndirectOutput>,
+    occluders: Vec<(Arc<GpuMesh>, u32)>,
+    shadow_base: Option<Vec<(Arc<GpuMesh>, u32)>>,
     transparent: Vec<Batch>,
     pub draws: usize,
     indirect: bool,
 }
 impl MeshViewState {
+    pub(crate) fn queries(&self) -> &[VisibilityQuery] { &self.queries }
+    pub(crate) fn occluder_count(&self) -> usize { self.occluders.len() }
+    pub(crate) fn candidate_count(&self) -> usize { self.opaque_instances.len() }
+    pub(crate) fn indirect_batch_count(&self) -> usize { self.visibility_batches.len() }
     pub(crate) fn commit_scene(&mut self) {
         if let Some(models) = self.pending_models.take() {
             self.previous_models = models;
@@ -149,6 +166,7 @@ pub(crate) struct MeshRenderer {
     programs: [HashMap<String, Program>; 2],
     next_program: u64,
     shadow: wgpu::RenderPipeline,
+    occluder_depth: wgpu::RenderPipeline,
     shadow_layout: wgpu::BindGroupLayout,
     shadow_index: (wgpu::Buffer, wgpu::BindGroup),
     motion: wgpu::RenderPipeline,
@@ -218,6 +236,37 @@ fn mesh_pipeline(
 }
 
 impl MeshRenderer {
+    pub(crate) fn encode_visibility(
+        &self,
+        gpu: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        adapter: &crate::visibility::HiZIndirect,
+        masks: &engine_render_hiz::VisibilityOutput,
+        state: &mut MeshViewState,
+        layouts: &PipelineLayouts,
+    ) -> Result<()> {
+        let output = adapter.encode(gpu, encoder, masks, &state.opaque_instances,
+            &state.visibility_batches, &layouts.instances)?;
+        state.indirect_output = Some(output);
+        Ok(())
+    }
+
+    pub(crate) fn draw_occluder_depth(
+        &self, pass: &mut wgpu::RenderPass<'_>, view: &wgpu::BindGroup,
+        state: &MeshViewState,
+    ) -> DrawStats {
+        let mut stats = DrawStats::default();
+        let Some((_, _, instances)) = &state.instances else { return stats; };
+        pass.set_pipeline(&self.occluder_depth);
+        pass.set_bind_group(0, view, &[]);
+        pass.set_bind_group(3, instances, &[]);
+        for (mesh, index) in &state.occluders {
+            mesh.draw(pass, *index..*index + 1);
+            stats.draw_calls += 1;
+            stats.instances += 1;
+        }
+        stats
+    }
     pub fn new(gpu: &GpuContext, layouts: &PipelineLayouts) -> Result<Self> {
         let device = &gpu.device;
         let composer = ShaderComposer::new();
@@ -297,10 +346,11 @@ impl MeshRenderer {
             bind_group_layouts: &[Some(&layouts.view), None, None, Some(&layouts.instances)],
             immediate_size: 0,
         });
-        let (shadow, motion, normals) = scoped(device, || {
+        let (shadow, motion, normals, occluder_depth) = scoped(device, || {
             let shadow_module = module(device, "engine shadow", &composer.compose(SHADOW_WGSL)?);
             let motion_module = module(device, "engine motion", &composer.compose(MOTION_WGSL)?);
             let normals_module = module(device, "engine normals", &composer.compose(NORMALS_WGSL)?);
+            let occluder_module = module(device, "engine hiz depth", &composer.compose(include_str!("../wgsl/hiz_depth.wgsl"))?);
             Ok((
                 mesh_pipeline(
                     device,
@@ -326,6 +376,7 @@ impl MeshRenderer {
                     Some((NORMALS_FORMAT, None)),
                     true,
                 ),
+                mesh_pipeline(device, "engine hiz depth", &prepass_layout, &occluder_module, None, true),
             ))
         })?;
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -343,6 +394,7 @@ impl MeshRenderer {
             programs: std::array::from_fn(|_| HashMap::new()),
             next_program: 1,
             shadow,
+            occluder_depth,
             shadow_layout,
             shadow_index: (index_buffer, index_group),
             motion,
@@ -433,7 +485,20 @@ impl MeshRenderer {
             reset_history,
             indirect,
             ambient,
+            visibility,
+            clip_from_world,
+            render_size,
         } = frame;
+        if let Some(input) = visibility {
+            ensure!(input.len() == meshes.len(), "visibility metadata must match scene meshes");
+        }
+        state.indirect_output = None;
+        state.opaque_instances.clear();
+        state.queries.clear();
+        state.visibility_batches.clear();
+        state.indirect_ranges.clear();
+        state.occluders.clear();
+        state.shadow_base = visibility.map(|_| Vec::new());
         ensure!(
             meshes.len() <= MAX_SCENE_MESHES,
             "at most {MAX_SCENE_MESHES} meshes per view"
@@ -590,6 +655,7 @@ impl MeshRenderer {
         let mut current_models = HashMap::with_capacity(meshes.len());
         state.opaque.clear();
         state.transparent.clear();
+        let mut opaque_sources = Vec::with_capacity(split);
         for (range, grouping, transparent) in [
             (0..split, Grouping::ByKey, false),
             (split..order.len(), Grouping::Consecutive, true),
@@ -600,7 +666,8 @@ impl MeshRenderer {
                 let first = members[0] + range.start;
                 let start = instances.len() as u32;
                 for &member in &members {
-                    let mesh = &meshes[order[member + range.start]];
+                    let source = order[member + range.start];
+                    let mesh = &meshes[source];
                     let model = mesh.world_from_local;
                     let previous = if reset_history {
                         model
@@ -614,6 +681,15 @@ impl MeshRenderer {
                         previous_world_from_local: previous.to_cols_array_2d(),
                         params: [id_hash(mesh.id), 0, 0, 0],
                     });
+                    if !transparent {
+                        let instance_index = instances.len() as u32 - 1;
+                        opaque_sources.push(source);
+                        if mesh.params.cast_shadows {
+                            if let Some(shadows) = &mut state.shadow_base {
+                                shadows.push((visibility.unwrap()[source].shadow_mesh.clone().unwrap_or_else(|| mesh.mesh.clone()), instance_index));
+                            }
+                        }
+                    }
                 }
                 let mesh = &meshes[order[first]];
                 let batch = Batch {
@@ -634,6 +710,47 @@ impl MeshRenderer {
         }
         state.pending_models = Some(current_models);
         state.draws = meshes.len();
+        state.opaque_instances.extend_from_slice(&instances[..opaque_sources.len()]);
+        if let Some(input) = visibility {
+            for &source in &opaque_sources {
+                let mesh = &meshes[source];
+                let query = input[source].bounds.map_or_else(
+                    || VisibilityQuery::new([0; 4], 0.0, true),
+                    |(min, max)| project_bounds(clip_from_world, mesh.world_from_local,
+                        glam::Vec3::from_array(min), glam::Vec3::from_array(max), render_size),
+                );
+                state.queries.push(query);
+            }
+            for batch in &state.opaque {
+                let first = state.visibility_batches.len();
+                let mut start = batch.instances.start;
+                while start < batch.instances.end {
+                    let end = (start + MAX_INSTANCES_PER_BATCH).min(batch.instances.end);
+                    state.visibility_batches.push(VisibilityBatch { mesh: batch.mesh.clone(), instances: start..end });
+                    start = end;
+                }
+                state.indirect_ranges.push(first..state.visibility_batches.len());
+            }
+            let mut marked: Vec<_> = opaque_sources.iter().enumerate()
+                .filter(|(_, &source)| input[source].occluder)
+                .collect();
+            marked.sort_by(|a, b| meshes[*a.1].id.cmp(meshes[*b.1].id));
+            let mut triangles = 0u32;
+            for (instance, &source) in marked {
+                let mesh = &meshes[source];
+                let count = mesh.mesh.count / 3;
+                if state.occluders.len() == MAX_OCCLUDERS { break; }
+                if mesh.shader.is_none() && !mesh.params.transparent
+                    && input[source].bounds.is_some()
+                    && triangles.checked_add(count).is_some_and(|sum| sum <= MAX_OCCLUDER_TRIANGLES)
+                {
+                    triangles += count;
+                    state.occluders.push((mesh.mesh.clone(), instance as u32));
+                    // A certified depth writer must not query against itself.
+                    state.queries[instance] = VisibilityQuery::new([0; 4], 0.0, true);
+                }
+            }
+        }
 
         // Uploads.
         let device = &gpu.device;
@@ -850,8 +967,34 @@ impl MeshRenderer {
         pass: &mut wgpu::RenderPass<'_>,
         view: &wgpu::BindGroup,
         state: &MeshViewState,
-    ) -> DrawStats {
-        self.draw_batches(pass, view, state, &state.opaque, false)
+    ) -> Result<DrawStats> {
+        let Some(output) = &state.indirect_output else {
+            return Ok(self.draw_batches(pass, view, state, &state.opaque, false));
+        };
+        let Some((_, _, params)) = &state.params else { return Ok(DrawStats::default()); };
+        let mut stats = DrawStats::default();
+        pass.set_bind_group(0, view, &[]);
+        let mut current = None;
+        for (batch, segments) in state.opaque.iter().zip(&state.indirect_ranges) {
+            let Some(pipeline) = self.pipeline(batch.program, false) else { continue; };
+            if current != Some(batch.program) { pass.set_pipeline(pipeline); current = Some(batch.program); }
+            let arena = MaterialArena::new(self.uniform_alignment, state.indirect);
+            let offset = u64::from(batch.material) * arena.stride;
+            pass.set_bind_group(1, &state.texture_groups[&batch.textures], &[]);
+            if state.indirect {
+                pass.set_bind_group(2, params, &[offset as u32, (offset + arena.indirect) as u32, (offset + arena.maps) as u32]);
+            } else {
+                pass.set_bind_group(2, params, &[offset as u32, (offset + arena.maps) as u32]);
+            }
+            for index in segments.clone() {
+                output.draw_batch(pass, index)?;
+                stats.draw_calls += 1;
+            }
+            // The GPU survivor count is not read back synchronously. This is
+            // the candidate count, not a claim about drawn instances.
+            stats.instances += batch.instances.len();
+        }
+        Ok(stats)
     }
 
     pub fn draw_transparent(
@@ -880,10 +1023,18 @@ impl MeshRenderer {
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(1, &self.shadow_index.1, &[shadow * alignment]);
         pass.set_bind_group(3, instances, &[]);
-        for batch in state.opaque.iter().filter(|b| b.casts) {
-            batch.mesh.draw(pass, batch.instances.clone());
-            stats.draw_calls += 1;
-            stats.instances += batch.instances.len();
+        if let Some(shadows) = &state.shadow_base {
+            for (mesh, index) in shadows {
+                mesh.draw(pass, *index..*index + 1);
+                stats.draw_calls += 1;
+                stats.instances += 1;
+            }
+        } else {
+            for batch in state.opaque.iter().filter(|b| b.casts) {
+                batch.mesh.draw(pass, batch.instances.clone());
+                stats.draw_calls += 1;
+                stats.instances += batch.instances.len();
+            }
         }
         stats
     }

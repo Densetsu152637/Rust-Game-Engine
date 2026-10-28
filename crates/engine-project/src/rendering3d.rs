@@ -9,6 +9,65 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// Additional authored mesh levels for a MeshRenderer. Level zero is its
+/// `mesh`; `meshes` contains successively coarser levels.
+#[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MeshLods {
+    pub version: u32,
+    pub meshes: Vec<String>,
+    /// One screen-height threshold per level, including level zero.
+    pub thresholds: Vec<f32>,
+    pub hysteresis: f32,
+}
+
+impl Default for MeshLods {
+    fn default() -> Self {
+        Self { version: 1, meshes: Vec::new(), thresholds: vec![1.0], hysteresis: 0.1 }
+    }
+}
+
+impl MeshLods {
+    pub fn policy(&self) -> engine_mesh_lod::ScreenSizeLods {
+        engine_mesh_lod::ScreenSizeLods {
+            thresholds: self.thresholds.clone(),
+            cull_below: None,
+            hysteresis: self.hysteresis,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != 1 || self.meshes.len() > 7
+            || self.thresholds.len() != self.meshes.len() + 1
+            || self.meshes.iter().any(String::is_empty)
+            || self.policy().validate().is_err()
+        {
+            return Err(Error::new("mesh_lods.invalid", "MeshLods requires version 1, at most seven additional meshes, and one strictly decreasing screen-height threshold per level"));
+        }
+        Ok(())
+    }
+}
+
+/// Explicit permission for a mesh entity to be considered as a Hi-Z depth
+/// writer. Native eligibility and the per-view budget are checked separately.
+#[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct HiZOccluder {
+    pub version: u32,
+    pub enabled: bool,
+}
+
+impl Default for HiZOccluder {
+    fn default() -> Self { Self { version: 1, enabled: true } }
+}
+
+impl HiZOccluder {
+    pub fn validate(&self) -> Result<()> {
+        if self.version != 1 { return Err(Error::new("hiz_occluder.invalid", "HiZOccluder requires version 1")); }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Projection3D {
@@ -778,11 +837,21 @@ pub struct MeshDraw3D {
     /// None selects the built-in lit shader.
     pub shader: Option<Arc<str>>,
 }
+/// Optional authored camera LOD and trusted-depth request for a mesh draw.
+/// The first level remains in `MeshDraw3D.mesh`; these are the coarser levels.
+#[derive(Clone, Debug)]
+pub struct MeshDrawOptions3D {
+    pub levels: Vec<Arc<Mesh>>,
+    pub policy: engine_mesh_lod::ScreenSizeLods,
+    pub occluder: bool,
+}
 #[derive(Clone, Debug)]
 pub struct SceneRenderFrame {
     pub sprites: RenderFrame,
     pub camera3d: Option<CameraInstance3D>,
     pub meshes: Vec<MeshDraw3D>,
+    /// Draw-ID-keyed options, absent for legacy level-zero direct draws.
+    pub mesh_options: BTreeMap<String, MeshDrawOptions3D>,
     /// Enabled light components in stable entity ID order.
     pub lights: Vec<crate::lights::LightInstance3D>,
     /// The active camera's `PostProcess`, enabled `PostProcessVolume`s and
@@ -819,6 +888,7 @@ impl From<RenderFrame> for SceneRenderFrame {
             sprites,
             camera3d: None,
             meshes: vec![],
+            mesh_options: BTreeMap::new(),
             lights: vec![],
             post: Default::default(),
             ray_tracing: None,

@@ -118,6 +118,8 @@ pub struct FrameTargets {
     /// Allocated only when an opaque effect needs a distinct full-image destination.
     pub(crate) scene_scratch: Option<Target>,
     pub depth: Target,
+    /// Isolated certified current-frame occluder depth for optional Hi-Z.
+    pub(crate) occluder_depth: Option<Target>,
     pub normals: Option<Target>,
     pub motion: Option<Target>,
     /// Screen-lighting inputs, when a running feature needs them.
@@ -157,6 +159,7 @@ impl FrameTargets {
                     | wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::COPY_SRC,
             ),
+            occluder_depth: None,
             normals: None,
             motion: None,
             screen_lighting: None,
@@ -179,6 +182,14 @@ impl FrameTargets {
                     | wgpu::TextureUsages::COPY_SRC,
             )
         })
+    }
+
+    pub(crate) fn ensure_occluder_depth(&mut self, device: &wgpu::Device) -> &Target {
+        self.occluder_depth.get_or_insert_with(|| Target::new(
+            device, "engine current-frame occluder depth", self.render_size,
+            DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        ))
     }
 
     pub(crate) fn ensure_screen_lighting(&mut self, device: &wgpu::Device) {

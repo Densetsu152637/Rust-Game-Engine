@@ -22,7 +22,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
             name: "component_schema",
             title: "Component schemas",
             description: "Describe the authored component types an entity can carry \
-                (Transform, Script, MeshRenderer, SpriteRenderer, Camera2D, Collider2D) as JSON \
+                (Transform, Script, MeshRenderer, MeshLods, HiZOccluder, SpriteRenderer, Camera2D, Collider2D) as JSON \
                 Schema with descriptions, defaults and a valid example each, plus the scene \
                 rules the engine enforces. Use it before building `components` for \
                 entity_create, entity_update or component_set.",

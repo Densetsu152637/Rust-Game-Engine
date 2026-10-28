@@ -128,6 +128,8 @@ impl<'a> FeatureContext<'a> {
                 Stage::Prepare
                     | Stage::Shadow
                     | Stage::Prepass
+                    | Stage::OccluderDepth
+                    | Stage::Visibility
                     | Stage::Opaque
                     | Stage::Sky
                     | Stage::Transparent

@@ -230,6 +230,9 @@ impl Project {
                     self.require_asset(t, "texture")?;
                 }
             }
+            if let Some(lods) = &c.mesh_lods {
+                for mesh in &lods.meshes { self.require_asset(mesh, "mesh")?; }
+            }
             if let Some(s) = &c.sprite_renderer {
                 self.require_asset(&s.texture, "texture")?;
             }

@@ -23,6 +23,7 @@ engine-sequencer = { path = "../engine-sequencer" }
 engine-navigation = { path = "../engine-navigation" }
 engine-graph = { path = "../engine-graph" }
 engine-material-graph = { path = "../engine-material-graph" }
+engine-mesh-lod = { path = "../engine-mesh-lod" }
 engine-ai = { path = "../engine-ai" }
 engine-script = { path = "../engine-script" }
 engine-gameplay = { path = "../engine-gameplay" }

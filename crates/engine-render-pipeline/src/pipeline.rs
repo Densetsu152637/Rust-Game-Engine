@@ -18,6 +18,8 @@ use crate::shader::ShaderComposer;
 use crate::shadows::ShadowAtlasConfig;
 use crate::targets::{CompositeTargets, FrameTargets, Target};
 use crate::view::{Presentation, VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, Viewport};
+use crate::visibility::{HiZIndirect, MeshVisibility, MAX_INDIRECT_BATCHES, MAX_INDIRECT_INSTANCES};
+use engine_render_hiz::{HiZKernel, HiZView};
 use anyhow::{Context, Result, bail, ensure};
 use bevy_ecs::world::World;
 use engine_render_wgpu::GpuContext;
@@ -34,6 +36,10 @@ pub mod names {
     pub const NORMALS: &str = "engine.prepass.normals";
     /// Prepass stage: motion vectors, when a feature or the host needs them.
     pub const MOTION: &str = "engine.prepass.motion";
+    /// Certified current-frame depth pass for camera Hi-Z culling.
+    pub const HIZ_DEPTH: &str = "engine.hiz.depth";
+    /// Opt-in current-frame Hi-Z queries and opaque indirect draws.
+    pub const HIZ_VISIBILITY: &str = "engine.hiz.visibility";
     /// Opaque stage: opaque engine meshes (instanced).
     pub const OPAQUE: &str = "engine.opaque";
     /// Transparent stage: blended engine meshes, back to front.
@@ -150,6 +156,8 @@ struct ViewState {
     targets: Option<FrameTargets>,
     history: ViewHistory,
     mesh: MeshViewState,
+    hiz_view: Option<HiZView>,
+    hiz_active: bool,
     uniform: wgpu::Buffer,
     /// Light list, shadows, atlas, clusters and the `engine::view` groups.
     lighting: ViewLighting,
@@ -179,6 +187,8 @@ impl ViewState {
             targets: None,
             history: ViewHistory::default(),
             mesh: MeshViewState::default(),
+            hiz_view: None,
+            hiz_active: false,
             uniform,
             lighting,
             report: ViewReport::default(),
@@ -302,6 +312,8 @@ pub fn builtin_registry() -> Result<FeatureRegistry> {
         FeatureDescriptor::new(names::SHADOWS, Stage::Shadow),
         FeatureDescriptor::new(names::NORMALS, Stage::Prepass),
         FeatureDescriptor::new(names::MOTION, Stage::Prepass),
+        FeatureDescriptor::new(names::HIZ_DEPTH, Stage::OccluderDepth),
+        FeatureDescriptor::new(names::HIZ_VISIBILITY, Stage::Visibility).disabled_by_default(),
         FeatureDescriptor::new(names::OPAQUE, Stage::Opaque),
         FeatureDescriptor::new(names::TRANSPARENT, Stage::Transparent),
         FeatureDescriptor::new(names::UPSCALE, Stage::Upscale),
@@ -332,6 +344,7 @@ pub struct ScenePipeline {
     registry: FeatureRegistry,
     post: std::sync::Arc<crate::post::PostShared>,
     mesh: MeshRenderer,
+    hiz: Option<(HiZKernel, HiZIndirect)>,
     output: OutputPass,
     composite_copy: OutputPass,
     upscale: UpscalePass,
@@ -351,6 +364,8 @@ impl ScenePipeline {
         let device = &gpu.device;
         let layouts = layouts(device);
         let mesh = MeshRenderer::new(&gpu, &layouts).context("creating the built-in mesh path")?;
+        let hiz = HiZKernel::new(&gpu).ok().and_then(|kernel|
+            HiZIndirect::new(&gpu).ok().map(|indirect| (kernel, indirect)));
         let output = OutputPass::new(device)?;
         let composite_copy = OutputPass::new(device)?;
         let upscale = UpscalePass::new(device)?;
@@ -376,6 +391,7 @@ impl ScenePipeline {
             registry,
             post,
             mesh,
+            hiz,
             output,
             composite_copy,
             upscale,
@@ -558,6 +574,19 @@ impl ScenePipeline {
         target: &OutputTarget,
         host: &mut dyn HostStages,
     ) -> Result<ViewReport> {
+        self.render_view_with_visibility(frame, target, host, None)
+    }
+
+    /// Opt-in camera visibility input, in exact `frame.meshes` order. Without
+    /// metadata the legacy direct path remains active, even when a camera
+    /// requests the disabled-by-default Hi-Z feature.
+    pub fn render_view_with_visibility(
+        &mut self,
+        frame: &SceneFrame<'_>,
+        target: &OutputTarget,
+        host: &mut dyn HostStages,
+        visibility: Option<&[MeshVisibility]>,
+    ) -> Result<ViewReport> {
         let view = frame.view;
         view.validate()?;
         frame.lights.validate()?;
@@ -637,12 +666,31 @@ impl ScenePipeline {
                     reset_history: view.reset_history,
                     indirect: indirect.map(|s| s.as_ref()),
                     ambient: view.ambient,
+                    visibility,
+                    clip_from_world: view.jittered_clip_from_world(),
+                    render_size: view.render_size,
                 },
             )
             .context("preparing scene meshes")
         {
             abort_scene(state, &mut self.registry, view.id);
             return Err(error);
+        }
+        state.hiz_active = false;
+        if resolved.is_enabled(names::HIZ_VISIBILITY) && self.hiz.is_some()
+            && visibility.is_some()
+            && state.mesh.occluder_count() > 0
+            && state.mesh.candidate_count() <= MAX_INDIRECT_INSTANCES
+            && state.mesh.indirect_batch_count() <= MAX_INDIRECT_BATCHES
+        {
+            let count = state.mesh.candidate_count() as u32;
+            let reuse = state.hiz_view.as_ref().is_some_and(|v|
+                v.size() == view.render_size && v.capacity() >= count);
+            if !reuse {
+                state.hiz_view = self.hiz.as_ref().and_then(|(kernel, _)|
+                    kernel.create_view(&self.gpu, view.render_size, count).ok());
+            }
+            state.hiz_active = state.hiz_view.is_some();
         }
         let mut targets = match state.targets.take() {
             Some(t) if t.render_size == view.render_size && t.output_size == view.output_size => t,
@@ -732,6 +780,8 @@ impl ScenePipeline {
                 Stage::Prepare,
                 Stage::Shadow,
                 Stage::Prepass,
+                Stage::OccluderDepth,
+                Stage::Visibility,
                 Stage::Opaque,
                 Stage::Sky,
                 Stage::OpaqueEffects,
@@ -743,6 +793,7 @@ impl ScenePipeline {
                         layouts,
                         registry: &mut self.registry,
                         mesh: &self.mesh,
+                        hiz: self.hiz.as_ref(),
                         output: &mut self.output,
                         upscale: &self.upscale,
                         shadow_alignment: self.shadow_alignment,
@@ -835,6 +886,7 @@ impl ScenePipeline {
                         layouts,
                         registry: &mut self.registry,
                         mesh: &self.mesh,
+                        hiz: self.hiz.as_ref(),
                         output: &mut self.output,
                         upscale: &self.upscale,
                         shadow_alignment: self.shadow_alignment,
@@ -1481,6 +1533,7 @@ struct StageRun<'a, 'f> {
     layouts: &'a PipelineLayouts,
     registry: &'a mut FeatureRegistry,
     mesh: &'a MeshRenderer,
+    hiz: Option<&'a (HiZKernel, HiZIndirect)>,
     output: &'a mut OutputPass,
     upscale: &'a UpscalePass,
     shadow_alignment: u32,
