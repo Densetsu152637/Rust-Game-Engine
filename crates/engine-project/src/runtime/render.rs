@@ -83,6 +83,7 @@ pub struct RenderFrame {
 }
 #[derive(Default)]
 pub(super) struct Content {
+    pub(super) indirect: BTreeMap<String, Arc<crate::indirect::IndirectAsset>>,
     pub(super) textures: BTreeMap<String, Arc<Texture>>,
     pub(super) meshes: BTreeMap<String, Arc<Mesh>>,
     pub(super) fonts: BTreeMap<String, FontAtlas>,
@@ -99,6 +100,7 @@ impl Content {
     }
     pub(super) fn load(project: &Project) -> Result<Self> {
         let mut content = Self::default();
+        content.indirect = crate::indirect::load_indirect_assets(project)?;
         let mut faces = BTreeMap::new();
         let mut config = None;
         for asset in project.assets.values() {

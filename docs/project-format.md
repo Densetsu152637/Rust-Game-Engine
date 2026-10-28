@@ -43,7 +43,9 @@ rejected rather than dropped.
 Each asset has a stable `id`, a project-relative `path` and a `kind`. Kinds are
 `script`, `mesh`, `texture`, `font`, `font_face`, `font_config`, `audio`, `scene` and `shader`
 (plus `prefab`, `model`, `animation`, `navigation`, `string_table`, `locale_config`,
-`caption_track` and `graph`; see their pages). A `graph` asset is one JSON graph
+`caption_track`, `indirect` and `graph`; see their pages). An `indirect` asset
+names a bounded descriptor and binary RGB32F cube faces as documented in
+[Indirect lighting](rendering-indirect.md#authored-project-input). A `graph` asset is one JSON graph
 document (behavior trees today) validated at project load against the kind named in
 the document; see [Graph documents](ai-graphs.md).
 

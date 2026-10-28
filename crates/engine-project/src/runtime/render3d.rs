@@ -51,6 +51,20 @@ impl Runtime {
         let mut camera = camera.clone();
         camera.upscaler = effective_upscaler(world, &camera);
         camera.frame_generation = effective_frame_generation(world, &camera);
+        frame.indirect = camera
+            .lighting
+            .indirect
+            .as_ref()
+            .map(|id| {
+                self.content.indirect.get(id).cloned().ok_or_else(|| {
+                    crate::Error::new(
+                        "render.indirect.unknown",
+                        format!("Unknown indirect asset {id}"),
+                    )
+                })
+            })
+            .transpose()?;
+        frame.applied_origin = crate::world::coordinates::render_origin(world);
         frame.camera3d = Some(CameraInstance3D {
             camera,
             world: crate::world_transform(world, entity)?.matrix,

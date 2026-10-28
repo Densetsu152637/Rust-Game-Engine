@@ -20,6 +20,9 @@ use glam::{Mat4, Vec3};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+mod indirect;
+pub(crate) use indirect::AuthoredIndirectCache;
+
 /// The built-in lit material (`engine::material` contract).
 pub const LIT_WGSL: &str = engine_render_pipeline::LIT_WGSL;
 

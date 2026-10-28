@@ -1,5 +1,10 @@
 # Large-world coordinates
 
+Authored indirect probes store f64 absolute positions. Rendering subtracts the
+origin already applied to local entity transforms before producing f32 probe
+volumes. A direct `WorldOrigin` write pending reconciliation does not shift
+probes independently of the camera and meshes.
+
 Positions stay precise far from the origin (tested at 50 km, 1,000 km and 10,000 km) through
 **floating-origin rebasing**: the simulation, physics and renderers keep working in f32 near
 a local origin, and the absolute position of that origin is an f64 offset that moves with the

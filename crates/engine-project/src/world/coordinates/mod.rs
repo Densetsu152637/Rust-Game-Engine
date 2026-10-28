@@ -21,6 +21,37 @@ use bevy_ecs::prelude::*;
 use engine_core::EngineApp;
 
 pub use api::{absolute_position, origin, rebase_now, set_absolute_position, snapshot, status};
+
+/// Origin applied to local transforms, including while a direct origin write awaits reconciliation.
+pub fn render_origin(world: &World) -> [f64; 3] {
+    service::render_origin(world)
+}
+
+#[cfg(test)]
+mod indirect_origin_tests {
+    use super::*;
+
+    #[test]
+    fn render_origin_follows_applied_frame_across_pending_write_and_rebase() {
+        let mut world = World::new();
+        world.insert_resource(WorldOrigin {
+            offset: [999_999_995_904.0, 0.0, 0.0],
+        });
+        install(&mut world).unwrap();
+        assert_eq!(render_origin(&world)[0], 999_999_995_904.0);
+        capture_origin(&mut world);
+        world.resource_mut::<WorldOrigin>().offset = [999_999_997_952.0, 0.0, 0.0];
+        assert_eq!(
+            render_origin(&world)[0],
+            999_999_995_904.0,
+            "unreconciled direct write must not move rendered probes alone"
+        );
+        pre_simulation(&mut world, 0.0).unwrap();
+        assert_eq!(render_origin(&world)[0], 999_999_997_952.0);
+        rebase_now(&mut world, [999_999_999_000.0, 0.0, 0.0]).unwrap();
+        assert_eq!(render_origin(&world)[0], 999_999_999_000.0);
+    }
+}
 pub use component::{
     ABSOLUTE_POSITION_NAME, AbsolutePosition, LARGE_WORLD_NAME, LargeWorld, MAX_ABSOLUTE,
     SNAP_VALUES, THRESHOLD_RANGE, validate_scene,

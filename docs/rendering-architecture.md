@@ -567,6 +567,7 @@ LUT/sampler and a validated 448-byte dynamic indirect uniform. Groups 0/3 and th
 208-byte instance ABI remain unchanged. Legacy feature material layouts and sprite
 bindings remain available. The built-in material and graph template call
 `engine_material_indirect_lighting`; custom shaders using the older generic helper
-remain ambient/screen-only. No authored project/desktop adapter or lightmap/UV2
-integration is included. Native shaded-pixel GPU test sources are present but unrun;
+remain ambient/screen-only. Authored project loading and a desktop cache adapter
+are present; the host lifecycle hook and its integrated GPU verification are
+pending. Lightmap/UV2 integration is not included. Native shaded-pixel GPU test sources are present but unrun;
 see [indirect lighting](rendering-indirect.md) for limits, precedence and lifecycle.
