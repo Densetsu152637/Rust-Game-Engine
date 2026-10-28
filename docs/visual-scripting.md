@@ -190,10 +190,13 @@ project-aware check also reports `script.call.*` and
 
 ## Runtime limits and traps
 
-Fuel is 10,000 ops per instance per tick by default (authorable 100..1,000,000);
-host calls cost their declared `cost`. A trap stops the run, discards its staged
+Fuel is 10,000 ops per instance per tick by default (authorable 100..1,000,000),
+with 2,000,000 ops shared by all instances in a tick, including `on_stop` handlers.
+When the shared budget is empty, remaining `on_stop` handlers are skipped and their
+instances are still removed. Host calls cost their declared `cost`. A trap stops the run, discards its staged
 writes, records the node id, emits a targeted `script.faulted` event and applies the
 component's `fault_policy`.
+Events staged by a trapped run do not consume the shared 256-event quota.
 
 | Trap code | Cause |
 | --- | --- |

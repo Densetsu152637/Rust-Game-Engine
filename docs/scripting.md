@@ -55,7 +55,9 @@ script backends:
   state 64 KiB, 64 pending waits, 16 emits per instance and 256 in total per tick.
   A violation traps the run with a coded `script.*` error.
 - **Staging**: built-in world writes and events are committed only when a run
-  returns normally; a trap discards them. Native game functions are trusted and
+  returns normally; every component write is prepared and checked before any
+  staged world write is applied, so a late native decode error leaves earlier
+  staged writes untouched. A trap discards them. Native game functions are trusted and
   apply their effects immediately (document the irreversible ones).
 - **Faults**: a trap records its node, emits a targeted `script.faulted` event and
   applies the component's `fault_policy`: `disable` (default; the instance stops)
@@ -69,9 +71,10 @@ script backends:
   delivered on the next tick through the normal bounded dispatcher.
 - **Tick placement**: the script service runs in the post-update step immediately
   before the AI services, after event dispatch and native script updates.
-- **Reload**: `Runtime::reload_script_asset(id)` compiles a candidate; on success
-  affected instances stop (`on_stop`) and restart fresh at the next tick boundary,
-  on failure the last good program keeps running and the error is returned. File
+- **Reload**: `Runtime::reload_script_asset(id)` compiles and checks a candidate
+  against every affected instance's variable overrides before replacing anything.
+  On success affected instances stop (`on_stop`) and restart fresh at the next tick
+  boundary; on failure the last good program and instance state keep running. File
   watching is out of scope.
 - **MCP**: `script_schema` describes the contract (node types, host functions,
   limits, codes) and `graph_validate` applies the project's declared functions when

@@ -7,6 +7,7 @@ use engine_project::{
     *,
 };
 use engine_script::{Effects, FnSig, NativeCx, ScriptError, Value as Script, ValueType};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs;
 
@@ -457,6 +458,104 @@ fn staged_writes_commit_when_the_run_succeeds_and_component_writes_are_checked()
     assert_eq!(position, [9.0, 0.0, 0.0]);
 }
 
+#[derive(Component, Serialize, Deserialize)]
+struct NativeChoice {
+    mode: Choice,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Choice {
+    Ok,
+}
+
+#[test]
+fn a_later_native_decode_failure_discards_earlier_staged_position() {
+    let position = call_node(
+        "pos",
+        "engine.set_position",
+        vec![
+            port("entity", "in", "entity", false),
+            port("position", "in", "vec3", false),
+        ],
+    );
+    let component = call_node(
+        "component",
+        "engine.component_set",
+        vec![
+            port("name", "in", "string", false),
+            port("field", "in", "string", false),
+            port("value", "in", "json", false),
+        ],
+    );
+    let g = graph(
+        vec![
+            node("s", "on_start", json!({})),
+            position,
+            component,
+            node("me", "self", json!({})),
+            node("x", "const", json!({"type":"float","value":9.0})),
+            node("v", "vec3_make", json!({})),
+            node(
+                "name",
+                "const",
+                json!({"type":"string","value":"game.Choice"}),
+            ),
+            node("field", "const", json!({"type":"string","value":"mode"})),
+            node("bad", "const", json!({"type":"json","value":"bad"})),
+        ],
+        vec![
+            edge("s", "then", "pos", "exec"),
+            edge("me", "entity", "pos", "entity"),
+            edge("x", "value", "v", "x"),
+            edge("v", "result", "pos", "position"),
+            edge("pos", "then", "component", "exec"),
+            edge("name", "value", "component", "name"),
+            edge("field", "value", "component", "field"),
+            edge("bad", "value", "component", "value"),
+        ],
+        vec![],
+    );
+    let mut hero = script_entity(
+        "hero",
+        json!({"graph":"transaction","capabilities":{"write":["game.Choice"]}}),
+    );
+    hero["components"]["custom"]["game.Choice"] = json!({"version":1,"data":{"mode":"ok"}});
+    let dir = project_with(&[("transaction", g)], vec![hero], None);
+    fs::write(
+        dir.path().join("components.json"),
+        json!([{"name":"game.Choice","version":1,"schema":{"type":"object","properties":{"mode":{"type":"string"}},"required":["mode"],"additionalProperties":false},"defaults":{"mode":"ok"},"dataOnly":false}]).to_string(),
+    )
+    .unwrap();
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(dir.path().join("project.json")).unwrap()).unwrap();
+    manifest["componentSchemas"] = json!("components.json");
+    fs::write(dir.path().join("project.json"), manifest.to_string()).unwrap();
+    let mut runtime = runtime(&dir, false);
+    register_component::<NativeChoice>(runtime.app_mut(), "game.Choice", 1).unwrap();
+    runtime.start().unwrap();
+    assert!(tick(&mut runtime, 1).is_err());
+    let hero = runtime.entity("hero").unwrap();
+    assert_eq!(
+        runtime
+            .app()
+            .world()
+            .get::<Transform>(hero)
+            .unwrap()
+            .position,
+        [1.0, 0.0, 1.0]
+    );
+    assert!(matches!(
+        runtime
+            .app()
+            .world()
+            .get::<NativeChoice>(hero)
+            .unwrap()
+            .mode,
+        Choice::Ok
+    ));
+}
+
 #[test]
 fn reload_keeps_the_last_good_program_and_restarts_on_success() {
     let counter = |step: i64| {
@@ -511,6 +610,55 @@ fn reload_keeps_the_last_good_program_and_restarts_on_success() {
     assert_eq!(
         scripts(&runtime)["instances"][0]["variables"]["n"],
         "Int(10)"
+    );
+}
+
+#[test]
+fn reload_rejects_incompatible_variable_overrides_before_stopping_last_good() {
+    let counter = graph(
+        vec![
+            node("u", "on_update", json!({})),
+            node("get", "get_var", json!({"variable": "n"})),
+            node("k", "const", json!({"type": "int", "value": 1})),
+            node("add", "add", json!({"type": "int"})),
+            node("set", "set_var", json!({"variable": "n"})),
+        ],
+        vec![
+            edge("u", "then", "set", "exec"),
+            edge("get", "value", "add", "a"),
+            edge("k", "value", "add", "b"),
+            edge("add", "result", "set", "value"),
+        ],
+        vec![json!({"name": "n", "type": "int", "default": 0})],
+    );
+    let dir = project_with(
+        &[("count", counter)],
+        vec![script_entity(
+            "hero",
+            json!({"graph": "count", "variables": {"n": 2}}),
+        )],
+        None,
+    );
+    let mut runtime = runtime(&dir, false);
+    runtime.start().unwrap();
+    tick(&mut runtime, 1).unwrap();
+    assert_eq!(
+        scripts(&runtime)["instances"][0]["variables"]["n"],
+        "Int(3)"
+    );
+
+    let incompatible = graph(vec![node("u", "on_update", json!({}))], vec![], vec![]);
+    fs::write(
+        dir.path().join("count.graph.json"),
+        serde_json::to_vec(&incompatible).unwrap(),
+    )
+    .unwrap();
+    let error = runtime.reload_script_asset("count").unwrap_err();
+    assert_eq!(code_of(&error), "script.variable.invalid");
+    tick(&mut runtime, 1).unwrap();
+    assert_eq!(
+        scripts(&runtime)["instances"][0]["variables"]["n"],
+        "Int(4)"
     );
 }
 

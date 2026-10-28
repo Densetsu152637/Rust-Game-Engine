@@ -51,6 +51,61 @@ pub(crate) enum Staged {
     },
 }
 
+enum PreparedStaged {
+    SetPosition { entity: Entity, position: [f32; 3] },
+    Component(crate::catalog::PreparedComponentWrite),
+}
+
+fn prepare_writes(world: &World) -> Result<Vec<PreparedStaged>> {
+    let mut prepared = Vec::new();
+    let mut snapshots: BTreeMap<Entity, BTreeMap<String, CustomValue>> = BTreeMap::new();
+    for write in &world.resource::<ScriptRun>().staged {
+        match write {
+            Staged::SetPosition { entity, position } => {
+                if world.get::<Transform>(*entity).is_some() {
+                    prepared.push(PreparedStaged::SetPosition {
+                        entity: *entity,
+                        position: *position,
+                    });
+                }
+            }
+            Staged::ComponentSet {
+                entity,
+                name,
+                field,
+                value,
+            } => {
+                if world.get_entity(*entity).is_err() {
+                    continue;
+                }
+                let project = &world.resource::<ProjectResource>().0;
+                let Some(descriptor) = project.component_catalog.0.get(name) else {
+                    continue;
+                };
+                if !snapshots.contains_key(entity) {
+                    snapshots.insert(*entity, crate::catalog::snapshot(world, *entity)?);
+                }
+                let Some(current) = snapshots[entity].get(name) else {
+                    continue;
+                };
+                let mut next = current.clone();
+                if let Some(object) = next.data.as_object_mut() {
+                    object.insert(field.clone(), value.clone());
+                }
+                next.version = descriptor.version;
+                let action =
+                    crate::catalog::prepare_component_write(world, *entity, name, next.clone())?;
+                snapshots
+                    .get_mut(entity)
+                    .expect("snapshot inserted")
+                    .insert(name.clone(), next);
+                prepared.push(PreparedStaged::Component(action));
+            }
+        }
+    }
+    Ok(prepared)
+}
+
 /// Per-run scratch state shared with the built-ins through the world.
 #[derive(Resource)]
 pub(crate) struct ScriptRun {
@@ -85,6 +140,9 @@ impl ScriptRun {
     /// Forgets the staged effects of a run (after commit or a trap).
     pub fn clear_run(&mut self) {
         self.staged.clear();
+        let discarded = self.events.len() as u32;
+        self.global_emits = self.global_emits.saturating_sub(discarded);
+        self.instance_emits = self.instance_emits.saturating_sub(discarded as u16);
         self.events.clear();
         self.logs.clear();
     }
@@ -435,52 +493,24 @@ pub(crate) fn register_builtins(registry: &mut HostRegistry<World>) -> Result<()
 
 /// Applies the staged writes of a successful run and queues its events.
 pub(crate) fn commit(world: &mut World) -> Result<()> {
-    let (staged, events, logs) = {
+    let prepared = prepare_writes(world)?;
+    let (events, logs) = {
         let mut state = world.resource_mut::<ScriptRun>();
+        state.staged.clear();
         (
-            std::mem::take(&mut state.staged),
             std::mem::take(&mut state.events),
             std::mem::take(&mut state.logs),
         )
     };
-    for write in staged {
+    for write in prepared {
         match write {
-            Staged::SetPosition { entity, position } => {
-                if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-                    transform.position = position;
-                }
+            PreparedStaged::SetPosition { entity, position } => {
+                world
+                    .get_mut::<Transform>(entity)
+                    .expect("prevalidated transform")
+                    .position = position;
             }
-            Staged::ComponentSet {
-                entity,
-                name,
-                field,
-                value,
-            } => {
-                if world.get_entity(entity).is_err() {
-                    continue;
-                }
-                let project = std::sync::Arc::clone(&world.resource::<ProjectResource>().0);
-                let Some(descriptor) = project.component_catalog.0.get(&name) else {
-                    continue;
-                };
-                let mut components = crate::catalog::snapshot(world, entity)?;
-                let Some(current) = components.remove(&name) else {
-                    continue;
-                };
-                let mut data = current.data;
-                if let Some(object) = data.as_object_mut() {
-                    object.insert(field, value);
-                }
-                crate::catalog::write_component(
-                    world,
-                    entity,
-                    &name,
-                    CustomValue {
-                        version: descriptor.version,
-                        data,
-                    },
-                )?;
-            }
+            PreparedStaged::Component(action) => action.apply(world),
         }
     }
     if !events.is_empty()
@@ -513,4 +543,42 @@ pub(crate) fn authored_id(world: &World, entity: Entity) -> String {
     world
         .get::<AuthoredId>(entity)
         .map_or_else(|| format!("entity:{}", entity.to_bits()), |a| a.id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn faulted_runs_release_staged_emits_for_other_instances() {
+        let mut world = World::new();
+        world.insert_resource(ScriptRun::default());
+        let entity = world.spawn_empty().id();
+        let caps = Capabilities::default();
+        for _ in 0..16 {
+            for _ in 0..MAX_EMITS_PER_INSTANCE {
+                stage_emit(
+                    &mut world,
+                    &caps,
+                    entity,
+                    "game.ping",
+                    json!({}),
+                    Some(entity),
+                )
+                .unwrap();
+            }
+            world.resource_mut::<ScriptRun>().clear_run();
+        }
+        assert_eq!(world.resource::<ScriptRun>().global_emits, 0);
+        stage_emit(
+            &mut world,
+            &caps,
+            entity,
+            "game.ping",
+            json!({}),
+            Some(entity),
+        )
+        .unwrap();
+        assert_eq!(world.resource::<ScriptRun>().global_emits, 1);
+    }
 }

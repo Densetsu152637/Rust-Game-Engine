@@ -58,7 +58,7 @@ pub struct ScriptState {
     pub(super) registry: HostRegistry<World>,
     programs: BTreeMap<String, Arc<Program>>,
     instances: BTreeMap<(String, Entity), Instance>,
-    reload: BTreeSet<String>,
+    reload: BTreeMap<String, Arc<Program>>,
     ticks: u64,
     faults: u64,
     skipped: u64,
@@ -72,7 +72,7 @@ impl ScriptState {
             registry,
             programs: BTreeMap::new(),
             instances: BTreeMap::new(),
-            reload: BTreeSet::new(),
+            reload: BTreeMap::new(),
             ticks: 0,
             faults: 0,
             skipped: 0,
@@ -175,7 +175,8 @@ pub(super) fn compile_program(
 pub fn prepare(world: &mut World) -> Result<()> {
     with_state(world, |world, state| {
         verify_functions(world, state)?;
-        sync(world, state)
+        let mut fuel = GLOBAL_FUEL_PER_TICK;
+        sync(world, state, &mut fuel)
     })
 }
 
@@ -189,8 +190,9 @@ pub fn shutdown(world: &mut World) {
     let Some(mut state) = world.remove_resource::<ScriptState>() else {
         return;
     };
+    let mut fuel = GLOBAL_FUEL_PER_TICK;
     for ((_, entity), mut instance) in std::mem::take(&mut state.instances) {
-        let _ = stop_instance(world, &state.registry, entity, &mut instance);
+        let _ = stop_instance(world, &state.registry, entity, &mut instance, &mut fuel);
     }
     world.insert_resource(state);
 }
@@ -241,7 +243,7 @@ fn authored_key(world: &World, entity: Entity) -> (String, Entity) {
     (authored_id(world, entity), entity)
 }
 
-fn sync(world: &mut World, state: &mut ScriptState) -> Result<()> {
+fn sync(world: &mut World, state: &mut ScriptState, fuel: &mut u64) -> Result<()> {
     let configs: BTreeMap<(String, Entity), ScriptGraph> = world
         .iter_entities()
         .filter_map(|e| {
@@ -256,6 +258,18 @@ fn sync(world: &mut World, state: &mut ScriptState) -> Result<()> {
             format!("more than {MAX_INSTANCES} script instances"),
         ));
     }
+    // Validate every new/changed instance before stopping any last-good one.
+    let mut replacements = Vec::new();
+    for (key, config) in &configs {
+        if state
+            .instances
+            .get(key)
+            .is_some_and(|existing| existing.config == *config)
+        {
+            continue;
+        }
+        replacements.push((key.clone(), build_instance(world, state, config.clone())?));
+    }
     let removed: Vec<(String, Entity)> = state
         .instances
         .keys()
@@ -266,21 +280,14 @@ fn sync(world: &mut World, state: &mut ScriptState) -> Result<()> {
         if let Some(mut instance) = state.instances.remove(&key) {
             // No handler runs for a despawned entity.
             if world.get_entity(key.1).is_ok() {
-                let _ = stop_instance(world, &state.registry, key.1, &mut instance);
+                let _ = stop_instance(world, &state.registry, key.1, &mut instance, fuel);
             }
         }
     }
-    for (key, config) in configs {
-        match state.instances.get(&key) {
-            Some(existing) if existing.config == config => continue,
-            Some(_) => {
-                if let Some(mut old) = state.instances.remove(&key) {
-                    let _ = stop_instance(world, &state.registry, key.1, &mut old);
-                }
-            }
-            None => {}
+    for (key, instance) in replacements {
+        if let Some(mut old) = state.instances.remove(&key) {
+            let _ = stop_instance(world, &state.registry, key.1, &mut old, fuel);
         }
-        let instance = build_instance(world, state, config)?;
         state.instances.insert(key, instance);
     }
     prune(state);
@@ -308,12 +315,27 @@ fn program_for(world: &World, state: &mut ScriptState, id: &str) -> Result<Arc<P
 
 fn build_instance(world: &World, state: &mut ScriptState, config: ScriptGraph) -> Result<Instance> {
     config.check_shape()?;
+    let program = if config.enabled {
+        Some(program_for(world, state, &config.graph)?)
+    } else {
+        None
+    };
+    build_instance_with_program(config, program.as_ref())
+}
+
+fn build_instance_with_program(
+    config: ScriptGraph,
+    program: Option<&Arc<Program>>,
+) -> Result<Instance> {
+    config.check_shape()?;
     let instance: Option<Box<dyn ScriptInstance>> = if config.enabled {
-        let program = program_for(world, state, &config.graph)?;
-        let instance = program
-            .instantiate(&config.variables)
-            .map_err(|e| invalid(e.code, e.message))?;
-        Some(Box::new(instance))
+        let program =
+            program.ok_or_else(|| invalid("script.graph.missing", "no compiled program"))?;
+        Some(Box::new(
+            program
+                .instantiate(&config.variables)
+                .map_err(|e| invalid(e.code, e.message))?,
+        ))
     } else {
         None
     };
@@ -336,6 +358,7 @@ fn stop_instance(
     registry: &HostRegistry<World>,
     entity: Entity,
     instance: &mut Instance,
+    global_fuel: &mut u64,
 ) -> Result<()> {
     let Some(mut running) = instance.instance.take() else {
         return Ok(());
@@ -343,7 +366,18 @@ fn stop_instance(
     if !instance.started {
         return Ok(());
     }
+    if *global_fuel == 0 {
+        if let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>() {
+            if log.0.len() < builtins::MAX_RUNTIME_LOG {
+                log.0
+                    .push("script: on_stop skipped (global fuel exhausted)".into());
+            }
+        }
+        return Ok(());
+    }
     let mut budget = Budget::with_fuel(instance.config.fuel_per_tick);
+    budget.fuel = budget.fuel.min(*global_fuel);
+    let start_fuel = budget.fuel;
     begin_run(world, instance, 0.0);
     let result = {
         let mut host = WorldHost {
@@ -354,6 +388,7 @@ fn stop_instance(
         };
         running.handle(&Trigger::Stop, &mut host, &mut budget)
     };
+    *global_fuel = global_fuel.saturating_sub(start_fuel.saturating_sub(budget.fuel));
     end_run(world, instance, result.is_ok())?;
     if let Err(fault) = result
         && let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>()
@@ -377,32 +412,41 @@ fn end_run(world: &mut World, instance: &mut Instance, ok: bool) -> Result<()> {
         SplitMix64::new(0),
     );
     if ok {
-        builtins::commit(world)
+        let result = builtins::commit(world);
+        if result.is_err() {
+            world.resource_mut::<ScriptRun>().clear_run();
+        }
+        result
     } else {
         world.resource_mut::<ScriptRun>().clear_run();
         Ok(())
     }
 }
 
-fn apply_reloads(world: &mut World, state: &mut ScriptState) -> Result<()> {
-    let reload = std::mem::take(&mut state.reload);
-    if reload.is_empty() {
+fn apply_reloads(world: &mut World, state: &mut ScriptState, fuel: &mut u64) -> Result<()> {
+    if state.reload.is_empty() {
         return Ok(());
     }
-    let keys: Vec<(String, Entity)> = state
+    let configs: Vec<((String, Entity), ScriptGraph)> = state
         .instances
         .iter()
-        .filter(|(_, i)| reload.contains(&i.config.graph))
-        .map(|(k, _)| k.clone())
+        .filter(|(_, i)| state.reload.contains_key(&i.config.graph))
+        .map(|(key, instance)| (key.clone(), instance.config.clone()))
         .collect();
-    for key in keys {
+    let mut replacements = Vec::with_capacity(configs.len());
+    for (key, config) in configs {
+        let program = &state.reload[&config.graph];
+        replacements.push((key, build_instance_with_program(config, Some(program))?));
+    }
+    for (key, fresh) in replacements {
         let Some(mut old) = state.instances.remove(&key) else {
             continue;
         };
-        let config = old.config.clone();
-        let _ = stop_instance(world, &state.registry, key.1, &mut old);
-        let fresh = build_instance(world, state, config)?;
+        let _ = stop_instance(world, &state.registry, key.1, &mut old, fuel);
         state.instances.insert(key, fresh);
+    }
+    for (id, program) in std::mem::take(&mut state.reload) {
+        state.programs.insert(id, program);
     }
     Ok(())
 }
@@ -420,8 +464,15 @@ pub fn reload_asset(world: &mut World, id: &str) -> Result<()> {
     let result = (|| {
         let project = Arc::clone(&world.resource::<ProjectResource>().0);
         let program = compile_program(&project, &state.registry, id)?;
-        state.programs.insert(id.to_owned(), program);
-        state.reload.insert(id.to_owned());
+        for instance in state.instances.values().filter(|i| i.config.graph == id) {
+            instance.config.check_shape()?;
+            if instance.config.enabled {
+                program
+                    .instantiate(&instance.config.variables)
+                    .map_err(|e| invalid(e.code, e.message))?;
+            }
+        }
+        state.reload.insert(id.to_owned(), program);
         Ok(())
     })();
     world.insert_resource(state);
@@ -430,8 +481,13 @@ pub fn reload_asset(world: &mut World, id: &str) -> Result<()> {
 
 fn step_inner(world: &mut World, state: &mut ScriptState, dt: f32) -> Result<()> {
     state.ticks += 1;
-    sync(world, state)?;
-    apply_reloads(world, state)?;
+    {
+        let mut run = world.resource_mut::<ScriptRun>();
+        run.global_emits = 0;
+    }
+    let mut global_fuel = GLOBAL_FUEL_PER_TICK;
+    sync(world, state, &mut global_fuel)?;
+    apply_reloads(world, state, &mut global_fuel)?;
     prune(state);
     if state.instances.is_empty() {
         return Ok(());
@@ -440,12 +496,7 @@ fn step_inner(world: &mut World, state: &mut ScriptState, dt: f32) -> Result<()>
         .get_resource::<DeliveredEvents>()
         .map(|d| d.0.clone())
         .unwrap_or_default();
-    {
-        let mut run = world.resource_mut::<ScriptRun>();
-        run.global_emits = 0;
-    }
     let time = state.ticks as f64 * f64::from(dt);
-    let mut global_fuel = GLOBAL_FUEL_PER_TICK;
     let keys: Vec<(String, Entity)> = state.instances.keys().cloned().collect();
     for key in keys {
         let Some(mut instance) = state.instances.remove(&key) else {
@@ -675,4 +726,66 @@ pub fn status(world: &World) -> Option<ScriptsStatus> {
         faults: state.faults,
         skipped: state.skipped,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_script::InstanceDebug;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct StopBurner(Arc<AtomicUsize>);
+
+    impl ScriptInstance for StopBurner {
+        fn handle(
+            &mut self,
+            trigger: &Trigger<'_>,
+            _host: &mut dyn ScriptHost,
+            budget: &mut Budget,
+        ) -> std::result::Result<(), Fault> {
+            assert!(matches!(trigger, Trigger::Stop));
+            self.0.fetch_add(1, Ordering::Relaxed);
+            budget
+                .charge(1_000_000)
+                .map_err(|trap| Fault { trap, site: None })
+        }
+        fn subscriptions(&self) -> &[String] {
+            &[]
+        }
+        fn debug(&self) -> InstanceDebug {
+            InstanceDebug::default()
+        }
+    }
+
+    #[test]
+    fn stop_handlers_share_one_global_fuel_budget() {
+        let mut world = World::new();
+        world.insert_resource(ScriptRun::default());
+        let entity = world.spawn_empty().id();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = HostRegistry::new();
+        let mut fuel = GLOBAL_FUEL_PER_TICK;
+        for _ in 0..3 {
+            let mut instance = Instance {
+                config: ScriptGraph {
+                    fuel_per_tick: 1_000_000,
+                    ..ScriptGraph::default()
+                },
+                caps: Capabilities::default(),
+                instance: Some(Box::new(StopBurner(Arc::clone(&calls)))),
+                rng: SplitMix64::new(0),
+                started: true,
+                fault: None,
+                ticks: 0,
+                last_fuel_used: 0,
+            };
+            stop_instance(&mut world, &registry, entity, &mut instance, &mut fuel).unwrap();
+            assert!(instance.instance.is_none());
+        }
+        assert_eq!(fuel, 0);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
 }
