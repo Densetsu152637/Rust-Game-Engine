@@ -210,7 +210,7 @@ fn unknown_kind(name: &str) -> ToolFailure {
 fn edit_operations() -> Value {
     json!([
         {"op": "add_node", "fields": {"id": "string, unique", "node_type": "string", "params": "object, optional", "position": "[x, y], optional", "ports": "array of {name, direction, type, multiple?}, optional for extensible node types"},
-         "description": "Adds a node; omitted ports are copied from the node type. Extensible types accept the full list or extra ports; declared ports stay fixed."},
+         "description": "Adds a node; omitted ports are copied from the node type. Authored ports must preserve every declared port."},
         {"op": "remove_node", "fields": {"id": "string"},
          "description": "Removes a node and every edge attached to it."},
         {"op": "connect", "fields": {"from": "{node, port}", "to": "{node, port}", "index": "integer, optional"},
@@ -222,7 +222,7 @@ fn edit_operations() -> Value {
         {"op": "set_position", "fields": {"node": "string", "position": "[x, y] or null"},
          "description": "Moves a node on the editor canvas."},
         {"op": "set_ports", "fields": {"node": "string", "ports": "array of {name, direction, type, multiple?}"},
-         "description": "Replaces authored ports on an extensible node. A full list keeps declared ports unchanged; extra-only ports add them automatically; [] restores declared ports."},
+         "description": "Replaces ports on an extensible node; every declared port must remain unchanged."},
         {"op": "add_variable", "fields": {"variable": "{name, type, default?, description?}"},
          "description": "Declares a variable (a blackboard key for behavior trees)."},
         {"op": "remove_variable", "fields": {"name": "string"},

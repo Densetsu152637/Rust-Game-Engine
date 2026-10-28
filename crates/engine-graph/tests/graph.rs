@@ -643,18 +643,19 @@ fn edits_author_extensible_ports_and_preserve_declared_ports_atomically() {
     )
     .unwrap();
     assert_eq!(document.node("o").unwrap().ports, next);
-    apply_edit(
-        &mut document,
-        &edit(json!({"op":"set_ports","node":"o","ports":[{"name":"other","direction":"in","type":"string"}]})),
-        &kind,
-    )
-    .unwrap();
-    assert_eq!(document.node("o").unwrap().ports, next);
 
     let attempts = [
         (
             json!({"op":"set_ports","node":"missing","ports":next}),
             codes::EDIT_NODE_MISSING,
+        ),
+        (
+            json!({"op":"set_ports","node":"o","ports":[{"name":"other","direction":"in","type":"string"}]}),
+            codes::NODE_PORTS_MISMATCH,
+        ),
+        (
+            json!({"op":"set_ports","node":"o","ports":[]}),
+            codes::NODE_PORTS_MISMATCH,
         ),
         (
             json!({"op":"set_ports","node":"o","ports":[{"name":"prev","direction":"out","type":"flow"}]}),
@@ -1046,18 +1047,21 @@ fn port_refs_serialize_with_plain_node_ids() {
 }
 
 #[test]
-fn extensible_nodes_take_extra_ports_through_edits() {
+fn extensible_nodes_take_full_port_lists_through_edits() {
     let kind = kind();
     let mut document = GraphDocument::new("test_flow");
     let extra = json!({"name":"extra","direction":"in","type":"flow"});
+    let declared = json!({"name":"prev","direction":"in","type":"flow"});
     let edits = vec![
         edit(json!({"op":"add_node","id":"s","node_type":"start"})),
-        edit(json!({"op":"add_node","id":"o","node_type":"open","ports":[extra.clone()]})),
+        edit(
+            json!({"op":"add_node","id":"o","node_type":"open","ports":[declared.clone(),extra.clone()]}),
+        ),
         edit(
             json!({"op":"connect","from":{"node":"s","port":"next"},"to":{"node":"o","port":"extra"}}),
         ),
     ];
-    apply_edits(&mut document, &edits, &kind, Strictness::Structure).expect("extra port edit");
+    apply_edits(&mut document, &edits, &kind, Strictness::Structure).expect("full port edit");
     let names: Vec<_> = document.nodes[1]
         .ports
         .iter()
@@ -1069,7 +1073,9 @@ fn extensible_nodes_take_extra_ports_through_edits() {
     let before = document.clone();
     let failure = apply_edits(
         &mut document,
-        &[edit(json!({"op":"set_ports","node":"o","ports":[]}))],
+        &[edit(
+            json!({"op":"set_ports","node":"o","ports":[declared.clone()]}),
+        )],
         &kind,
         Strictness::Structure,
     )
@@ -1083,7 +1089,7 @@ fn extensible_nodes_take_extra_ports_through_edits() {
         &mut document,
         &[
             edit(json!({"op":"disconnect","from":{"node":"s","port":"next"},"to":{"node":"o","port":"extra"}})),
-            edit(json!({"op":"set_ports","node":"o","ports":[more]})),
+            edit(json!({"op":"set_ports","node":"o","ports":[declared,more]})),
         ],
         &kind,
         Strictness::Structure,

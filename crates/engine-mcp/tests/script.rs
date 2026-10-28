@@ -22,7 +22,9 @@ fn chime_edits(function: &str) -> Value {
     json!([
         {"op":"add_node","id":"s","node_type":"on_start"},
         {"op":"add_node","id":"c","node_type":"call","params":{"function":function},
-         "ports":[{"name":"n","direction":"in","type":"int"}]},
+         "ports":[{"name":"exec","direction":"in","type":"flow","multiple":true},
+                  {"name":"then","direction":"out","type":"flow","multiple":true},
+                  {"name":"n","direction":"in","type":"int"}]},
         {"op":"add_node","id":"k","node_type":"const","params":{"type":"int","value":3}},
         {"op":"connect","from":{"node":"s","port":"then"},"to":{"node":"c","port":"exec"}},
         {"op":"connect","from":{"node":"k","port":"value"},"to":{"node":"c","port":"n"}}
