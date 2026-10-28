@@ -148,6 +148,7 @@ fn scene(upscaler: UpscalerSettings) -> SceneRenderFrame {
         post: Default::default(),
         ray_tracing: None,
         materials2d: Default::default(),
+        lighting2d: None,
         lights: vec![
             engine_project::lights::LightInstance3D::directional_toward(
                 "sun",
