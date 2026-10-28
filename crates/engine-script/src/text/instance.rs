@@ -407,7 +407,7 @@ fn install_host_functions(
         let slot = Arc::clone(trap);
         engine.register_fn(
             name,
-            move |message: ImmutableString| -> Result<(), Box<EvalAltResult>> {
+            move |message: ImmutableString| -> Result<ImmutableString, Box<EvalAltResult>> {
                 if message.len() > crate::MAX_STRING_BYTES {
                     return Err(capture_trap(&slot, Trap::Memory));
                 }
@@ -428,7 +428,18 @@ fn install_host_functions(
                             Trap::host(codes::HOST_FAILED, "log bridge reply closed"),
                         )
                     })?
-                    .map_err(|e| capture_trap(&slot, e))
+                    .map_err(|e| capture_trap(&slot, e))?;
+                Ok(message)
+            },
+        );
+        let slot = Arc::clone(trap);
+        engine.register_fn(
+            name,
+            move |_value: Dynamic| -> Result<ImmutableString, Box<EvalAltResult>> {
+                Err(capture_trap(
+                    &slot,
+                    Trap::host(codes::HOST_ARGUMENT, "print/debug requires a string"),
+                ))
             },
         );
     }
@@ -894,5 +905,26 @@ mod tests {
             .handle(&Trigger::Start, &mut host, &mut Budget::default())
             .unwrap();
         assert_eq!(host.logs, ["hello", "world"]);
+    }
+
+    #[test]
+    fn print_and_debug_reject_non_strings() {
+        for source in [
+            br#"fn on_start() { print(42); }"#.as_slice(),
+            br#"fn on_start() { debug([1]); }"#.as_slice(),
+        ] {
+            let program = Arc::new(TextProgram::compile(source).unwrap());
+            let mut instance = TextInstance::new(program, vec![]).unwrap();
+            let mut host = Recorder {
+                calls: 0,
+                fail: false,
+                logs: vec![],
+            };
+            let fault = instance
+                .handle(&Trigger::Start, &mut host, &mut Budget::default())
+                .unwrap_err();
+            assert_eq!(fault.code(), codes::HOST_ARGUMENT, "{fault}");
+            assert!(host.logs.is_empty());
+        }
     }
 }

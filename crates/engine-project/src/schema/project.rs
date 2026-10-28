@@ -40,6 +40,7 @@ impl Project {
             }
             if ![
                 "script",
+                "text_script",
                 "mesh",
                 "texture",
                 "font",
@@ -82,6 +83,14 @@ impl Project {
                 return Err(Error::new(
                     "project.script.language",
                     "Native scripts must be Rust .rs sources",
+                ));
+            }
+            if asset.kind == "text_script"
+                && file.extension().and_then(|e| e.to_str()) != Some("rhai")
+            {
+                return Err(Error::new(
+                    "project.script.language",
+                    "Text scripts must be .rhai sources",
                 ));
             }
             assets.insert(asset.id.clone(), asset);
@@ -342,6 +351,9 @@ impl Project {
                 }
                 "script" => {
                     read_bounded(&file, 1024 * 1024)?;
+                }
+                "text_script" => {
+                    crate::scripting::check_text_asset(self, &asset.id)?;
                 }
                 _ => {}
             }

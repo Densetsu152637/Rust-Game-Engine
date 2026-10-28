@@ -22,11 +22,13 @@ mod check;
 mod component;
 mod functions;
 mod runtime;
+mod text;
 
 pub use builtins::{MAX_EMITS_GLOBAL, MAX_EMITS_PER_INSTANCE};
-pub use check::validate_scene;
+pub use check::{check_text_asset, validate_scene};
 pub use component::{
-    FaultPolicy, MAX_OVERRIDES, SCRIPT_GRAPH, ScriptCapabilities, ScriptGraph, descriptor,
+    FaultPolicy, MAX_OVERRIDES, SCRIPT_GRAPH, TEXT_SCRIPT, ScriptCapabilities, ScriptGraph,
+    TextScript, descriptor, text_descriptor,
 };
 pub use functions::{
     MAX_FUNCTIONS, MAX_FUNCTIONS_BYTES, ScriptFunctionDecl, builtin_signatures, parse_declarations,
@@ -42,12 +44,13 @@ pub(crate) use check::project_check;
 
 /// Catalog descriptors of this module's components.
 pub fn descriptors() -> Vec<ComponentDescriptor> {
-    vec![descriptor()]
+    vec![descriptor(), text_descriptor()]
 }
 
 /// Registers the component adapter and the service resources.
 pub fn register(app: &mut EngineApp) -> Result<()> {
     crate::register_component::<ScriptGraph>(app, SCRIPT_GRAPH, 1)?;
+    crate::register_component::<TextScript>(app, TEXT_SCRIPT, 1)?;
     app.world_mut().insert_resource(ScriptState::new()?);
     app.world_mut()
         .insert_resource(builtins::ScriptRun::default());

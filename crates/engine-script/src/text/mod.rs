@@ -4,7 +4,7 @@ use rhai::Engine;
 use rhai::module_resolvers::DummyModuleResolver;
 use rhai::packages::{
     ArithmeticPackage, BasicArrayPackage, BasicIteratorPackage, BasicMapPackage,
-    BasicStringPackage, LogicPackage, Package,
+    LogicPackage, Package,
 };
 
 mod instance;
@@ -19,7 +19,6 @@ pub(crate) fn engine() -> Engine {
     BasicIteratorPackage::new().register_into_engine(&mut engine);
     BasicArrayPackage::new().register_into_engine(&mut engine);
     BasicMapPackage::new().register_into_engine(&mut engine);
-    BasicStringPackage::new().register_into_engine(&mut engine);
     LogicPackage::new().register_into_engine(&mut engine);
     engine.set_module_resolver(DummyModuleResolver::new());
     engine.disable_symbol("import");

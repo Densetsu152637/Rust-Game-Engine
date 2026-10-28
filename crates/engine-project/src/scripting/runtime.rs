@@ -3,6 +3,7 @@
 use super::{
     builtins::{self, ScriptRun, authored_id, fault_payload},
     component::{FaultPolicy, ScriptGraph},
+    text::TextState,
 };
 use crate::{
     EngineEvent, Error, Project, Result, events::DeliveredEvents, runtime::ProjectResource,
@@ -59,6 +60,7 @@ pub struct ScriptState {
     programs: BTreeMap<String, Arc<Program>>,
     instances: BTreeMap<(String, Entity), Instance>,
     reload: BTreeMap<String, Arc<Program>>,
+    text: TextState,
     ticks: u64,
     faults: u64,
     skipped: u64,
@@ -73,6 +75,7 @@ impl ScriptState {
             programs: BTreeMap::new(),
             instances: BTreeMap::new(),
             reload: BTreeMap::new(),
+            text: TextState::new(),
             ticks: 0,
             faults: 0,
             skipped: 0,
@@ -82,11 +85,11 @@ impl ScriptState {
 
 /// The host a graph instance runs against: the live world plus the instance's
 /// capabilities. Effects of built-ins are staged (see [`builtins`]).
-struct WorldHost<'a> {
-    world: &'a mut World,
-    registry: &'a HostRegistry<World>,
-    caps: &'a Capabilities,
-    entity: Entity,
+pub(super) struct WorldHost<'a> {
+    pub(super) world: &'a mut World,
+    pub(super) registry: &'a HostRegistry<World>,
+    pub(super) caps: &'a Capabilities,
+    pub(super) entity: Entity,
 }
 
 fn trap_of(error: ScriptError) -> Trap {
@@ -176,7 +179,8 @@ pub fn prepare(world: &mut World) -> Result<()> {
     with_state(world, |world, state| {
         verify_functions(world, state)?;
         let mut fuel = GLOBAL_FUEL_PER_TICK;
-        sync(world, state, &mut fuel)
+        sync(world, state, &mut fuel)?;
+        state.text.sync(world, &state.registry, state.instances.len(), &mut fuel)
     })
 }
 
@@ -194,6 +198,7 @@ pub fn shutdown(world: &mut World) {
     for ((_, entity), mut instance) in std::mem::take(&mut state.instances) {
         let _ = stop_instance(world, &state.registry, entity, &mut instance, &mut fuel);
     }
+    state.text.shutdown(world, &state.registry, &mut fuel);
     world.insert_resource(state);
 }
 
@@ -492,6 +497,9 @@ pub fn reload_asset(world: &mut World, id: &str) -> Result<()> {
     };
     let result = (|| {
         let project = Arc::clone(&world.resource::<ProjectResource>().0);
+        if project.assets.get(id).is_some_and(|asset| asset.kind == "text_script") {
+            return state.text.reload(world, &state.registry, id);
+        }
         let program = compile_program(&project, &state.registry, id)?;
         for instance in state.instances.values().filter(|i| i.config.graph == id) {
             instance.config.check_shape()?;
@@ -518,9 +526,6 @@ fn step_inner(world: &mut World, state: &mut ScriptState, dt: f32) -> Result<()>
     sync(world, state, &mut global_fuel)?;
     apply_reloads(world, state, &mut global_fuel)?;
     prune(state);
-    if state.instances.is_empty() {
-        return Ok(());
-    }
     let delivered: Vec<EngineEvent> = world
         .get_resource::<DeliveredEvents>()
         .map(|d| d.0.clone())
@@ -544,7 +549,16 @@ fn step_inner(world: &mut World, state: &mut ScriptState, dt: f32) -> Result<()>
         state.instances.insert(key, instance);
         result?;
     }
-    Ok(())
+    state.text.step(
+        world,
+        &state.registry,
+        state.instances.len(),
+        dt,
+        time,
+        &delivered,
+        &mut global_fuel,
+        state.ticks,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -719,7 +733,7 @@ pub struct ScriptsStatus {
 /// Bounded telemetry; `None` when the world has no script instances.
 pub fn status(world: &World) -> Option<ScriptsStatus> {
     let state = world.get_resource::<ScriptState>()?;
-    if state.instances.is_empty() {
+    if state.instances.is_empty() && state.text.len() == 0 {
         return None;
     }
     let mut instances: Vec<InstanceStatus> = state
@@ -748,12 +762,14 @@ pub fn status(world: &World) -> Option<ScriptsStatus> {
             }
         })
         .collect();
-    instances.sort_by(|a, b| a.entity.cmp(&b.entity));
+    instances.extend(state.text.status());
+    instances.sort_by(|a, b| a.entity.cmp(&b.entity).then(a.graph.cmp(&b.graph)));
+    instances.truncate(STATUS_MAX_INSTANCES);
     Some(ScriptsStatus {
-        total: state.instances.len(),
+        total: state.instances.len() + state.text.len(),
         instances,
-        faults: state.faults,
-        skipped: state.skipped,
+        faults: state.faults + state.text.faults(),
+        skipped: state.skipped + state.text.skipped(),
     })
 }
 

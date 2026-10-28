@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 /// Catalog name of the component.
 pub const SCRIPT_GRAPH: &str = "engine.ScriptGraph";
+/// Catalog name of the text script component.
+pub const TEXT_SCRIPT: &str = "engine.TextScript";
 /// Most variable overrides one component may carry.
 pub const MAX_OVERRIDES: usize = 64;
 /// Most component names in one capability list.
@@ -125,6 +127,75 @@ impl ScriptGraph {
         }
         Ok(())
     }
+}
+
+/// Runs a `.rhai` text script asset on an entity.
+#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TextScript {
+    /// Asset id of a `text_script` asset.
+    pub script: String,
+    /// Seeds deterministic `engine.random_*` host calls.
+    pub seed: u64,
+    pub enabled: bool,
+    pub fuel_per_tick: u64,
+    pub capabilities: ScriptCapabilities,
+    pub fault_policy: FaultPolicy,
+}
+
+impl Default for TextScript {
+    fn default() -> Self {
+        Self {
+            script: String::new(),
+            seed: 0,
+            enabled: true,
+            fuel_per_tick: DEFAULT_FUEL,
+            capabilities: ScriptCapabilities::default(),
+            fault_policy: FaultPolicy::default(),
+        }
+    }
+}
+
+impl TextScript {
+    pub(crate) fn check_shape(&self) -> Result<()> {
+        if self.script.is_empty() {
+            return Err(Error::new(
+                "script.component.invalid",
+                "engine.TextScript needs a text_script asset id",
+            ));
+        }
+        ScriptGraph {
+            graph: self.script.clone(),
+            seed: self.seed,
+            enabled: self.enabled,
+            fuel_per_tick: self.fuel_per_tick,
+            capabilities: self.capabilities.clone(),
+            fault_policy: self.fault_policy,
+            ..ScriptGraph::default()
+        }
+        .check_shape()
+    }
+}
+
+/// Catalog schema and defaults for `engine.TextScript`.
+pub fn text_descriptor() -> crate::ComponentDescriptor {
+    let mut descriptor = descriptor();
+    descriptor.name = TEXT_SCRIPT.into();
+    descriptor.schema["required"] = json!(["script"]);
+    descriptor.schema["properties"]
+        .as_object_mut()
+        .expect("builtin schema is an object")
+        .remove("graph");
+    descriptor.schema["properties"]["script"] = json!({
+        "type": "string", "maxLength": 128,
+        "description": "Asset id of a .rhai asset of kind text_script."
+    });
+    descriptor.schema["properties"]
+        .as_object_mut()
+        .expect("builtin schema is an object")
+        .remove("variables");
+    descriptor.defaults = serde_json::to_value(TextScript::default()).expect("finite builtin defaults");
+    descriptor
 }
 
 /// Catalog descriptor: JSON schema and defaults.

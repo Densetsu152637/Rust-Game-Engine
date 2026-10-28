@@ -2,9 +2,10 @@
 //! and the scene check of `engine.ScriptGraph` components. Nothing here runs game
 //! code or touches a world.
 use super::{
-    component::{SCRIPT_GRAPH, ScriptGraph},
+    component::{SCRIPT_GRAPH, ScriptGraph, TEXT_SCRIPT, TextScript},
     functions::signature_table,
     runtime::compile_program,
+    text::compile_text_program,
 };
 use crate::{Error, Project, Result, Scene};
 use engine_graph::{GraphDiagnostic, GraphDocument, GraphIndex};
@@ -86,5 +87,35 @@ pub fn validate_scene(project: &Project, scene: &Scene) -> Result<()> {
             .instantiate(&component.variables)
             .map_err(|e| Error::new(e.code, format!("entity {}: {}", entity.id, e.message)))?;
     }
+    for entity in &scene.entities {
+        let Some(value) = entity.components.custom.get(TEXT_SCRIPT) else {
+            continue;
+        };
+        let component: TextScript = serde_json::from_value(value.data.clone())?;
+        component.check_shape()?;
+        project.require_asset(&component.script, "text_script")?;
+        for name in component
+            .capabilities
+            .read
+            .iter()
+            .chain(&component.capabilities.write)
+        {
+            if !project.component_catalog.0.contains_key(name) {
+                return Err(Error::new(
+                    codes::CAPABILITY_UNKNOWN_COMPONENT,
+                    format!(
+                        "entity {}: capability names component {name:?}, which is not in the catalog",
+                        entity.id
+                    ),
+                ));
+            }
+        }
+        compile_text_program(project, &component.script)?;
+    }
     Ok(())
+}
+
+/// Parse and structurally validate a text asset without invoking any handler.
+pub fn check_text_asset(project: &Project, id: &str) -> Result<()> {
+    compile_text_program(project, id).map(|_| ())
 }
