@@ -520,3 +520,21 @@ are still unreconciled with the Codex host and were left in place. The
 The integration build cache and logs stay in this checkout's
 `target/validation-build` and `target/combined-validation`. Keep the one
 heavy-build slot and the per-checkout cache rule when resuming.
+
+## Resumed execution (2026-10-28)
+
+The user resumed this task and explicitly transferred the newer Claude scripting
+work to Codex. Completed visual VM/runtime commit `50ec9b6` and a preserved snapshot
+of unfinished MCP changes are being reconciled in `codex/scripting-completion`,
+based on `79c7418`. The older Codex core at `75d9cb9` remains a recovery branch.
+The separate root-owned rendering checkout is restored for authored 2D lighting
+and World tile integration. Main remains at the validated World revision `598e395`.
+
+Confirmed evidence on recovery: the BRDF repair passed all 52 pipeline library
+and nine indirect tests at `f1ca69b`. UI execution has not passed: the last attempt
+stopped on a missing test dependency, repaired in `bd89a31` and locked in `2025b04`.
+The combined branch also contains reviewed native SpriteLit `0fc0c33`, AI handoff
+`d88464d`, and graph-authoring foundation `c63f3d`. The next gate reruns UI and
+desktop GPU tests on this combined revision. Preserve one heavy build at a time
+and dedicated per-checkout caches. All prior workers are stopped; new assignments
+remain within the user's eight-worker limit.
