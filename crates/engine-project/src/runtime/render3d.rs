@@ -42,6 +42,8 @@ impl Runtime {
                 }
             }
         }
+        let lighting2d = self.extract_lighting2d(&mut frame)?;
+        frame.lighting2d = lighting2d;
         let Some((entity, camera)) = active_camera3d(world) else {
             return Ok(frame);
         };
@@ -68,6 +70,14 @@ impl Runtime {
                 continue;
             }
             if entity.get::<Transform>().is_none() {
+                continue;
+            }
+            if let Some(chunk) = entity.get::<crate::world::tilemap::TileChunkRender>()
+                && world
+                    .get::<crate::lighting2d::SpriteLighting2D>(chunk.owner)
+                    .is_some_and(|lighting| lighting.enabled)
+                && frame.lighting2d.is_some()
+            {
                 continue;
             }
             let id = entity
@@ -137,6 +147,165 @@ impl Runtime {
             rt.validate()?;
         }
         Ok(frame)
+    }
+    fn extract_lighting2d(&self, frame: &mut SceneRenderFrame) -> Result<Option<LightingFrame2D>> {
+        use crate::lighting2d::{Light2D, Light2DKind, Lighting2D, SpriteLighting2D};
+        let world = self.app.world();
+        let Some(settings) = world
+            .iter_entities()
+            .find_map(|entity| {
+                entity
+                    .get::<Camera2D>()
+                    .map(|_| entity.get::<Lighting2D>().cloned().unwrap_or_default())
+            })
+            .filter(|settings| settings.enabled)
+        else {
+            return Ok(None);
+        };
+        settings.validate()?;
+        let mut lights = Vec::new();
+        for entity in world.iter_entities() {
+            let Some(light) = entity.get::<Light2D>().filter(|light| light.enabled) else {
+                continue;
+            };
+            light.validate()?;
+            let id = entity
+                .get::<AuthoredId>()
+                .map(|authored| authored.id.clone())
+                .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
+            let position = if entity.get::<Transform>().is_some() {
+                crate::world_transform(world, entity.id())?.position()
+            } else if light.kind == Light2DKind::Directional {
+                [0.0; 3]
+            } else {
+                return Err(Error::new(
+                    "render.light2d.transform",
+                    format!("{id}: point light requires Transform"),
+                ));
+            };
+            lights.push(crate::lighting2d::LightSnapshot2D {
+                id,
+                light: light.clone(),
+                position,
+            });
+        }
+        if lights.len() > 64 {
+            return Err(Error::new(
+                "render.light2d.limit",
+                "at most 64 enabled 2D lights",
+            ));
+        }
+        lights.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut materials = BTreeMap::new();
+        for entity in world.iter_entities() {
+            let owner = entity
+                .get::<crate::world::tilemap::TileChunkRender>()
+                .map(|chunk| chunk.owner)
+                .unwrap_or(entity.id());
+            if !world
+                .get::<SpriteLighting2D>(owner)
+                .is_some_and(|marker| marker.enabled)
+            {
+                continue;
+            }
+            let id = entity
+                .get::<AuthoredId>()
+                .map(|authored| authored.id.clone())
+                .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
+            let prefix = if entity.get::<SpriteRenderer>().is_some() {
+                "sprite"
+            } else if entity
+                .get::<crate::world::tilemap::TileChunkRender>()
+                .is_some()
+            {
+                "mesh"
+            } else {
+                continue;
+            };
+            let draw_id = format!("{prefix}:{id}");
+            let Some(draw) = frame
+                .sprites
+                .draws
+                .iter_mut()
+                .find(|draw| draw.id == draw_id)
+            else {
+                continue;
+            };
+            let material = world
+                .get::<MeshMaterial>(owner)
+                .cloned()
+                .unwrap_or_default();
+            material.validate()?;
+            if let Some(id) = &material.texture {
+                draw.texture = Some(self.resolve_texture(id, &mut frame.streams)?);
+            }
+            let resolve_data = |id: &Option<String>| -> Result<Option<Arc<Texture>>> {
+                id.as_ref()
+                    .map(|id| {
+                        self.content
+                            .textures
+                            .get(id)
+                            .cloned()
+                            .ok_or_else(|| Error::new("render.texture.unknown", id))
+                    })
+                    .transpose()
+            };
+            let mr = resolve_data(&material.metallic_roughness_texture)?;
+            let normal = resolve_data(&material.normal_texture)?;
+            if let Some(base) = &draw.texture {
+                for atlas in [&mr, &normal].into_iter().flatten() {
+                    if (base.width, base.height) != (atlas.width, atlas.height) {
+                        return Err(Error::new(
+                            "render.light2d.atlas",
+                            format!("{draw_id}: data atlas dimensions must match base atlas"),
+                        ));
+                    }
+                }
+            }
+            materials.insert(
+                draw_id,
+                LitMaterialSnapshot2D {
+                    shader: self.material_shader_lit2d(&material)?,
+                    material,
+                    metallic_roughness_texture: mr,
+                    normal_texture: normal,
+                },
+            );
+        }
+        for id in materials.keys() {
+            frame.materials2d.remove(id);
+        }
+        Ok(Some(LightingFrame2D {
+            lighting: crate::lighting2d::LightingSnapshot2D {
+                ambient: settings.ambient,
+                exposure: settings.exposure,
+                lights,
+            },
+            materials,
+        }))
+    }
+    fn material_shader_lit2d(&self, material: &MeshMaterial) -> Result<Option<Arc<str>>> {
+        let Some(id) = &material.shader else {
+            return Ok(None);
+        };
+        if let Some(asset) = self
+            .project
+            .assets
+            .get(id)
+            .filter(|asset| asset.kind == "graph")
+        {
+            let document = crate::graphs::load_graph(&self.project, id)?;
+            if document.kind != engine_material_graph::KIND {
+                return Err(Error::new(
+                    "render.shader.kind",
+                    format!("{id}: graph kind must be material"),
+                ));
+            }
+            return engine_material_graph::compile_material_sprite_lit(&document)
+                .map(|compiled| Some(Arc::<str>::from(compiled.source)))
+                .map_err(|diagnostics| crate::graphs::into_error(diagnostics, &asset.path));
+        }
+        self.material_shader(material)
     }
     /// The active camera's `PostProcess`, the enabled volumes and the LUT
     /// files they reference (read bounded; the renderer validates them).

@@ -791,6 +791,8 @@ pub struct SceneRenderFrame {
     /// The active camera's `RayTracing` component.
     pub ray_tracing: Option<crate::raytracing::RayTracing>,
     pub materials2d: BTreeMap<String, MaterialSnapshot>,
+    /// Optional authored 2D lighting and only the opted-in draw materials.
+    pub lighting2d: Option<LightingFrame2D>,
     /// Texture streams sampled by the draws of this frame.
     pub streams: Vec<StreamFrame>,
 }
@@ -798,6 +800,18 @@ pub struct SceneRenderFrame {
 pub struct MaterialSnapshot {
     pub material: MeshMaterial,
     pub shader: Option<Arc<str>>,
+}
+#[derive(Clone, Debug)]
+pub struct LitMaterialSnapshot2D {
+    pub material: MeshMaterial,
+    pub shader: Option<Arc<str>>,
+    pub metallic_roughness_texture: Option<Arc<Texture>>,
+    pub normal_texture: Option<Arc<Texture>>,
+}
+#[derive(Clone, Debug)]
+pub struct LightingFrame2D {
+    pub lighting: crate::lighting2d::LightingSnapshot2D,
+    pub materials: BTreeMap<String, LitMaterialSnapshot2D>,
 }
 impl From<RenderFrame> for SceneRenderFrame {
     fn from(sprites: RenderFrame) -> Self {
@@ -809,6 +823,7 @@ impl From<RenderFrame> for SceneRenderFrame {
             post: Default::default(),
             ray_tracing: None,
             materials2d: BTreeMap::new(),
+            lighting2d: None,
             streams: Vec::new(),
         }
     }

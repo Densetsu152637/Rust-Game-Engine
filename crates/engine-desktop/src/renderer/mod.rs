@@ -340,6 +340,7 @@ impl GpuRenderer {
             },
         );
         let mut sprites = SpriteRenderer::new(backend, limits)?;
+        sprites.set_lighting_limits(gpu.device.limits().clone());
         sprites.set_surface_size((info.width, info.height));
         gpu.check_errors()?;
         Ok(Self {

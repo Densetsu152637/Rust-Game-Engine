@@ -165,6 +165,7 @@ fn streamed_scene(stream: &StreamFrame) -> SceneRenderFrame {
         post: Default::default(),
         ray_tracing: None,
         materials2d: Default::default(),
+        lighting2d: None,
         streams: vec![stream.clone()],
     }
 }
@@ -297,6 +298,7 @@ fn xr_eyes_render_into_external_targets_with_their_own_views() -> anyhow::Result
         post: Default::default(),
         ray_tracing: None,
         materials2d: Default::default(),
+        lighting2d: None,
         streams: vec![],
     };
     // Asymmetric per-eye projections like OpenXR's (wider toward the nose).

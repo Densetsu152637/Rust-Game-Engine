@@ -27,6 +27,7 @@ fn scene() -> SceneRenderFrame {
         post: Default::default(),
         ray_tracing: None,
         materials2d: Default::default(),
+        lighting2d: None,
         streams: vec![],
     }
 }

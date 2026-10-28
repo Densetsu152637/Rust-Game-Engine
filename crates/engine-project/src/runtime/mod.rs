@@ -94,6 +94,7 @@ impl Runtime {
         crate::xr::register(&mut app)?;
         crate::ai::register(&mut app)?;
         crate::world::register_components(&mut app)?;
+        crate::lighting2d::register(&mut app)?;
         crate::simulation::install(app.world_mut(), simulation)?;
         crate::world::install(app.world_mut())?;
         app.world_mut().insert_resource(RuntimeLog::default());

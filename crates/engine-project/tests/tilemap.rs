@@ -102,6 +102,90 @@ impl Fixture {
 fn tick(rt: &mut Runtime) {
     rt.tick(0.1, InputSnapshot::default()).unwrap();
 }
+
+#[test]
+fn authored_lighting_keeps_world_chunks_in_ordered_sprite_path() {
+    let fixture = Fixture::standard();
+    let scene_path = fixture.dir.path().join("scene.json");
+    let mut scene: Value = serde_json::from_slice(&fs::read(&scene_path).unwrap()).unwrap();
+    scene["entities"][0]["components"]["custom"] = json!({
+        "engine.Lighting2D":{"version":1,"data":{"enabled":true,"ambient":[0.1,0.1,0.1],"exposure":1.0}}
+    });
+    scene["entities"][0]["components"]["Camera3D"] = json!({});
+    scene["entities"][1]["components"]["custom"]["engine.SpriteLighting2D"] =
+        json!({"version":1,"data":{"enabled":true}});
+    scene["entities"].as_array_mut().unwrap().push(json!({
+        "id":"lamp","name":"lamp","components":{
+            "Transform":{"position":[0.0,0.0,3.0]},
+            "custom":{"engine.Light2D":{"version":1,"data":{
+                "kind":"point","color":[1.0,0.7,0.5],"intensity":12.0,
+                "range":10.0,"enabled":true}}}
+        }
+    }));
+    fs::write(&scene_path, scene.to_string()).unwrap();
+    let mut rt = fixture.runtime();
+    tick(&mut rt);
+    let frame = rt.extract_scene_frame().unwrap();
+    let lighting = frame.lighting2d.as_ref().unwrap();
+    assert_eq!(lighting.lighting.lights.len(), 1);
+    assert_eq!(lighting.lighting.lights[0].position, [0.0, 0.0, 3.0]);
+    let chunks: Vec<_> = frame
+        .sprites
+        .draws
+        .iter()
+        .filter(|draw| draw.id.starts_with("mesh:tilemap:world/"))
+        .collect();
+    assert_eq!(chunks.len(), 6);
+    assert!(
+        chunks
+            .iter()
+            .all(|draw| lighting.materials.contains_key(&draw.id))
+    );
+    assert!(
+        frame
+            .meshes
+            .iter()
+            .all(|mesh| !mesh.id.starts_with("tilemap:world/"))
+    );
+    assert!(
+        chunks
+            .iter()
+            .all(|draw| draw.state.blend == BlendMode::StraightAlpha)
+    );
+    let mesh = chunks[0].mesh.clone();
+    let next = rt.extract_scene_frame().unwrap();
+    let same = next
+        .sprites
+        .draws
+        .iter()
+        .find(|draw| draw.id == chunks[0].id)
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&mesh, &same.mesh));
+}
+
+#[test]
+fn authored_light_rejects_nonfinite_and_missing_point_transform() {
+    let fixture = Fixture::standard();
+    let scene_path = fixture.dir.path().join("scene.json");
+    let mut scene: Value = serde_json::from_slice(&fs::read(&scene_path).unwrap()).unwrap();
+    scene["entities"].as_array_mut().unwrap().push(json!({
+        "id":"lamp","name":"lamp","components":{"custom":{
+            "engine.Light2D":{"version":1,"data":{"kind":"point","range":0.0}}
+        }}
+    }));
+    fs::write(&scene_path, scene.to_string()).unwrap();
+    let error = Project::load(fixture.dir.path().join("project.json")).unwrap_err();
+    assert!(format!("{error}").contains("render.light2d.invalid"));
+
+    scene["entities"][3]["components"]["custom"]["engine.Light2D"]["data"]["range"] = json!(8.0);
+    scene["entities"][0]["components"]["custom"] = json!({
+        "engine.Lighting2D":{"version":1,"data":{"enabled":true}}
+    });
+    fs::write(&scene_path, scene.to_string()).unwrap();
+    let runtime = fixture.runtime();
+    let error = runtime.extract_scene_frame().unwrap_err();
+    assert!(format!("{error}").contains("render.light2d.transform"));
+}
 fn tile_draws(rt: &Runtime) -> Vec<engine_project::runtime::Draw> {
     rt.extract_frame()
         .unwrap()

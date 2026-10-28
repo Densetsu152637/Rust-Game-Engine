@@ -1,11 +1,10 @@
 # Native lit sprites and tile-shaped meshes
 
-This source milestone adds an optional native `SpriteLit` material, validated
-point/directional light snapshots and real-backend readback test sources. It does
-not install Project components, desktop extraction/submission adapters or a new
-World tilemap renderer. No Cargo tests, compilation or GPU validation have run for
-this milestone. Authored Runtime World tilemap-to-desktop pixels remain an
-acceptance requirement after the native gate.
+The native `SpriteLit` material is exposed to authored Projects through
+`engine.Light2D`, `engine.SpriteLighting2D`, and `engine.Lighting2D` components.
+The desktop renderer submits opted-in sprite and World tile chunk draws through
+the existing ordered sprite command path. This adapter is currently source-only;
+Cargo, GPU readback, and full authored World pixel validation remain gates.
 
 ## Native API and submission
 
@@ -66,7 +65,9 @@ these baked meshes must also be world-space; an absent/zero normal uses the
 view-facing geometric normal from derivatives. The reference view direction is
 constant +Z for the orthographic 2D camera.
 
-`SPRITE_LIT_WGSL` is the native reference shader. Raw custom SpriteLit materials
+`SPRITE_LIT_WGSL` is the native reference shader. Authored material graphs are
+compiled against that template for opted-in draws; ordinary graphs retain their
+existing mesh/legacy-sprite template. Raw custom SpriteLit materials
 import `engine::material` and use `engine_sprite_view_direction()` for the
 orthographic direction. The old `engine_camera_position()` helper remains for
 source compatibility but a fixed position cannot represent that direction across
@@ -113,7 +114,32 @@ lighting values are not a claim of HDR display output.
   per-view lighting groups. Existing RenderDevice owns texture/mesh handles,
   deferred retirement, dynamic uniform arenas and bind-group cache identity.
 
-## World and desktop follow-up
+## Authored Project and World adapter
+
+Attach `engine.Lighting2D` to the active `Camera2D` entity with `enabled: true`,
+finite `ambient` RGB and `exposure` (0..1000). Attach
+`engine.SpriteLighting2D` with `enabled: true` to a sprite or tilemap owner.
+The marker defaults to enabled when present; without the marker the draw keeps
+its previous shader. Attach `engine.Light2D` to light entities. `kind` is
+`point` or `directional`, with RGB `color`, `intensity` (candela/lux), `range`,
+world-space ray `direction`, and `enabled`. Point lights require a `Transform`;
+their transformed position and height are used in shading. Disabled lights are
+omitted. Exposure multiplies ambient and light intensity once. At most 64 enabled
+lights are admitted, with native bounds enforced before submission.
+
+The selected 2D camera is the first `Camera2D` in ECS iteration order, matching
+`Runtime::extract_camera`. An opted-in tile chunk inherits the owner's
+`MeshMaterial` and map references. Its vertex tint and layer opacity are already
+baked by World and are not copied into the material again. Normal and MR atlases
+must match the base atlas dimensions and orientation. Lit draw snapshots are
+keyed by existing `Draw.id`; the desktop renderer uploads those data textures
+through the shared resource cache, binds MR then normal maps, and prepares one
+native light uniform per lit draw in painter order. Lit draws use the unshifted
+world camera matrix and pass `Draw.offset` only in the light uniform.
+
+When a `Camera3D` is active, opted-in tile chunks remain in the 2D sprite pass
+and are excluded from the opaque 3D mesh list. Other mesh routing is unchanged.
+No shadow, HDR, history, or temporal stage is added.
 
 Reuse [World's committed chunk contract](world-tilemap.md#render-data-handed-to-the-sprite-path):
 16x16 chunks, the existing `GeometryOverride(Arc<Mesh>)`, y-up positions, oriented
@@ -121,12 +147,7 @@ v-down atlas UVs, baked tint/layer opacity, stable IDs/revisions and existing
 `Draw` state/order. Do not regenerate chunks in this native module. The GPU tests
 use small quad/UV fixtures; they do not establish actual Runtime World integration.
 
-Remaining adapter work includes authored `engine.Light2D`, `engine.SpriteLighting2D`
-and `engine.Lighting2D`, texture resolution/snapshot population, owner material
-inheritance through `TileChunkRender.owner`, sprite material/normal uploads and
-keeping opted-in tile chunks on the 2D path when a Camera3D exists. That routing
-must preserve `(space,layer,id)` interleaving and avoid duplicate 3D submission.
-Lighting remains in the existing ordered sprite/late-presentation path. Feeding 2D
+Feeding 2D
 world layers into scene HDR, temporal AA, or frame generation requires a separate
 shared-stage contract; no such stage is added here.
 
@@ -150,4 +171,4 @@ Before full feature acceptance, execute those gates plus existing material/IBL
 interop checks, then render an authored World tilemap through Runtime extraction
 and desktop submission. Read back atlas orientation, normal response, opacity and
 sprite/UI interleaving, and prove unchanged-chunk upload reuse, edit/erase/recreate,
-visibility and hybrid-camera routing. Native source tests are only the first slice.
+visibility and hybrid-camera routing.

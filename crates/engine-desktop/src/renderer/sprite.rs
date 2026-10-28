@@ -9,12 +9,18 @@ use super::vertex::VERTEX_STRIDE;
 use super::{RenderLimits, RenderStats};
 use crate::{CameraView, PixelRect as CameraRect};
 use anyhow::{Context, Result, ensure};
+use engine_project::lighting2d::Light2DKind;
+use engine_project::rendering3d::LightingFrame2D;
 use engine_project::runtime::{BlendMode, Draw, DrawSpace, RenderFrame};
 use engine_render::{
     DeviceConfig, DrawCommand, DrawState, DrawUniform, FrameDesc, FrameOutcome, PixelRect,
     RenderBackend, RenderCommandBuffer, RenderDevice, RenderTarget, ShaderHandle, ShaderResource,
     ShaderSource, UniformSlot,
 };
+use engine_render_pipeline::Light;
+use engine_render_pipeline::sprite_lighting::{SpriteLight, SpriteLighting, SpriteLightingUniform};
+use glam::Vec3;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 
 /// The sprite shader shipped with the engine.
@@ -70,6 +76,7 @@ pub struct SpriteRenderer<B: RenderBackend = Box<dyn RenderBackend>> {
     cache: ResourceCache,
     materials: super::material2d::Materials2d,
     surface_size: (u32, u32),
+    lighting_limits: wgpu::Limits,
 }
 
 impl<B: RenderBackend> SpriteRenderer<B> {
@@ -94,6 +101,7 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             cache: ResourceCache::default(),
             materials: Default::default(),
             surface_size: (0, 0),
+            lighting_limits: wgpu::Limits::default(),
         })
     }
 
@@ -118,6 +126,9 @@ impl<B: RenderBackend> SpriteRenderer<B> {
     /// already created the surface at this size).
     pub fn set_surface_size(&mut self, size: (u32, u32)) {
         self.surface_size = size;
+    }
+    pub(crate) fn set_lighting_limits(&mut self, limits: wgpu::Limits) {
+        self.lighting_limits = limits;
     }
 
     /// Resize the presentation surface. Zero is a suspended surface, not a size.
@@ -184,9 +195,23 @@ impl<B: RenderBackend> SpriteRenderer<B> {
         frame: &engine_project::rendering3d::SceneRenderFrame,
         size: (u32, u32),
     ) -> Result<BuiltFrame> {
-        let built = self.build_with_materials(&frame.sprites, size, &frame.materials2d)?;
+        let built = self.build_with_materials(
+            &frame.sprites,
+            size,
+            &frame.materials2d,
+            frame.lighting2d.as_ref(),
+        )?;
         self.materials
             .retire(&mut self.device, &frame.materials2d)?;
+        let empty = BTreeMap::new();
+        self.materials.retire_lit(
+            &mut self.device,
+            frame
+                .lighting2d
+                .as_ref()
+                .map(|lit| &lit.materials)
+                .unwrap_or(&empty),
+        )?;
         Ok(built)
     }
 
@@ -271,6 +296,15 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             .flat_map(|d| [&d.metallic_roughness_texture, &d.normal_texture])
             .flatten()
             .cloned()
+            .chain(
+                frame
+                    .lighting2d
+                    .iter()
+                    .flat_map(|lit| lit.materials.values())
+                    .flat_map(|m| [&m.metallic_roughness_texture, &m.normal_texture])
+                    .flatten()
+                    .cloned(),
+            )
             .collect();
         self.validate(&proxies, &camera, &extra)?;
         super::scene3d::validate_meshes(frame)?;
@@ -280,12 +314,18 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 super::material2d::validate(&draw.id, material)?;
             }
         }
+        if let Some(lighting) = &frame.lighting2d {
+            self.prepare_lighting(&frame.sprites, lighting)?;
+            for (id, material) in &lighting.materials {
+                super::material2d::Materials2d::validate_lit(id, material)?;
+            }
+        }
         Ok(camera)
     }
 
     /// Validate, sync caches and convert `frame` for a target of `size`.
     pub(crate) fn build(&mut self, frame: &RenderFrame, size: (u32, u32)) -> Result<BuiltFrame> {
-        self.build_with_materials(frame, size, &Default::default())
+        self.build_with_materials(frame, size, &Default::default(), None)
     }
     fn build_with_materials(
         &mut self,
@@ -295,10 +335,24 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             String,
             engine_project::rendering3d::MaterialSnapshot,
         >,
+        lighting: Option<&LightingFrame2D>,
     ) -> Result<BuiltFrame> {
         let camera = CameraView::new(&frame.camera, size.0, size.1)?;
-        self.validate(frame, &camera, &[])?;
-        let uploads = self.cache.sync(&mut self.device, &frame.draws)?;
+        let prepared = lighting
+            .map(|lit| self.prepare_lighting(frame, lit))
+            .transpose()?
+            .unwrap_or_default();
+        let extra: Vec<_> = lighting
+            .into_iter()
+            .flat_map(|lit| lit.materials.values())
+            .flat_map(|m| [&m.metallic_roughness_texture, &m.normal_texture])
+            .flatten()
+            .cloned()
+            .collect();
+        self.validate(frame, &camera, &extra)?;
+        let uploads = self
+            .cache
+            .sync_with_textures(&mut self.device, &frame.draws, &extra)?;
         let mut stats = RenderStats {
             mesh_uploads: uploads.meshes,
             texture_uploads: uploads.textures,
@@ -378,6 +432,25 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                 command.shader = shader;
                 command.uniforms = uniforms;
             }
+            if let Some(lit) = lighting.and_then(|lit| lit.materials.get(&draw.id)) {
+                let (shader, uniforms) = self.materials.lit_material(
+                    &mut self.device,
+                    &draw.id,
+                    lit,
+                    glam::Mat4::from_cols_array(&camera.world),
+                    &prepared[&draw.id],
+                )?;
+                command.shader = shader;
+                command.uniforms = uniforms;
+                command.data_textures = [
+                    lit.metallic_roughness_texture
+                        .as_ref()
+                        .and_then(|tex| self.cache.texture_handle(tex)),
+                    lit.normal_texture
+                        .as_ref()
+                        .and_then(|tex| self.cache.texture_handle(tex)),
+                ];
+            }
             command.texture = texture;
             let shader = command.shader;
             painter.push(engine_render_pipeline::OverlayItem {
@@ -393,7 +466,8 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             // and scissor; painter order is never changed to reduce them.
             let key = (
                 shader,
-                materials.contains_key(&draw.id).then_some(draw.id.as_str()),
+                (materials.contains_key(&draw.id) || prepared.contains_key(&draw.id))
+                    .then_some(draw.id.as_str()),
                 state.pipeline_state(),
                 draw.texture.as_ref().map(address),
                 camera_index,
@@ -413,6 +487,69 @@ impl<B: RenderBackend> SpriteRenderer<B> {
             viewport: neutral_rect(camera.viewport),
             painter,
         })
+    }
+
+    fn prepare_lighting(
+        &self,
+        frame: &RenderFrame,
+        authored: &LightingFrame2D,
+    ) -> Result<BTreeMap<String, SpriteLightingUniform>> {
+        if authored.materials.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let lights = authored
+            .lighting
+            .lights
+            .iter()
+            .map(|item| {
+                let color = Vec3::from_array(item.light.color);
+                let intensity = item.light.intensity * authored.lighting.exposure;
+                let light = match item.light.kind {
+                    Light2DKind::Point => Light::point(
+                        Vec3::from_array(item.position),
+                        color,
+                        intensity,
+                        item.light.range,
+                    ),
+                    Light2DKind::Directional => {
+                        Light::directional(Vec3::from_array(item.light.direction), color, intensity)
+                    }
+                };
+                SpriteLight::new(item.id.clone(), light)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let ambient = Vec3::from_array(authored.lighting.ambient) * authored.lighting.exposure;
+        let lighting = SpriteLighting::new(ambient, lights)?;
+        let mut selected: Vec<_> = frame
+            .draws
+            .iter()
+            .filter(|draw| authored.materials.contains_key(&draw.id))
+            .collect();
+        selected.sort_by(|a, b| {
+            (a.space == DrawSpace::Ui, a.layer, &a.id).cmp(&(
+                b.space == DrawSpace::Ui,
+                b.layer,
+                &b.id,
+            ))
+        });
+        ensure!(
+            selected.len() == authored.materials.len(),
+            "lit material references a missing draw"
+        );
+        ensure!(
+            selected.iter().all(|draw| draw.space == DrawSpace::World),
+            "SpriteLit requires world-space draws"
+        );
+        let offsets: Vec<_> = selected
+            .iter()
+            .map(|draw| Vec3::from_array(draw.offset))
+            .collect();
+        let values = lighting.prepare_draws(&self.lighting_limits, &offsets)?;
+        Ok(selected
+            .into_iter()
+            .zip(values)
+            .map(|(draw, uniform)| (draw.id.clone(), uniform))
+            .collect())
     }
 
     fn validate(

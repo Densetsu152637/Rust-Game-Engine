@@ -45,6 +45,7 @@ impl ComponentCatalog {
         for d in crate::simulation::component_descriptors()
             .into_iter()
             .chain(crate::world::component_descriptors())
+            .chain(crate::lighting2d::descriptors())
             .chain(crate::ui_tree::descriptors())
             .chain([
                 crate::accessibility::descriptor(),
@@ -112,6 +113,7 @@ impl ComponentCatalog {
         }
         crate::acoustics::validate_component(name, &value.data)?;
         crate::networking::validate_component(name, &value.data)?;
+        crate::lighting2d::validate_component(name, &value.data)?;
         Ok(())
     }
     pub fn validate_entity(&self, scene: &crate::Scene, entity: &crate::SceneEntity) -> Result<()> {
