@@ -170,27 +170,6 @@ fn fail(code: &str, path: String, message: impl Into<String>) -> Vec<GraphDiagno
     vec![GraphDiagnostic::new(code, path, message)]
 }
 
-/// Declared ports followed by `extra`; extra ports need an extensible type.
-fn with_extra_ports(
-    def: &NodeTypeDef,
-    extra: &[Port],
-    id: &NodeId,
-) -> Result<Vec<Port>, Vec<GraphDiagnostic>> {
-    if !extra.is_empty() && !def.extensible {
-        return Err(fail(
-            codes::NODE_PORTS_MISMATCH,
-            format!("/nodes/{id}"),
-            format!(
-                "node type {} is not extensible; it takes no extra ports",
-                def.name
-            ),
-        ));
-    }
-    let mut ports = def.declared_ports();
-    ports.extend(extra.iter().cloned());
-    Ok(ports)
-}
-
 fn node_index(doc: &GraphDocument, id: &NodeId) -> Result<usize, Vec<GraphDiagnostic>> {
     doc.nodes.iter().position(|n| n.id == *id).ok_or_else(|| {
         fail(
