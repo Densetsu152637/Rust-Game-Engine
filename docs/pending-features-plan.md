@@ -1,15 +1,12 @@
 # Pending engine features
 
-Revision: 2026-10-26; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
-Initial plan commit: `7d614e9`. Main contains accepted audio/server changes through
-`ebc765c`. Larger branches are assembled in `codex/pending-integration`, currently
-`3b4f289` before this plan update. Validated milestones include XR, animation graph/IK/morphs, ML, scene
-editing/hot reload, shared shadows, compressed decoding and video. The branch also
-contains source-reviewed retargeting, procedural/authored audio, voice, sequencer,
-UI presentation, material graphs, editor graphs/settings and physics-audio work
-for combined validation. Those source-only milestones remain unaccepted until
-execution checks pass. Nothing has been published; final checks remain pending.
-
+Revision: 2026-10-28; starting main `91b961c2b7fa12e1114f8f45884eb1d15ccd0aee`.
+Local main is the validated World merge `598e395`; nothing has been pushed.
+The combined feature branch is `codex/pending-integration`, assembled through
+`7d4263f` before the current compile repairs. World is complete on main. The
+newer combined features remain in progress; source review and individual test
+passes do not establish final acceptance. The latest execution checkpoint below
+supersedes historical test states in earlier progress entries.
 This is the implementation record for the pending-feature request. Existing
 spatial audio, first-round rendering, physics, UI and networking are the baseline.
 Their remaining limitations still apply. This plan supersedes older plan prose
@@ -229,7 +226,7 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 
 ### 9. Rendering round two
 
-- Status: in progress (material graph native tests pass; Hi-Z kernel source underway); remaining effects depend on
+- Status: in progress (native SpriteLit/post GPU checks pass; authored lighting and scene lifecycle work active); remaining effects depend on
   stage 6 and relevant World/material contracts.
 - Objective: IBL/probes/lightmaps; SSR/DOF/motion blur; AA/vendor-neutral upscale;
   atmosphere/fog/clouds/decals/GPU particles; Hi-Z with LOD; HDR display output;
@@ -538,3 +535,53 @@ The combined branch also contains reviewed native SpriteLit `0fc0c33`, AI handof
 desktop GPU tests on this combined revision. Preserve one heavy build at a time
 and dedicated per-checkout caches. All prior workers are stopped; new assignments
 remain within the user's eight-worker limit.
+
+## Execution checkpoint: combined scripting and rendering (2026-10-28)
+
+- Main `598e395` remains validated and contains World `255035b`. No push or final
+  pending-feature merge has occurred.
+- At `976112d`, all nine UI GPU tests and three desktop presentation GPU tests
+  passed on RTX 5080 Vulkan. At `802faf0`, desktop tests compile with the DLSS
+  feature; the SDK was absent, so this is stub compilation, not live NGX evidence.
+- At `675d0d2`, native SpriteLit passed six GPU and five CPU tests. Native post
+  effects passed six GPU and two CPU tests, including independent spatial-AA
+  pixel references. Earlier IBL/GGX numerical checks passed 61 tests at `f1ca69b`.
+- Authored 2D fixes `4bf9241` passed independent source review and are integrated.
+  The original project tilemap check failed a missing-first-tick fixture; this is
+  repaired, with runtime and four authored World GPU regressions still pending.
+- Visual scripting `4ba66f7` is integrated at `a4968ff`, with reviewed reload,
+  shared fuel, event rollback and transactional write fixes. Removing a stale
+  graph helper at `7d4263f` enabled all 25 script-core tests to pass. The next
+  combined runtime build failed a Project test literal missing `script_functions`;
+  its repair and runtime execution are pending. No GPU test ran after that failure.
+- Recomputed MCP counts from actual registrations are 35 read, 68 with write,
+  38 with execution only, and 71 with write and execution. The component schema
+  has 16 standard and 72 custom entries. Source assertions match; MCP execution
+  checks are still pending.
+- Rhai `1.26.1` public-API probe `068b294` is ready for its isolated compile check.
+  The supported design uses explicit handlers and persistent `this` state, safe
+  synchronous host requests, disabled imports with a denying resolver, and
+  functions-only execution. Unknown calls may trap at runtime. No total heap
+  isolation is claimed; implementation, adversarial tests and review remain.
+- Scene lifecycle checkpoint `205de3d` is committed for independent review and
+  compilation: opaque colour ping-pong, staged history, commit before late UI,
+  and retained presentation retry. It is not yet merged or execution-validated.
+- Authored IBL/probes are in progress. Multiple indirect assets share bounded
+  aggregate loading (128 MiB decoded RGB32F payload, 1 MiB per descriptor and
+  16 MiB descriptors total) and a bounded device cache. Probe translations remain
+  f64 until subtracting the applied world origin. Requested unsupported lighting
+  produces an error; absent configuration keeps legacy ambient. Lightmap UV2
+  consumption and World-specific shaders remain separate pending slices.
+- The Hi-Z consumer design is ready but waits for scene lifecycle integration:
+  actual per-view mesh LOD selection, certified current-frame occluder depth,
+  conservative queries, stable indirect camera draws and independent shadow
+  casters. GPU count/readback tests must prove omitted geometry. The later
+  lightmap instance-layout migration must update compaction WGSL with Rust.
+
+Active task-owned worktrees added this checkpoint (creator and cleanup owner:
+root; no shared target directories): `codex-scripting-completion`, restored
+`codex-render-indirect`, `codex-rhai`, `codex-scene-lifecycle`, and
+`codex-authored-indirect`, all under `D:/Git-Worktrees/Rust-Game-Engine/`.
+The root checkpoint under main's `target/task-coordination/root-checkpoint.md`
+records exact branches, bases, active build handles and ownership. One heavy
+Cargo/GPU job remains the rule; the user's eight-worker maximum remains in force.
