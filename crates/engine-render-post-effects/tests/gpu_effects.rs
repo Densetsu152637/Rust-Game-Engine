@@ -93,8 +93,8 @@ fn pipeline(
         primitive: Default::default(),
         depth_stencil: depth.then_some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Always,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Always),
             stencil: Default::default(),
             bias: Default::default(),
         }),
