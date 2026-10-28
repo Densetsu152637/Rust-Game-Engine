@@ -490,3 +490,51 @@ Worktree record addition: `codex-ai-scripting`, path
 `D:/Git-Worktrees/Rust-Game-Engine/codex-ai-scripting`, branch `codex/ai-scripting`,
 base `ee57d57`, creator/cleanup root, active scripting manager. Its own branch
 integrates `d88464d` before scripting. No cross-checkout build cache reuse.
+
+## Paused checkpoint (2026-10-28)
+
+Codex stopped after 2026-10-27; the user paused this plan until new agents
+resume it. Nothing is pushed: local `main` (`598e395`) is 61 commits ahead of
+`origin/main` (`91b961c`) and already contains World (`255035b`).
+
+Resume points, the only two Codex checkouts kept:
+
+| Checkout | Branch | Head | Resume with |
+| --- | --- | --- | --- |
+| `codex-pending-integration` | `codex/pending-integration` | this commit | Execution gates recorded above as pending: IBL/GGX rerun, UI GPU build after the foliage E0716 repair, World shadow, spatial AA, sequencer and Hi-Z tests; then lit 2D sprites and remaining stage 9 followups |
+| `codex-ai-scripting` | `codex/ai-scripting` | `75d9cb9` | Stage 2 scripting. `engine-script` V0 core is committed as unvalidated WIP (`1d8467e`): the library builds with two warnings, and `tests/core.rs` fails with E0502 at line 126. Fix that, then V1–V4, T1–T2 (Rhai), security review |
+
+Every other Codex task branch is contained in `codex/pending-integration` by
+ancestry or patch, so its worktree was removed and its branch kept for
+reference: `animation-graph`, `audio-procedural`, `audio-streams`,
+`material-graph`, `physics-audio`, `render-contracts`, `render-hiz`,
+`render-indirect`, `render-post-effects`, `voice-audio` and `world-shadows`.
+The `codex/unsealed-*` branches and the World branches were merged into `main`
+and deleted. The task-worktree rows above for those checkouts are superseded.
+
+The host-managed creations `world-completion`, `gameplay-completion`,
+`audio-foundation` and `animation-features` under `D:/Git-Worktrees/<name>`
+are still unreconciled with the Codex host and were left in place. The
+`claude/parity-*` worktrees remain with their owner.
+
+The integration build cache and logs stay in this checkout's
+`target/validation-build` and `target/combined-validation`. Keep the one
+heavy-build slot and the per-checkout cache rule when resuming.
+
+## Resumed execution (2026-10-28)
+
+The user resumed this task and explicitly transferred the newer Claude scripting
+work to Codex. Completed visual VM/runtime commit `50ec9b6` and a preserved snapshot
+of unfinished MCP changes are being reconciled in `codex/scripting-completion`,
+based on `79c7418`. The older Codex core at `75d9cb9` remains a recovery branch.
+The separate root-owned rendering checkout is restored for authored 2D lighting
+and World tile integration. Main remains at the validated World revision `598e395`.
+
+Confirmed evidence on recovery: the BRDF repair passed all 52 pipeline library
+and nine indirect tests at `f1ca69b`. UI execution has not passed: the last attempt
+stopped on a missing test dependency, repaired in `bd89a31` and locked in `2025b04`.
+The combined branch also contains reviewed native SpriteLit `0fc0c33`, AI handoff
+`d88464d`, and graph-authoring foundation `c63f3d`. The next gate reruns UI and
+desktop GPU tests on this combined revision. Preserve one heavy build at a time
+and dedicated per-checkout caches. All prior workers are stopped; new assignments
+remain within the user's eight-worker limit.
