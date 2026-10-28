@@ -585,3 +585,35 @@ root; no shared target directories): `codex-scripting-completion`, restored
 The root checkpoint under main's `target/task-coordination/root-checkpoint.md`
 records exact branches, bases, active build handles and ownership. One heavy
 Cargo/GPU job remains the rule; the user's eight-worker maximum remains in force.
+### Verified follow-up checkpoint
+
+At `5afac3d`, the combined project checks passed 84 tests (58 library, four
+progression, twelve visual scripting, ten tilemap), including all reviewed visual
+scripting fuel, rollback and reload regressions. All four authored World tile
+lighting GPU tests also passed: oriented normal/MR shading, resource reuse and
+recreation, hybrid camera routing, and sprite/clipped-UI ordering. The dead cache
+wrapper warning is removed in `537eee7`.
+
+The reviewed lifecycle stack through `f2ded0b` is integrated at `6ff1eb7`; a
+mechanical GPU test helper repair produces `d129700`. That revision passes
+pipeline/RT/desktop test compilation with DLSS enabled (SDK absent), all 52
+pipeline CPU tests and all eleven pipeline GPU tests on RTX 5080 Vulkan. The
+checks cover opaque-effect ordering through host/native upscale and transparency,
+abort history reset, retained late-UI retry, and view/resize/forget behavior.
+A retry snapshot expires when a newer scene attempt begins. Desktop presentation
+and RT-specific execution after this change remain separate queued checks.
+
+Rhai probe `28172a6` compiles with its locked dependency set. Full backend source
+`adb9019` is undergoing its first focused compilation/tests and independent
+security review; project/MCP integration and adversarial resource checks remain.
+Authored IBL source `3f4a8ac` is being completed with its renderer hook, actual GPU
+oracles and review repairs for file-handle lifetime, verified cache byte accounting
+and an isolated path-escape test. It is not integrated or accepted yet.
+
+Hi-Z consumer implementation is now active on `feat/codex-hiz-consumer`, worktree
+`D:/Git-Worktrees/Rust-Game-Engine/codex-hiz-consumer`, base `d129700`, creator and
+cleanup owner root. Reuse `engine-mesh-lod` selection/hysteresis; keep camera LOD
+and culling separate from shadow geometry. Coordinate desktop hooks with the IBL
+owner and retain the existing 208-byte instance layout until a later explicit
+lightmap migration. The implementation must demonstrate skipped opaque geometry
+with indirect counts and a depth-disabled GPU diagnostic, not merely a mask.
