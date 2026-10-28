@@ -876,7 +876,15 @@ impl ScenePipeline {
             lighting: state.lighting.report.clone(),
             aborted: false,
         };
-        state.committed_report = Some(state.report.clone());
+        let mut scene_report = state.report.clone();
+        for feature in &mut scene_report.features.states {
+            if !matches!(feature.stage, Stage::Overlay | Stage::Composite)
+                && feature.activity == Activity::Pending
+            {
+                feature.activity = Activity::Ran;
+            }
+        }
+        state.committed_report = Some(scene_report);
         for feature in &resolved.states {
             if feature.runs()
                 && !matches!(feature.stage, Stage::Overlay | Stage::Composite)
@@ -1055,11 +1063,23 @@ impl ScenePipeline {
             .committed_report
             .clone()
             .context("no committed scene report")?;
-        report.features = resolved;
+        for retry_state in resolved
+            .states
+            .into_iter()
+            .filter(|feature| matches!(feature.stage, Stage::Overlay | Stage::Composite))
+        {
+            if let Some(state) = report
+                .features
+                .states
+                .iter_mut()
+                .find(|state| state.name == retry_state.name)
+            {
+                *state = retry_state;
+            }
+        }
         report.draw_calls += stats.draw_calls;
         report.instances += stats.instances;
         state.report = report.clone();
-        state.committed_report = Some(report.clone());
         Ok(report)
     }
 

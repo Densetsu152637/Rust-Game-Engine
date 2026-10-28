@@ -550,6 +550,10 @@ fn late_ui_retry_uses_one_committed_scene() -> Result<()> {
     let retry =
         pipeline.retry_view_presentation(ViewId::MAIN, &target.target, None, &mut NoHost)?;
     assert_eq!(retry.evaluation_id, Some(id));
+    assert_eq!(
+        retry.features.get("test.count_scene").unwrap().activity,
+        Activity::Ran
+    );
     assert_eq!(pipeline.committed_scene_id(ViewId::MAIN), Some(id));
     assert_eq!(scenes.load(Ordering::SeqCst), 1);
     assert_eq!(overlays.load(Ordering::SeqCst), 2);
