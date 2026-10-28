@@ -643,7 +643,7 @@ fn opaque_effects_feed_transparency_host_upscale_and_scene_readback() -> Result<
     };
     pipeline.render_view(&disabled_frame, &target.target, &mut NoHost)?;
     assert!((pipeline.read_scene_hdr(ViewId::MAIN)?.pixel(2, 2)[0] - 1.0).abs() < 0.02);
-    let other = view(ViewId(42), Mat4::IDENTITY);
+    let other = ViewData::new(ViewId(42), Mat4::IDENTITY, perspective(), SIZE, SIZE)?;
     let other_frame = SceneFrame {
         view: &other,
         meshes: &meshes,
