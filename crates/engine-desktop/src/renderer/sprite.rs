@@ -325,7 +325,10 @@ impl<B: RenderBackend> SpriteRenderer<B> {
 
     /// Validate, sync caches and convert `frame` for a target of `size`.
     pub(crate) fn build(&mut self, frame: &RenderFrame, size: (u32, u32)) -> Result<BuiltFrame> {
-        self.build_with_materials(frame, size, &Default::default(), None)
+        let built = self.build_with_materials(frame, size, &Default::default(), None)?;
+        self.materials
+            .retire_lit(&mut self.device, &BTreeMap::new())?;
+        Ok(built)
     }
     fn build_with_materials(
         &mut self,
@@ -1231,6 +1234,51 @@ mod tests {
         assert_eq!(
             frames(&log)[0].desc.viewport,
             Some(PixelRect::new(32, 16, 64, 64))
+        );
+    }
+
+    #[test]
+    fn plain_frame_retires_previous_sprite_lit_shader_after_in_flight_frames() {
+        use engine_project::{
+            lighting2d::LightingSnapshot2D,
+            rendering3d::{LightingFrame2D, LitMaterialSnapshot2D, MeshMaterial, SceneRenderFrame},
+        };
+        let (mut renderer, log) = renderer(RenderLimits::default());
+        let atlas = white();
+        let mesh = quad([1.0; 4], 0.0, &atlas);
+        let plain = frame(vec![draw("lit", 0, &mesh, Some(&atlas))]);
+        let mut scene: SceneRenderFrame = plain.clone().into();
+        scene.lighting2d = Some(LightingFrame2D {
+            lighting: LightingSnapshot2D {
+                ambient: [1.0; 3],
+                exposure: 1.0,
+                lights: vec![],
+            },
+            materials: BTreeMap::from([(
+                "lit".into(),
+                LitMaterialSnapshot2D {
+                    material: MeshMaterial::default(),
+                    shader: None,
+                    metallic_roughness_texture: None,
+                    normal_texture: None,
+                },
+            )]),
+        });
+        renderer
+            .render_scene(&scene, RenderTarget::Surface)
+            .unwrap();
+        assert_eq!(renderer.device().counts().shaders, 2);
+        renderer.render(&plain, RenderTarget::Surface).unwrap();
+        assert_eq!(renderer.device().counts().shaders, 1);
+        assert_eq!(renderer.device().counts().pending_destruction, 1);
+        for _ in 0..3 {
+            renderer.render(&plain, RenderTarget::Surface).unwrap();
+        }
+        assert_eq!(renderer.device().counts().pending_destruction, 0);
+        assert_eq!(
+            log.live_resources().len(),
+            3,
+            "base shader, mesh and texture remain"
         );
     }
 }
