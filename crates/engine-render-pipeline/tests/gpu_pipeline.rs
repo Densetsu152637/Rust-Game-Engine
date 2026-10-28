@@ -600,6 +600,118 @@ fn opaque_effects_feed_transparency_host_upscale_and_scene_readback() -> Result<
         pixel(&read(&gpu, &target), 32, 32),
         pixel(&read(&gpu, &target), 2, 2)
     );
+    let mut native = view.clone();
+    native.features.set("test.opaque_scale", false);
+    let native_frame = SceneFrame {
+        view: &native,
+        meshes: &meshes,
+        lights: &LightList::default(),
+        world: None,
+    };
+    pipeline.render_view(&native_frame, &target.target, &mut NoHost)?;
+    assert!((pipeline.read_scene_hdr(ViewId::MAIN)?.pixel(2, 2)[0] - 1.5).abs() < 0.02);
+    native.features.set("test.opaque_bias", false);
+    let disabled_frame = SceneFrame {
+        view: &native,
+        meshes: &meshes,
+        lights: &LightList::default(),
+        world: None,
+    };
+    pipeline.render_view(&disabled_frame, &target.target, &mut NoHost)?;
+    assert!((pipeline.read_scene_hdr(ViewId::MAIN)?.pixel(2, 2)[0] - 1.0).abs() < 0.02);
+    let other = view(ViewId(42), Mat4::IDENTITY);
+    let other_frame = SceneFrame {
+        view: &other,
+        meshes: &meshes,
+        lights: &LightList::default(),
+        world: None,
+    };
+    pipeline.render_view(&other_frame, &target.target, &mut NoHost)?;
+    assert!((pipeline.read_scene_hdr(ViewId(42))?.pixel(2, 2)[0] - 0.75).abs() < 0.02);
+    pipeline.forget_view(ViewId::MAIN);
+    assert!(pipeline.read_scene_hdr(ViewId::MAIN).is_err());
+    let new_report = pipeline.render_view(&frame, &target.target, &mut NoHost)?;
+    assert_ne!(new_report.evaluation_id, report.evaluation_id);
+    let mut resized = view.clone();
+    resized.render_size = [31, 27];
+    pipeline.render_view(
+        &SceneFrame {
+            view: &resized,
+            meshes: &meshes,
+            lights: &LightList::default(),
+            world: None,
+        },
+        &target.target,
+        &mut NoHost,
+    )?;
+    let image = pipeline.read_scene_hdr(ViewId::MAIN)?;
+    assert_eq!(image.size, [31, 27]);
+    assert!((image.pixel(2, 2)[0] - 0.75).abs() < 0.02);
+    gpu.check_errors()?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn opaque_effects_feed_odd_size_native_upscale() -> Result<()> {
+    let gpu = gpu()?;
+    let mut pipeline = ScenePipeline::new(gpu.clone())?;
+    pipeline.register(opaque_affine("test.odd_scale", None, 0.25, 0.0))?;
+    pipeline.register(opaque_affine(
+        "test.odd_bias",
+        Some("test.odd_scale"),
+        1.0,
+        0.5,
+    ))?;
+    let output_size = [67, 63];
+    let render_size = [31, 27];
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("odd output"),
+        size: wgpu::Extent3d {
+            width: output_size[0],
+            height: output_size[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target = OutputTarget {
+        view: texture.create_view(&Default::default()),
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        size: output_size,
+        viewport: Viewport::full(output_size),
+    };
+    let view = ViewData::new(
+        ViewId(99),
+        Mat4::IDENTITY,
+        perspective(),
+        render_size,
+        output_size,
+    )?;
+    let mesh = quad(&gpu, [-5.0, -5.0], [5.0, 5.0]);
+    let meshes = [unlit("odd", mesh, -2.0, [1.0; 4])];
+    pipeline.render_view(
+        &SceneFrame {
+            view: &view,
+            meshes: &meshes,
+            lights: &LightList::default(),
+            world: None,
+        },
+        &target,
+        &mut NoHost,
+    )?;
+    assert!((pipeline.read_scene_hdr(view.id)?.pixel(2, 2)[0] - 0.75).abs() < 0.02);
+    let pixels =
+        engine_render_wgpu::read_texture_rgba(&gpu, &texture, output_size[0], output_size[1])?;
+    let offset = ((2 * output_size[0] + 2) * 4) as usize;
+    assert!(
+        pixels[offset] > 180 && pixels[offset] < 255,
+        "native upscale must read opaque effects"
+    );
     gpu.check_errors()?;
     Ok(())
 }
