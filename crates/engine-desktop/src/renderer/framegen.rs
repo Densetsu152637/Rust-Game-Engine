@@ -67,7 +67,7 @@ pub(crate) struct FrameGeneration {
     failure: Option<(FailureKey, String)>,
     /// When the last generated sequence finished; a long gap resets history.
     last_frame: Option<Instant>,
-    last_completed_source: Option<u64>,
+    last_completed_source: Option<(u64, bool)>,
     /// Indices of presentable generated textures of the last real frame, in
     /// presentation order.
     pub(super) presentable: Vec<usize>,
@@ -148,10 +148,13 @@ impl FrameGeneration {
         sizes: ([u32; 2], [u32; 2]),
         failure: Option<&str>,
     ) -> bool {
-        if self.last_completed_source == Some(source_id) {
-            return failure.is_none();
+        if let Some((completed, success)) = self.last_completed_source {
+            if completed == source_id {
+                return success;
+            }
         }
-        self.last_completed_source = Some(source_id);
+        let success = failure.is_none();
+        self.last_completed_source = Some((source_id, success));
         self.history.commit(camera);
         self.finish_frame(now);
         if let Some(reason) = failure {
@@ -583,6 +586,7 @@ mod tests {
             sizes,
             Some("evaluation failed")
         ));
+        assert!(!state.complete_evaluation(1, &camera, now, fg(2), sizes, None));
         assert!(!state.complete_evaluation(
             1,
             &camera,
