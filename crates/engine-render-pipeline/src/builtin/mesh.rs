@@ -118,12 +118,22 @@ pub(crate) struct MeshViewState {
     params: Option<(wgpu::Buffer, u64, wgpu::BindGroup)>,
     texture_groups: HashMap<TextureKey, wgpu::BindGroup>,
     previous_models: HashMap<String, Mat4>,
+    pending_models: Option<HashMap<String, Mat4>>,
     opaque: Vec<Batch>,
     transparent: Vec<Batch>,
     pub draws: usize,
     indirect: bool,
 }
 impl MeshViewState {
+    pub(crate) fn commit_scene(&mut self) {
+        if let Some(models) = self.pending_models.take() {
+            self.previous_models = models;
+        }
+    }
+
+    pub(crate) fn abort_scene(&mut self) {
+        self.pending_models = None;
+    }
     pub(crate) fn invalidate_material_bindings(&mut self) {
         self.texture_groups.clear();
         self.params = None;
@@ -622,7 +632,7 @@ impl MeshRenderer {
                 }
             }
         }
-        state.previous_models = current_models;
+        state.pending_models = Some(current_models);
         state.draws = meshes.len();
 
         // Uploads.

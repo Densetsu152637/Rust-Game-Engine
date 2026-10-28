@@ -113,6 +113,8 @@ pub struct SceneTextures<'a> {
     pub hdr: &'a Target,
     pub depth: &'a Target,
     pub motion: Option<&'a Target>,
+    /// Effective reset, including an earlier aborted attempt or resize.
+    pub reset_history: bool,
     pub render_size: [u32; 2],
     pub output_size: [u32; 2],
 }
@@ -129,6 +131,8 @@ pub struct SceneFrame<'a> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ViewReport {
     pub view: Option<ViewId>,
+    /// Unique per-view scene evaluation attempt; absent for overlay-only work.
+    pub evaluation_id: Option<u64>,
     /// Mesh draws submitted to the built-in path.
     pub draws: usize,
     /// Instanced draw calls and instances (built-ins and features that
@@ -150,8 +154,16 @@ struct ViewState {
     /// Light list, shadows, atlas, clusters and the `engine::view` groups.
     lighting: ViewLighting,
     report: ViewReport,
+    committed_report: Option<ViewReport>,
     final_hdr: Option<wgpu::Texture>,
+    scene_index: usize,
+    scene_readable: bool,
+    committed_evaluation_id: Option<u64>,
+    reset_next: bool,
     composite: Option<CompositeTargets>,
+    /// Tonemapped, UI-free source retained across late presentation attempts.
+    display_base: Option<Target>,
+    committed_view: Option<ViewData>,
 }
 
 impl ViewState {
@@ -170,8 +182,15 @@ impl ViewState {
             uniform,
             lighting,
             report: ViewReport::default(),
+            committed_report: None,
             final_hdr: None,
+            scene_index: 0,
+            scene_readable: false,
+            committed_evaluation_id: None,
+            reset_next: false,
             composite: None,
+            display_base: None,
+            committed_view: None,
         }
     }
 }
@@ -317,6 +336,7 @@ pub struct ScenePipeline {
     composite_copy: OutputPass,
     upscale: UpscalePass,
     views: HashMap<ViewId, ViewState>,
+    next_evaluation_id: u64,
     indirect: HashMap<ViewId, std::sync::Arc<crate::indirect::IndirectScene>>,
     shadow_alignment: u32,
     lighting: LightingRenderer,
@@ -360,6 +380,7 @@ impl ScenePipeline {
             composite_copy,
             upscale,
             views: HashMap::new(),
+            next_evaluation_id: 0,
             indirect: HashMap::new(),
             shadow_alignment,
             lighting,
@@ -458,8 +479,29 @@ impl ScenePipeline {
 
     /// Drop a view's targets and history (for example a closed viewport).
     pub fn forget_view(&mut self, view: ViewId) {
+        for entry in &mut self.registry.features {
+            if let FeatureBody::Owned(feature) = &mut entry.body {
+                feature.forget_view(view);
+            }
+        }
         self.indirect.remove(&view);
         self.views.remove(&view);
+    }
+
+    /// Last submitted scene evaluation for this view; unaffected by late UI failure.
+    pub fn committed_scene_id(&self, view: ViewId) -> Option<u64> {
+        self.views
+            .get(&view)
+            .and_then(|state| state.committed_evaluation_id)
+    }
+
+    /// Whether the last submitted scene discarded prior temporal inputs.
+    pub fn committed_scene_reset(&self, view: ViewId) -> Option<bool> {
+        self.views
+            .get(&view)?
+            .committed_view
+            .as_ref()
+            .map(|view| view.reset_history)
     }
 
     /// Configure native material IBL for one view. None restores legacy ambient.
@@ -554,12 +596,37 @@ impl ScenePipeline {
             .entry(view.id)
             .or_insert_with(|| ViewState::new(gpu, layouts, lighting));
 
+        self.next_evaluation_id = self
+            .next_evaluation_id
+            .checked_add(1)
+            .context("scene evaluation ID exhausted")?;
+        let evaluation_id = self.next_evaluation_id;
+        let resized = state.targets.as_ref().is_some_and(|targets| {
+            targets.render_size != view.render_size || targets.output_size != view.output_size
+        });
+        state.scene_readable = false;
+        state.final_hdr = None;
+        // The attempt will rewrite view uniforms and lighting bindings. A retained
+        // display source from an earlier scene can no longer be composited safely.
+        state.committed_view = None;
+        state.committed_report = None;
+        if resized {
+            state.scene_index = 0;
+        }
+        let mut effective_view = view.clone();
+        effective_view.reset_history |= state.reset_next || resized;
+        let view = &effective_view;
+        if view.reset_history {
+            reset_feature_histories(&mut self.registry, view.id);
+        }
+
         let indirect = self.indirect.get(&view.id);
         if view.reset_history && indirect.is_some() {
             state.mesh.invalidate_material_bindings();
         }
         // CPU validation and uploads first: nothing is encoded on failure.
-        self.mesh
+        if let Err(error) = self
+            .mesh
             .prepare(
                 &self.gpu,
                 layouts,
@@ -572,7 +639,11 @@ impl ScenePipeline {
                     ambient: view.ambient,
                 },
             )
-            .context("preparing scene meshes")?;
+            .context("preparing scene meshes")
+        {
+            abort_scene(state, &mut self.registry, view.id);
+            return Err(error);
+        }
         let mut targets = match state.targets.take() {
             Some(t) if t.render_size == view.render_size && t.output_size == view.output_size => t,
             _ => FrameTargets::new(&device, view.render_size, view.output_size),
@@ -610,16 +681,44 @@ impl ScenePipeline {
                     atlas: self.atlas,
                 },
             )
-            .context("preparing lights")?;
+            .context("preparing lights");
+        let light_count = match light_count {
+            Ok(count) => count,
+            Err(error) => {
+                abort_scene(state, &mut self.registry, view.id);
+                state.targets = Some(targets);
+                return Err(error);
+            }
+        };
         let current = view.clip_from_world();
         let previous = state.history.previous(current, view.reset_history);
         let uniform = view.uniform(previous, state.history.frame_index(), light_count);
         queue.write_buffer(&state.uniform, 0, bytemuck::bytes_of(&uniform));
 
         let mut stats = DrawStats::default();
-        let composite = view.presentation == Presentation::Enabled
-            && composite_needed(&self.registry, &resolved, view);
+        let composite = view.presentation == Presentation::Enabled;
         let mut io = presentation_io(&device, target, state.composite.take(), composite);
+        if composite {
+            let base = state.display_base.get_or_insert_with(|| {
+                Target::new(
+                    &device,
+                    "engine UI-free display",
+                    target.size,
+                    target.format,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                )
+            });
+            if base.size() != target.size || base.texture.format() != target.format {
+                *base = Target::new(
+                    &device,
+                    "engine UI-free display",
+                    target.size,
+                    target.format,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                );
+            }
+            io.output.as_mut().expect("output").view = base.view.clone();
+        }
         io.targets = Some(targets);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("engine scene stages"),
@@ -635,6 +734,7 @@ impl ScenePipeline {
                 Stage::Prepass,
                 Stage::Opaque,
                 Stage::Sky,
+                Stage::OpaqueEffects,
                 Stage::Transparent,
             ] {
                 run_stage(
@@ -669,9 +769,10 @@ impl ScenePipeline {
             state.lighting.after_submit();
             let targets = io.targets.as_ref().expect("targets set above");
             let textures = SceneTextures {
-                hdr: &targets.hdr,
+                hdr: targets.scene_color(io.scene_index),
                 depth: &targets.depth,
                 motion: targets.motion.as_ref(),
+                reset_history: view.reset_history,
                 render_size: view.render_size,
                 output_size: view.output_size,
             };
@@ -681,16 +782,19 @@ impl ScenePipeline {
         let decision = match result {
             Ok(decision) => decision,
             Err(error) => {
+                abort_scene(state, &mut self.registry, view.id);
                 state.targets = io.targets.take();
                 state.composite = io.composite.take();
                 return Err(error);
             }
         };
         if let Some(HostUpscale::Abort) = decision {
+            abort_scene(state, &mut self.registry, view.id);
             state.targets = io.targets.take();
             state.composite = io.composite.take();
             let report = ViewReport {
                 view: Some(view.id),
+                evaluation_id: Some(evaluation_id),
                 aborted: true,
                 features: resolved,
                 lighting: state.lighting.report.clone(),
@@ -699,7 +803,14 @@ impl ScenePipeline {
             state.report = report.clone();
             return Ok(report);
         }
-        io.current_hdr = Some(io.targets.as_ref().expect("targets").hdr.view.clone());
+        io.current_hdr = Some(
+            io.targets
+                .as_ref()
+                .expect("targets")
+                .scene_color(io.scene_index)
+                .view
+                .clone(),
+        );
         if let Some(HostUpscale::Upscaled(upscaled)) = decision {
             io.current_hdr = Some(upscaled);
             io.source = HdrSource::Host;
@@ -713,49 +824,11 @@ impl ScenePipeline {
         }
         let result = (|| -> Result<()> {
             let stages: &[Stage] = if io.source == HdrSource::Host {
-                &[
-                    Stage::PostProcess,
-                    Stage::Tonemap,
-                    Stage::Overlay,
-                    Stage::Composite,
-                ]
+                &[Stage::PostProcess, Stage::Tonemap]
             } else {
-                &[
-                    Stage::Upscale,
-                    Stage::PostProcess,
-                    Stage::Tonemap,
-                    Stage::Overlay,
-                    Stage::Composite,
-                ]
+                &[Stage::Upscale, Stage::PostProcess, Stage::Tonemap]
             };
             for &stage in stages {
-                if matches!(stage, Stage::Overlay | Stage::Composite) {
-                    if view.presentation == Presentation::SceneOnly {
-                        for feature in resolved
-                            .states
-                            .iter_mut()
-                            .filter(|f| f.stage == stage && f.enabled)
-                        {
-                            feature.activity = Activity::Idle;
-                        }
-                        continue;
-                    }
-                    run_presentation(
-                        stage,
-                        &self.gpu,
-                        layouts,
-                        &mut self.registry,
-                        state.lighting.bind_group(),
-                        view,
-                        frame.world,
-                        &mut encoder,
-                        &mut io,
-                        &mut resolved,
-                        &mut stats,
-                        host,
-                    )?;
-                    continue;
-                }
                 run_stage(
                     StageRun {
                         gpu: &self.gpu,
@@ -778,21 +851,111 @@ impl ScenePipeline {
                     &mut stats,
                 )?;
             }
-            finish_presentation(&mut self.composite_copy, &self.gpu, &mut encoder, &io)?;
             Ok(())
         })();
+        if let Err(error) = result {
+            abort_scene(state, &mut self.registry, view.id);
+            state.targets = io.targets.take();
+            state.composite = io.composite.take();
+            return Err(error);
+        }
         queue.submit([encoder.finish()]);
+        state.history.commit(current);
+        state.mesh.commit_scene();
+        state.committed_evaluation_id = Some(evaluation_id);
+        state.committed_view = Some(view.clone());
+        state.scene_readable = true;
+        state.reset_next = false;
+        state.report = ViewReport {
+            view: Some(view.id),
+            evaluation_id: Some(evaluation_id),
+            draws: state.mesh.draws,
+            draw_calls: stats.draw_calls,
+            instances: stats.instances,
+            features: resolved.clone(),
+            lighting: state.lighting.report.clone(),
+            aborted: false,
+        };
+        let mut scene_report = state.report.clone();
+        for feature in &mut scene_report.features.states {
+            if !matches!(feature.stage, Stage::Overlay | Stage::Composite)
+                && feature.activity == Activity::Pending
+            {
+                feature.activity = Activity::Ran;
+            }
+        }
+        state.committed_report = Some(scene_report);
+        for feature in &resolved.states {
+            if feature.runs()
+                && !matches!(feature.stage, Stage::Overlay | Stage::Composite)
+                && let FeatureBody::Owned(owned) = &mut self.registry.features[feature.index].body
+            {
+                owned.finish_scene(view.id, evaluation_id);
+            }
+        }
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("engine late presentation"),
+        });
+        let presentation_result = (|| -> Result<()> {
+            if view.presentation == Presentation::Enabled {
+                let base = state
+                    .display_base
+                    .as_ref()
+                    .context("no retained display source")?;
+                let composite = io.composite.as_ref().context("no presentation targets")?;
+                self.composite_copy.encode(
+                    &device,
+                    &queue,
+                    &mut encoder,
+                    &base.view,
+                    &composite.colors[0].view,
+                    target.format,
+                    Viewport::full(target.size),
+                )?;
+                io.output.as_mut().context("no output")?.view = composite.colors[0].view.clone();
+                io.composite_index = 0;
+                for stage in [Stage::Overlay, Stage::Composite] {
+                    run_presentation(
+                        stage,
+                        &self.gpu,
+                        layouts,
+                        &mut self.registry,
+                        state.lighting.bind_group(),
+                        view,
+                        frame.world,
+                        &mut encoder,
+                        &mut io,
+                        &mut resolved,
+                        &mut stats,
+                        host,
+                    )?;
+                }
+                finish_presentation(&mut self.composite_copy, &self.gpu, &mut encoder, &io)?;
+            } else {
+                for feature in resolved
+                    .states
+                    .iter_mut()
+                    .filter(|f| matches!(f.stage, Stage::Overlay | Stage::Composite) && f.enabled)
+                {
+                    feature.activity = Activity::Idle;
+                }
+            }
+            Ok(())
+        })();
+        if presentation_result.is_ok() {
+            queue.submit([encoder.finish()]);
+        }
         let targets = io.targets.take().expect("targets set above");
         state.final_hdr = match io.source {
-            HdrSource::Scene => Some(targets.hdr.texture.clone()),
+            HdrSource::Scene => Some(targets.scene_color(io.scene_index).texture.clone()),
             HdrSource::Upscaled => targets.upscaled.as_ref().map(|t| t.texture.clone()),
             HdrSource::Post(i) => targets.post[i].as_ref().map(|t| t.texture.clone()),
             HdrSource::Host => None,
         };
         state.targets = Some(targets);
+        state.scene_index = io.scene_index;
         state.composite = io.composite.take();
-        result?;
-        state.history.commit(current);
+        presentation_result?;
         for feature in &mut resolved.states {
             if feature.activity == Activity::Pending {
                 feature.activity = Activity::Ran;
@@ -800,6 +963,7 @@ impl ScenePipeline {
         }
         let report = ViewReport {
             view: Some(view.id),
+            evaluation_id: Some(evaluation_id),
             draws: state.mesh.draws,
             draw_calls: stats.draw_calls,
             instances: stats.instances,
@@ -807,6 +971,114 @@ impl ScenePipeline {
             lighting: state.lighting.report.clone(),
             aborted: false,
         };
+        state.report = report.clone();
+        Ok(report)
+    }
+
+    /// Retry only the late presentation of the last committed scene.
+    /// Scene features, camera/model history, and host upscale are untouched.
+    pub fn retry_view_presentation(
+        &mut self,
+        view_id: ViewId,
+        target: &OutputTarget,
+        world: Option<&World>,
+        host: &mut dyn HostStages,
+    ) -> Result<ViewReport> {
+        let state = self
+            .views
+            .get_mut(&view_id)
+            .context("no committed scene for view")?;
+        let view = state
+            .committed_view
+            .as_ref()
+            .context("no committed scene for view")?;
+        ensure!(
+            view.presentation == Presentation::Enabled,
+            "scene has no late presentation"
+        );
+        let base = state
+            .display_base
+            .as_ref()
+            .context("no retained display source")?;
+        ensure!(
+            base.size() == target.size && base.texture.format() == target.format,
+            "retry target size/format differs from committed scene"
+        );
+        let mut resolved = self.registry.resolve(&view.features);
+        for feature in resolved
+            .states
+            .iter_mut()
+            .filter(|f| !matches!(f.stage, Stage::Overlay | Stage::Composite) && f.enabled)
+        {
+            feature.activity = Activity::Idle;
+        }
+        let mut io = presentation_io(&self.gpu.device, target, state.composite.take(), true);
+        let mut stats = DrawStats::default();
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("engine retry presentation"),
+            });
+        let result = (|| -> Result<()> {
+            let composite = io.composite.as_ref().context("no presentation targets")?;
+            self.composite_copy.encode(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut encoder,
+                &base.view,
+                &composite.colors[0].view,
+                target.format,
+                Viewport::full(target.size),
+            )?;
+            for stage in [Stage::Overlay, Stage::Composite] {
+                run_presentation(
+                    stage,
+                    &self.gpu,
+                    &self.layouts,
+                    &mut self.registry,
+                    state.lighting.bind_group(),
+                    view,
+                    world,
+                    &mut encoder,
+                    &mut io,
+                    &mut resolved,
+                    &mut stats,
+                    host,
+                )?;
+            }
+            finish_presentation(&mut self.composite_copy, &self.gpu, &mut encoder, &io)
+        })();
+        if result.is_ok() {
+            self.gpu.queue.submit([encoder.finish()]);
+        }
+        state.composite = io.composite.take();
+        result?;
+        for feature in &mut resolved.states {
+            if feature.activity == Activity::Pending {
+                feature.activity = Activity::Ran;
+            }
+        }
+        let mut report = state
+            .committed_report
+            .clone()
+            .context("no committed scene report")?;
+        for retry_state in resolved
+            .states
+            .into_iter()
+            .filter(|feature| matches!(feature.stage, Stage::Overlay | Stage::Composite))
+        {
+            if let Some(state) = report
+                .features
+                .states
+                .iter_mut()
+                .find(|state| state.name == retry_state.name)
+            {
+                *state = retry_state;
+            }
+        }
+        report.draw_calls += stats.draw_calls;
+        report.instances += stats.instances;
         state.report = report.clone();
         Ok(report)
     }
@@ -1104,10 +1376,20 @@ impl ScenePipeline {
 
     /// Read back render-size scene HDR colour (before upscale/post).
     pub fn read_scene_hdr(&self, view: ViewId) -> Result<HdrImage> {
-        let targets = self
-            .targets(view)
+        let state = self
+            .views
+            .get(&view)
             .context("no frame was rendered for this view")?;
-        crate::readback::read_rgba16f(&self.gpu, &targets.hdr.texture)
+        ensure!(
+            state.scene_readable,
+            "the last scene attempt did not commit readable colour"
+        );
+        let targets = state
+            .targets
+            .as_ref()
+            .context("no frame was rendered for this view")?;
+        let index = state.scene_index;
+        crate::readback::read_rgba16f(&self.gpu, &targets.scene_color(index).texture)
     }
 }
 
@@ -1273,6 +1555,20 @@ fn run_stage(
     Ok(())
 }
 
+fn reset_feature_histories(registry: &mut FeatureRegistry, view: ViewId) {
+    for entry in &mut registry.features {
+        if let FeatureBody::Owned(feature) = &mut entry.body {
+            feature.reset_history(view);
+        }
+    }
+}
+
+fn abort_scene(state: &mut ViewState, registry: &mut FeatureRegistry, view: ViewId) {
+    state.mesh.abort_scene();
+    state.reset_next = true;
+    reset_feature_histories(registry, view);
+}
+
 /// Built-in work; `Ok(false)` when there was nothing to do.
 fn run_builtin(
     run: &mut StageRun<'_, '_>,
@@ -1292,13 +1588,14 @@ fn run_builtin(
     let state = &*run.state;
     let view_group = state.lighting.bind_group();
     let device = &run.gpu.device;
+    let scene_index = io.scene_index;
     let targets = io.targets.as_mut().context("no scene targets")?;
     let scene_pass = |encoder: &'_ mut wgpu::CommandEncoder, targets: &FrameTargets, label| {
         encoder
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.hdr.view,
+                    view: &targets.scene_color(scene_index).view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1410,11 +1707,11 @@ fn run_builtin(
         }
         names::UPSCALE => {
             if targets.render_size == targets.output_size {
-                io.current_hdr = Some(targets.hdr.view.clone());
+                io.current_hdr = Some(targets.scene_color(io.scene_index).view.clone());
                 io.source = HdrSource::Scene;
                 return Ok(false);
             }
-            let source = targets.hdr.view.clone();
+            let source = targets.scene_color(io.scene_index).view.clone();
             let destination = targets.ensure_upscaled(device).view.clone();
             run.upscale.encode(
                 device,

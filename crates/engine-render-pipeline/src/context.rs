@@ -65,6 +65,8 @@ pub struct PresentationInput<'a> {
 pub(crate) struct FrameIo {
     /// Taken from the view state for the frame and returned after it.
     pub targets: Option<FrameTargets>,
+    /// Index of the render-size scene colour: 0 = hdr, 1 = scene_scratch.
+    pub scene_index: usize,
     /// HDR colour the next post/tonemap feature reads.
     pub current_hdr: Option<wgpu::TextureView>,
     /// Which texture `current_hdr` is.
@@ -196,6 +198,41 @@ impl<'a> FeatureContext<'a> {
         Ok(&self.targets()?.hdr)
     }
 
+    /// The current render-size HDR scene colour after any opaque effects.
+    pub fn scene_color(&self) -> Result<&Target> {
+        let targets = self.targets()?;
+        Ok(targets.scene_color(self.io.scene_index))
+    }
+
+    /// Full-image source and distinct destination for an opaque HDR effect.
+    /// Call once per effect; the returned destination becomes scene colour.
+    pub fn opaque_effect_io(&mut self) -> Result<(wgpu::TextureView, wgpu::TextureView)> {
+        ensure!(
+            self.stage == Stage::OpaqueEffects,
+            "{}: opaque_effect_io is for opaque_effects",
+            self.name
+        );
+        let device = self.gpu.device.clone();
+        let targets = self.io.targets.as_mut().context("no scene targets")?;
+        let source = if self.io.scene_index == 0 {
+            targets.hdr.view.clone()
+        } else {
+            targets
+                .scene_scratch
+                .as_ref()
+                .expect("scene source exists")
+                .view
+                .clone()
+        };
+        let destination = if self.io.scene_index == 0 {
+            targets.ensure_scene_scratch(&device).view.clone()
+        } else {
+            targets.hdr.view.clone()
+        };
+        self.io.scene_index = 1 - self.io.scene_index;
+        Ok((source, destination))
+    }
+
     /// Scene depth (`Depth32Float`, render size). Complete after the
     /// Transparent stage; sampled reads are valid outside passes writing it.
     pub fn depth(&self) -> Result<&Target> {
@@ -232,7 +269,7 @@ impl<'a> FeatureContext<'a> {
     pub fn scene_pass(&mut self, label: &str) -> Result<wgpu::RenderPass<'static>> {
         self.scene_stage()?;
         let targets = self.targets()?;
-        let (hdr, depth) = (targets.hdr.view.clone(), targets.depth.view.clone());
+        let (hdr, depth) = (self.scene_color()?.view.clone(), targets.depth.view.clone());
         let pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -301,7 +338,16 @@ impl<'a> FeatureContext<'a> {
             .targets
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("{}: no 3D view this frame", self.name))?;
-        let source = targets.hdr.view.clone();
+        let source = if self.io.scene_index == 0 {
+            targets.hdr.view.clone()
+        } else {
+            targets
+                .scene_scratch
+                .as_ref()
+                .expect("scene source exists")
+                .view
+                .clone()
+        };
         let destination = targets.ensure_upscaled(&device).view.clone();
         self.io.current_hdr = Some(destination.clone());
         self.io.source = HdrSource::Upscaled;

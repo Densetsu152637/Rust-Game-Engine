@@ -267,6 +267,7 @@ mod tests {
         };
         let project = Project {
             component_catalog: ComponentCatalog::new(Vec::new()).unwrap(),
+            script_functions: Vec::new(),
             schema: 1,
             name: "context".into(),
             root: PathBuf::new(),

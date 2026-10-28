@@ -74,15 +74,7 @@ impl ResourceCache {
         Some(self.textures.get(&address(texture))?.handle)
     }
 
-    /// Upload what `draws` need and retire what they no longer reference.
-    pub fn sync<B: RenderBackend>(
-        &mut self,
-        device: &mut RenderDevice<B>,
-        draws: &[Draw],
-    ) -> Result<UploadCounts> {
-        self.sync_with_textures(device, draws, &[])
-    }
-
+    /// Upload draw and data textures, then retire resources no longer referenced.
     pub fn sync_with_textures<B: RenderBackend>(
         &mut self,
         device: &mut RenderDevice<B>,
@@ -216,7 +208,7 @@ mod tests {
         let mut cache = ResourceCache::default();
         let (mesh, atlas) = (triangle(), texture());
         let draws = [draw("a", &mesh, Some(&atlas))];
-        let first = cache.sync(&mut device, &draws).unwrap();
+        let first = cache.sync_with_textures(&mut device, &draws, &[]).unwrap();
         assert_eq!(
             first,
             UploadCounts {
@@ -224,14 +216,14 @@ mod tests {
                 textures: 1
             }
         );
-        let again = cache.sync(&mut device, &draws).unwrap();
+        let again = cache.sync_with_textures(&mut device, &draws, &[]).unwrap();
         assert_eq!(again, UploadCounts::default());
         assert!(cache.has_current_mesh(&mesh));
         // An equal but distinct snapshot is a different asset.
         let edited = Arc::new((*mesh).clone());
         assert!(!cache.has_current_mesh(&edited));
         let republished = cache
-            .sync(&mut device, &[draw("a", &edited, Some(&atlas))])
+            .sync_with_textures(&mut device, &[draw("a", &edited, Some(&atlas))], &[])
             .unwrap();
         assert_eq!(
             republished,
@@ -253,11 +245,11 @@ mod tests {
         let mut cache = ResourceCache::default();
         let (mesh, atlas) = (triangle(), texture());
         cache
-            .sync(&mut device, &[draw("a", &mesh, Some(&atlas))])
+            .sync_with_textures(&mut device, &[draw("a", &mesh, Some(&atlas))], &[])
             .unwrap();
         assert_eq!(device.counts().meshes, 1);
         assert_eq!(device.counts().textures, 1);
-        cache.sync(&mut device, &[]).unwrap();
+        cache.sync_with_textures(&mut device, &[], &[]).unwrap();
         assert_eq!((cache.mesh_count(), cache.texture_count()), (0, 0));
         let counts = device.counts();
         assert_eq!((counts.meshes, counts.textures), (0, 0));
@@ -269,7 +261,9 @@ mod tests {
         let mut device = device();
         let mut cache = ResourceCache::default();
         let empty = Arc::new(Mesh::default());
-        let counts = cache.sync(&mut device, &[draw("e", &empty, None)]).unwrap();
+        let counts = cache
+            .sync_with_textures(&mut device, &[draw("e", &empty, None)], &[])
+            .unwrap();
         assert_eq!(counts.meshes, 1);
         assert_eq!(cache.mesh_count(), 1);
         assert_eq!(cache.mesh_handle(&empty), None);
@@ -282,7 +276,7 @@ mod tests {
         let mut cache = ResourceCache::default();
         let (mesh, atlas) = (triangle(), texture());
         cache
-            .sync(&mut device, &[draw("a", &mesh, Some(&atlas))])
+            .sync_with_textures(&mut device, &[draw("a", &mesh, Some(&atlas))], &[])
             .unwrap();
         cache.clear(&mut device).unwrap();
         assert_eq!(cache.mesh_count() + cache.texture_count(), 0);

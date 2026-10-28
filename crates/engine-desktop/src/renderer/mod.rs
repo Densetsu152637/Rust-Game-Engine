@@ -1006,7 +1006,9 @@ impl GpuRenderer {
             (now.duration_since(last).as_secs_f32() * 1000.0).clamp(0.1, 1000.0)
         });
         let mut failure = None;
+        let mut effective_reset = reset;
         let mut hook = |gpu: &GpuContext, scene: &SceneTextures<'_>| -> Result<HostUpscale> {
+            effective_reset = scene.reset_history;
             let motion = scene
                 .motion
                 .context("the SR view requests motion vectors")?;
@@ -1035,7 +1037,7 @@ impl GpuRenderer {
             if let Err(error) = session.evaluate(engine_dlss::Frame {
                 jitter,
                 motion_scale: [1.0, 1.0],
-                reset,
+                reset: scene.reset_history,
                 delta_ms,
             }) {
                 failure = Some(format!("DLSS evaluation failed: {error}"));
@@ -1043,10 +1045,35 @@ impl GpuRenderer {
             }
             Ok(HostUpscale::Upscaled(session.output().clone()))
         };
+        let prior_scene_id = self
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.committed_scene_id(ViewId::MAIN));
         let drawn = self.draw_3d(frame, view, output_target, world, sprites, Some(&mut hook));
         let (report, stats) = match drawn {
             Ok(drawn) => drawn,
             Err(error) => {
+                let committed = self
+                    .scene
+                    .as_ref()
+                    .and_then(|scene| scene.committed_scene_id(ViewId::MAIN))
+                    != prior_scene_id;
+                if committed && failure.is_none() {
+                    stage.last_evaluation = Some(now);
+                    self.upscaler.evaluated += 1;
+                    if effective_reset {
+                        self.upscaler.resets += 1;
+                    }
+                    self.upscaler.history.commit(camera);
+                    self.upscaler.active(
+                        request,
+                        render,
+                        output,
+                        session.status().device_name.clone(),
+                    );
+                } else {
+                    self.upscaler.history.request_reset();
+                }
                 stage.session = Some((key, session));
                 return Err(error);
             }
@@ -1066,7 +1093,7 @@ impl GpuRenderer {
         stage.last_evaluation = Some(now);
         stage.session = Some((key, session));
         self.upscaler.evaluated += 1;
-        if reset {
+        if effective_reset {
             self.upscaler.resets += 1;
         }
         self.upscaler.history.commit(camera);
@@ -1300,7 +1327,7 @@ impl GpuRenderer {
         };
         let fg_inputs = (fg.depth.1.clone(), fg.motion.0.clone());
         let (stats, jitter) = if sr_ready {
-            let Some(scene) = self.super_resolve(
+            let resolved = self.super_resolve(
                 stage,
                 frame,
                 upscale,
@@ -1308,8 +1335,14 @@ impl GpuRenderer {
                 world,
                 false,
                 Some(fg_inputs),
-            )?
-            else {
+            );
+            let Some(scene) = (match resolved {
+                Ok(scene) => scene,
+                Err(error) => {
+                    self.framegen.request_reset();
+                    return Err(error);
+                }
+            }) else {
                 // SR failed this frame: generate from a native-resolution scene
                 // next frame (SR's failure is sticky); present natively now.
                 self.framegen.fallback(
@@ -1343,9 +1376,22 @@ impl GpuRenderer {
                 gpu.queue.submit([encoder.finish()]);
                 Ok(HostUpscale::NotHandled)
             };
-            let (_, stats) = self.draw_3d(frame, view, &hudless, world, false, Some(&mut hook))?;
+            let (_, stats) =
+                match self.draw_3d(frame, view, &hudless, world, false, Some(&mut hook)) {
+                    Ok(rendered) => rendered,
+                    Err(error) => {
+                        self.framegen.request_reset();
+                        return Err(error);
+                    }
+                };
             (stats, [0.0; 2])
         };
+
+        let reset = self
+            .pipeline()?
+            .committed_scene_reset(ViewId::MAIN)
+            .unwrap_or(reset);
+        let previous_vp = if reset { current_vp } else { previous_vp };
 
         // NGX sees only the UI-free scene. Every presentable output receives
         // the same late painter/filter pass after all evaluations finish.
@@ -1459,6 +1505,10 @@ impl GpuRenderer {
             .as_ref()
             .context("frame generation requires a Camera3D")?;
         let success = self.framegen.complete_evaluation(
+            self.scene
+                .as_ref()
+                .and_then(|scene| scene.committed_scene_id(ViewId::MAIN))
+                .context("no committed source for frame generation")?,
             camera,
             std::time::Instant::now(),
             request,

@@ -470,16 +470,6 @@ pub(crate) fn prepare_component_write(
     })
 }
 
-pub(crate) fn write_component(
-    world: &mut World,
-    entity: Entity,
-    name: &str,
-    value: CustomValue,
-) -> Result<()> {
-    let prepared = prepare_component_write(world, entity, name, value)?;
-    prepared.apply(world);
-    Ok(())
-}
 pub(crate) fn snapshot(world: &World, entity: Entity) -> Result<BTreeMap<String, CustomValue>> {
     let mut values = world
         .get::<DynamicComponents>(entity)

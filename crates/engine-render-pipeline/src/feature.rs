@@ -2,6 +2,7 @@
 //! constraints, deterministic order and per-view enable state.
 
 use crate::context::{FeatureContext, FeatureSetup};
+use crate::view::ViewId;
 use anyhow::{Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,6 +28,8 @@ pub enum Stage {
     Opaque,
     /// Sky and background, after opaque geometry (depth-tested at far depth).
     Sky,
+    /// Full-image HDR effects after opaque/sky and before blended geometry.
+    OpaqueEffects,
     /// Blended geometry, sorted by the feature.
     Transparent,
     /// Render size to output size: temporal resolve/upscalers. The last
@@ -44,12 +47,13 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [Stage; 11] = [
+    pub const ALL: [Stage; 12] = [
         Self::Prepare,
         Self::Shadow,
         Self::Prepass,
         Self::Opaque,
         Self::Sky,
+        Self::OpaqueEffects,
         Self::Transparent,
         Self::Upscale,
         Self::PostProcess,
@@ -66,6 +70,7 @@ impl Stage {
             Self::Prepass => "prepass",
             Self::Opaque => "opaque",
             Self::Sky => "sky",
+            Self::OpaqueEffects => "opaque_effects",
             Self::Transparent => "transparent",
             Self::Upscale => "upscale",
             Self::PostProcess => "post_process",
@@ -213,6 +218,15 @@ pub trait PipelineFeature: Send + Sync + 'static {
     fn prepare(&mut self, _setup: &FeatureSetup<'_>) -> Result<()> {
         Ok(())
     }
+
+    /// Invalidate CPU temporal state after an uncommitted attempt or camera cut.
+    fn reset_history(&mut self, _view: ViewId) {}
+
+    /// Finish one submitted scene evaluation. Called once per participating feature.
+    fn finish_scene(&mut self, _view: ViewId, _evaluation_id: u64) {}
+
+    /// Release all state associated with a closed view.
+    fn forget_view(&mut self, _view: ViewId) {}
 
     /// Pin presentation-only data while a host composites a generated/real
     /// output sequence. End runs even when a begin/encode operation fails.

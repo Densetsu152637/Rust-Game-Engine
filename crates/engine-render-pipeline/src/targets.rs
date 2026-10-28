@@ -115,6 +115,8 @@ pub struct FrameTargets {
     pub render_size: [u32; 2],
     pub output_size: [u32; 2],
     pub hdr: Target,
+    /// Allocated only when an opaque effect needs a distinct full-image destination.
+    pub(crate) scene_scratch: Option<Target>,
     pub depth: Target,
     pub normals: Option<Target>,
     pub motion: Option<Target>,
@@ -127,6 +129,13 @@ pub struct FrameTargets {
 }
 
 impl FrameTargets {
+    pub(crate) fn scene_color(&self, index: usize) -> &Target {
+        if index == 0 {
+            &self.hdr
+        } else {
+            self.scene_scratch.as_ref().expect("scene source exists")
+        }
+    }
     pub(crate) fn new(device: &wgpu::Device, render_size: [u32; 2], output_size: [u32; 2]) -> Self {
         Self {
             render_size,
@@ -138,6 +147,7 @@ impl FrameTargets {
                 HDR_FORMAT,
                 COLOR_USAGE,
             ),
+            scene_scratch: None,
             depth: Target::new(
                 device,
                 "engine scene depth",
@@ -211,6 +221,19 @@ impl FrameTargets {
         let size = self.output_size;
         self.upscaled.get_or_insert_with(|| {
             Target::new(device, "engine upscaled HDR", size, HDR_FORMAT, COLOR_USAGE)
+        })
+    }
+
+    pub(crate) fn ensure_scene_scratch(&mut self, device: &wgpu::Device) -> &Target {
+        let size = self.render_size;
+        self.scene_scratch.get_or_insert_with(|| {
+            Target::new(
+                device,
+                "engine opaque effects HDR",
+                size,
+                HDR_FORMAT,
+                COLOR_USAGE,
+            )
         })
     }
 
