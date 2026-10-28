@@ -2,6 +2,10 @@
 
 use rhai::Engine;
 use rhai::module_resolvers::DummyModuleResolver;
+use rhai::packages::{
+    ArithmeticPackage, BasicArrayPackage, BasicIteratorPackage, BasicMapPackage,
+    BasicStringPackage, LogicPackage, Package,
+};
 
 mod instance;
 mod program;
@@ -11,6 +15,12 @@ pub use program::{MAX_SOURCE_BYTES, TextProgram};
 /// Creates a parser and evaluator with no ambient module resolution or output.
 pub(crate) fn engine() -> Engine {
     let mut engine = Engine::new_raw();
+    ArithmeticPackage::new().register_into_engine(&mut engine);
+    BasicIteratorPackage::new().register_into_engine(&mut engine);
+    BasicArrayPackage::new().register_into_engine(&mut engine);
+    BasicMapPackage::new().register_into_engine(&mut engine);
+    BasicStringPackage::new().register_into_engine(&mut engine);
+    LogicPackage::new().register_into_engine(&mut engine);
     engine.set_module_resolver(DummyModuleResolver::new());
     engine.disable_symbol("import");
     engine.disable_symbol("eval");

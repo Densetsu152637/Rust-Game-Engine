@@ -46,6 +46,10 @@ enum Request {
         function: String,
         reply: SyncSender<Result<(), Trap>>,
     },
+    Log {
+        message: String,
+        reply: SyncSender<Result<(), Trap>>,
+    },
 }
 
 /// One persistent text script. A scoped worker exists only during `handle`;
@@ -89,6 +93,7 @@ impl TextInstance {
         sender: SyncSender<Request>,
         ops: Arc<AtomicU64>,
         host_cost: Arc<AtomicU64>,
+        timer_count: Arc<AtomicU64>,
         fuel: u64,
         max_state_bytes: usize,
         max_call_depth: u16,
@@ -156,6 +161,7 @@ impl TextInstance {
                         true
                     }
                 });
+                timer_count.store(self.timers.len() as u64, Ordering::SeqCst);
                 for function in due {
                     call(self, &function, vec![])?;
                 }
@@ -178,7 +184,7 @@ impl TextInstance {
                     call(
                         self,
                         "on_event",
-                        vec![Dynamic::from(*name), payload, source],
+                        vec![Dynamic::from((*name).to_owned()), payload, source],
                     )?;
                 }
             }
@@ -217,16 +223,17 @@ impl ScriptInstance for TextInstance {
         let (sender, receiver) = mpsc::sync_channel(0);
         let ops = Arc::new(AtomicU64::new(0));
         let host_cost = Arc::new(AtomicU64::new(0));
+        let timer_count = Arc::new(AtomicU64::new(self.timers.len() as u64));
         let trapped = Arc::new(Mutex::new(None));
         let fuel = budget.fuel;
         let max_state_bytes = budget.max_state_bytes;
         let max_call_depth = budget.max_call_depth;
         let mut pending = Vec::new();
-        let existing_timers = self.timers.len();
         let program = Arc::clone(&self.program);
         let result = thread::scope(|scope| {
             let ops_worker = Arc::clone(&ops);
             let cost_worker = Arc::clone(&host_cost);
+            let count_worker = Arc::clone(&timer_count);
             let trap_worker = Arc::clone(&trapped);
             let instance = &mut *self;
             let worker = thread::Builder::new()
@@ -237,6 +244,7 @@ impl ScriptInstance for TextInstance {
                         sender,
                         ops_worker,
                         cost_worker,
+                        count_worker,
                         fuel,
                         max_state_bytes,
                         max_call_depth,
@@ -282,12 +290,22 @@ impl ScriptInstance for TextInstance {
                                     "timer function is missing or takes arguments",
                                 ));
                             }
-                            if pending.len() + existing_timers >= usize::from(budget.max_pending) {
+                            if pending.len() + timer_count.load(Ordering::SeqCst) as usize
+                                >= usize::from(budget.max_pending)
+                            {
                                 return Err(Trap::Memory);
                             }
                             pending.push((delay, function));
                             Ok(())
                         });
+                        let _ = reply.send(answer);
+                    }
+                    Request::Log { message, reply } => {
+                        let answer = charge.and_then(|_| budget.charge(1));
+                        if answer.is_ok() {
+                            host.log(&message);
+                        }
+                        host_cost.fetch_add(1, Ordering::SeqCst);
                         let _ = reply.send(answer);
                     }
                 }
@@ -384,6 +402,36 @@ fn install_host_functions(
     sender: &SyncSender<Request>,
     trap: &Arc<Mutex<Option<Trap>>>,
 ) {
+    for name in ["print", "debug"] {
+        let sender = sender.clone();
+        let slot = Arc::clone(trap);
+        engine.register_fn(
+            name,
+            move |message: ImmutableString| -> Result<(), Box<EvalAltResult>> {
+                if message.len() > crate::MAX_STRING_BYTES {
+                    return Err(capture_trap(&slot, Trap::Memory));
+                }
+                let (reply, answer) = mpsc::sync_channel(0);
+                sender
+                    .send(Request::Log {
+                        message: message.to_string(),
+                        reply,
+                    })
+                    .map_err(|_| {
+                        capture_trap(&slot, Trap::host(codes::HOST_FAILED, "log bridge closed"))
+                    })?;
+                answer
+                    .recv()
+                    .map_err(|_| {
+                        capture_trap(
+                            &slot,
+                            Trap::host(codes::HOST_FAILED, "log bridge reply closed"),
+                        )
+                    })?
+                    .map_err(|e| capture_trap(&slot, e))
+            },
+        );
+    }
     let mut roots: BTreeMap<String, Namespace> = BTreeMap::new();
     roots.insert("engine".to_owned(), Namespace::default());
     for binding in bindings {
@@ -711,6 +759,7 @@ mod tests {
     struct Recorder {
         calls: usize,
         fail: bool,
+        logs: Vec<String>,
     }
 
     impl ScriptHost for Recorder {
@@ -732,7 +781,9 @@ mod tests {
             Ok(())
         }
 
-        fn log(&mut self, _message: &str) {}
+        fn log(&mut self, message: &str) {
+            self.logs.push(message.to_owned());
+        }
 
         fn subject(&self) -> crate::EntityRef {
             crate::EntityRef(1)
@@ -764,6 +815,7 @@ mod tests {
         let mut host = Recorder {
             calls: 0,
             fail: true,
+            logs: vec![],
         };
         let fault = instance
             .handle(&Trigger::Start, &mut host, &mut Budget::default())
@@ -784,17 +836,63 @@ mod tests {
         let mut host = Recorder {
             calls: 0,
             fail: false,
+            logs: vec![],
         };
         instance
             .handle(&Trigger::Start, &mut host, &mut Budget::default())
             .unwrap();
         let mut budget = Budget::with_fuel(300);
-        assert_eq!(
-            instance
-                .handle(&Trigger::Update { dt: 0.1 }, &mut host, &mut budget)
-                .unwrap_err()
-                .code(),
-            codes::FUEL_EXHAUSTED
+        let fault = instance
+            .handle(&Trigger::Update { dt: 0.1 }, &mut host, &mut budget)
+            .unwrap_err();
+        assert_eq!(fault.code(), codes::FUEL_EXHAUSTED, "{fault}");
+    }
+
+    #[test]
+    fn due_timers_release_capacity_before_callbacks_schedule_more() {
+        let source = br#"
+            fn on_start() {
+                for n in 0..63 { engine::after(0.0, "noop"); }
+                engine::after(0.0, "replace");
+            }
+            fn noop() {}
+            fn replace() { engine::after(1.0, "noop"); }
+        "#;
+        let program = Arc::new(TextProgram::compile(source).unwrap());
+        let mut instance = TextInstance::new(program, vec![]).unwrap();
+        let mut host = Recorder {
+            calls: 0,
+            fail: false,
+            logs: vec![],
+        };
+        instance
+            .handle(&Trigger::Start, &mut host, &mut Budget::default())
+            .unwrap();
+        assert_eq!(instance.debug().pending, 64);
+        instance
+            .handle(
+                &Trigger::Update { dt: 0.1 },
+                &mut host,
+                &mut Budget::default(),
+            )
+            .unwrap();
+        assert_eq!(instance.debug().pending, 1);
+    }
+
+    #[test]
+    fn print_and_debug_go_to_the_host_log() {
+        let program = Arc::new(
+            TextProgram::compile(br#"fn on_start() { print("hello"); debug("world"); }"#).unwrap(),
         );
+        let mut instance = TextInstance::new(program, vec![]).unwrap();
+        let mut host = Recorder {
+            calls: 0,
+            fail: false,
+            logs: vec![],
+        };
+        instance
+            .handle(&Trigger::Start, &mut host, &mut Budget::default())
+            .unwrap();
+        assert_eq!(host.logs, ["hello", "world"]);
     }
 }

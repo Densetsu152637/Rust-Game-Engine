@@ -141,4 +141,17 @@ mod tests {
             codes::TEXT_PARSE
         );
     }
+
+    #[test]
+    fn computed_events_do_not_subscribe() {
+        let program = TextProgram::compile(
+            br#"
+                let name = "player.hit";
+                const events = [name];
+                fn on_event(name, payload, source) {}
+            "#,
+        )
+        .unwrap();
+        assert!(program.subscriptions().is_empty());
+    }
 }

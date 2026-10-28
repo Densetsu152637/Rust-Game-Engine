@@ -209,3 +209,6 @@ Events staged by a trapped run do not consume the shared 256-event quota.
 | `script.value.nonfinite` | A non-finite number reached an operation or boundary. |
 | `script.event.limit` | More than 16 emits in one tick. |
 | `script.variable.invalid` | Instantiation: an override names no variable or has the wrong type. |
+| `script.text.parse` | A `.rhai` text script exceeds the source bound, is not UTF-8, or fails Rhai parsing. See [text scripting](text-scripting.md). |
+| `script.text.handler` | A text handler has the wrong parameters, or an event or timer names a missing handler. |
+| `script.text.events` | A text script's literal event subscription list is invalid. |
