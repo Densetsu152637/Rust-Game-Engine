@@ -72,10 +72,9 @@ import `engine::material` and use `engine_sprite_view_direction()` for the
 orthographic direction. The old `engine_camera_position()` helper remains for
 source compatibility but a fixed position cannot represent that direction across
 a wide sprite. Existing mesh `LIT_WGSL`, legacy `MaterialTarget::Sprite`, native
-IBL materials and their shader/layout contracts are unchanged. The later authored
-material-graph adapter must select/adapt the SpriteLit reference template; this
-milestone does not silently rewrite the graph compiler or current desktop material
-selection.
+IBL materials and their shader/layout contracts are unchanged. The authored
+material-graph compiler selects the SpriteLit template only for opted-in draws;
+legacy material selection remains as authored.
 
 Base colour samples decode from sRGB through the existing backend. Normal and MR
 textures use existing **linear** data views. MR green scales roughness and blue

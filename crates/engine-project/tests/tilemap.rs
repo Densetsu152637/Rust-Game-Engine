@@ -182,7 +182,8 @@ fn authored_light_rejects_nonfinite_and_missing_point_transform() {
         "engine.Lighting2D":{"version":1,"data":{"enabled":true}}
     });
     fs::write(&scene_path, scene.to_string()).unwrap();
-    let runtime = fixture.runtime();
+    let mut runtime = fixture.runtime();
+    tick(&mut runtime);
     let error = runtime.extract_scene_frame().unwrap_err();
     assert!(format!("{error}").contains("render.light2d.transform"));
 }
