@@ -948,6 +948,26 @@ struct RtFeature {
 }
 
 impl PipelineFeature for RtFeature {
+    fn reset_history(&mut self, view: ViewId) {
+        if let Some(targets) = lock(&self.shared).views.get_mut(&view) {
+            for denoiser in targets.denoisers.iter_mut().flatten() {
+                denoiser.reset();
+            }
+        }
+    }
+
+    fn finish_scene(&mut self, view: ViewId, _evaluation_id: u64) {
+        if let Some(targets) = lock(&self.shared).views.get_mut(&view) {
+            for denoiser in targets.denoisers.iter_mut().flatten() {
+                denoiser.finish_scene();
+            }
+        }
+    }
+
+    fn forget_view(&mut self, view: ViewId) {
+        lock(&self.shared).views.remove(&view);
+    }
+
     fn descriptor(&self) -> FeatureDescriptor {
         FeatureDescriptor::new(self.effect.feature(), Stage::Prepass)
             .after(names::NORMALS)

@@ -67,6 +67,7 @@ pub(crate) struct FrameGeneration {
     failure: Option<(FailureKey, String)>,
     /// When the last generated sequence finished; a long gap resets history.
     last_frame: Option<Instant>,
+    last_completed_source: Option<u64>,
     /// Indices of presentable generated textures of the last real frame, in
     /// presentation order.
     pub(super) presentable: Vec<usize>,
@@ -88,6 +89,7 @@ impl FrameGeneration {
             resets: 0,
             failure: None,
             last_frame: None,
+            last_completed_source: None,
             presentable: Vec::new(),
             real_ready: false,
             viewport: [0; 4],
@@ -107,6 +109,7 @@ impl FrameGeneration {
             self.stage = None;
         }
         self.history.clear();
+        self.last_completed_source = None;
         self.failure = None;
         self.discard_frames();
     }
@@ -138,12 +141,17 @@ impl FrameGeneration {
     /// The caller retains its valid real colour and must not rerender the scene.
     pub fn complete_evaluation(
         &mut self,
+        source_id: u64,
         camera: &CameraInstance3D,
         now: Instant,
         request: FrameGenerationSettings,
         sizes: ([u32; 2], [u32; 2]),
         failure: Option<&str>,
     ) -> bool {
+        if self.last_completed_source == Some(source_id) {
+            return failure.is_none();
+        }
+        self.last_completed_source = Some(source_id);
         self.history.commit(camera);
         self.finish_frame(now);
         if let Some(reason) = failure {
@@ -567,7 +575,22 @@ mod tests {
         let mut state = FrameGeneration::new();
         let now = Instant::now();
         let sizes = ([64, 64], [64, 64]);
-        assert!(!state.complete_evaluation(&camera, now, fg(2), sizes, Some("evaluation failed")));
+        assert!(!state.complete_evaluation(
+            1,
+            &camera,
+            now,
+            fg(2),
+            sizes,
+            Some("evaluation failed")
+        ));
+        assert!(!state.complete_evaluation(
+            1,
+            &camera,
+            now,
+            fg(2),
+            sizes,
+            Some("evaluation failed")
+        ));
         assert_eq!(
             state.history.frame(),
             1,

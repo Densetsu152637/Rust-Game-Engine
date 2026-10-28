@@ -1043,10 +1043,35 @@ impl GpuRenderer {
             }
             Ok(HostUpscale::Upscaled(session.output().clone()))
         };
+        let prior_scene_id = self
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.committed_scene_id(ViewId::MAIN));
         let drawn = self.draw_3d(frame, view, output_target, world, sprites, Some(&mut hook));
         let (report, stats) = match drawn {
             Ok(drawn) => drawn,
             Err(error) => {
+                let committed = self
+                    .scene
+                    .as_ref()
+                    .and_then(|scene| scene.committed_scene_id(ViewId::MAIN))
+                    != prior_scene_id;
+                if committed && failure.is_none() {
+                    stage.last_evaluation = Some(now);
+                    self.upscaler.evaluated += 1;
+                    if reset {
+                        self.upscaler.resets += 1;
+                    }
+                    self.upscaler.history.commit(camera);
+                    self.upscaler.active(
+                        request,
+                        render,
+                        output,
+                        session.status().device_name.clone(),
+                    );
+                } else {
+                    self.upscaler.history.request_reset();
+                }
                 stage.session = Some((key, session));
                 return Err(error);
             }
@@ -1459,6 +1484,10 @@ impl GpuRenderer {
             .as_ref()
             .context("frame generation requires a Camera3D")?;
         let success = self.framegen.complete_evaluation(
+            self.scene
+                .as_ref()
+                .and_then(|scene| scene.committed_scene_id(ViewId::MAIN))
+                .context("no committed source for frame generation")?,
             camera,
             std::time::Instant::now(),
             request,

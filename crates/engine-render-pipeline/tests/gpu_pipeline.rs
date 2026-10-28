@@ -5,7 +5,10 @@ use anyhow::Result;
 use engine_render_pipeline::*;
 use engine_render_wgpu::WgpuOptions;
 use glam::{Mat4, Vec3};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 const SIZE: [u32; 2] = [64, 64];
 
@@ -273,6 +276,7 @@ fn an_external_opaque_feature_instance_draws_quads_depth_tested_against_scene_ge
 /// A post-process feature reading HDR and writing `scale * x + bias`.
 struct Affine {
     name: &'static str,
+    stage: Stage,
     after: Option<&'static str>,
     scale: f32,
     bias: f32,
@@ -292,7 +296,7 @@ const AFFINE_WGSL: &str = "
 
 impl PipelineFeature for Affine {
     fn descriptor(&self) -> FeatureDescriptor {
-        let mut d = FeatureDescriptor::new(self.name, Stage::PostProcess);
+        let mut d = FeatureDescriptor::new(self.name, self.stage);
         if let Some(after) = self.after {
             d = d.after(after);
         }
@@ -373,7 +377,11 @@ impl PipelineFeature for Affine {
 
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
         let (pipeline, group, uniform) = self.pipeline.as_ref().unwrap();
-        let (source, destination) = ctx.post_process_io()?;
+        let (source, destination) = if self.stage == Stage::OpaqueEffects {
+            ctx.opaque_effect_io()?
+        } else {
+            ctx.post_process_io()?
+        };
         let bind = ctx
             .gpu
             .device
@@ -414,11 +422,186 @@ impl PipelineFeature for Affine {
 fn affine(name: &'static str, after: Option<&'static str>, scale: f32, bias: f32) -> Affine {
     Affine {
         name,
+        stage: Stage::PostProcess,
         after,
         scale,
         bias,
         pipeline: None,
     }
+}
+
+fn opaque_affine(name: &'static str, after: Option<&'static str>, scale: f32, bias: f32) -> Affine {
+    Affine {
+        name,
+        stage: Stage::OpaqueEffects,
+        after,
+        scale,
+        bias,
+        pipeline: None,
+    }
+}
+
+struct ReturnSceneSource;
+impl HostStages for ReturnSceneSource {
+    fn upscale(&mut self, _gpu: &GpuContext, scene: &SceneTextures<'_>) -> Result<HostUpscale> {
+        Ok(HostUpscale::Upscaled(scene.hdr.view.clone()))
+    }
+}
+
+struct AbortSource;
+impl HostStages for AbortSource {
+    fn upscale(&mut self, _gpu: &GpuContext, _scene: &SceneTextures<'_>) -> Result<HostUpscale> {
+        Ok(HostUpscale::Abort)
+    }
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn aborted_scene_resets_camera_and_model_history_together() -> Result<()> {
+    let gpu = gpu()?;
+    let mut pipeline = ScenePipeline::new(gpu.clone())?;
+    let target = offscreen(&gpu);
+    let mesh = quad(&gpu, [-0.3, -0.3], [0.3, 0.3]);
+    let mut render =
+        |camera_x: f32, model_x: f32, host: &mut dyn HostStages| -> Result<ViewReport> {
+            let mut view = view(
+                ViewId::MAIN,
+                Mat4::from_translation(Vec3::new(camera_x, 0.0, 0.0)),
+            );
+            view.host_needs.motion = true;
+            let mut object = unlit("moving", mesh.clone(), -2.0, [1.0; 4]);
+            object.world_from_local = Mat4::from_translation(Vec3::new(model_x, 0.0, -2.0));
+            pipeline.render_view(
+                &SceneFrame {
+                    view: &view,
+                    meshes: &[object],
+                    lights: &LightList::default(),
+                    world: None,
+                },
+                &target.target,
+                host,
+            )
+        };
+    let a = render(0.0, 0.0, &mut NoHost)?;
+    let b = render(0.1, 0.2, &mut AbortSource)?;
+    assert!(b.aborted);
+    assert_ne!(a.evaluation_id, b.evaluation_id);
+    let c = render(0.2, 0.4, &mut NoHost)?;
+    assert_ne!(b.evaluation_id, c.evaluation_id);
+    let motion = pipeline
+        .read_motion(ViewId::MAIN)?
+        .pixel(column(0.2, -2.0), 32);
+    assert!(
+        motion[0].abs() < 0.05 && motion[1].abs() < 0.05,
+        "camera and model must both reset: {motion:?}"
+    );
+    gpu.check_errors()?;
+    Ok(())
+}
+
+struct CountScene(Arc<AtomicUsize>);
+impl PipelineFeature for CountScene {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new("test.count_scene", Stage::OpaqueEffects)
+    }
+    fn encode(&mut self, _ctx: &mut FeatureContext<'_>) -> Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+struct FailOnceOverlay(Arc<AtomicUsize>);
+impl PipelineFeature for FailOnceOverlay {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new("test.fail_once_ui", Stage::Overlay)
+    }
+    fn encode(&mut self, _ctx: &mut FeatureContext<'_>) -> Result<()> {
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            anyhow::bail!("intentional late UI failure")
+        }
+        Ok(())
+    }
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn late_ui_retry_uses_one_committed_scene() -> Result<()> {
+    let gpu = gpu()?;
+    let mut pipeline = ScenePipeline::new(gpu.clone())?;
+    let scenes = Arc::new(AtomicUsize::new(0));
+    let overlays = Arc::new(AtomicUsize::new(0));
+    pipeline.register(CountScene(scenes.clone()))?;
+    pipeline.register(FailOnceOverlay(overlays.clone()))?;
+    let target = offscreen(&gpu);
+    let view = view(ViewId::MAIN, Mat4::IDENTITY);
+    let first = pipeline.render_view(
+        &SceneFrame {
+            view: &view,
+            meshes: &[],
+            lights: &LightList::default(),
+            world: None,
+        },
+        &target.target,
+        &mut NoHost,
+    );
+    assert!(first.unwrap_err().to_string().contains("test.fail_once_ui"));
+    let id = pipeline
+        .committed_scene_id(ViewId::MAIN)
+        .expect("tonemap committed before UI");
+    let retry =
+        pipeline.retry_view_presentation(ViewId::MAIN, &target.target, None, &mut NoHost)?;
+    assert_eq!(retry.evaluation_id, Some(id));
+    assert_eq!(pipeline.committed_scene_id(ViewId::MAIN), Some(id));
+    assert_eq!(scenes.load(Ordering::SeqCst), 1);
+    assert_eq!(overlays.load(Ordering::SeqCst), 2);
+    gpu.check_errors()?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn opaque_effects_feed_transparency_host_upscale_and_scene_readback() -> Result<()> {
+    let gpu = gpu()?;
+    let mut pipeline = ScenePipeline::new(gpu.clone())?;
+    pipeline.register(opaque_affine(
+        "test.opaque_bias",
+        Some("test.opaque_scale"),
+        1.0,
+        0.5,
+    ))?;
+    pipeline.register(opaque_affine("test.opaque_scale", None, 0.25, 0.0))?;
+    let target = offscreen(&gpu);
+    let full = quad(&gpu, [-5.0, -5.0], [5.0, 5.0]);
+    let front = quad(&gpu, [-0.35, -0.35], [0.35, 0.35]);
+    let opaque = unlit("back", full, -2.0, [1.0; 4]);
+    let mut transparent = unlit("front", front, -1.0, [1.0, 0.0, 0.0, 0.5]);
+    transparent.params.transparent = true;
+    let meshes = [opaque, transparent];
+    let view = view(ViewId::MAIN, Mat4::IDENTITY);
+    let frame = SceneFrame {
+        view: &view,
+        meshes: &meshes,
+        lights: &LightList::default(),
+        world: None,
+    };
+    let report = pipeline.render_view(&frame, &target.target, &mut ReturnSceneSource)?;
+    assert!(report.evaluation_id.is_some());
+    let scene = pipeline.read_scene_hdr(ViewId::MAIN)?;
+    let outside = scene.pixel(2, 2);
+    let inside = scene.pixel(32, 32);
+    assert!(
+        (outside[0] - 0.75).abs() < 0.02,
+        "noncommuting scale then bias: {outside:?}"
+    );
+    assert!(
+        inside[0] > inside[1] && inside[1] < outside[1],
+        "transparent geometry uses effect result: {inside:?}"
+    );
+    assert_ne!(
+        pixel(&read(&gpu, &target), 32, 32),
+        pixel(&read(&gpu, &target), 2, 2)
+    );
+    gpu.check_errors()?;
+    Ok(())
 }
 
 #[test]

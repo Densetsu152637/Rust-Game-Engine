@@ -61,6 +61,7 @@ Per view, in order (render size until Upscale, output size after):
 | `Prepass` | `engine.prepass.normals`, `engine.prepass.motion`; `engine.rt.shadows`, `engine.rt.ao`, `engine.rt.reflections`, `engine.rt.gi` (desktop host, disabled by default) | prepasses run only when a running feature (or the host) needs them; the RT features write the screen-lighting inputs ([rendering-raytracing.md](rendering-raytracing.md#frame-integration)) |
 | `Opaque` | `engine.opaque` | instanced opaque engine meshes |
 | `Sky` | — | background after opaque geometry |
+| `OpaqueEffects` | — | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination |
 | `Transparent` | `engine.transparent` | blended engine meshes, back to front |
 | `Upscale` | `engine.upscale` | bilinear when sizes differ; a host (DLSS) may replace the stage |
 | `PostProcess` | — | HDR ping-pong at output size |
@@ -70,8 +71,13 @@ Per view, in order (render size until Upscale, output size after):
 
 Before `Prepare` the pipeline clears HDR colour to opaque black, depth to 1 and
 requested normal/motion targets to 0. Scene stages are submitted before the
-host's upscale hook; host overlay nodes run between submissions, so queue order
-is stage order.
+host's upscale hook. Upscale, post and Tonemap are submitted as a second scene
+segment. Camera, model and feature histories commit once after this submission;
+Overlay and Composite run in a later segment. A failed host evaluation or scene
+encoding discards pending CPU history and resets the next attempt. A late UI
+failure leaves the scene committed and may retry presentation from its retained
+UI-free display source without evaluating the scene again. Submission does not
+mean GPU completion.
 
 `Upscale` and `Tonemap` are single-winner stages: only the **last enabled**
 feature in order runs and the others report `superseded`. A tonemapper
@@ -142,9 +148,10 @@ preview status. The UI features (`engine-ui-render`) are not a default.
 | `stage`, `view` (`&ViewData`) | current stage and view |
 | `view_bind_group`, `layouts` | `engine::view` group 0 and the shared layouts (in `Shadow` the atlas binding is a 1x1 placeholder) |
 | `world` | the extracted ECS world (read only), when the host supplies it |
-| `hdr()`, `depth()`, `normals()`, `motion()`, `screen_lighting()` | frame textures (see below) |
+| `hdr()`, `scene_color()`, `depth()`, `normals()`, `motion()`, `screen_lighting()` | initial HDR target, authoritative current scene HDR target, and other frame textures (see below) |
 | `shadow_views()`, `shadow_pass(label, index)` | allocated shared-atlas tiles and a depth-only Load pass (Shadow only; see below) |
 | `scene_pass(label)` | render pass over HDR + depth (load/store), scene stages only |
+| `opaque_effect_io()` | distinct render-size HDR source/destination; call once and write the full destination (`OpaqueEffects` only) |
 | `composite_io()` | final sampled source + distinct destination at output target size/format (Composite only) |
 | `post_process_io()` | `(source, destination)`; the destination becomes current (PostProcess) |
 | `upscale_io()` | `(render HDR, output-size destination)` (Upscale) |
@@ -189,6 +196,9 @@ numerical encoding contract.
 `Presentation::SceneOnly` suppresses both Overlay and Composite for UI-free
 scene output. `render_overlay_over(PresentationInput, target, ...)` runs late
 presentation in a separate overlay-only state, without advancing scene history.
+For a regular 3D view, `retry_view_presentation(view_id, target, world, host)`
+reuses the last committed UI-free display source after a late presentation error.
+It requires the same target size and format and preserves the scene evaluation ID.
 It supports source/target aliasing by sampling the source into scratch first.
 `with_presentation_sequence` pins feature data across outputs and releases it on
 success/error. Desktop FG pins before scene/NGX work and uses the same late path
@@ -264,6 +274,7 @@ clip space, depth 0 near .. 1 far, not reversed. Helpers:
 | Texture | Format | Size | Available |
 | --- | --- | --- | --- |
 | HDR scene colour | `Rgba16Float` (linear, values > 1 kept) | render | always; attachment, sampled, storage, copy |
+| Opaque-effect scratch | `Rgba16Float` | render | lazy, one per view when an opaque effect requests it |
 | Depth | `Depth32Float` (0 near .. 1 far) | render | always; sampled after Transparent |
 | Normals | `Rgba16Float` (world unit normal, w coverage) | render | after Prepass when a running feature needs normals |
 | Motion | `Rg16Float` (current→previous, render px, y down) | render | after Prepass when a feature or the host needs motion |
