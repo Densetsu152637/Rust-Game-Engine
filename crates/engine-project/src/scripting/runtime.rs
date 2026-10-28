@@ -258,6 +258,31 @@ fn sync(world: &mut World, state: &mut ScriptState, fuel: &mut u64) -> Result<()
             format!("more than {MAX_INSTANCES} script instances"),
         ));
     }
+    // A component may change after reload_asset checked its overrides. Recheck
+    // every pending candidate against the current world before any Stop handler
+    // runs. An incompatible candidate is cancelled; the old program remains.
+    let mut rejected = Vec::new();
+    for (id, program) in &state.reload {
+        for config in configs
+            .values()
+            .filter(|config| config.graph == id.as_str() && config.enabled)
+        {
+            if let Err(error) = program.instantiate(&config.variables) {
+                rejected.push((id.clone(), error));
+                break;
+            }
+        }
+    }
+    for (id, error) in rejected {
+        state.reload.remove(&id);
+        if let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>() {
+            if log.0.len() < builtins::MAX_RUNTIME_LOG {
+                log.0.push(format!(
+                    "script: pending reload {id} rejected after component change: {error}"
+                ));
+            }
+        }
+    }
     // Validate every new/changed instance before stopping any last-good one.
     let mut replacements = Vec::new();
     for (key, config) in &configs {
@@ -268,7 +293,11 @@ fn sync(world: &mut World, state: &mut ScriptState, fuel: &mut u64) -> Result<()
         {
             continue;
         }
-        replacements.push((key.clone(), build_instance(world, state, config.clone())?));
+        let instance = match state.reload.get(&config.graph) {
+            Some(program) => build_instance_with_program(config.clone(), Some(program))?,
+            None => build_instance(world, state, config.clone())?,
+        };
+        replacements.push((key.clone(), instance));
     }
     let removed: Vec<(String, Entity)> = state
         .instances

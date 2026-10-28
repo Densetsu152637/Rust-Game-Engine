@@ -74,7 +74,9 @@ script backends:
 - **Reload**: `Runtime::reload_script_asset(id)` compiles and checks a candidate
   against every affected instance's variable overrides before replacing anything.
   On success affected instances stop (`on_stop`) and restart fresh at the next tick
-  boundary; on failure the last good program and instance state keep running. File
+  boundary; on failure the last good program and instance state keep running. If
+  component overrides change before that boundary and reject the queued candidate,
+  the reload is cancelled and recorded in the runtime log. File
   watching is out of scope.
 - **MCP**: `script_schema` describes the contract (node types, host functions,
   limits, codes) and `graph_validate` applies the project's declared functions when

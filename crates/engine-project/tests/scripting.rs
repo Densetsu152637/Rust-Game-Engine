@@ -663,6 +663,57 @@ fn reload_rejects_incompatible_variable_overrides_before_stopping_last_good() {
 }
 
 #[test]
+fn pending_reload_is_cancelled_if_component_changes_to_reject_candidate() {
+    let original = graph(
+        vec![
+            node("u", "on_update", json!({})),
+            node("k", "const", json!({"type":"int","value":1})),
+            node("set", "set_var", json!({"variable":"n"})),
+        ],
+        vec![
+            edge("u", "then", "set", "exec"),
+            edge("k", "value", "set", "value"),
+        ],
+        vec![json!({"name":"n","type":"int","default":0})],
+    );
+    let dir = project_with(
+        &[("count", original)],
+        vec![script_entity("hero", json!({"graph":"count"}))],
+        None,
+    );
+    let mut runtime = runtime(&dir, false);
+    runtime.start().unwrap();
+    tick(&mut runtime, 1).unwrap();
+
+    let candidate = graph(vec![node("u", "on_update", json!({}))], vec![], vec![]);
+    fs::write(
+        dir.path().join("count.graph.json"),
+        serde_json::to_vec(&candidate).unwrap(),
+    )
+    .unwrap();
+    runtime.reload_script_asset("count").unwrap();
+    let hero = runtime.entity("hero").unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .get_mut::<engine_project::scripting::ScriptGraph>(hero)
+        .unwrap()
+        .variables
+        .insert("n".into(), json!(5));
+
+    tick(&mut runtime, 1).unwrap();
+    assert_eq!(
+        scripts(&runtime)["instances"][0]["variables"]["n"],
+        "Int(1)"
+    );
+    tick(&mut runtime, 1).unwrap();
+    assert_eq!(
+        scripts(&runtime)["instances"][0]["variables"]["n"],
+        "Int(1)"
+    );
+}
+
+#[test]
 fn telemetry_is_absent_without_scripts() {
     let dir = project_with(&[], vec![], None);
     let mut runtime = runtime(&dir, false);
