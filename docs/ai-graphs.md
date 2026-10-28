@@ -143,13 +143,13 @@ full validation.
 
 | `op` | Fields | Effect |
 | --- | --- | --- |
-| `add_node` | `id`, `node_type`, `params`, `position`, `ports` | Adds a node with the type's declared ports, or an authored port list for an extensible type. |
+| `add_node` | `id`, `node_type`, `params`, `position`, `ports` | Adds a node with the type's declared ports. Extensible types accept either a full port list or extra ports; declared ports stay fixed. |
 | `remove_node` | `id` | Removes the node and every edge attached to it. |
 | `connect` | `from`, `to`, `index` | Adds an edge; `index` is the position among the edges already leaving `from` (child order); omitted means last. |
 | `disconnect` | `from`, `to` | Removes one edge. |
 | `set_param` | `node`, `name`, `value` | Sets one parameter; `null` removes it so the default applies. |
 | `set_position` | `node`, `position` | Moves the node on the canvas (`null` clears). |
-| `set_ports` | `node`, `ports` | Replaces an extensible node's full port list; declared ports must remain unchanged. |
+| `set_ports` | `node`, `ports` | Replaces an extensible node's authored ports. A full list must preserve declared ports; an extra-only list adds them automatically, and `[]` restores only declared ports. Removing a connected port fails. |
 | `add_variable` / `set_variable` | `variable` | Declares / replaces a variable. |
 | `remove_variable` | `name` | Removes a variable (rejected while a parameter references it). |
 | `set_metadata` | `key`, `value` | Sets an entry; `null` removes it. |

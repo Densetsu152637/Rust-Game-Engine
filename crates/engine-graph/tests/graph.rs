@@ -643,19 +643,18 @@ fn edits_author_extensible_ports_and_preserve_declared_ports_atomically() {
     )
     .unwrap();
     assert_eq!(document.node("o").unwrap().ports, next);
+    apply_edit(
+        &mut document,
+        &edit(json!({"op":"set_ports","node":"o","ports":[{"name":"other","direction":"in","type":"string"}]})),
+        &kind,
+    )
+    .unwrap();
+    assert_eq!(document.node("o").unwrap().ports, next);
 
     let attempts = [
         (
             json!({"op":"set_ports","node":"missing","ports":next}),
             codes::EDIT_NODE_MISSING,
-        ),
-        (
-            json!({"op":"set_ports","node":"o","ports":[{"name":"other","direction":"in","type":"string"}]}),
-            codes::NODE_PORTS_MISMATCH,
-        ),
-        (
-            json!({"op":"set_ports","node":"o","ports":[]}),
-            codes::NODE_PORTS_MISMATCH,
         ),
         (
             json!({"op":"set_ports","node":"o","ports":[{"name":"prev","direction":"out","type":"flow"}]}),

@@ -23,7 +23,8 @@ pub const MAX_EDITS: usize = 1024;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GraphEdit {
-    /// Adds a node. Omitted ports are copied from the registry declaration.
+    /// Adds a node. Omitted ports use the registry declaration. Extensible nodes
+    /// accept either the full port list or only ports beyond that declaration.
     AddNode {
         id: NodeId,
         node_type: String,
@@ -60,7 +61,8 @@ pub enum GraphEdit {
         node: NodeId,
         position: Option<[f32; 2]>,
     },
-    /// Replaces the ports of an extensible node, including its declared ports.
+    /// Replaces authored ports of an extensible node. A full list keeps every
+    /// declared port unchanged; an extras-only list adds them automatically.
     SetPorts {
         node: NodeId,
         ports: Vec<Port>,
@@ -333,16 +335,26 @@ fn authored_ports(
 ) -> Result<Vec<Port>, Vec<GraphDiagnostic>> {
     match ports {
         Some(ports) if def.extensible => {
-            for declared in def.declared_ports() {
-                if !ports.contains(&declared) {
-                    return Err(fail(
-                        codes::NODE_PORTS_MISMATCH,
-                        format!("/nodes/{node}/ports/{}", declared.name),
-                        format!("node type {} declares this port as {declared:?}", def.name),
-                    ));
+            let declared = def.declared_ports();
+            if ports
+                .iter()
+                .any(|port| declared.iter().any(|fixed| fixed.name == port.name))
+            {
+                for fixed in &declared {
+                    if !ports.contains(fixed) {
+                        return Err(fail(
+                            codes::NODE_PORTS_MISMATCH,
+                            format!("/nodes/{node}/ports/{}", fixed.name),
+                            format!("node type {} declares this port as {fixed:?}", def.name),
+                        ));
+                    }
                 }
+                Ok(ports.to_vec())
+            } else {
+                let mut all = declared;
+                all.extend_from_slice(ports);
+                Ok(all)
             }
-            Ok(ports.to_vec())
         }
         Some(_) => Err(fail(
             codes::NODE_PORTS_MISMATCH,
