@@ -40,6 +40,13 @@ pub const CAPABILITY_UNKNOWN_COMPONENT: &str = "script.capability.unknown_compon
 /// An instance variable override names no variable or has the wrong type.
 pub const VARIABLE_INVALID: &str = "script.variable.invalid";
 
+/// Text source was malformed, too large, or not UTF-8.
+pub const TEXT_PARSE: &str = "script.text.parse";
+/// A declared text handler has the wrong arity or is absent.
+pub const TEXT_HANDLER: &str = "script.text.handler_missing";
+/// Static text event declarations are malformed.
+pub const TEXT_EVENTS: &str = "script.text.events";
+
 /// `script_graph` kind rules.
 pub mod graph {
     pub const ENTRY_MISSING: &str = "script.graph.entry_missing";
@@ -77,6 +84,9 @@ pub const ALL: &[&str] = &[
     CALL_PORTS,
     CAPABILITY_UNKNOWN_COMPONENT,
     VARIABLE_INVALID,
+    TEXT_PARSE,
+    TEXT_HANDLER,
+    TEXT_EVENTS,
     graph::ENTRY_MISSING,
     graph::UNREACHABLE,
     graph::VALUE_UNAVAILABLE,
