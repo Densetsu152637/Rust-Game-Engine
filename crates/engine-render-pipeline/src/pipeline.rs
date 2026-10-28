@@ -113,6 +113,8 @@ pub struct SceneTextures<'a> {
     pub hdr: &'a Target,
     pub depth: &'a Target,
     pub motion: Option<&'a Target>,
+    /// Effective reset, including an earlier aborted attempt or resize.
+    pub reset_history: bool,
     pub render_size: [u32; 2],
     pub output_size: [u32; 2],
 }
@@ -493,6 +495,15 @@ impl ScenePipeline {
             .and_then(|state| state.committed_evaluation_id)
     }
 
+    /// Whether the last submitted scene discarded prior temporal inputs.
+    pub fn committed_scene_reset(&self, view: ViewId) -> Option<bool> {
+        self.views
+            .get(&view)?
+            .committed_view
+            .as_ref()
+            .map(|view| view.reset_history)
+    }
+
     /// Configure native material IBL for one view. None restores legacy ambient.
     /// Rejected settings leave the prior configuration unchanged. Resources must
     /// belong to this pipeline device; replacement releases stale material groups.
@@ -595,10 +606,12 @@ impl ScenePipeline {
         });
         state.scene_readable = false;
         state.final_hdr = None;
+        // The attempt will rewrite view uniforms and lighting bindings. A retained
+        // display source from an earlier scene can no longer be composited safely.
+        state.committed_view = None;
+        state.committed_report = None;
         if resized {
             state.scene_index = 0;
-            state.committed_view = None;
-            state.committed_report = None;
         }
         let mut effective_view = view.clone();
         effective_view.reset_history |= state.reset_next || resized;
@@ -759,6 +772,7 @@ impl ScenePipeline {
                 hdr: targets.scene_color(io.scene_index),
                 depth: &targets.depth,
                 motion: targets.motion.as_ref(),
+                reset_history: view.reset_history,
                 render_size: view.render_size,
                 output_size: view.output_size,
             };

@@ -553,6 +553,26 @@ fn late_ui_retry_uses_one_committed_scene() -> Result<()> {
     assert_eq!(pipeline.committed_scene_id(ViewId::MAIN), Some(id));
     assert_eq!(scenes.load(Ordering::SeqCst), 1);
     assert_eq!(overlays.load(Ordering::SeqCst), 2);
+    let presented = read(&gpu, &target);
+    let aborted = pipeline.render_view(
+        &SceneFrame {
+            view: &view,
+            meshes: &[],
+            lights: &LightList::default(),
+            world: None,
+        },
+        &target.target,
+        &mut AbortSource,
+    )?;
+    assert!(aborted.aborted);
+    assert!(
+        pipeline
+            .retry_view_presentation(ViewId::MAIN, &target.target, None, &mut NoHost)
+            .is_err(),
+        "a new scene attempt changes view bindings and invalidates the old retry source"
+    );
+    assert_eq!(overlays.load(Ordering::SeqCst), 2);
+    assert_eq!(read(&gpu, &target), presented);
     gpu.check_errors()?;
     Ok(())
 }

@@ -199,6 +199,9 @@ presentation in a separate overlay-only state, without advancing scene history.
 For a regular 3D view, `retry_view_presentation(view_id, target, world, host)`
 reuses the last committed UI-free display source after a late presentation error.
 It requires the same target size and format and preserves the scene evaluation ID.
+A new scene attempt invalidates this retry route before changing the view's
+uniform and light bindings; if that attempt aborts, the older display source
+cannot be presented with the newer bindings.
 It supports source/target aliasing by sampling the source into scratch first.
 `with_presentation_sequence` pins feature data across outputs and releases it on
 success/error. Desktop FG pins before scene/NGX work and uses the same late path
