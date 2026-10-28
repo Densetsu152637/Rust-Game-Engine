@@ -83,7 +83,65 @@ impl Harness {
             )
             .unwrap();
         submit(rt, encoder);
+        denoiser.finish_scene();
     }
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with ray query"]
+fn history_advances_only_after_submitted_scene_completion() {
+    let rt = open();
+    let texels = vec![Texel::surface([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]); (SIZE * SIZE) as usize];
+    let harness = Harness::new(&rt, &texels);
+    let mut denoiser = Denoiser::new(
+        &rt,
+        SIZE,
+        SIZE,
+        DenoiserSignal::Scalar,
+        &DenoiserSettings::default(),
+    )
+    .unwrap();
+    let record = |denoiser: &mut Denoiser| {
+        let mut encoder = rt.device().create_command_encoder(&Default::default());
+        denoiser
+            .record(
+                &mut encoder,
+                &DenoiserInputs {
+                    gbuffer: harness.gbuffer.views(),
+                    signal: &harness.signal_view,
+                    motion: &harness.motion_view,
+                    eye: EYE,
+                    camera_cut: false,
+                },
+            )
+            .unwrap();
+        encoder
+    };
+
+    drop(record(&mut denoiser));
+    assert_eq!(
+        denoiser.frame_count(),
+        0,
+        "encoding alone must not commit history"
+    );
+    denoiser.reset();
+    submit(&rt, record(&mut denoiser));
+    assert_eq!(
+        denoiser.frame_count(),
+        0,
+        "submission alone must not commit CPU history"
+    );
+    denoiser.finish_scene();
+    denoiser.finish_scene();
+    assert_eq!(denoiser.frame_count(), 1, "completion is idempotent");
+
+    submit(&rt, record(&mut denoiser));
+    denoiser.reset();
+    denoiser.finish_scene();
+    assert_eq!(denoiser.frame_count(), 1, "aborted scene does not commit");
+    submit(&rt, record(&mut denoiser));
+    denoiser.finish_scene();
+    assert_eq!(denoiser.frame_count(), 2);
 }
 
 fn output(rt: &RtDevice, denoiser: &Denoiser) -> Vec<f32> {

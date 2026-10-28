@@ -378,6 +378,9 @@ Measured on the RTX 5080 (64 x 64, about 1.1 ms per frame including readback):
 &DenoiserSettings)`, then once per frame `record(&mut encoder, &DenoiserInputs { gbuffer,
 signal, motion, eye, camera_cut })`. `output()` / `output_view()` is the `Rgba16Float`
 result (`STORAGE_BINDING | TEXTURE_BINDING | COPY_SRC`, the same texture every frame);
+after a successful command submission, call `finish_scene()` once to advance CPU
+history. An abandoned encoder or failed scene uses `reset()` instead, so the next
+record starts without stale history. `frame_count()` counts finished scenes;
 `reset()` discards the history and `set_settings` applies new validated settings. The
 denoiser is plain compute (no ray query); one instance serves one signal of one view.
 
