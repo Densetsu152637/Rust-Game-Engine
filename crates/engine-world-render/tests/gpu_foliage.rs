@@ -664,7 +664,9 @@ fn shadow_toggle_preserves_foliage_colour_pose_at_lod_hysteresis_edge() -> Resul
     assert_eq!(status.get().batches[0].level, LodLevel::Mesh(0));
     let coverage = |pixels: &[u8]| {
         pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
             .collect::<Vec<_>>()
     };

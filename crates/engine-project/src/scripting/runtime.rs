@@ -275,12 +275,12 @@ fn sync(world: &mut World, state: &mut ScriptState, fuel: &mut u64) -> Result<()
     }
     for (id, error) in rejected {
         state.reload.remove(&id);
-        if let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>() {
-            if log.0.len() < builtins::MAX_RUNTIME_LOG {
-                log.0.push(format!(
-                    "script: pending reload {id} rejected after component change: {error}"
-                ));
-            }
+        if let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>()
+            && log.0.len() < builtins::MAX_RUNTIME_LOG
+        {
+            log.0.push(format!(
+                "script: pending reload {id} rejected after component change: {error}"
+            ));
         }
     }
     // Validate every new/changed instance before stopping any last-good one.
@@ -396,11 +396,11 @@ fn stop_instance(
         return Ok(());
     }
     if *global_fuel == 0 {
-        if let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>() {
-            if log.0.len() < builtins::MAX_RUNTIME_LOG {
-                log.0
-                    .push("script: on_stop skipped (global fuel exhausted)".into());
-            }
+        if let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>()
+            && log.0.len() < builtins::MAX_RUNTIME_LOG
+        {
+            log.0
+                .push("script: on_stop skipped (global fuel exhausted)".into());
         }
         return Ok(());
     }

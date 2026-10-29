@@ -99,8 +99,10 @@ impl Content {
         crate::ui_tree::SelectingTextBackend::new(self.text.as_deref(), &self.fonts, &self.textures)
     }
     pub(super) fn load(project: &Project) -> Result<Self> {
-        let mut content = Self::default();
-        content.indirect = crate::indirect::load_indirect_assets(project)?;
+        let mut content = Self {
+            indirect: crate::indirect::load_indirect_assets(project)?,
+            ..Self::default()
+        };
         let mut faces = BTreeMap::new();
         let mut config = None;
         for asset in project.assets.values() {

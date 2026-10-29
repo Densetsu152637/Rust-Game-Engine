@@ -171,10 +171,10 @@ impl Project {
         for entity in &scene.entities {
             self.component_catalog.validate_entity(scene, entity)?;
             let c = &entity.components;
-            if let Some(camera) = &c.camera3d {
-                if let Some(indirect) = &camera.lighting.indirect {
-                    self.require_asset(indirect, "indirect")?;
-                }
+            if let Some(camera) = &c.camera3d
+                && let Some(indirect) = &camera.lighting.indirect
+            {
+                self.require_asset(indirect, "indirect")?;
             }
             for lut in c
                 .post_process

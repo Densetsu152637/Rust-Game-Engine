@@ -266,7 +266,9 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
                             )));
                         }
                         let pixels = bytes
-                            .chunks_exact(12)
+                            .as_chunks::<12>()
+                            .0
+                            .iter()
                             .map(|p| {
                                 [
                                     f32::from_le_bytes(p[0..4].try_into().unwrap()),

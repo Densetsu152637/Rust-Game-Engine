@@ -55,7 +55,7 @@ fn script_schema_describes_the_kind_functions_limits_and_codes() {
         .collect();
     assert!(codes.contains(&"script.fuel.exhausted") && codes.contains(&"script.call.unknown"));
     assert_eq!(schema["limits"]["max_call_depth"], 16);
-    assert_eq!(schema["limits"]["spawn"].as_str().is_some(), true);
+    assert!(schema["limits"]["spawn"].as_str().is_some());
 
     let one = data(dir.path(), "script_schema", json!({"node_type":"branch"}));
     assert_eq!(one["kind"]["node_types"].as_array().unwrap().len(), 1);

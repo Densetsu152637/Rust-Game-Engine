@@ -54,10 +54,10 @@ impl Sequences {
             .copied()
             .collect();
         for owner in retire {
-            if let Some(mut old) = self.players.remove(&owner) {
-                if let Some(capture) = old.capture.take() {
-                    capture.restore(world);
-                }
+            if let Some(mut old) = self.players.remove(&owner)
+                && let Some(capture) = old.capture.take()
+            {
+                capture.restore(world);
             }
         }
         for (owner, config) in configs {

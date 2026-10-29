@@ -44,7 +44,7 @@ fn real_opus_routes_to_ordinary_pcm_stream_and_offline_mixer() {
         playback.tick(now).unwrap();
         let mut output = [0f32; FRAME_SAMPLES * 2];
         audio.mix(&mut output).unwrap();
-        mixed.extend(output.chunks_exact(2).map(|stereo| stereo[0]));
+        mixed.extend(output.as_chunks::<2>().0.iter().map(|stereo| stereo[0]));
         if let Some(snapshot) = playback.stream_snapshot(1).unwrap() {
             max_source_frame = max_source_frame.max(snapshot.source_frame);
             assert!(

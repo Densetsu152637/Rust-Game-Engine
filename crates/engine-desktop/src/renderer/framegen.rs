@@ -148,10 +148,10 @@ impl FrameGeneration {
         sizes: ([u32; 2], [u32; 2]),
         failure: Option<&str>,
     ) -> bool {
-        if let Some((completed, success)) = self.last_completed_source {
-            if completed == source_id {
-                return success;
-            }
+        if let Some((completed, success)) = self.last_completed_source
+            && completed == source_id
+        {
+            return success;
         }
         let success = failure.is_none();
         self.last_completed_source = Some((source_id, success));

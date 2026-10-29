@@ -99,10 +99,11 @@ impl AuthoredIndirectCache {
             return Ok(None);
         };
         let key = Arc::as_ptr(source) as usize;
-        if let Some(old) = self.views.get(&view) {
-            if old.source == key && old.origin == frame.applied_origin {
-                return Ok(Some(old.scene.clone()));
-            }
+        if let Some(old) = self.views.get(&view)
+            && old.source == key
+            && old.origin == frame.applied_origin
+        {
+            return Ok(Some(old.scene.clone()));
         }
         // Only unreferenced resources may be removed. A replacement view's old
         // scene remains alive until set_indirect and commit have both succeeded.
@@ -231,6 +232,11 @@ fn probe_local(absolute: [f64; 3], applied_origin: [f64; 3]) -> Result<[f32; 3]>
     );
     Ok(local)
 }
+fn lighting(
+    value: &engine_project::indirect::EnvironmentLightingAsset,
+) -> Result<EnvironmentLighting> {
+    EnvironmentLighting::new(value.environment, quat(value.rotation), value.intensity)
+}
 
 #[cfg(test)]
 mod tests {
@@ -302,9 +308,4 @@ mod tests {
         assert!(Arc::ptr_eq(&cache.views[&ViewId::MAIN].scene, &first));
         Ok(())
     }
-}
-fn lighting(
-    value: &engine_project::indirect::EnvironmentLightingAsset,
-) -> Result<EnvironmentLighting> {
-    EnvironmentLighting::new(value.environment, quat(value.rotation), value.intensity)
 }

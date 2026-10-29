@@ -287,6 +287,7 @@ impl Rig {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn frame(
         &mut self,
         id: ViewId,
@@ -300,6 +301,7 @@ impl Rig {
         self.frame_with_upscale(id, render, output, projection, dof, motion, reset, true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn frame_with_upscale(
         &mut self,
         id: ViewId,
