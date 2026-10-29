@@ -83,6 +83,7 @@ pub struct RenderFrame {
 }
 #[derive(Default)]
 pub(super) struct Content {
+    pub(super) indirect: BTreeMap<String, Arc<crate::indirect::IndirectAsset>>,
     pub(super) textures: BTreeMap<String, Arc<Texture>>,
     pub(super) meshes: BTreeMap<String, Arc<Mesh>>,
     pub(super) fonts: BTreeMap<String, FontAtlas>,
@@ -98,7 +99,10 @@ impl Content {
         crate::ui_tree::SelectingTextBackend::new(self.text.as_deref(), &self.fonts, &self.textures)
     }
     pub(super) fn load(project: &Project) -> Result<Self> {
-        let mut content = Self::default();
+        let mut content = Self {
+            indirect: crate::indirect::load_indirect_assets(project)?,
+            ..Self::default()
+        };
         let mut faces = BTreeMap::new();
         let mut config = None;
         for asset in project.assets.values() {

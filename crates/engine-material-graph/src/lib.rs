@@ -4,6 +4,7 @@ use engine_graph::{
     NodeTypeRegistry, ParamDef, ParamType, PortDef, PortType, Strictness, validate,
 };
 use engine_render_pipeline::shader::LIT_WGSL;
+use engine_render_pipeline::sprite_lighting::SPRITE_LIT_WGSL;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -105,14 +106,28 @@ pub fn compile_material(
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
-    compile_checked(document).map(|source| CompiledMaterial { source })
+    compile_checked(document, false).map(|source| CompiledMaterial { source })
+}
+
+/// Compile the same graph expressions against the orthographic SpriteLit template.
+pub fn compile_material_sprite_lit(
+    document: &GraphDocument,
+) -> Result<CompiledMaterial, Vec<GraphDiagnostic>> {
+    let diagnostics = validate(document, &material_kind(), Strictness::Complete);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+    compile_checked(document, true).map(|source| CompiledMaterial { source })
 }
 
 fn check_material(document: &GraphDocument) -> Vec<GraphDiagnostic> {
-    compile_checked(document).err().unwrap_or_default()
+    compile_checked(document, false).err().unwrap_or_default()
 }
 
-fn compile_checked(document: &GraphDocument) -> Result<String, Vec<GraphDiagnostic>> {
+fn compile_checked(
+    document: &GraphDocument,
+    sprite_lit: bool,
+) -> Result<String, Vec<GraphDiagnostic>> {
     let outputs: Vec<_> = document
         .nodes
         .iter()
@@ -224,6 +239,50 @@ fn compile_checked(document: &GraphDocument) -> Result<String, Vec<GraphDiagnost
         };
         outputs.push_str(&format!("    let graph_{port} = {expression};\n"));
     }
+    let template = if sprite_lit {
+        SPRITE_LIT_WGSL
+    } else {
+        LIT_WGSL
+    };
+    if sprite_lit {
+        let markers = [
+            "struct Output {",
+            "    let dx = dpdx(input.world);",
+            "    let mr=textureSample(metallic_roughness_map,image_sampler,input.uv);",
+            "surface.albedo=color.rgb;",
+            "surface.metallic=material.options.y*select(1.0,mr.b,maps.z>0.5);",
+            "surface.roughness=material.options.z*select(1.0,mr.g,maps.z>0.5);",
+            "return vec4<f32>(select(lit,color.rgb,material.options.x>0.5),color.a);",
+        ];
+        if markers
+            .iter()
+            .any(|marker| template.matches(marker).count() != 1)
+        {
+            return Err(vec![error(
+                "material.template.changed",
+                "",
+                "SpriteLit shader template has changed",
+            )]);
+        }
+        let source = template
+            .replace("struct Output {", &format!("{SAFE_FUNCTIONS}struct Output {{"))
+            .replace("    let dx = dpdx(input.world);", &format!("{lines}    let dx = dpdx(input.world);"))
+            .replace("    let mr=textureSample(metallic_roughness_map,image_sampler,input.uv);",
+                &format!("    let mr=textureSample(metallic_roughness_map,image_sampler,input.uv);\n{outputs}"))
+            .replace("surface.albedo=color.rgb;", "surface.albedo=graph_base_color;")
+            .replace("surface.metallic=material.options.y*select(1.0,mr.b,maps.z>0.5);", "surface.metallic=graph_metallic;")
+            .replace("surface.roughness=material.options.z*select(1.0,mr.g,maps.z>0.5);", "surface.roughness=graph_roughness;")
+            .replace("return vec4<f32>(select(lit,color.rgb,material.options.x>0.5),color.a);",
+                "return vec4<f32>(select(lit,graph_base_color,material.options.x>0.5),graph_alpha);");
+        if source.len() > MAX_SOURCE_BYTES {
+            return Err(vec![error(
+                "material.source.too_large",
+                "",
+                format!("generated WGSL exceeds {MAX_SOURCE_BYTES} bytes"),
+            )]);
+        }
+        return Ok(source);
+    }
     for marker in [
         "struct Output {",
         "    let derivative_normal = cross(dpdx(input.world), dpdy(input.world));",
@@ -234,7 +293,7 @@ fn compile_checked(document: &GraphDocument) -> Result<String, Vec<GraphDiagnost
         "surface.roughness = material.options.z * select(1.0, mr.g, maps.z > 0.5);",
         "return vec4<f32>(result, color.a);",
     ] {
-        if LIT_WGSL.matches(marker).count() != 1 {
+        if template.matches(marker).count() != 1 {
             return Err(vec![error(
                 "material.template.changed",
                 "",
@@ -242,7 +301,7 @@ fn compile_checked(document: &GraphDocument) -> Result<String, Vec<GraphDiagnost
             )]);
         }
     }
-    let source = LIT_WGSL.replace(
+    let source = template.replace(
         "    let derivative_normal = cross(dpdx(input.world), dpdy(input.world));",
         &format!("{lines}    let derivative_normal = cross(dpdx(input.world), dpdy(input.world));"),
     ).replace(

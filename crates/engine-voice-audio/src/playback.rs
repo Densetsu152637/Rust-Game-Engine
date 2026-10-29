@@ -160,15 +160,14 @@ impl VoicePlayback {
                 let Some(stream) = self.streams.get_mut(&frame.speaker) else {
                     continue;
                 };
-                if let Some(position) = frame.position {
-                    if !stream.options.spatial.enabled
-                        || stream.options.spatial.position != position
-                    {
-                        stream.options.spatial.enabled = true;
-                        stream.options.spatial.position = position;
-                        self.audio
-                            .configure(stream.handle, stream.options.clone())?;
-                    }
+                if let Some(position) = frame.position
+                    && (!stream.options.spatial.enabled
+                        || stream.options.spatial.position != position)
+                {
+                    stream.options.spatial.enabled = true;
+                    stream.options.spatial.position = position;
+                    self.audio
+                        .configure(stream.handle, stream.options.clone())?;
                 }
                 if stream.len > stream.offset {
                     self.stats.frames_dropped += 1;

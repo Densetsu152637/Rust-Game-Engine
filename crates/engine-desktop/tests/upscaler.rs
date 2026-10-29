@@ -88,6 +88,8 @@ fn scene(upscaler: UpscalerSettings) -> SceneRenderFrame {
         [1.0; 4],
     );
     SceneRenderFrame {
+        indirect: None,
+        applied_origin: [0.0; 3],
         sprites: RenderFrame {
             camera: Camera2D {
                 logical_size: [WIDTH, HEIGHT],
@@ -148,6 +150,7 @@ fn scene(upscaler: UpscalerSettings) -> SceneRenderFrame {
         post: Default::default(),
         ray_tracing: None,
         materials2d: Default::default(),
+        lighting2d: None,
         lights: vec![
             engine_project::lights::LightInstance3D::directional_toward(
                 "sun",

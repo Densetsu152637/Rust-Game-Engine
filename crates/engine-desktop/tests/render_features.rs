@@ -140,6 +140,8 @@ fn camera() -> CameraInstance3D {
 /// A scene whose full-screen quad samples `texture` (a stream frame).
 fn streamed_scene(stream: &StreamFrame) -> SceneRenderFrame {
     SceneRenderFrame {
+        indirect: None,
+        applied_origin: [0.0; 3],
         sprites: RenderFrame {
             camera: Camera2D {
                 logical_size: [64, 64],
@@ -165,6 +167,7 @@ fn streamed_scene(stream: &StreamFrame) -> SceneRenderFrame {
         post: Default::default(),
         ray_tracing: None,
         materials2d: Default::default(),
+        lighting2d: None,
         streams: vec![stream.clone()],
     }
 }
@@ -274,6 +277,8 @@ fn xr_eyes_render_into_external_targets_with_their_own_views() -> anyhow::Result
         indices: vec![0, 1, 2, 0, 2, 3],
     });
     let frame = SceneRenderFrame {
+        indirect: None,
+        applied_origin: [0.0; 3],
         sprites: RenderFrame {
             camera: Camera2D::default(),
             draws: vec![],
@@ -297,6 +302,7 @@ fn xr_eyes_render_into_external_targets_with_their_own_views() -> anyhow::Result
         post: Default::default(),
         ray_tracing: None,
         materials2d: Default::default(),
+        lighting2d: None,
         streams: vec![],
     };
     // Asymmetric per-eye projections like OpenXR's (wider toward the nose).

@@ -173,7 +173,7 @@ pub fn check_material_limits(limits: &wgpu::Limits) -> Result<()> {
     ensure!(
         limits.max_uniform_buffers_per_shader_stage >= 4
             && limits.max_dynamic_uniform_buffers_per_pipeline_layout >= 3
-            && u64::from(limits.max_uniform_buffer_binding_size) >= INDIRECT_UNIFORM_BYTES,
+            && limits.max_uniform_buffer_binding_size >= INDIRECT_UNIFORM_BYTES,
         "indirect material unavailable: needs four uniform bindings, three dynamic bindings and a 448-byte uniform"
     );
     Ok(())

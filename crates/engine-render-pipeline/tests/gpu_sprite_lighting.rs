@@ -429,7 +429,7 @@ fn normal_data_texture_and_oriented_uvs_change_lighting_without_geometry_changes
             image.pixel(32, 32).unwrap(),
             reference([1.0; 3], 0.0, 1.0, n, toward, [0.5; 3]),
         );
-        h.device.destroy(mesh.into())?;
+        h.device.destroy(mesh)?;
     }
     let opposite = h.texture([0, 128, 255, 255])?;
     let a = h.render(vec![h.command(
@@ -496,7 +496,7 @@ fn native_atlas_uvs_remain_v_down_for_all_eight_orientations() -> Result<()> {
                 "orientation {i},corner {corner}"
             );
         }
-        h.device.destroy(mesh.into())?;
+        h.device.destroy(mesh)?;
     }
     Ok(())
 }
@@ -559,7 +559,7 @@ fn offset_is_applied_once_and_native_snapshots_do_not_leak_between_draws() -> Re
     close(image.pixel(48, 32).unwrap(), [0.0, 0.0, 0.5]);
     let old_target = h.target;
     h.target = h.device.create_target(96, 48)?;
-    h.device.destroy(old_target.into())?;
+    h.device.destroy(old_target)?;
     let green = lighting(Vec3::new(0.0, 0.5, 0.0), vec![]);
     let u = h.uniforms(&green, &[Vec3::ZERO])?;
     let image = h.render(vec![h.command(Some(&u[0]), params(), [None; 3])?])?;

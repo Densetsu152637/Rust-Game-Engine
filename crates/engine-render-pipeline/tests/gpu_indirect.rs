@@ -214,7 +214,7 @@ fn sample_cube_view(gpu: &GpuContext, resources: &GpuIndirectResources) -> Resul
         .slice(..)
         .get_mapped_range()
         .map_err(|e| anyhow::anyhow!("cube sample readback: {e:?}"))?;
-    for (index, pixel) in mapped.chunks_exact(16).enumerate() {
+    for (index, pixel) in mapped.as_chunks::<16>().0.iter().enumerate() {
         let actual: [f32; 4] = std::array::from_fn(|c| {
             f32::from_le_bytes(pixel[c * 4..c * 4 + 4].try_into().unwrap())
         });

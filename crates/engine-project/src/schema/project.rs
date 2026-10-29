@@ -43,6 +43,7 @@ impl Project {
                 "text_script",
                 "mesh",
                 "texture",
+                "indirect",
                 "font",
                 "font_face",
                 "font_config",
@@ -179,6 +180,11 @@ impl Project {
         for entity in &scene.entities {
             self.component_catalog.validate_entity(scene, entity)?;
             let c = &entity.components;
+            if let Some(camera) = &c.camera3d
+                && let Some(indirect) = &camera.lighting.indirect
+            {
+                self.require_asset(indirect, "indirect")?;
+            }
             for lut in c
                 .post_process
                 .iter()
@@ -266,6 +272,7 @@ impl Project {
     /// Validate all declared scenes/content, not only the startup scene.
     pub fn validate(&self) -> Result<()> {
         self.validate_scene(&self.scene)?;
+        crate::indirect::load_indirect_assets(self)?;
         for asset in self.assets.values() {
             let file = self.resolve_asset(&asset.id)?;
             match asset.kind.as_str() {

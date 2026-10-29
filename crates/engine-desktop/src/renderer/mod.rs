@@ -25,6 +25,7 @@ mod vertex;
 
 pub use framegen::{MAX_GENERATION_GAP, MAX_PRESENT_SPACING, PresentPacer, presentation_offsets};
 pub use rt::{effects_settings, prepare_ray_tracing, request_ray_tracing, rt_names};
+pub use scene3d::ActiveIndirectBudgetExceeded;
 pub use scene3d::{LIT_WGSL, camera_matrix};
 pub use sprite::{SpriteRenderer, TEXTURED_WGSL};
 pub use temporal::{halton, jitter_matrix, jitter_offset, jitter_phase_count, pixel_motion};
@@ -128,6 +129,7 @@ pub struct GpuRenderer {
     sprites: SpriteRenderer<WgpuBackend>,
     scene: Option<ScenePipeline>,
     uploads: scene3d::SceneUploads,
+    indirect: scene3d::AuthoredIndirectCache,
     #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
     depth_export: Option<Arc<engine_render_pipeline::DepthExport>>,
     status: RenderPipelineStatus,
@@ -340,6 +342,7 @@ impl GpuRenderer {
             },
         );
         let mut sprites = SpriteRenderer::new(backend, limits)?;
+        sprites.set_lighting_limits(gpu.device.limits().clone());
         sprites.set_surface_size((info.width, info.height));
         gpu.check_errors()?;
         Ok(Self {
@@ -348,6 +351,7 @@ impl GpuRenderer {
             sprites,
             scene: None,
             uploads: Default::default(),
+            indirect: Default::default(),
             depth_export: None,
             status: RenderPipelineStatus::default(),
             lighting: LightingStatus::default(),
@@ -451,6 +455,14 @@ impl GpuRenderer {
             self.scene = Some(scene);
         }
         Ok(self.scene.as_mut().expect("created above"))
+    }
+
+    /// Release a view's native targets and authored indirect resource reference.
+    pub fn forget_view(&mut self, view: ViewId) {
+        if let Some(scene) = &mut self.scene {
+            scene.forget_view(view);
+        }
+        self.indirect.forget_view(view);
     }
 
     /// Prepare and add render features (for example from a
@@ -689,6 +701,10 @@ impl GpuRenderer {
         let size = (self.info.width, self.info.height);
         self.sprites.validate_scene(frame, size)?;
         let built = self.sprites.build_overlay(frame, size)?;
+        if let Some(scene) = &mut self.scene {
+            scene.set_indirect(ViewId::MAIN, None)?;
+        }
+        self.indirect.forget_view(ViewId::MAIN);
         if !self.has_overlay_features() {
             copy_streams(
                 &self.sprites,
@@ -785,6 +801,7 @@ impl GpuRenderer {
             sprites: sprite_renderer,
             scene,
             uploads,
+            indirect,
             status,
             lighting,
             post,
@@ -793,6 +810,9 @@ impl GpuRenderer {
         } = self;
         let scene = scene.as_mut().expect("created above");
         let inputs = uploads.sync(gpu, frame)?;
+        let candidate = indirect.resolve(gpu, view.id, frame)?;
+        scene.set_indirect(view.id, candidate.clone())?;
+        indirect.commit(view.id, frame, candidate);
         let copies = stream_copies(frame, &uploads.streams);
         let mut host = DesktopHost {
             sprites: sprite_renderer,
@@ -1005,7 +1025,9 @@ impl GpuRenderer {
             (now.duration_since(last).as_secs_f32() * 1000.0).clamp(0.1, 1000.0)
         });
         let mut failure = None;
+        let mut effective_reset = reset;
         let mut hook = |gpu: &GpuContext, scene: &SceneTextures<'_>| -> Result<HostUpscale> {
+            effective_reset = scene.reset_history;
             let motion = scene
                 .motion
                 .context("the SR view requests motion vectors")?;
@@ -1034,7 +1056,7 @@ impl GpuRenderer {
             if let Err(error) = session.evaluate(engine_dlss::Frame {
                 jitter,
                 motion_scale: [1.0, 1.0],
-                reset,
+                reset: scene.reset_history,
                 delta_ms,
             }) {
                 failure = Some(format!("DLSS evaluation failed: {error}"));
@@ -1042,10 +1064,35 @@ impl GpuRenderer {
             }
             Ok(HostUpscale::Upscaled(session.output().clone()))
         };
+        let prior_scene_id = self
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.committed_scene_id(ViewId::MAIN));
         let drawn = self.draw_3d(frame, view, output_target, world, sprites, Some(&mut hook));
         let (report, stats) = match drawn {
             Ok(drawn) => drawn,
             Err(error) => {
+                let committed = self
+                    .scene
+                    .as_ref()
+                    .and_then(|scene| scene.committed_scene_id(ViewId::MAIN))
+                    != prior_scene_id;
+                if committed && failure.is_none() {
+                    stage.last_evaluation = Some(now);
+                    self.upscaler.evaluated += 1;
+                    if effective_reset {
+                        self.upscaler.resets += 1;
+                    }
+                    self.upscaler.history.commit(camera);
+                    self.upscaler.active(
+                        request,
+                        render,
+                        output,
+                        session.status().device_name.clone(),
+                    );
+                } else {
+                    self.upscaler.history.request_reset();
+                }
                 stage.session = Some((key, session));
                 return Err(error);
             }
@@ -1065,7 +1112,7 @@ impl GpuRenderer {
         stage.last_evaluation = Some(now);
         stage.session = Some((key, session));
         self.upscaler.evaluated += 1;
-        if reset {
+        if effective_reset {
             self.upscaler.resets += 1;
         }
         self.upscaler.history.commit(camera);
@@ -1299,7 +1346,7 @@ impl GpuRenderer {
         };
         let fg_inputs = (fg.depth.1.clone(), fg.motion.0.clone());
         let (stats, jitter) = if sr_ready {
-            let Some(scene) = self.super_resolve(
+            let resolved = self.super_resolve(
                 stage,
                 frame,
                 upscale,
@@ -1307,8 +1354,14 @@ impl GpuRenderer {
                 world,
                 false,
                 Some(fg_inputs),
-            )?
-            else {
+            );
+            let Some(scene) = (match resolved {
+                Ok(scene) => scene,
+                Err(error) => {
+                    self.framegen.request_reset();
+                    return Err(error);
+                }
+            }) else {
                 // SR failed this frame: generate from a native-resolution scene
                 // next frame (SR's failure is sticky); present natively now.
                 self.framegen.fallback(
@@ -1342,9 +1395,22 @@ impl GpuRenderer {
                 gpu.queue.submit([encoder.finish()]);
                 Ok(HostUpscale::NotHandled)
             };
-            let (_, stats) = self.draw_3d(frame, view, &hudless, world, false, Some(&mut hook))?;
+            let (_, stats) =
+                match self.draw_3d(frame, view, &hudless, world, false, Some(&mut hook)) {
+                    Ok(rendered) => rendered,
+                    Err(error) => {
+                        self.framegen.request_reset();
+                        return Err(error);
+                    }
+                };
             (stats, [0.0; 2])
         };
+
+        let reset = self
+            .pipeline()?
+            .committed_scene_reset(ViewId::MAIN)
+            .unwrap_or(reset);
+        let previous_vp = if reset { current_vp } else { previous_vp };
 
         // NGX sees only the UI-free scene. Every presentable output receives
         // the same late painter/filter pass after all evaluations finish.
@@ -1458,6 +1524,10 @@ impl GpuRenderer {
             .as_ref()
             .context("frame generation requires a Camera3D")?;
         let success = self.framegen.complete_evaluation(
+            self.scene
+                .as_ref()
+                .and_then(|scene| scene.committed_scene_id(ViewId::MAIN))
+                .context("no committed source for frame generation")?,
             camera,
             std::time::Instant::now(),
             request,

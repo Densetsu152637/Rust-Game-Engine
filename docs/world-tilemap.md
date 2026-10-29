@@ -201,8 +201,8 @@ snapshots carry it; fails above ~60 KiB, then save a `tilemap` asset instead).
 
 ## Render data handed to the sprite path
 
-Until the rendering domain provides a tilemap renderer, tiles render through the existing
-2D draw path (`runtime::Draw`). This is the precise contract (the adapter is
+Tiles render through the existing 2D draw path (`runtime::Draw`). This is the
+precise contract (the adapter is
 `world::tilemap::service::sync_visuals` plus one hook in `Runtime::extract_frame`):
 
 **Entities** (one per visible layer, per non-empty chunk): id and name
@@ -238,9 +238,12 @@ edit outside `world/tilemap`: `runtime/render.rs` reads `TileChunkRender` in the
 z order, `cell_size`, `tint` or `render_layer` changes; unchanged chunks keep their
 `Arc<Mesh>`, and `Runtime` hashes meshes so draws reuse the cached mesh object.
 
-**Camera3D scenes**: the chunk entities are ordinary `MeshRenderer` entities, so with an
-active `Camera3D` they appear in `SceneRenderFrame::meshes` (lit mesh path) and are removed
-from the sprite draws. A pure-2D game has no `Camera3D` and uses the sprite path above.
+**Camera3D scenes**: ordinary chunk entities appear in `SceneRenderFrame::meshes` and are
+removed from sprite draws. A tilemap owner carrying enabled `engine.SpriteLighting2D`,
+with enabled `engine.Lighting2D` on the active 2D camera, keeps its chunks in the
+ordered sprite path and excludes them from the opaque 3D mesh pass. The chunks
+inherit the owner's 2D material and normal/MR atlas references; vertex tint and
+layer opacity remain baked exactly once.
 `pixel_snap` is not applied to tile meshes; keep `cell_size` a multiple of
 `1 / pixels_per_unit`.
 

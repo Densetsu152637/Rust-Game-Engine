@@ -511,8 +511,7 @@ fn native_scene_errors_and_distinct_material_budget_are_explicit() -> Result<()>
         .collect();
     let error = h
         .draw(ViewId::MAIN, &meshes, [64; 2], Vec3::ZERO)
-        .err()
-        .expect("material budget should reject");
+        .expect_err("material budget should reject");
     assert!(format!("{error:#}").contains("distinct indirect materials"));
     h.gpu.check_errors()
 }

@@ -1,5 +1,5 @@
 use engine_graph::{GraphDocument, GraphEdge, GraphNode, PortRef};
-use engine_material_graph::{compile_material, material_kind};
+use engine_material_graph::{compile_material, compile_material_sprite_lit, material_kind};
 use engine_render_pipeline::{MaterialTarget, compose_material};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -54,6 +54,15 @@ fn compiled_graph_satisfies_mesh_and_sprite_material_contracts() {
     }
     assert!(!compiled.source.contains("@group("));
     assert!(!compiled.source.contains("#import game::"));
+}
+
+#[test]
+fn compiled_graph_uses_sprite_lighting_template_and_preserves_graph_outputs() {
+    let compiled = compile_material_sprite_lit(&graph()).unwrap();
+    let composed = compose_material(&compiled.source, MaterialTarget::SpriteLit).unwrap();
+    assert!(composed.contains("engine_sprite_view_direction()"));
+    assert!(composed.contains("surface.albedo=graph_base_color;"));
+    assert!(composed.contains("select(lit,graph_base_color,material.options.x>0.5)"));
 }
 
 #[test]

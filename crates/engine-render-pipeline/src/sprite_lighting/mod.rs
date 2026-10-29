@@ -166,7 +166,7 @@ pub fn check_limits(limits: &wgpu::Limits) -> Result<()> {
         "SpriteLit needs three bind groups and four bindings per group"
     );
     ensure!(
-        u64::from(limits.max_uniform_buffer_binding_size) >= SPRITE_LIGHTING_UNIFORM_BYTES,
+        limits.max_uniform_buffer_binding_size >= SPRITE_LIGHTING_UNIFORM_BYTES,
         "SpriteLit needs a {SPRITE_LIGHTING_UNIFORM_BYTES}-byte uniform binding"
     );
     ensure!(

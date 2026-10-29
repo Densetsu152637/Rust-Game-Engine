@@ -12,7 +12,9 @@ pub mod events;
 pub mod gameplay;
 pub mod gameplay2d;
 pub mod graphs;
+pub mod indirect;
 pub mod input;
+pub mod lighting2d;
 pub mod lights;
 pub mod localization;
 #[cfg(not(target_arch = "wasm32"))]

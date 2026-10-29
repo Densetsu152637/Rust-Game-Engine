@@ -680,8 +680,10 @@ fn sprite_background_sdf_text_and_foreground_keep_authored_paint_order_in_2d_and
         let background = frame_image(&mut gpu, &frame);
         let at = background
             .rgba
-            .chunks_exact(4)
-            .position(|p| p == &[255, 255, 255, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .position(|p| *p == [255, 255, 255, 255])
             .expect("text must paint above its red background");
         let (x, y) = (at as u32 % 320, at as u32 / 320);
         frame.sprites.draws.push(screen_quad(
@@ -765,7 +767,7 @@ impl DisplayImage {
         let mut rgba =
             engine_render_wgpu::read_texture_rgba(gpu, &self.texture, size[0], size[1]).unwrap();
         if self.target.format == wgpu::TextureFormat::Bgra8UnormSrgb {
-            for p in rgba.chunks_exact_mut(4) {
+            for p in rgba.as_chunks_mut::<4>().0 {
                 p.swap(0, 2);
             }
         }

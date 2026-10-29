@@ -451,12 +451,12 @@ impl HiZView {
         let output_bytes = u64::from(capacity).max(1) * 4;
         ensure!(
             input_bytes <= limits.max_buffer_size
-                && input_bytes <= u64::from(limits.max_storage_buffer_binding_size),
+                && input_bytes <= limits.max_storage_buffer_binding_size,
             "query input exceeds device storage buffer limit"
         );
         ensure!(
             output_bytes <= limits.max_buffer_size
-                && output_bytes <= u64::from(limits.max_storage_buffer_binding_size),
+                && output_bytes <= limits.max_storage_buffer_binding_size,
             "query output exceeds device storage buffer limit"
         );
         let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {

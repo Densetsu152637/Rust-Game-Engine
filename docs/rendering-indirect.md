@@ -1,9 +1,55 @@
-# Native indirect-lighting resource preparation
+# Indirect lighting and authored IBL/probes
 
-Source milestone: native input validation, immutable float GPU resources and
-optional per-view material IBL/probe consumption. The module is
-`engine_render_pipeline::indirect`. No authored project adapter is installed. No tests in this milestone
-have been executed by its implementer; GPU tests require an explicit real adapter.
+The native pipeline validates and uploads immutable float indirect-lighting
+resources, then shades built-in 3D meshes with optional per-view IBL/probes.
+The module is `engine_render_pipeline::indirect`. A project loader and desktop
+adapter consume externally prepared environment data and configure each view.
+The authored project-to-GPU HDR fixtures have been exercised on a real adapter.
+
+## Authored project input
+
+Declare a project asset of kind `indirect` and reference its ID from
+`Camera3D.lighting.indirect`. Absence uses constant ambient. Unsupported
+authored requests return an error. A version-1 descriptor contains
+`environments`, optional `global`, and `probes`:
+
+```json
+{
+  "version": 1,
+  "environments": [{"edge": 1,
+    "diffuse": [[1, 1, 1], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0],
+                [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]],
+    "mips": [["px.rgb32f", "nx.rgb32f", "py.rgb32f", "ny.rgb32f",
+              "pz.rgb32f", "nz.rgb32f"]]}],
+  "global": {"environment": 0, "rotation": [0, 0, 0, 1], "intensity": 1},
+  "probes": [{"id": "room", "positionAbsolute": [0, 0, 0],
+              "scale": [1, 1, 1], "halfExtents": [4, 3, 4],
+              "blendDistance": 1, "priority": 0,
+              "lighting": {"environment": 0, "rotation": [0, 0, 0, 1],
+                           "intensity": 1}}]
+}
+```
+
+Each face file is exactly `edge * edge * 12` bytes of little-endian,
+row-major, top-row-first RGB32F. The first mip is `edge` squared; each mip
+halves the edge down to 1. All paths are project-relative and confined to the
+project root. The loader rejects unknown fields, incorrect lengths, nonfinite
+or negative radiance, radiance above 65504, invalid references/transforms,
+duplicate probe IDs, and incomplete mips. It preflights every descriptor and
+face length before bulk decoding, retaining the opened face handles through
+decoding: at most 1 MiB per descriptor, 16 MiB for all descriptors, 4096 face
+files, and 128 MiB decoded RGB32F across all indirect assets. Concurrent
+modification of project files during loading remains unsupported; canonical
+path checks and opening a file are not an atomic cross-platform operation. GPU
+resources are separately bounded to 128 MiB across active view sets. The
+native integrator generates the BRDF LUT; supplied cube chains must already
+be GGX-prefiltered. This path does not capture probes, prefilter environments,
+consume lightmaps, or bake a scene.
+
+Probe `positionAbsolute` is f64 world space. Extraction subtracts the applied
+floating origin in f64 before producing local f32 probe volumes. A rebase
+rebuilds probe volumes while retaining uploaded images. The shapes are static
+world-space volumes; World terrain and foliage shaders do not yet sample IBL.
 
 ## Input and precision contract
 
@@ -93,15 +139,15 @@ reconstructed, length-floored half vector separately. No shared BRDF shader is
 changed by this native preparation. Independent numerical density/CDF regression
 sources cover both regimes, their transition and the roughness-one endpoint;
 light-direction quadrature retains its original accuracy thresholds. Bounded
-standalone CPU diagnostics checked these formulas; Cargo revalidation remains a
-separate gate. Texel centers are x=NdotV and
+standalone CPU diagnostics checked these formulas. The native CPU Cargo test
+below is the regression gate. Texel centers are x=NdotV and
 y=roughness at `(i+0.5)/size`. Size is 8..128, samples 64..4096, with at most
 16,777,216 sample evaluations. This approximation is BRDF preparation, not lighting
 baking. The LUT uploads as R=A, G=B, B=0, A=1 in `Rgba16Float`.
 
 `check_capabilities` requires filterable Rgba16Float sampled/copy usages and six
 array layers. Unsupported capability returns an error naming the missing resource
-requirement; a future renderer may report constant-ambient fallback. No successful
+requirement. No successful
 material feature status is fabricated. No optional feature is requested after the
 device has been created. The native material adapter additionally validates its optional layout limits;
 the legacy material layouts remain available on a restricted device.
@@ -112,7 +158,7 @@ wgpu ownership. Preparation issues uploads and checks currently recorded errors;
 it does not wait for GPU completion or confirm presented pixels. Tests use actual
 readback to establish completion. There is no camera/history/scene-stage coupling.
 
-## Verification sources and integration still required
+## Verification
 
 CPU source tests in `tests/indirect.rs` cover invalid data, dimensions/mips, signed
 diffuse evaluation, exposure overflow, atomic budgets, transformed deterministic
@@ -124,7 +170,7 @@ change-of-variable Jacobians; it has no ideal-GGX PDF cancellation. Its 512/1024
 midpoint grids must agree within 0.001 + 1% per coefficient before comparison.
 The bounded 4096-sample production comparison allows 0.002 + 4% per coefficient;
 GPU-upload comparison adds 0.001 for half quantization. These are declared
-acceptance tolerances, not measured errors: the new tests remain unrun. The GPU
+acceptance tolerances, not measured errors. The GPU
 LUT fixture uses size 15 so its first two rows test roughness floored to .045
 and exactly .1, including the first (grazing) view-angle column.
 
@@ -138,7 +184,7 @@ cargo test -p engine-render-pipeline --test indirect
 cargo test -p engine-render-pipeline --test gpu_indirect -- --ignored --test-threads=1 --nocapture
 ```
 
-## Native material adapter (source, GPU verification pending)
+## Native material adapter
 
 Configure each view independently:
 
@@ -215,21 +261,32 @@ Replacement/toggle releases stale material groups; camera reset clears those gro
 without discarding lighting configuration. `forget_view` drops its configuration
 and all view caches. Setting the same immutable Arc again leaves caches intact.
 
-Ignored `gpu_indirect_shading` test sources render native lit meshes and read actual
+Ignored `gpu_indirect_shading` tests render native lit meshes and read actual
 scene HDR pixels. They cover constant HDR irradiance, independently integrated
 metallic specular/roughness response, supplied mip selection, cube/diffuse rotation,
 probe priority/tie/boundary blending, per-view isolation, resize/forget, missing/empty
 data and toggling, legacy custom neutrality, screen GI/AO/reflection precedence,
-invalid scene references and distinct-material limits. Source-only compiler tests
+invalid scene references and distinct-material limits. Compiler tests
 compose native, legacy and sprite variants; metadata tests cover bad rotations,
-intensities and restricted limits. These tests have NOT run in this milestone:
+intensities and restricted limits. Run the native shaded-pixel gate with:
 
 ```text
 cargo test -p engine-render-pipeline --test gpu_indirect_shading -- --ignored --test-threads=1 --nocapture
 ```
 
-Still required for the full rendering request: executed CPU/GPU validation and
-source review; authored project/desktop extraction, float asset loading and schemas;
-real UV2 and lightmap material consumption; relevant World material integration;
-authored fixtures and runtime resource reload/status adapters. Native shaded test
-sources do not establish user-facing authored IBL/probes/lightmaps acceptance.
+The authored path was verified in the isolated worktree on 2026-10-29 with
+`CARGO_BUILD_JOBS=1` and that checkout's own `CARGO_TARGET_DIR`:
+
+```text
+cargo test -p engine-project --test indirect_asset # 6 passed
+cargo test -p engine-mcp --test tools # 56 passed
+cargo test -p engine-desktop --test gpu_authored_indirect -- --ignored --test-threads=1 # 2 passed on a real adapter
+cargo test -p engine-desktop --lib failed_budget_admission_keeps_previous_view_and_ignores_forged_byte_count -- --ignored --test-threads=1 # 1 passed
+```
+
+The HDR fixture loads the project, extracts a runtime frame, then renders it
+through `GpuRenderer`. It checks global irradiance, local probe priority and
+boundary blending, SH rotation, view isolation, disable/resize/forget and an
+applied-origin rebase near 1e12. Supplied UV2 lightmap consumption, World
+terrain/foliage material sampling and runtime asset reload/status remain
+separate work.

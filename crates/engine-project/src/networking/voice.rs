@@ -31,14 +31,16 @@ mod codec_factory_tests {
     fn decoder_initialization_failure_propagates_from_client_creation() {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
-        let mut settings = VoiceSettings::default();
-        settings.codec = Some(VoiceCodecFactory(Arc::new(move || {
-            if observed.fetch_add(1, Ordering::Relaxed) == 0 {
-                Ok(Box::new(RawPcmCodec::new(16_000, 20).unwrap()) as Box<dyn VoiceCodec>)
-            } else {
-                Err(engine_net_voice::VoiceError::Codec("decoder init failed"))
-            }
-        })));
+        let settings = VoiceSettings {
+            codec: Some(VoiceCodecFactory(Arc::new(move || {
+                if observed.fetch_add(1, Ordering::Relaxed) == 0 {
+                    Ok(Box::new(RawPcmCodec::new(16_000, 20).unwrap()) as Box<dyn VoiceCodec>)
+                } else {
+                    Err(engine_net_voice::VoiceError::Codec("decoder init failed"))
+                }
+            }))),
+            ..VoiceSettings::default()
+        };
         assert!(ClientVoice::new(&settings).is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 2);
     }

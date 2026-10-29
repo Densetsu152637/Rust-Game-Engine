@@ -64,7 +64,9 @@ fn lighting_schema() -> Value {
             "ambient":{"type":"number","minimum":0,"maximum":1,"default":0.08,
                 "description":"Ambient radiance added to lit materials (already exposed)."},
             "exposure":{"type":"number","minimum":1e-8,"maximum":1000,"default":1,
-                "description":"Linear factor from photometric light units (lux, lumens) to output: a 1 lux directional light on a white diffuse surface gives exposure/pi. Physically based scenes use 1/(1.2*2^EV100), about 2.5e-5 for sunlight at EV100 15. Lights are DirectionalLight, PointLight, SpotLight and AreaLight entities."}
+                "description":"Linear factor from photometric light units (lux, lumens) to output: a 1 lux directional light on a white diffuse surface gives exposure/pi. Physically based scenes use 1/(1.2*2^EV100), about 2.5e-5 for sunlight at EV100 15. Lights are DirectionalLight, PointLight, SpotLight and AreaLight entities."},
+            "indirect":{"type":["string","null"],"minLength":1,
+                "description":"Optional catalog indirect asset ID; externally prepared IBL and probe data. Absent uses constant ambient."}
         }),
         &[],
     )
@@ -284,7 +286,7 @@ pub const SCENE_RULES: [&str; 7] = [
     "A scene may contain at most one Camera2D.",
     "SpriteRenderer, Collider2D, Camera3D, PointLight, SpotLight and AreaLight require a Transform on the same entity.",
     "Camera2D.follow must name an entity that has a Transform.",
-    "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture/normal_texture/metallic_roughness_texture) must be catalog asset IDs of the right kind; MeshMaterial.shader also accepts a graph asset with document kind material.",
+    "Asset references (Script.asset, MeshRenderer.mesh/texture, SpriteRenderer.texture, MeshMaterial.shader/texture/normal_texture/metallic_roughness_texture, Camera3D.lighting.indirect) must be catalog asset IDs of the right kind; MeshMaterial.shader also accepts a graph asset with document kind material.",
     "A scene may contain at most one `engine.AcousticEnvironment`; `engine.AudioEmitter` selects exactly one nonempty `clip` (`audio` asset) or `graph` (`graph` asset of kind `audio`) at runtime. File clips use bounded resident decoding by default or incremental decoding with `streamed: true`; graphs use bounded procedural streaming with atomic initial `parameters`. Nonresident sources reject `looped: true`; empty default emitter references remain structurally valid for authoring. `engine.AcousticGeometry.mesh` and `engine.AcousticVolume.mesh` must reference `mesh` assets, and `engine.AcousticEnvironment.geometry.asset` an `acoustics` asset.",
     "A scene may contain at most one `engine.NetworkSession`; `engine.NetworkReplication` requires `engine.NetworkReplica` on the same entity, and `engine.NetworkHitboxes` and `engine.NetworkVoice` require a Transform.",
 ];

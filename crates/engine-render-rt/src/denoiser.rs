@@ -134,6 +134,7 @@ pub struct Denoiser {
     output: Target,
     frames: u64,
     has_history: bool,
+    pending: bool,
 }
 
 impl Denoiser {
@@ -238,6 +239,7 @@ impl Denoiser {
             resolve_layout,
             frames: 0,
             has_history: false,
+            pending: false,
         })
     }
 
@@ -259,19 +261,29 @@ impl Denoiser {
     /// Discards the history: the next frame starts accumulation afresh.
     pub fn reset(&mut self) {
         self.has_history = false;
+        self.pending = false;
+    }
+
+    /// Advance CPU history only after the scene containing `record` was submitted.
+    pub fn finish_scene(&mut self) {
+        if self.pending {
+            self.frames += 1;
+            self.has_history = true;
+            self.pending = false;
+        }
     }
 
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
 
-    /// Frames recorded since creation.
+    /// Frames committed with `finish_scene` since creation.
     pub fn frame_count(&self) -> u64 {
         self.frames
     }
 
     /// The denoised signal (`Rgba16Float`, `STORAGE_BINDING | TEXTURE_BINDING
-    /// | COPY_SRC`), valid after a recorded frame; the same texture every frame.
+    /// | COPY_SRC`), valid after a submitted frame; the same texture every frame.
     pub fn output(&self) -> &wgpu::Texture {
         &self.output.texture
     }
@@ -411,8 +423,7 @@ impl Denoiser {
             w,
             h,
         );
-        self.frames += 1;
-        self.has_history = true;
+        self.pending = true;
         Ok(())
     }
 

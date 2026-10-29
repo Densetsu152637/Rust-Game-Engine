@@ -45,6 +45,7 @@ impl ComponentCatalog {
         for d in crate::simulation::component_descriptors()
             .into_iter()
             .chain(crate::world::component_descriptors())
+            .chain(crate::lighting2d::descriptors())
             .chain(crate::ui_tree::descriptors())
             .chain([
                 crate::accessibility::descriptor(),
@@ -113,6 +114,7 @@ impl ComponentCatalog {
         }
         crate::acoustics::validate_component(name, &value.data)?;
         crate::networking::validate_component(name, &value.data)?;
+        crate::lighting2d::validate_component(name, &value.data)?;
         Ok(())
     }
     pub fn validate_entity(&self, scene: &crate::Scene, entity: &crate::SceneEntity) -> Result<()> {
@@ -303,12 +305,14 @@ fn bound(schema: &Value, min: &str, max: &str, value: f64) -> Result<()> {
 
 #[derive(Component, Clone, Debug, Default)]
 pub struct DynamicComponents(pub BTreeMap<String, CustomValue>);
+/// A validated native component write, applied later to one entity.
+pub(crate) type PreparedApply = Box<dyn FnOnce(&mut World, Entity) + Send + Sync>;
 #[derive(Clone, Copy)]
 pub(crate) struct ComponentAdapter {
     pub version: u32,
     type_id: std::any::TypeId,
     insert: fn(&mut World, Entity, &Value) -> Result<()>,
-    prepare: fn(&Value) -> Result<Box<dyn FnOnce(&mut World, Entity) + Send + Sync>>,
+    prepare: fn(&Value) -> Result<PreparedApply>,
     encode: fn(&World, Entity) -> Result<Option<Value>>,
 }
 #[derive(Resource, Default)]
@@ -408,7 +412,7 @@ pub(crate) enum PreparedComponentWrite {
     },
     Native {
         entity: Entity,
-        apply: Box<dyn FnOnce(&mut World, Entity) + Send + Sync>,
+        apply: PreparedApply,
     },
 }
 
@@ -468,16 +472,6 @@ pub(crate) fn prepare_component_write(
     })
 }
 
-pub(crate) fn write_component(
-    world: &mut World,
-    entity: Entity,
-    name: &str,
-    value: CustomValue,
-) -> Result<()> {
-    let prepared = prepare_component_write(world, entity, name, value)?;
-    prepared.apply(world);
-    Ok(())
-}
 pub(crate) fn snapshot(world: &World, entity: Entity) -> Result<BTreeMap<String, CustomValue>> {
     let mut values = world
         .get::<DynamicComponents>(entity)

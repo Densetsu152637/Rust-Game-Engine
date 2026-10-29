@@ -77,6 +77,8 @@ fn scene(x: f32, camera_x: f32, generation: FrameGenerationSettings) -> SceneRen
         vec![0, 1, 2, 0, 2, 3],
     );
     SceneRenderFrame {
+        indirect: None,
+        applied_origin: [0.0; 3],
         sprites: RenderFrame {
             camera: Camera2D {
                 logical_size: [WIDTH, HEIGHT],
@@ -131,6 +133,7 @@ fn scene(x: f32, camera_x: f32, generation: FrameGenerationSettings) -> SceneRen
             ),
         ],
         materials2d: Default::default(),
+        lighting2d: None,
         lights: vec![],
         post: Default::default(),
         ray_tracing: None,

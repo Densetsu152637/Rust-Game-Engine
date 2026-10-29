@@ -329,10 +329,10 @@ impl GraphCanvas {
                 30.0 + (index % 4) as f32 * 215.0,
                 40.0 + (index / 4) as f32 * 230.0,
             ]);
-            if let Some((id, start, _, delta)) = &self.drag {
-                if *id == node.id {
-                    position = [start[0] + delta.x, start[1] + delta.y];
-                }
+            if let Some((id, start, _, delta)) = &self.drag
+                && *id == node.id
+            {
+                position = [start[0] + delta.x, start[1] + delta.y];
             }
             let effective = if node.ports.is_empty() {
                 session
@@ -378,32 +378,32 @@ impl GraphCanvas {
             if response.clicked() || response.drag_started() {
                 self.select(Some(node.id.clone()));
             }
-            if response.drag_started() && !session.is_read_only() {
-                if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
-                    self.drag = Some((node.id.clone(), position, origin, Vec2::ZERO));
-                }
+            if response.drag_started()
+                && !session.is_read_only()
+                && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+            {
+                self.drag = Some((node.id.clone(), position, origin, Vec2::ZERO));
             }
-            if response.dragged() || response.drag_stopped() {
-                if let Some((id, _, origin, delta)) = &mut self.drag {
-                    if *id == node.id {
-                        // Absolute displacement survives idle frames and includes release motion.
-                        if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) {
-                            *delta = pointer - *origin;
-                        }
-                        ui.ctx().request_repaint();
-                    }
+            if (response.dragged() || response.drag_stopped())
+                && let Some((id, _, origin, delta)) = &mut self.drag
+                && *id == node.id
+            {
+                // Absolute displacement survives idle frames and includes release motion.
+                if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) {
+                    *delta = pointer - *origin;
                 }
+                ui.ctx().request_repaint();
             }
-            if response.drag_stopped() {
-                if let Some((id, start, _, delta)) = self.drag.take() {
-                    self.commit(
-                        session,
-                        &[GraphEdit::SetPosition {
-                            node: id,
-                            position: Some([start[0] + delta.x, start[1] + delta.y]),
-                        }],
-                    );
-                }
+            if response.drag_stopped()
+                && let Some((id, start, _, delta)) = self.drag.take()
+            {
+                self.commit(
+                    session,
+                    &[GraphEdit::SetPosition {
+                        node: id,
+                        position: Some([start[0] + delta.x, start[1] + delta.y]),
+                    }],
+                );
             }
             for (i, port) in effective.iter().enumerate() {
                 let input = port.direction == PortDirection::In;
@@ -454,17 +454,18 @@ impl GraphCanvas {
                         i.pointer.any_released()
                             && i.pointer.interact_pos().is_some_and(|p| hit.contains(p))
                     });
-                    if input && (response.clicked() || released) {
-                        if let Some(from) = self.wire.take() {
-                            self.commit(
-                                session,
-                                &[GraphEdit::Connect {
-                                    from,
-                                    to: reference,
-                                    index: None,
-                                }],
-                            );
-                        }
+                    if input
+                        && (response.clicked() || released)
+                        && let Some(from) = self.wire.take()
+                    {
+                        self.commit(
+                            session,
+                            &[GraphEdit::Connect {
+                                from,
+                                to: reference,
+                                index: None,
+                            }],
+                        );
                     }
                 }
             }
@@ -474,10 +475,10 @@ impl GraphCanvas {
                 painter.line_segment([*from, *to], Stroke::new(2.0, Color32::LIGHT_BLUE));
             }
         }
-        if let Some(from) = self.wire.as_ref().and_then(|p| ports.get(p)) {
-            if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) {
-                painter.line_segment([*from, pointer], Stroke::new(2.0, Color32::YELLOW));
-            }
+        if let Some(from) = self.wire.as_ref().and_then(|p| ports.get(p))
+            && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
+        {
+            painter.line_segment([*from, pointer], Stroke::new(2.0, Color32::YELLOW));
         }
         if session.is_read_only() {
             self.cancel_gesture();

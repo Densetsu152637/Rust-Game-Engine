@@ -12,7 +12,7 @@ use crate::shader::{
 use crate::targets::HDR_FORMAT;
 use crate::view::ViewId;
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// Byte stride of one bloom pass's parameters in the shared uniform buffer.
@@ -393,6 +393,14 @@ fn main_params(settings: &PostSettings) -> Vec<[f32; 4]> {
 }
 
 impl PipelineFeature for PostFeature {
+    fn forget_view(&mut self, view: ViewId) {
+        self.views.remove(&view);
+        self.shared
+            .readbacks
+            .lock()
+            .expect("post readbacks lock")
+            .remove(&view);
+    }
     fn descriptor(&self) -> FeatureDescriptor {
         FeatureDescriptor::new(names::POST, Stage::PostProcess).disabled_by_default()
     }
@@ -852,6 +860,7 @@ pub(crate) struct TonemapFeature {
     module: Option<wgpu::ShaderModule>,
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     views: HashMap<ViewId, (wgpu::Buffer, u32)>,
+    pending: HashSet<ViewId>,
 }
 
 impl TonemapFeature {
@@ -861,11 +870,26 @@ impl TonemapFeature {
             module: None,
             pipelines: HashMap::new(),
             views: HashMap::new(),
+            pending: HashSet::new(),
         }
     }
 }
 
 impl PipelineFeature for TonemapFeature {
+    fn forget_view(&mut self, view: ViewId) {
+        self.views.remove(&view);
+        self.pending.remove(&view);
+    }
+    fn reset_history(&mut self, view: ViewId) {
+        self.pending.remove(&view);
+    }
+    fn finish_scene(&mut self, view: ViewId, _evaluation_id: u64) {
+        if self.pending.remove(&view)
+            && let Some((_, frame)) = self.views.get_mut(&view)
+        {
+            *frame = frame.wrapping_add(1) % 65_536;
+        }
+    }
     fn descriptor(&self) -> FeatureDescriptor {
         FeatureDescriptor::new(names::TONEMAP, Stage::Tonemap)
             .after(names::OUTPUT)
@@ -931,7 +955,8 @@ impl PipelineFeature for TonemapFeature {
             .views
             .entry(ctx.view.id)
             .or_insert_with(|| (uniform(&device, "engine tonemap params", 16 * 5), 0));
-        entry.1 = entry.1.wrapping_add(1) % 65_536;
+        let frame = entry.1.wrapping_add(1) % 65_536;
+        self.pending.insert(ctx.view.id);
         let v = &settings.vignette;
         let n = &settings.grain;
         let flag = |on: bool| if on { 1.0 } else { 0.0 };
@@ -949,7 +974,7 @@ impl PipelineFeature for TonemapFeature {
                 flag(n.enabled && n.intensity > 0.0),
             ],
             [v.intensity, v.smoothness, v.center[0], v.center[1]],
-            [v.color[0], v.color[1], v.color[2], entry.1 as f32],
+            [v.color[0], v.color[1], v.color[2], frame as f32],
             [n.intensity, n.response, 0.0, 0.0],
         ];
         ctx.gpu.queue.write_buffer(&entry.0, 0, &f32_bytes(&params));
