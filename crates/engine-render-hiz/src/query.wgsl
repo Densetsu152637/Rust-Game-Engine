@@ -50,7 +50,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     var greatest = 0.0;
     for (var y = y0; y < y1; y++) {
         for (var x = x0; x < x1; x++) {
-            let d = textureLoad(pyramid, vec2<i32>(x, y), i32(level)).x;
+            let d = textureLoad(pyramid, vec2<u32>(x, y), level).x;
             greatest = max(greatest, select(1.0, d, d >= 0.0 && d <= 1.0));
         }
     }

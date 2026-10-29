@@ -13,7 +13,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     var greatest = 0.0;
     for (var y = y0; y < y1; y++) {
         for (var x = x0; x < x1; x++) {
-            let value = textureLoad(source, vec2<i32>(x, y), 0).x;
+            let value = textureLoad(source, vec2<u32>(x, y), 0).x;
             greatest = max(greatest, select(1.0, value, value >= 0.0 && value <= 1.0));
         }
     }
