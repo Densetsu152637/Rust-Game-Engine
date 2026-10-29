@@ -477,6 +477,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)] // One empty batch range is the case under test.
     fn reference_keeps_stable_survivors_and_empty_batches() {
         let ranges = [0..3, 3..3, 3..6, 6..6];
         let survivors = reference_ranges(&[0, 1, 1, 1, 0, 1], &ranges).unwrap();
@@ -486,6 +487,8 @@ mod tests {
     }
 
     #[test]
+    // Deliberately invalid batch ranges, including reversed and single-range inputs.
+    #[allow(clippy::reversed_empty_ranges, clippy::single_range_in_vec_init)]
     fn rejects_overlaps_gaps_reordering_and_incomplete_coverage() {
         let masks = [1, 1, 1, 1];
         for ranges in [
