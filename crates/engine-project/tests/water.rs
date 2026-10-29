@@ -54,7 +54,10 @@ fn cpu_water_reports_unsupported_shadow_casting() {
     data["render_mode"] = json!("cpu");
     data["cast_shadows"] = json!(true);
     let mut s = scene(
-        vec![entity("lake", [0.0; 3], custom(&[water(data)]))],
+        vec![
+            entity("lake", [0.0; 3], custom(&[water(data)])),
+            entity("camera", [0.0, 10.0, 20.0], json!({"Camera3D": {}})),
+        ],
         vec![],
         &[],
     )
