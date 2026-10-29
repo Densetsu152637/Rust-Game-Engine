@@ -528,7 +528,9 @@ fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
     }];
     let lights = LightList {
         lights: vec![
-            Light::directional(Vec3::new(-1.0, -0.25, 0.0).normalize(), Vec3::ONE, 1.0)
+            // The sun grazes the receiver (N.L ~ 0.24), so a high intensity keeps the
+            // shadow contrast above the 20-level threshold against the 0.3 ambient.
+            Light::directional(Vec3::new(-1.0, -0.25, 0.0).normalize(), Vec3::ONE, 4.0)
                 .with_shadow(ShadowSettings::default()),
         ],
     };
@@ -653,9 +655,13 @@ fn shadow_toggle_preserves_foliage_colour_pose_at_lod_hysteresis_edge() -> Resul
                 .with_shadow(ShadowSettings::default()),
         ],
     };
-    let near = make_view(Vec3::new(0.0, 6.0, 19.0), Vec3::ZERO, 0.0);
+    // The views sit 6 m to the side at the same distance from the post as a view
+    // straight on from z = 19 / 21 (so the LOD bands are unchanged), because the post
+    // would otherwise hide the receiver samples behind it.
+    let side_eye = |z: f32| Vec3::new(6.0, 6.0, (z * z - 36.0).sqrt());
+    let near = make_view(side_eye(19.0), Vec3::ZERO, 0.0);
     render_scene(&gpu, &mut pipeline, &world, &near, &[], &lights)?;
-    let far = make_view(Vec3::new(0.0, 6.0, 21.0), Vec3::ZERO, 0.0);
+    let far = make_view(side_eye(21.0), Vec3::ZERO, 0.0);
     let mut disabled = far.clone();
     disabled.features.set(names::FOLIAGE_SHADOW, false);
     let bare = render_scene(&gpu, &mut pipeline, &world, &disabled, &[], &lights)?;
