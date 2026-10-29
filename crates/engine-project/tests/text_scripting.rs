@@ -1,6 +1,7 @@
 //! `engine.TextScript` end to end: Rhai handlers, declared host functions, timers,
 //! fault policy, capabilities with staged writes, last-good reload, shared fuel
-//! and telemetry.
+//! and telemetry. Built only with the default `text-scripting` feature.
+#![cfg(feature = "text-scripting")]
 use bevy_ecs::prelude::*;
 use engine_project::{
     Result,
@@ -669,4 +670,35 @@ fn a_valid_but_never_started_project_runs_no_script_code() {
         "{:?}",
         runtime_log(&runtime)
     );
+}
+
+#[test]
+fn broadcasts_need_the_any_emit_scope_and_use_the_null_entity() {
+    let source = r#"fn on_start() { engine::emit("game.pong", #{ all: true }, ()); }"#;
+    for (scope, delivered) in [("self_only", false), ("any", true)] {
+        let dir = project_with(
+            &[("cast", source)],
+            vec![text_entity(
+                "hero",
+                json!({"script": "cast", "capabilities": {"emit": scope}}),
+            )],
+            None,
+        );
+        let mut runtime = runtime(&dir, false);
+        runtime.start().unwrap();
+        tick(&mut runtime, 2).unwrap();
+        let pongs = log(&runtime)
+            .into_iter()
+            .filter(|(name, _)| name == "game.pong")
+            .count();
+        let fault = scripts(&runtime)["instances"][0]["fault"].clone();
+        if delivered {
+            // The broadcast reaches the hero's own binding once.
+            assert_eq!(pongs, 1, "{scope}");
+            assert!(fault.is_null(), "{fault}");
+        } else {
+            assert_eq!(pongs, 0, "{scope}");
+            assert_eq!(fault["code"], "script.capability.denied", "{fault}");
+        }
+    }
 }

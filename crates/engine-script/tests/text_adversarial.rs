@@ -428,6 +428,8 @@ fn invalid_host_arguments_never_reach_the_native_function() {
         ("game::scale(1.0e308 * 10.0);", codes::HOST_ARGUMENT),
         ("game::name(5);", codes::HOST_ARGUMENT),
         ("game::touch(42);", codes::HOST_ARGUMENT),
+        ("game::touch(true);", codes::HOST_ARGUMENT),
+        ("game::touch([1, 2, 3]);", codes::HOST_ARGUMENT),
         ("game::touch(\"engine\");", codes::HOST_ARGUMENT),
         ("game::move([1.0, 2.0]);", codes::HOST_ARGUMENT),
         ("game::move([1.0, 2.0, \"z\"]);", codes::HOST_ARGUMENT),
@@ -452,6 +454,13 @@ fn invalid_host_arguments_never_reach_the_native_function() {
     let outcome = start(&format!("fn on_start() {{ game::name(\"{long_name}\"); }}"));
     assert!(outcome.result.is_ok(), "{:?}", outcome.result);
     assert_eq!(outcome.host.calls.len(), 1);
+    // `()` is the only way to name "no entity"; it reaches the host as handle 0.
+    let outcome = start("fn on_start() { game::touch(()); }");
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(
+        outcome.host.calls,
+        [(4, vec![Value::Entity(engine_script::EntityRef(0))])]
+    );
     // Valid calls pass through with the exact values.
     let outcome = start(
         "fn on_start() { game::ping(7); game::move([1.0, 2.0, 3.0]); \

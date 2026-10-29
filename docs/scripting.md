@@ -4,17 +4,19 @@ Gameplay has two layers. **Native Rust game crates** are the primary, trusted wa
 write gameplay: the engine compiles the crate together with the engine into a native
 executable and gameplay runs as ordinary Rust against the same Bevy ECS world. On top
 of that, **data-driven scripts** are additive and optional: visual scripts
-([`script_graph`](visual-scripting.md), shipped) run in a bounded, deterministic VM
-and reach the game only through declared host functions and explicit capabilities.
-There is no Lua: the earlier embedded Lua scripting was removed with the C++ engine
-and nothing here brings back an unbounded interpreter.
+([`script_graph`](visual-scripting.md), shipped) run in a bounded, deterministic VM,
+and [Rhai text scripts](#text-scripts-rhai) (shipped, `text-scripting` feature, on by
+default) run in a restricted Rhai engine. Both reach the game only through declared
+host functions and explicit capabilities. There is no Lua: the earlier embedded Lua
+scripting was removed with the C++ engine and nothing here brings back an unbounded
+interpreter.
 
-| | Native game crates | `script_graph` visual scripts |
-| --- | --- | --- |
-| Trust | Trusted code, the user's process privileges | Bounded by construction (not a defence against a malicious project, which can already edit native code) |
-| Authoring | Rust, compiled into a generation | JSON graph asset edited with `graph_edit` or the node editor |
-| World access | The whole `World` | Declared host functions, staged built-ins, capabilities |
-| Reload | New generation, restarts game state | `Runtime::reload_script_asset`, last good program kept on failure |
+| | Native game crates | `script_graph` visual scripts | Rhai text scripts |
+| --- | --- | --- | --- |
+| Trust | Trusted code, the user's process privileges | Bounded by construction (not a defence against a malicious project, which can already edit native code) | Restricted and budgeted, with a documented [isolation gap](#what-is-not-isolated) |
+| Authoring | Rust, compiled into a generation | JSON graph asset edited with `graph_edit` or the node editor | `.rhai` source, checked with `script_check` |
+| World access | The whole `World` | Declared host functions, staged built-ins, capabilities | The same host functions, staging and capabilities |
+| Reload | New generation, restarts game state | `Runtime::reload_script_asset`, last good program kept on failure | The same call, by `text_script` asset id |
 
 ## Shared script core
 
@@ -44,7 +46,7 @@ script backends:
   `script.function.signature` when a declaration has no matching implementation.
   Every argument is checked (type, finiteness, string and JSON bounds) before the
   native function runs, so invalid script data never reaches game code.
-- **Capabilities** are per `engine.ScriptGraph` component and denied by default:
+- **Capabilities** are per `engine.ScriptGraph` or `engine.TextScript` component and denied by default:
   `read` and `write` list component names `engine.component_get` and
   `engine.component_set` may touch on the script's own entity (writes must pass the
   component's schema; `engine.set_position` is denied on an entity whose pose is
@@ -79,8 +81,166 @@ script backends:
   the reload is cancelled and recorded in the runtime log. File
   watching is out of scope.
 - **MCP**: `script_schema` describes the contract (node types, host functions,
-  limits, codes) and `graph_validate` applies the project's declared functions when
-  a project is open. Neither executes scripts or game code.
+  limits, codes and the text backend), `graph_validate` applies the project's
+  declared functions when a project is open and `script_check` parses a `.rhai`
+  source. None of them executes scripts or game code.
+
+## Text scripts (Rhai)
+
+A **`text_script`** asset is a `.rhai` source file (kind `text_script`; other
+extensions are rejected with `project.script.language`) run by the
+**`engine.TextScript`** component. The backend is [Rhai](https://rhai.rs) pinned to
+`=1.26.1` inside `engine-script` behind the `text` feature, forwarded as the
+`engine-project` feature `text-scripting` (default on; a game may build with
+`--no-default-features`). With the feature off the component and the asset kind keep
+their data shape, but nothing parses or runs a source: validating a project that has a
+`text_script` asset, or starting a world that has the component, fails with
+`script.text.disabled`.
+
+`engine.TextScript` has the fields of `engine.ScriptGraph` except `graph` and
+`variables`: `script` (asset id, required), `seed`, `enabled`, `fuel_per_tick`
+(100..1,000,000, default 10,000), `capabilities` (`read`, `write`, `spawn` = 0, `emit`)
+and `fault_policy`. Project validation checks the shape, that the asset exists with kind
+`text_script`, that capability names are catalog components and that the source parses.
+Nothing is run to validate: top-level statements in a source are never evaluated (only
+function definitions and a literal `events` list are kept), so a load, a `script_check`
+or a reload cannot execute script code.
+
+### The script contract
+
+```rhai
+const events = ["collision.enter"];          // static subscriptions (literal strings)
+
+fn on_start()                      { this.hits = 0; engine::after(2.0, "tick"); }
+fn on_update(dt)                   { }
+fn on_event(name, payload, source) { this.hits += 1; game::chime(3); }
+fn on_stop()                       { }
+fn tick()                          { engine::emit("game.hit", #{ n: this.hits }, engine::self()); }
+```
+
+- Handlers are optional, but one that is present must take exactly the parameters shown
+  (`script.text.handler_missing`), and a non-empty `events` list requires `on_event`.
+  `events` must be a literal array of at most 64 valid, distinct event names
+  (`script.text.events`). Only those events are delivered, targeted at the entity or
+  broadcast, at most 64 per tick.
+- Per tick an instance runs `on_start` once (first tick), its events in delivered order,
+  due timers, then `on_update(dt)`. `on_stop` runs when the component is removed,
+  replaced, reloaded or the runtime stops (not for a despawned entity).
+- **State** lives in the object map `this`, which persists between handlers; local
+  variables do not. Persistent state that is too large, or nested deeper than 8 levels
+  or past 512 values, is discarded and the run traps with `script.memory.limit`.
+- **Host calls** map a dotted host name to a Rhai namespace: `engine.emit` is
+  `engine::emit(..)`, a declared `game.damage` is `game::damage(..)`. The names are the
+  built-ins of the shared core plus the project's `scriptFunctions`. Arguments are
+  converted by declared type (`int` to `i64`, `float` to `f64`, `string`, `vec3` as an
+  array of three floats, `json` from maps, arrays and scalars of at most 8 levels and 512
+  values, `entity` as an opaque handle) and checked before the native function runs.
+  `()` is the null entity, so `engine::emit(name, payload, ())` broadcasts when
+  `capabilities.emit` is `any`. A script cannot build any other entity handle; it gets
+  them from `engine::self()` and `engine::find_entity(id)`.
+- **Timers**: `engine::after(seconds, "fn_name")` runs a zero-parameter script function
+  after `seconds` (0..3600) of accumulated `dt`; at most 64 are pending per instance.
+  Timers that come due in one tick free their slots before their callbacks run.
+- `print` and `debug` accept only strings and write to the runtime log (prefix
+  `script: `). Nothing reaches stdout, so an MCP server's protocol stream stays clean.
+- There is no `import`, `eval`, module, file system, network, process, clock or ambient
+  randomness (use `engine::random_int`, seeded from `seed`, and `engine::time`).
+
+### Engine configuration
+
+`Engine::new_raw()` with only these packages: arithmetic, basic iterator, basic array,
+basic map and logic. The core language and its built-in operators are available
+(including string concatenation and comparison, and `type_of`), but the standard string,
+time, debugging and math-extension packages are not, so `"abc".len()` or `to_string(1)`
+is an unknown function (`script.host.failed`). Rhai crate features:
+`std, sync, no_time, no_custom_syntax, no_optimize, only_i64` (integers are `i64`).
+`unchecked` and `internals` must never be enabled (the adversarial tests would hang or
+fail), and `import` and `eval` are disabled symbols. `rhai` is a locked, offline
+dependency; upgrading it is a reviewed change.
+
+| Limit | Value | Reported as |
+| --- | --- | --- |
+| Source size | 256 KiB, UTF-8 | `script.text.parse` |
+| Fuel per instance and tick | 10,000 default, 100..1,000,000; 2,000,000 per tick across **all** script instances, graphs included | `script.fuel.exhausted` |
+| Script call depth | 16 | `script.call.depth` |
+| Expression nesting | 64 globally, 32 inside functions | `script.text.parse` |
+| String size | 4096 bytes (also counted per container) | `script.memory.limit` |
+| Array and map size | 512 elements each, counting nested containers | `script.memory.limit` |
+| Variables and functions | 128 and 128 | `script.memory.limit`, `script.text.parse` |
+| Pending timers | 64 per instance | `script.memory.limit` |
+| Persistent state | 64 KiB, depth 8, 512 values | `script.memory.limit` |
+| Worker native stack | 8 MiB per handler call | n/a |
+
+Every handler call runs on a short-lived scoped worker thread with its own native stack
+(Rhai recurses on the native stack). The host thread blocks on a rendezvous channel and
+serves each host call, fuel charge and log line, so no `World` reference or channel
+outlives a call.
+
+### Traps
+
+A trap stops the run, discards its staged writes and events, records a fault
+(`script.faulted`, telemetry, runtime log) and applies `fault_policy`. A faulted instance
+does not run again until its component or asset is replaced or reloaded.
+
+| Code | Text-script cause |
+| --- | --- |
+| `script.fuel.exhausted` | Operations or host-call cost used up the tick's or the global fuel; any loop form |
+| `script.memory.limit` | String, array or map growth or nesting past the engine limits, too many variables, state too large or deep, a payload past the bridge limits, more than 64 pending timers |
+| `script.call.depth` | More than 16 nested script calls, including through function pointers |
+| `script.host.argument` | A host argument of the wrong type, non-finite, oversize or an invalid handle (the native function is not called), or a bad timer delay |
+| `script.host.failed` | A host function failed, or any other Rhai runtime error: unknown function or namespace, wrong operand types, arithmetic errors |
+| `script.capability.denied` | A read or write outside `capabilities`, a non-self target, a pose-owned `set_position`, or an emit scope violation |
+| `script.value.nonfinite` | A non-finite number reached a boundary |
+| `script.event.limit` | More than 16 emits per instance or 256 in total per tick |
+
+Source and project diagnostics, reported before anything runs:
+
+| Code | Meaning |
+| --- | --- |
+| `script.text.parse` | Syntax error (with `line:col`), oversize or non-UTF-8 source, a disabled `import` or `eval`, an over-large literal, too many functions |
+| `script.text.handler_missing` | A handler with the wrong parameter count, or `events` without `on_event`; as a trap, a timer naming a missing or parameterised function |
+| `script.text.events` | `events` is not a literal array of at most 64 distinct valid event names |
+| `script.text.disabled` | The build was compiled without `text-scripting` |
+
+### Reload, determinism and telemetry
+
+`Runtime::reload_script_asset(id)` accepts a `text_script` asset id: the file is re-read,
+compiled and checked against every affected instance. On failure the last good program
+keeps running and the error is returned. On success affected instances run `on_stop`
+and restart fresh (no state migration) at the next tick boundary, which also recovers an
+instance that had faulted. Text instances run after the graph instances in authored-id
+order and share their per-tick global fuel budget. The same build, platform and inputs
+give the same events and telemetry. Telemetry lists text instances in the `scripts`
+snapshot field with `graph` set to the script asset id, fuel used, state bytes, pending
+timers and the fault (code and, when Rhai knows it, a `line:col` site).
+
+### What is not isolated
+
+- There is **no global heap cap**. Rhai's size limits bound each value (counting nested
+  elements), not total memory, and they are checked after an operation produces its
+  value. The limits above are the control, backed by the adversarial tests; memory is
+  not measured with an allocator in tests because the workspace forbids `unsafe`.
+- Fuel counts Rhai operations and declared host cost, not wall-clock time. A single Rhai
+  builtin is not interruptible mid-call, so builtins on 512-element values are the
+  longest uninterrupted work.
+- Rhai recurses natively for nested calls, expressions and nested values. Depth is
+  bounded by the limits above, and the worker stack (8 MiB) leaves a 4x margin over the
+  deepest value they admit (511 alternating array and map levels needed more than 1 MiB
+  in a debug build). That is a measured bound, not a proof.
+- Native game functions registered with `register_script_fn` are trusted and apply their
+  effects immediately; a panic in one propagates. Rhai is a third-party parser and
+  evaluator inside the process.
+- This is robustness and defence in depth against buggy scripts, not isolation from a
+  malicious project: project writers can already edit native Rust. Hostile content (mods
+  or user-generated scripts in a shipped game) is not a goal; a WebAssembly interpreter
+  is the documented option to revisit for that.
+
+### Checking scripts without running them
+
+The MCP read tool **`script_check`** (see [MCP](mcp.md)) takes an `asset`, a `path` or
+inline `source` and returns coded diagnostics with `line:col`, the functions the source
+defines and its event list. `script_schema` returns the text contract: component schema,
+handler list, calling convention and limits.
 
 ## Native game crates (trusted)
 

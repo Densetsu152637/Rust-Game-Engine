@@ -260,7 +260,8 @@ current design:
   objects cross independently compiled library boundaries, and a failed candidate
   build never destroys the last working generation. Data-driven scripts are
   additive, not a second type universe: `script_graph` visual scripts run in the
-  bounded `engine-script` VM and touch the world only through declared host
+  bounded `engine-script` VM and Rhai text scripts in a restricted, fuel-budgeted
+  engine (feature `text-scripting`); both touch the world only through declared host
   functions and the component catalog, with staged commits and a last-good reload
   ([Scripting](scripting.md)).
 - **Identity:** authored asset/entity IDs stay separate from generation-aware ECS

@@ -1,14 +1,18 @@
-//! Scripting for the runtime: `script_graph` visual scripts on entities.
+//! Scripting for the runtime: `script_graph` visual scripts and Rhai text scripts
+//! on entities.
 //!
 //! * `engine.ScriptGraph` ([`ScriptGraph`]): runs a `script_graph` graph asset on
 //!   an entity with explicit capabilities, a fuel budget and a fault policy.
+//! * `engine.TextScript` ([`TextScript`]): the same for a `text_script` (`.rhai`)
+//!   asset, behind the `text-scripting` feature; instances share the graph
+//!   instances' per-tick fuel budget.
 //! * The `scriptFunctions` project file ([`ScriptFunctionDecl`]) declares the host
 //!   functions graphs may call; [`register_script_fn`] supplies the native
 //!   implementations before the runtime starts. The built-in `engine.*` functions
 //!   ([`builtin_signatures`]) stage their writes and commit them only when a run
 //!   succeeds.
 //! * `script.faulted` events and the `scripts` telemetry of the runtime snapshot.
-//! * [`reload_asset`]: recompiles a graph asset with last-good semantics.
+//! * [`reload_asset`]: recompiles a graph or text asset with last-good semantics.
 //!
 //! The service runs immediately before the AI services in the tick (after event
 //! dispatch and native scripts, before simulation), so a script sees this tick's

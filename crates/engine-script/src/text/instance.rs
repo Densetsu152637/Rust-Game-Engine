@@ -630,6 +630,9 @@ fn dynamic_to_value(ty: ValueType, value: &Dynamic) -> Result<Value, Trap> {
             .clone()
             .try_cast::<ImmutableString>()
             .map(|v| Value::str(v.as_str())),
+        // `()` is the null entity handle (no target), for example an `engine::emit`
+        // broadcast. A script cannot build any other handle.
+        ValueType::Entity if value.is_unit() => Some(Value::Entity(crate::EntityRef(0))),
         ValueType::Entity => value
             .clone()
             .try_cast::<crate::EntityRef>()

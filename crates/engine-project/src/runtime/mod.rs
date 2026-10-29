@@ -403,9 +403,9 @@ impl Runtime {
         self.elapsed += dt as f64;
         Ok(())
     }
-    /// Recompiles the `script_graph` asset `id` from disk. On success every
-    /// instance of it restarts fresh at the next tick boundary; on failure the
-    /// last good program keeps running and the error is returned.
+    /// Recompiles the `script_graph` or `text_script` asset `id` from disk. On
+    /// success every instance of it restarts fresh at the next tick boundary; on
+    /// failure the last good program keeps running and the error is returned.
     pub fn reload_script_asset(&mut self, id: &str) -> Result<()> {
         crate::scripting::reload_asset(self.app.world_mut(), id)
     }
