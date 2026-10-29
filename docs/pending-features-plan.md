@@ -675,9 +675,16 @@ All results below are on RTX 5080 Vulkan with the per-checkout cache
 - Visual scripting MCP: done. All 463 `engine-mcp` tests and all 15
   `engine-tooling` `mcp_exec` tests pass.
 
-Remaining for a later run, most complete first: authored streamed/procedural
-audio project runtime, project retargeting checks, sequencer project runtime,
-editor shell and MCP settings tests, material graph authored runtime and four
+- Authored streamed/procedural audio: done. All 46 project `acoustics` tests,
+  including streamed, procedural and fault-cleanup emitters, and all 355 native
+  `engine-audio` tests (two hardware/cost tests ignored) pass.
+- Animation retargeting: done. All five project retargeting tests and the
+  imported-animation test pass.
+- Cinematics sequencer: done. All 31 project sequencer, coordinate and skinning
+  tests and seven native `engine-sequencer` tests pass after the origin-write
+  regression pauses before seeking, matching documented autoplay semantics.
+
+Remaining for a later run, most complete first: editor shell and MCP settings tests, material graph authored runtime and four
 GPU tests, World shadow GPU tests, physics audio validation, then the Rhai text
 backend (`feat/codex-rhai`) and the Hi-Z LOD consumer (`feat/codex-hiz-consumer`)
 from the ownership-transfer table. The final combined workspace gate is not run.
