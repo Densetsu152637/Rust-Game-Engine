@@ -537,14 +537,11 @@ impl Controller {
     }
     fn cue(&self, world: &mut World, gain: f32) {
         let result = (|| -> Result<()> {
+            // The runtime cache is filled lazily, so load the declared asset on demand.
+            let clip = engine_project::audio::load_clip(world, "asset:cue")?;
             let audio = world
                 .get_resource::<runtime::RuntimeAudio>()
                 .ok_or_else(|| invalid("audio unavailable"))?;
-            let clip = audio
-                .clips
-                .get("asset:cue")
-                .cloned()
-                .ok_or_else(|| invalid("cue missing"))?;
             audio
                 .control
                 .play(
@@ -564,14 +561,11 @@ impl Controller {
     }
     fn start_music(&mut self, world: &mut World) {
         let result = (|| -> Result<engine_audio::VoiceHandle> {
+            // The runtime cache is filled lazily, so load the declared asset on demand.
+            let clip = engine_project::audio::load_clip(world, "asset:loop")?;
             let audio = world
                 .get_resource::<runtime::RuntimeAudio>()
                 .ok_or_else(|| invalid("audio unavailable"))?;
-            let clip = audio
-                .clips
-                .get("asset:loop")
-                .cloned()
-                .ok_or_else(|| invalid("loop missing"))?;
             audio
                 .control
                 .play(
