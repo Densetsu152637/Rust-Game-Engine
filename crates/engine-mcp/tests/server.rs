@@ -59,7 +59,7 @@ fn a_server_can_be_reused_for_many_connections() {
             .serve(Cursor::new(request.into_bytes()), &mut out)
             .unwrap();
         let response: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 35);
+        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 36);
     }
     let names: Vec<_> = server
         .registry()
@@ -85,7 +85,7 @@ fn access_flags_are_independent() {
             .definitions()
             .count()
     };
-    assert_eq!(count(ServerConfig::new()), 35);
+    assert_eq!(count(ServerConfig::new()), 36);
     let access = |config: ServerConfig, name: &str| {
         Server::new(dir.path(), config)
             .unwrap()

@@ -418,6 +418,7 @@ fn component_schema_lists_all_components_and_rules() {
         "engine.StateTreeAgent",
         "engine.StreamingSource",
         "engine.Terrain",
+        "engine.TextScript",
         "engine.Tilemap",
         "engine.UiData",
         "engine.UiRoot",
