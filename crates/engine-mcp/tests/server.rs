@@ -180,7 +180,7 @@ fn access_flags_are_independent() {
         access(ServerConfig::new().allow_write(true), "graph_edit"),
         Some(AccessLevel::Write)
     );
-    assert_eq!(count(ServerConfig::new().allow_write(true)), 68);
+    assert_eq!(count(ServerConfig::new().allow_write(true)), 69);
     for (config, exposed) in [
         (ServerConfig::new(), false),
         (ServerConfig::new().allow_exec(true), false),
