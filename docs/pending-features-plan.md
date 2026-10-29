@@ -684,7 +684,23 @@ All results below are on RTX 5080 Vulkan with the per-checkout cache
   tests and seven native `engine-sequencer` tests pass after the origin-write
   regression pauses before seeking, matching documented autoplay semantics.
 
-Remaining for a later run, most complete first: editor shell and MCP settings tests, material graph authored runtime and four
-GPU tests, World shadow GPU tests, physics audio validation, then the Rhai text
-backend (`feat/codex-rhai`) and the Hi-Z LOD consumer (`feat/codex-hiz-consumer`)
-from the ownership-transfer table. The final combined workspace gate is not run.
+- Combined gate (Claude Sonnet worker, root-reviewed), head `59ede86`: rustfmt
+  check over all tracked workspace sources and strict workspace Clippy pass;
+  `cargo test --workspace --locked` passes 5,645 tests (233 ignored); the desktop
+  examples check and all five standalone example crates pass offline with locally
+  generated, gitignored lockfiles; `validate_fixture.py` passes. Real-adapter GPU
+  suites pass for `engine-world-render` (including all four `gpu_foliage` shadow
+  readbacks), `engine-material-graph` (11), `engine-editor-graph` (6),
+  `engine-ui-render` (33) and project `material_graph`/`physics` (11). Fixes were
+  Clippy cleanups, stale test fixtures and the desktop-2d example's switch to the
+  documented on-demand `audio::load_clip`. Native Opus builds with VS 2019 Build
+  Tools CMake (`CMAKE` and `CMAKE_GENERATOR="Visual Studio 16 2019"`), because the
+  VS 2026 install has no CMake. Local `main` is fast-forwarded to this revision;
+  it is not pushed.
+
+The workspace suite in that gate also covers the editor shell and MCP settings
+tests and the physics-audio project tests. Remaining unfinished code, most complete
+first: the Rhai text backend (`feat/codex-rhai`) and the Hi-Z LOD consumer
+(`feat/codex-hiz-consumer`) from the ownership-transfer table. Hardware-only
+checks (headset, microphone, audio device, HDR display, interactive editor) remain
+unverified.
