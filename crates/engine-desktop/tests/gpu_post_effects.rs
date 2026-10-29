@@ -174,7 +174,7 @@ fn authored_spatial_aa_changes_diagonal_and_clears_on_disable_resize() -> Result
             .as_chunks::<4>()
             .0
             .iter()
-            .zip(aa.chunks_exact(4))
+            .zip(aa.as_chunks::<4>().0)
             .map(|(a, b)| a[0].abs_diff(b[0]))
             .max()
             .unwrap_or(0)
@@ -223,7 +223,7 @@ fn authored_spatial_aa_changes_diagonal_and_clears_on_disable_resize() -> Result
             .as_chunks::<4>()
             .0
             .iter()
-            .zip(resized_aa.chunks_exact(4))
+            .zip(resized_aa.as_chunks::<4>().0)
             .any(|(a, b)| a[0].abs_diff(b[0]) > 2)
     );
     Ok(())
