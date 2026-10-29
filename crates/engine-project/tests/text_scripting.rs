@@ -702,3 +702,69 @@ fn broadcasts_need_the_any_emit_scope_and_use_the_null_entity() {
         }
     }
 }
+
+#[test]
+fn capability_violations_trap_with_the_denied_code_and_change_nothing() {
+    let cases = [
+        // Another entity's pose.
+        (
+            r#"engine::set_position(engine::find_entity("bystander"), [5.0, 5.0, 5.0]);"#,
+            json!({"script": "s"}),
+        ),
+        // A read of a component the script was not granted.
+        (
+            r#"engine::component_get("engine.TextScript", "seed");"#,
+            json!({"script": "s"}),
+        ),
+        // A write that is granted but violates the component schema.
+        (
+            r#"engine::component_set("engine.TextScript", "fuel_per_tick", 5);"#,
+            json!({"script": "s", "capabilities": {"write": ["engine.TextScript"]}}),
+        ),
+        // A write to a component that is only readable.
+        (
+            r#"engine::component_set("engine.TextScript", "seed", 3);"#,
+            json!({"script": "s", "capabilities": {"read": ["engine.TextScript"]}}),
+        ),
+        // A component that is not in the catalog cannot be granted at all.
+        (
+            r#"engine::component_set("engine.NoSuch", "x", 1);"#,
+            json!({"script": "s", "capabilities": {"write": ["engine.TextScript"]}}),
+        ),
+    ];
+    for (body, data) in cases {
+        let source = format!(
+            "fn on_start() {{ engine::set_position(engine::self(), [8.0, 8.0, 8.0]); {body} }}"
+        );
+        let dir = project_with(
+            &[("s", source.as_str())],
+            vec![
+                text_entity("hero", data.clone()),
+                json!({"id": "bystander", "name": "bystander",
+                    "components": {"Transform": {"position": [2, 0, 2]}}}),
+            ],
+            None,
+        );
+        let mut runtime = runtime(&dir, false);
+        runtime.start().unwrap();
+        tick(&mut runtime, 1).unwrap();
+        let fault = scripts(&runtime)["instances"][0]["fault"].clone();
+        assert_eq!(fault["code"], "script.capability.denied", "{body}: {fault}");
+        let world = runtime.app().world();
+        let position = |id: &str| {
+            world
+                .get::<Transform>(runtime.entity(id).unwrap())
+                .unwrap()
+                .position
+        };
+        assert_eq!(
+            position("hero"),
+            [1.0, 0.0, 1.0],
+            "{body}: staged write leaked"
+        );
+        assert_eq!(position("bystander"), [2.0, 0.0, 2.0], "{body}");
+        let hero = runtime.entity("hero").unwrap();
+        let config = world.get::<TextScript>(hero).unwrap();
+        assert_eq!((config.seed, config.fuel_per_tick), (0, 10_000), "{body}");
+    }
+}

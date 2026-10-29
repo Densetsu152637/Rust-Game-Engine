@@ -180,7 +180,7 @@ impl TextInstance {
                 {
                     let payload = json_to_dynamic(payload, 0, &mut 0)
                         .map_err(|trap| Fault { trap, site: None })?;
-                    let source = source.map_or(Dynamic::UNIT, |value| Dynamic::from(value));
+                    let source = source.map_or(Dynamic::UNIT, Dynamic::from);
                     call(
                         self,
                         "on_event",
@@ -760,7 +760,7 @@ fn dynamic_to_json(
         }
         let mut map = serde_json::Map::new();
         for (key, item) in v.iter() {
-            map.insert(key.to_string(), dynamic_to_json(&item, depth + 1, nodes)?);
+            map.insert(key.to_string(), dynamic_to_json(item, depth + 1, nodes)?);
         }
         return Ok(serde_json::Value::Object(map));
     }

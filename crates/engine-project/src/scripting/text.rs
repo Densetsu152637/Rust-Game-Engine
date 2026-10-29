@@ -172,10 +172,10 @@ impl TextState {
             .cloned()
             .collect();
         for key in removed {
-            if let Some(mut old) = self.instances.remove(&key) {
-                if world.get_entity(key.1).is_ok() {
-                    stop(world, registry, key.1, &mut old, fuel);
-                }
+            if let Some(mut old) = self.instances.remove(&key)
+                && world.get_entity(key.1).is_ok()
+            {
+                stop(world, registry, key.1, &mut old, fuel);
             }
         }
         for (key, fresh) in replacements {
@@ -251,6 +251,9 @@ impl TextState {
         Ok(())
     }
 
+    // Mirrors the graph service's `tick_instance`: the per-tick context is passed
+    // through as plain values instead of a one-use struct.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn step(
         &mut self,
         world: &mut World,
@@ -390,11 +393,11 @@ impl TextState {
             tick,
         });
         let id = authored_id(world, entity);
-        if let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>() {
-            if log.0.len() < builtins::MAX_RUNTIME_LOG {
-                log.0
-                    .push(format!("script: {id} faulted: {}", fault.code()));
-            }
+        if let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>()
+            && log.0.len() < builtins::MAX_RUNTIME_LOG
+        {
+            log.0
+                .push(format!("script: {id} faulted: {}", fault.code()));
         }
         let _ = crate::emit_events(
             world,
