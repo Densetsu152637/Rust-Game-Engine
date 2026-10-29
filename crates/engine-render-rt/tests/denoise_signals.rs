@@ -117,6 +117,7 @@ fn denoise(
             )
             .unwrap();
         submit(rt, encoder);
+        denoiser.finish_scene();
         if frame == 0 {
             input_rmse = rmse(&channels(&read_signal(rt, signal), kind), reference);
         }
@@ -377,6 +378,7 @@ fn denoiser_reduces_gi_and_glossy_reflection_noise() {
         )
         .unwrap();
     submit(&rt, encoder);
+    denoiser.finish_scene();
     let out = read_rgba16f(&rt, denoiser.output());
     let raw = read_rgba16f(&rt, &output);
     for k in 0..(SIZE * SIZE) as usize {
