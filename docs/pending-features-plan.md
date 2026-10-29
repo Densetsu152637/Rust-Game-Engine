@@ -657,3 +657,27 @@ checkpoints above: lightmap UV2 consumption, World-specific shaders, MCP
 execution checks, the scripting security review and the final combined gate.
 The four host-managed creations and the `claude/parity-*` worktrees keep the
 handling recorded in the paused checkpoint.
+
+## Claude root execution checkpoint (2026-10-29)
+
+All results below are on RTX 5080 Vulkan with the per-checkout cache
+`target/validation-build`, one heavy job at a time. Logs and exit codes are under
+`target/combined-validation/claude-*`.
+
+- Scene lifecycle: done. RT denoiser fix `d985b91` integrated at `67b234e`; all
+  58 `engine-render-rt` tests pass, including GPU denoiser suites. The desktop
+  suite passes 334 tests after `2ace124` derives the default render feature count
+  from the world and physics name lists (World shadows added two casters).
+- GPU visibility compaction: done. `35d610d` renames the reserved WGSL `meta`
+  identifier and loads Hi-Z texels with unsigned coordinates; all five
+  `gpu_visibility_indirect` tests, eight `engine-render-hiz` tests and the
+  native indirect suites pass.
+- Visual scripting MCP: done. All 463 `engine-mcp` tests and all 15
+  `engine-tooling` `mcp_exec` tests pass.
+
+Remaining for a later run, most complete first: authored streamed/procedural
+audio project runtime, project retargeting checks, sequencer project runtime,
+editor shell and MCP settings tests, material graph authored runtime and four
+GPU tests, World shadow GPU tests, physics audio validation, then the Rhai text
+backend (`feat/codex-rhai`) and the Hi-Z LOD consumer (`feat/codex-hiz-consumer`)
+from the ownership-transfer table. The final combined workspace gate is not run.
