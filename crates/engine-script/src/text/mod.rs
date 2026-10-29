@@ -12,6 +12,13 @@ mod program;
 pub use instance::{HostBinding, TextInstance};
 pub use program::{MAX_EVENTS, MAX_SOURCE_BYTES, TextProgram};
 
+/// Native stack of the scoped worker thread that evaluates one handler call. Rhai
+/// recurses on it for nested calls, expressions and (when cloning, measuring or
+/// dropping) nested arrays and maps, which its size limits do not bound by depth:
+/// 511 alternating array/map levels need between 1 and 2 MiB in a debug build, so
+/// 1 MiB overflowed; 8 MiB keeps a 4x margin. Address space only, committed lazily.
+pub const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+
 /// Deepest script call stack (`Engine::set_max_call_levels`).
 pub const MAX_CALL_LEVELS: usize = 16;
 /// Expression nesting limits: `(global, inside functions)`.

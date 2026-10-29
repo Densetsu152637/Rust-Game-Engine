@@ -180,7 +180,7 @@ pub fn text_limits() -> Option<serde_json::Value> {
         "max_functions": t::MAX_FUNCTIONS,
         "max_pending_timers": engine_script::trap::MAX_PENDING,
         "max_state_bytes": engine_script::trap::MAX_STATE_BYTES,
-        "stack_bytes": 1024 * 1024,
+        "worker_stack_bytes": t::WORKER_STACK_BYTES,
     }))
 }
 

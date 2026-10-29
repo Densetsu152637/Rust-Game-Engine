@@ -87,7 +87,8 @@ impl TextInstance {
         })
     }
 
-    fn run(
+    #[allow(clippy::too_many_arguments)]
+    fn run_handlers(
         &mut self,
         trigger: &Trigger<'_>,
         sender: SyncSender<Request>,
@@ -95,7 +96,6 @@ impl TextInstance {
         host_cost: Arc<AtomicU64>,
         timer_count: Arc<AtomicU64>,
         fuel: u64,
-        max_state_bytes: usize,
         max_call_depth: u16,
         trap: Arc<Mutex<Option<Trap>>>,
     ) -> Result<(), Fault> {
@@ -195,15 +195,47 @@ impl TextInstance {
             }
             Trigger::Stop => call(self, "on_stop", vec![])?,
         }
-        let state_size =
-            dynamic_size(&self.state, 0, &mut 0).map_err(|trap| Fault { trap, site: None })?;
-        if state_size > max_state_bytes {
-            return Err(Fault {
+        Ok(())
+    }
+
+    /// Runs one trigger, then enforces the persistent state budget. State that is
+    /// too large or nested deeper than the bridge walks is discarded here, on the
+    /// worker thread, so the deep structure is never dropped on the host's stack.
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        trigger: &Trigger<'_>,
+        sender: SyncSender<Request>,
+        ops: Arc<AtomicU64>,
+        host_cost: Arc<AtomicU64>,
+        timer_count: Arc<AtomicU64>,
+        fuel: u64,
+        max_state_bytes: usize,
+        max_call_depth: u16,
+        trap: Arc<Mutex<Option<Trap>>>,
+    ) -> Result<(), Fault> {
+        let result = self.run_handlers(
+            trigger,
+            sender,
+            ops,
+            host_cost,
+            timer_count,
+            fuel,
+            max_call_depth,
+            trap,
+        );
+        let too_big =
+            dynamic_size(&self.state, 0, &mut 0).map_or(true, |size| size > max_state_bytes);
+        if too_big {
+            self.state = Dynamic::from(Map::new());
+        }
+        match result {
+            Ok(()) if too_big => Err(Fault {
                 trap: Trap::Memory,
                 site: None,
-            });
+            }),
+            other => other,
         }
-        Ok(())
     }
 }
 
@@ -237,7 +269,7 @@ impl ScriptInstance for TextInstance {
             let trap_worker = Arc::clone(&trapped);
             let instance = &mut *self;
             let worker = thread::Builder::new()
-                .stack_size(1024 * 1024)
+                .stack_size(super::WORKER_STACK_BYTES)
                 .spawn_scoped(scope, move || {
                     instance.run(
                         trigger,
@@ -356,6 +388,10 @@ fn map_error(error: &EvalAltResult) -> Trap {
         EvalAltResult::ErrorTooManyOperations(..) => Trap::Fuel,
         EvalAltResult::ErrorTerminated(..) => Trap::Fuel,
         EvalAltResult::ErrorStackOverflow(..) => Trap::CallDepth,
+        // Rhai's own size and scope limits are the memory limits of the text backend.
+        EvalAltResult::ErrorDataTooLarge(..)
+        | EvalAltResult::ErrorTooManyVariables(..)
+        | EvalAltResult::ErrorTooManyModules(..) => Trap::Memory,
         _ => Trap::host(codes::HOST_FAILED, error.to_string()),
     }
 }
