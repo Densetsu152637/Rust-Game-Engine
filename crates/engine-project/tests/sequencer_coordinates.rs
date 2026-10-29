@@ -160,6 +160,8 @@ fn direct_origin_write_and_nonzero_initial_frame_use_applied_coordinates() {
         .world_mut()
         .resource_mut::<WorldOrigin>()
         .offset = [64., 0., 0.];
+    // Seeking keeps autoplay running; pause so the next tick only applies the origin.
+    control(&mut rt, Command::Pause).unwrap();
     control(
         &mut rt,
         Command::Seek {
