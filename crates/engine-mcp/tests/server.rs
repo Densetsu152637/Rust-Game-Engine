@@ -198,12 +198,12 @@ fn access_flags_are_independent() {
     }
     assert_eq!(
         count(ServerConfig::new().allow_exec(true)),
-        35,
+        36,
         "exec tools come from providers"
     );
     assert_eq!(
         count(ServerConfig::new().allow_write(true).allow_write(false)),
-        35
+        36
     );
 }
 
