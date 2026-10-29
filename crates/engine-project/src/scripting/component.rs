@@ -194,7 +194,8 @@ pub fn text_descriptor() -> crate::ComponentDescriptor {
         .as_object_mut()
         .expect("builtin schema is an object")
         .remove("variables");
-    descriptor.defaults = serde_json::to_value(TextScript::default()).expect("finite builtin defaults");
+    descriptor.defaults =
+        serde_json::to_value(TextScript::default()).expect("finite builtin defaults");
     descriptor
 }
 

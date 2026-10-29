@@ -46,6 +46,8 @@ pub const TEXT_PARSE: &str = "script.text.parse";
 pub const TEXT_HANDLER: &str = "script.text.handler_missing";
 /// Static text event declarations are malformed.
 pub const TEXT_EVENTS: &str = "script.text.events";
+/// The build has no text scripting backend (feature `text-scripting` is off).
+pub const TEXT_DISABLED: &str = "script.text.disabled";
 
 /// `script_graph` kind rules.
 pub mod graph {
@@ -87,6 +89,7 @@ pub const ALL: &[&str] = &[
     TEXT_PARSE,
     TEXT_HANDLER,
     TEXT_EVENTS,
+    TEXT_DISABLED,
     graph::ENTRY_MISSING,
     graph::UNREACHABLE,
     graph::VALUE_UNAVAILABLE,

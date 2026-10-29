@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{Error, Project, Result, Scene};
 use engine_graph::{GraphDiagnostic, GraphDocument, GraphIndex};
-use engine_script::{codes, graph::node};
+use engine_script::{ScriptError, codes, graph::node};
 
 /// The `script_graph` project check: host calls against the declared functions
 /// and constant component names against the catalog.
@@ -118,4 +118,74 @@ pub fn validate_scene(project: &Project, scene: &Scene) -> Result<()> {
 /// Parse and structurally validate a text asset without invoking any handler.
 pub fn check_text_asset(project: &Project, id: &str) -> Result<()> {
     compile_text_program(project, id).map(|_| ())
+}
+
+/// Largest `.rhai` source accepted, in bytes (same bound as the text backend).
+pub const MAX_TEXT_SOURCE_BYTES: usize = 256 * 1024;
+
+#[cfg(feature = "text-scripting")]
+const _: () = assert!(MAX_TEXT_SOURCE_BYTES == engine_script::text::MAX_SOURCE_BYTES);
+
+/// What a successful structural check of one `.rhai` source found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextReport {
+    /// Every function the source defines as `(name, parameter count)`, sorted.
+    pub functions: Vec<(String, usize)>,
+    /// Statically declared event subscriptions (`const events = [...]`), sorted.
+    pub events: Vec<String>,
+    pub source_bytes: usize,
+}
+
+/// Parse and structurally validate bounded `.rhai` source bytes. Nothing is run, no
+/// top-level statement is evaluated and no project is needed.
+#[cfg(feature = "text-scripting")]
+pub fn check_text_source(bytes: &[u8]) -> std::result::Result<TextReport, ScriptError> {
+    let program = engine_script::text::TextProgram::compile(bytes)?;
+    Ok(TextReport {
+        functions: program
+            .functions()
+            .map(|(name, arity)| (name.to_owned(), arity))
+            .collect(),
+        events: program.subscriptions().to_vec(),
+        source_bytes: bytes.len(),
+    })
+}
+
+/// Parse and structurally validate bounded `.rhai` source bytes.
+#[cfg(not(feature = "text-scripting"))]
+pub fn check_text_source(_bytes: &[u8]) -> std::result::Result<TextReport, ScriptError> {
+    Err(ScriptError::new(
+        codes::TEXT_DISABLED,
+        "this build was compiled without the text-scripting feature",
+    ))
+}
+
+/// Whether this build can parse and run Rhai text scripts.
+pub const TEXT_SCRIPTING: bool = cfg!(feature = "text-scripting");
+
+/// The enforced limits of the text backend as JSON; `None` without the feature.
+#[cfg(feature = "text-scripting")]
+pub fn text_limits() -> Option<serde_json::Value> {
+    use engine_script::text as t;
+    Some(serde_json::json!({
+        "max_source_bytes": t::MAX_SOURCE_BYTES,
+        "max_events": t::MAX_EVENTS,
+        "max_call_levels": t::MAX_CALL_LEVELS,
+        "max_expr_depth": t::MAX_EXPR_DEPTHS.0,
+        "max_function_expr_depth": t::MAX_EXPR_DEPTHS.1,
+        "max_string_bytes": engine_script::MAX_STRING_BYTES,
+        "max_array_size": t::MAX_ARRAY_SIZE,
+        "max_map_size": t::MAX_MAP_SIZE,
+        "max_variables": t::MAX_VARIABLES,
+        "max_functions": t::MAX_FUNCTIONS,
+        "max_pending_timers": engine_script::trap::MAX_PENDING,
+        "max_state_bytes": engine_script::trap::MAX_STATE_BYTES,
+        "stack_bytes": 1024 * 1024,
+    }))
+}
+
+/// The enforced limits of the text backend as JSON; `None` without the feature.
+#[cfg(not(feature = "text-scripting"))]
+pub fn text_limits() -> Option<serde_json::Value> {
+    None
 }

@@ -180,7 +180,9 @@ pub fn prepare(world: &mut World) -> Result<()> {
         verify_functions(world, state)?;
         let mut fuel = GLOBAL_FUEL_PER_TICK;
         sync(world, state, &mut fuel)?;
-        state.text.sync(world, &state.registry, state.instances.len(), &mut fuel)
+        state
+            .text
+            .sync(world, &state.registry, state.instances.len(), &mut fuel)
     })
 }
 
@@ -497,7 +499,11 @@ pub fn reload_asset(world: &mut World, id: &str) -> Result<()> {
     };
     let result = (|| {
         let project = Arc::clone(&world.resource::<ProjectResource>().0);
-        if project.assets.get(id).is_some_and(|asset| asset.kind == "text_script") {
+        if project
+            .assets
+            .get(id)
+            .is_some_and(|asset| asset.kind == "text_script")
+        {
             return state.text.reload(world, &state.registry, id);
         }
         let program = compile_program(&project, &state.registry, id)?;

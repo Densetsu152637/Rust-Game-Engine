@@ -1,18 +1,24 @@
-//! Project loading and live service for `engine.TextScript`.
+//! Project loading and live service for `engine.TextScript` (feature `text-scripting`).
 
 use super::{
     builtins::{self, ScriptRun, authored_id, fault_payload},
     component::{FaultPolicy, TextScript},
-    runtime::{EVENT_FAULTED, FaultStatus, InstanceStatus, MAX_EVENTS_PER_INSTANCE, MAX_INSTANCES, WorldHost},
+    runtime::{
+        EVENT_FAULTED, FaultStatus, InstanceStatus, MAX_EVENTS_PER_INSTANCE, MAX_INSTANCES,
+        WorldHost,
+    },
 };
 use crate::{EngineEvent, Error, Project, Result, runtime::ProjectResource};
 use bevy_ecs::prelude::*;
 use engine_ai::SplitMix64;
 use engine_script::{
-    Budget, Capabilities, Fault, HostRegistry, ScriptInstance, Trap, Trigger, codes,
-    text::{HostBinding, TextInstance, TextProgram, MAX_SOURCE_BYTES},
+    Budget, Capabilities, Fault, HostRegistry, ScriptInstance, Trigger,
+    text::{HostBinding, MAX_SOURCE_BYTES, TextInstance, TextProgram},
 };
-use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 /// Read and structurally compile a `.rhai` asset. No script code runs here.
 pub(super) fn compile_text_program(project: &Project, id: &str) -> Result<Arc<TextProgram>> {
@@ -63,13 +69,16 @@ impl TextState {
     }
 
     fn bindings(registry: &HostRegistry<World>) -> Vec<HostBinding> {
-        registry.names().filter_map(|name| {
-            registry.resolve(name).map(|(id, sig)| HostBinding {
-                name: name.to_owned(),
-                id,
-                sig: sig.clone(),
+        registry
+            .names()
+            .filter_map(|name| {
+                registry.resolve(name).map(|(id, sig)| HostBinding {
+                    name: name.to_owned(),
+                    id,
+                    sig: sig.clone(),
+                })
             })
-        }).collect()
+            .collect()
     }
 
     fn program_for(&mut self, world: &World, id: &str) -> Result<Arc<TextProgram>> {
@@ -89,9 +98,12 @@ impl TextState {
     ) -> Result<Running> {
         config.check_shape()?;
         let instance = if config.enabled {
-            let program = program.ok_or_else(|| Error::new("script.text.missing", "no compiled text program"))?;
-            Some(TextInstance::new(program, bindings.to_vec())
-                .map_err(|error| Error::new(error.code, error.message))?)
+            let program = program
+                .ok_or_else(|| Error::new("script.text.missing", "no compiled text program"))?;
+            Some(
+                TextInstance::new(program, bindings.to_vec())
+                    .map_err(|error| Error::new(error.code, error.message))?,
+            )
         } else {
             None
         };
@@ -115,17 +127,29 @@ impl TextState {
         graph_count: usize,
         fuel: &mut u64,
     ) -> Result<()> {
-        let configs: BTreeMap<(String, Entity), TextScript> = world.iter_entities()
-            .filter_map(|entity| entity.get::<TextScript>().cloned()
-                .map(|config| ((authored_id(world, entity.id()), entity.id()), config)))
+        let configs: BTreeMap<(String, Entity), TextScript> = world
+            .iter_entities()
+            .filter_map(|entity| {
+                entity
+                    .get::<TextScript>()
+                    .cloned()
+                    .map(|config| ((authored_id(world, entity.id()), entity.id()), config))
+            })
             .collect();
         if configs.len() + graph_count > MAX_INSTANCES {
-            return Err(Error::new("script.capacity", format!("more than {MAX_INSTANCES} script instances")));
+            return Err(Error::new(
+                "script.capacity",
+                format!("more than {MAX_INSTANCES} script instances"),
+            ));
         }
         let bindings = Self::bindings(registry);
         let mut replacements = Vec::new();
         for (key, config) in &configs {
-            if self.instances.get(key).is_some_and(|old| old.config == *config) {
+            if self
+                .instances
+                .get(key)
+                .is_some_and(|old| old.config == *config)
+            {
                 continue;
             }
             let program = if config.enabled {
@@ -133,10 +157,20 @@ impl TextState {
                     Some(candidate) => Arc::clone(candidate),
                     None => self.program_for(world, &config.script)?,
                 })
-            } else { None };
-            replacements.push((key.clone(), Self::make_running(config.clone(), program, &bindings)?));
+            } else {
+                None
+            };
+            replacements.push((
+                key.clone(),
+                Self::make_running(config.clone(), program, &bindings)?,
+            ));
         }
-        let removed: Vec<_> = self.instances.keys().filter(|key| !configs.contains_key(*key)).cloned().collect();
+        let removed: Vec<_> = self
+            .instances
+            .keys()
+            .filter(|key| !configs.contains_key(*key))
+            .cloned()
+            .collect();
         for key in removed {
             if let Some(mut old) = self.instances.remove(&key) {
                 if world.get_entity(key.1).is_ok() {
@@ -150,18 +184,36 @@ impl TextState {
             }
             self.instances.insert(key, fresh);
         }
-        let used: BTreeSet<_> = self.instances.values().map(|running| running.config.script.as_str()).collect();
+        let used: BTreeSet<_> = self
+            .instances
+            .values()
+            .map(|running| running.config.script.as_str())
+            .collect();
         self.programs.retain(|id, _| used.contains(id.as_str()));
         Ok(())
     }
 
-    fn apply_reloads(&mut self, world: &mut World, registry: &HostRegistry<World>, fuel: &mut u64) -> Result<()> {
-        if self.reload.is_empty() { return Ok(()); }
+    fn apply_reloads(
+        &mut self,
+        world: &mut World,
+        registry: &HostRegistry<World>,
+        fuel: &mut u64,
+    ) -> Result<()> {
+        if self.reload.is_empty() {
+            return Ok(());
+        }
         let bindings = Self::bindings(registry);
         let mut replacements = Vec::new();
         for (key, running) in &self.instances {
             if let Some(program) = self.reload.get(&running.config.script) {
-                replacements.push((key.clone(), Self::make_running(running.config.clone(), Some(Arc::clone(program)), &bindings)?));
+                replacements.push((
+                    key.clone(),
+                    Self::make_running(
+                        running.config.clone(),
+                        Some(Arc::clone(program)),
+                        &bindings,
+                    )?,
+                ));
             }
         }
         for (key, fresh) in replacements {
@@ -175,12 +227,25 @@ impl TextState {
     }
 
     /// Stage a compiled candidate; parse/shape failures preserve the last good program.
-    pub(super) fn reload(&mut self, world: &World, registry: &HostRegistry<World>, id: &str) -> Result<()> {
+    pub(super) fn reload(
+        &mut self,
+        world: &World,
+        registry: &HostRegistry<World>,
+        id: &str,
+    ) -> Result<()> {
         let project = &world.resource::<ProjectResource>().0;
         let candidate = compile_text_program(project, id)?;
         let bindings = Self::bindings(registry);
-        for running in self.instances.values().filter(|running| running.config.script == id) {
-            Self::make_running(running.config.clone(), Some(Arc::clone(&candidate)), &bindings)?;
+        for running in self
+            .instances
+            .values()
+            .filter(|running| running.config.script == id)
+        {
+            Self::make_running(
+                running.config.clone(),
+                Some(Arc::clone(&candidate)),
+                &bindings,
+            )?;
         }
         self.reload.insert(id.to_owned(), candidate);
         Ok(())
@@ -201,8 +266,20 @@ impl TextState {
         self.apply_reloads(world, registry, fuel)?;
         let keys: Vec<_> = self.instances.keys().cloned().collect();
         for key in keys {
-            let Some(mut running) = self.instances.remove(&key) else { continue; };
-            let result = self.tick_one(world, registry, key.1, &mut running, dt, time, delivered, fuel, tick);
+            let Some(mut running) = self.instances.remove(&key) else {
+                continue;
+            };
+            let result = self.tick_one(
+                world,
+                registry,
+                key.1,
+                &mut running,
+                dt,
+                time,
+                delivered,
+                fuel,
+                tick,
+            );
             self.instances.insert(key, running);
             result?;
         }
@@ -222,7 +299,9 @@ impl TextState {
         fuel: &mut u64,
         tick: u64,
     ) -> Result<()> {
-        let Some(mut instance) = running.instance.take() else { return Ok(()); };
+        let Some(mut instance) = running.instance.take() else {
+            return Ok(());
+        };
         if *fuel == 0 {
             self.skipped += 1;
             running.instance = Some(instance);
@@ -233,28 +312,44 @@ impl TextState {
         let initial_fuel = budget.fuel;
         running.ticks += 1;
         world.resource_mut::<ScriptRun>().instance_emits = 0;
-        let subscriptions: BTreeSet<_> = instance.subscriptions().iter().map(String::as_str).collect();
+        let subscriptions: BTreeSet<_> = instance
+            .subscriptions()
+            .iter()
+            .map(String::as_str)
+            .collect();
         let mut sequence = Vec::new();
         if !running.started {
             running.started = true;
             sequence.push(Trigger::Start);
         }
-        sequence.extend(delivered.iter()
-            .filter(|event| (event.target == Some(entity) || event.target.is_none())
-                && subscriptions.contains(event.name.as_str()))
-            .take(MAX_EVENTS_PER_INSTANCE)
-            .map(|event| Trigger::Event {
-                name: &event.name,
-                payload: &event.payload,
-                source: event.source.map(|entity| engine_script::EntityRef(entity.to_bits())),
-            }));
+        sequence.extend(
+            delivered
+                .iter()
+                .filter(|event| {
+                    (event.target == Some(entity) || event.target.is_none())
+                        && subscriptions.contains(event.name.as_str())
+                })
+                .take(MAX_EVENTS_PER_INSTANCE)
+                .map(|event| Trigger::Event {
+                    name: &event.name,
+                    payload: &event.payload,
+                    source: event
+                        .source
+                        .map(|entity| engine_script::EntityRef(entity.to_bits())),
+                }),
+        );
         sequence.push(Trigger::Update { dt });
         let mut fault = None;
         let mut outcome = Ok(());
         for trigger in sequence {
             begin(world, running, time);
             let result = {
-                let mut host = WorldHost { world, registry, caps: &running.caps, entity };
+                let mut host = WorldHost {
+                    world,
+                    registry,
+                    caps: &running.caps,
+                    entity,
+                };
                 instance.handle(&trigger, &mut host, &mut budget)
             };
             if let Err(error) = end(world, running, result.is_ok()) {
@@ -277,54 +372,93 @@ impl TextState {
         outcome
     }
 
-    fn record_fault(&mut self, world: &mut World, entity: Entity, running: &mut Running, fault: &Fault, tick: u64) -> Result<()> {
+    fn record_fault(
+        &mut self,
+        world: &mut World,
+        entity: Entity,
+        running: &mut Running,
+        fault: &Fault,
+        tick: u64,
+    ) -> Result<()> {
         self.faults += 1;
         let site = fault.site.as_ref().map(ToString::to_string);
         let message = fault.trap.message();
-        running.fault = Some(FaultRecord { code: fault.code(), site: site.clone(), message: message.clone(), tick });
+        running.fault = Some(FaultRecord {
+            code: fault.code(),
+            site: site.clone(),
+            message: message.clone(),
+            tick,
+        });
         let id = authored_id(world, entity);
         if let Some(mut log) = world.get_resource_mut::<crate::runtime::RuntimeLog>() {
             if log.0.len() < builtins::MAX_RUNTIME_LOG {
-                log.0.push(format!("script: {id} faulted: {}", fault.code()));
+                log.0
+                    .push(format!("script: {id} faulted: {}", fault.code()));
             }
         }
-        let _ = crate::emit_events(world, vec![EngineEvent {
-            name: EVENT_FAULTED.to_owned(), source: None, target: Some(entity),
-            payload: fault_payload(&running.config.script, fault.code(), site, &message),
-        }]);
+        let _ = crate::emit_events(
+            world,
+            vec![EngineEvent {
+                name: EVENT_FAULTED.to_owned(),
+                source: None,
+                target: Some(entity),
+                payload: fault_payload(&running.config.script, fault.code(), site, &message),
+            }],
+        );
         match running.config.fault_policy {
             FaultPolicy::Disable => Ok(()),
-            FaultPolicy::StopRuntime => Err(Error::new(fault.code(), format!("script {} faulted: {fault}", running.config.script))),
+            FaultPolicy::StopRuntime => Err(Error::new(
+                fault.code(),
+                format!("script {} faulted: {fault}", running.config.script),
+            )),
         }
     }
 
-    pub(super) fn shutdown(&mut self, world: &mut World, registry: &HostRegistry<World>, fuel: &mut u64) {
+    pub(super) fn shutdown(
+        &mut self,
+        world: &mut World,
+        registry: &HostRegistry<World>,
+        fuel: &mut u64,
+    ) {
         for ((_, entity), mut running) in std::mem::take(&mut self.instances) {
-            if world.get_entity(entity).is_ok() { stop(world, registry, entity, &mut running, fuel); }
+            if world.get_entity(entity).is_ok() {
+                stop(world, registry, entity, &mut running, fuel);
+            }
         }
     }
 
-    pub(super) fn len(&self) -> usize { self.instances.len() }
-    pub(super) fn faults(&self) -> u64 { self.faults }
-    pub(super) fn skipped(&self) -> u64 { self.skipped }
+    pub(super) fn len(&self) -> usize {
+        self.instances.len()
+    }
+    pub(super) fn faults(&self) -> u64 {
+        self.faults
+    }
+    pub(super) fn skipped(&self) -> u64 {
+        self.skipped
+    }
     pub(super) fn status(&self) -> Vec<InstanceStatus> {
-        self.instances.iter().map(|((id, _), running)| {
-            let debug = running.instance.as_ref().map(ScriptInstance::debug);
-            InstanceStatus {
-                entity: id.clone(),
-                graph: running.config.script.clone(),
-                enabled: running.config.enabled,
-                ticks: running.ticks,
-                fault: running.fault.as_ref().map(|fault| FaultStatus {
-                    code: fault.code.to_owned(), site: fault.site.clone(),
-                    message: fault.message.clone(), tick: fault.tick,
-                }),
-                fuel_used: running.last_fuel_used,
-                state_bytes: debug.as_ref().map_or(0, |debug| debug.state_bytes),
-                pending: debug.as_ref().map_or(0, |debug| debug.pending),
-                variables: BTreeMap::new(),
-            }
-        }).collect()
+        self.instances
+            .iter()
+            .map(|((id, _), running)| {
+                let debug = running.instance.as_ref().map(ScriptInstance::debug);
+                InstanceStatus {
+                    entity: id.clone(),
+                    graph: running.config.script.clone(),
+                    enabled: running.config.enabled,
+                    ticks: running.ticks,
+                    fault: running.fault.as_ref().map(|fault| FaultStatus {
+                        code: fault.code.to_owned(),
+                        site: fault.site.clone(),
+                        message: fault.message.clone(),
+                        tick: fault.tick,
+                    }),
+                    fuel_used: running.last_fuel_used,
+                    state_bytes: debug.as_ref().map_or(0, |debug| debug.state_bytes),
+                    pending: debug.as_ref().map_or(0, |debug| debug.pending),
+                    variables: BTreeMap::new(),
+                }
+            })
+            .collect()
     }
 }
 
@@ -336,10 +470,15 @@ fn begin(world: &mut World, running: &mut Running, time: f64) {
 }
 
 fn end(world: &mut World, running: &mut Running, ok: bool) -> Result<()> {
-    running.rng = std::mem::replace(&mut world.resource_mut::<ScriptRun>().rng, SplitMix64::new(0));
+    running.rng = std::mem::replace(
+        &mut world.resource_mut::<ScriptRun>().rng,
+        SplitMix64::new(0),
+    );
     if ok {
         let result = builtins::commit(world);
-        if result.is_err() { world.resource_mut::<ScriptRun>().clear_run(); }
+        if result.is_err() {
+            world.resource_mut::<ScriptRun>().clear_run();
+        }
         result
     } else {
         world.resource_mut::<ScriptRun>().clear_run();
@@ -347,15 +486,30 @@ fn end(world: &mut World, running: &mut Running, ok: bool) -> Result<()> {
     }
 }
 
-fn stop(world: &mut World, registry: &HostRegistry<World>, entity: Entity, running: &mut Running, fuel: &mut u64) {
-    let Some(mut instance) = running.instance.take() else { return; };
-    if !running.started || *fuel == 0 { return; }
+fn stop(
+    world: &mut World,
+    registry: &HostRegistry<World>,
+    entity: Entity,
+    running: &mut Running,
+    fuel: &mut u64,
+) {
+    let Some(mut instance) = running.instance.take() else {
+        return;
+    };
+    if !running.started || *fuel == 0 {
+        return;
+    }
     let mut budget = Budget::with_fuel(running.config.fuel_per_tick);
     budget.fuel = budget.fuel.min(*fuel);
     let initial_fuel = budget.fuel;
     begin(world, running, 0.0);
     let result = {
-        let mut host = WorldHost { world, registry, caps: &running.caps, entity };
+        let mut host = WorldHost {
+            world,
+            registry,
+            caps: &running.caps,
+            entity,
+        };
         instance.handle(&Trigger::Stop, &mut host, &mut budget)
     };
     *fuel = fuel.saturating_sub(initial_fuel.saturating_sub(budget.fuel));

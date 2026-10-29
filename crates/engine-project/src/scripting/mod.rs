@@ -22,12 +22,16 @@ mod check;
 mod component;
 mod functions;
 mod runtime;
+#[cfg_attr(not(feature = "text-scripting"), path = "text_off.rs")]
 mod text;
 
 pub use builtins::{MAX_EMITS_GLOBAL, MAX_EMITS_PER_INSTANCE};
-pub use check::{check_text_asset, validate_scene};
+pub use check::{
+    MAX_TEXT_SOURCE_BYTES, TEXT_SCRIPTING, TextReport, check_text_asset, check_text_source,
+    text_limits, validate_scene,
+};
 pub use component::{
-    FaultPolicy, MAX_OVERRIDES, SCRIPT_GRAPH, TEXT_SCRIPT, ScriptCapabilities, ScriptGraph,
+    FaultPolicy, MAX_OVERRIDES, SCRIPT_GRAPH, ScriptCapabilities, ScriptGraph, TEXT_SCRIPT,
     TextScript, descriptor, text_descriptor,
 };
 pub use functions::{

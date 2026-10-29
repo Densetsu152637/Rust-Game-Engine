@@ -96,6 +96,13 @@ impl TextProgram {
         })
     }
 
+    /// Every function the source defines as `(name, parameter count)`, sorted.
+    pub fn functions(&self) -> impl Iterator<Item = (&str, usize)> {
+        self.functions
+            .iter()
+            .map(|(name, arity)| (name.as_str(), *arity))
+    }
+
     pub fn subscriptions(&self) -> &[String] {
         &self.subscriptions
     }

@@ -941,7 +941,7 @@ fn brackets_inside_strings_do_not_count_as_nesting() {
     let dir = tempfile::tempdir().unwrap();
     let s = store(dir.path());
     let data = map(
-        json!({"text": "[".repeat(300) + &"{".repeat(300), "quoted": "\"[[[[[[\" and \\\\ [[[["}),
+        json!({"text": "[".repeat(300) + "{".repeat(300).as_str(), "quoted": "\"[[[[[[\" and \\\\ [[[["}),
     );
     s.save("slot", data.clone(), None).unwrap();
     assert_eq!(s.load("slot", None).unwrap(), data);

@@ -182,7 +182,7 @@ fn default_server_is_read_only_and_lists_no_write_or_exec_tools() {
     );
     assert_eq!(session.code, 0, "{}", session.stderr);
     let names = tool_names(&session);
-    assert_eq!(names.len(), 35);
+    assert_eq!(names.len(), 36);
     assert!(names.contains(&"navigation_query".to_owned()));
     assert!(names.contains(&"physics_query".to_owned()));
     assert!(names.contains(&"physics_debug".to_owned()));
@@ -204,6 +204,7 @@ fn default_server_is_read_only_and_lists_no_write_or_exec_tools() {
         "graph_schema",
         "graph_validate",
         "script_schema",
+        "script_check",
     ] {
         assert!(names.contains(&read.to_owned()), "{read}");
     }
@@ -263,7 +264,7 @@ fn allow_write_adds_only_the_write_tools() {
         &[request(1, "tools/list", json!({}))],
     );
     let names = tool_names(&session);
-    assert_eq!(names.len(), 68);
+    assert_eq!(names.len(), 69);
     assert!(names.contains(&"graph_edit".to_owned()));
     assert!(names.contains(&"navigation_bake".to_owned()));
     assert!(names.contains(&"acoustics_bake".to_owned()));

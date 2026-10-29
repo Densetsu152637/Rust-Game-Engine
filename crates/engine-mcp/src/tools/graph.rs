@@ -312,6 +312,16 @@ fn read_graph_file(cx: &ToolContext<'_>, file: &Path) -> Result<Loaded, ToolFail
 /// Resolves a graph asset id through the manifest without loading the project:
 /// an invalid graph must stay inspectable and repairable.
 fn asset_file(cx: &ToolContext<'_>, id: &str) -> Result<PathBuf, ToolFailure> {
+    asset_file_of_kind(cx, id, "graph")
+}
+
+/// Resolves an asset id of the given kind through the manifest without loading
+/// the project (shared by the graph and script authoring tools).
+pub(super) fn asset_file_of_kind(
+    cx: &ToolContext<'_>,
+    id: &str,
+    kind: &str,
+) -> Result<PathBuf, ToolFailure> {
     let manifest =
         engine_project::confined_file(cx.root, Path::new("project.json")).map_err(|_| {
             ToolFailure::new(
@@ -337,12 +347,12 @@ fn asset_file(cx: &ToolContext<'_>, id: &str) -> Result<PathBuf, ToolFailure> {
                 "asset_not_found",
                 format!("the project catalog has no asset with ID {id}"),
             )
-            .with_hint("List graph assets with asset_list kind graph.")
+            .with_hint(format!("List assets with asset_list kind {kind}."))
         })?;
-    if entry["kind"] != "graph" {
+    if entry["kind"] != kind {
         return Err(ToolFailure::new(
             "asset_kind",
-            format!("asset {id} is not a graph asset"),
+            format!("asset {id} is not a {kind} asset"),
         ));
     }
     let relative = entry["path"].as_str().unwrap_or_default();
