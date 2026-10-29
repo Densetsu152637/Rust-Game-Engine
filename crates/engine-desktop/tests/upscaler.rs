@@ -88,6 +88,8 @@ fn scene(upscaler: UpscalerSettings) -> SceneRenderFrame {
         [1.0; 4],
     );
     SceneRenderFrame {
+        indirect: None,
+        applied_origin: [0.0; 3],
         sprites: RenderFrame {
             camera: Camera2D {
                 logical_size: [WIDTH, HEIGHT],

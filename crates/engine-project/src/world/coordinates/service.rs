@@ -90,6 +90,14 @@ pub(super) fn current_origin(world: &World) -> [f64; 3] {
         .map_or([0.0; 3], |o| o.offset)
 }
 
+/// Offset of the coordinate frame that current local transforms actually use.
+pub(super) fn render_origin(world: &World) -> [f64; 3] {
+    world
+        .get_resource::<Coordinates>()
+        .and_then(|state| state.applied)
+        .unwrap_or_else(|| current_origin(world))
+}
+
 /// The offset local transforms are expressed in, latching the current one the first time.
 pub(super) fn applied_origin(world: &mut World) -> [f64; 3] {
     let current = current_origin(world);

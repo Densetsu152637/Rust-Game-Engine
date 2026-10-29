@@ -572,7 +572,7 @@ integration and requests fall back with the build reason.
 - 2D sprites are composed after the 3D output and no longer depth-test against
   3D geometry (previously only the DLSS path behaved this way).
 
-## Native per-view environment and probe materials (source checkpoint)
+## Native and authored per-view environment and probe materials
 
 `ScenePipeline::set_indirect(ViewId, Option<Arc<IndirectScene>>)` configures native
 IBL/probes independently per view; None retains the legacy ambient/screen path.
@@ -581,6 +581,8 @@ LUT/sampler and a validated 448-byte dynamic indirect uniform. Groups 0/3 and th
 208-byte instance ABI remain unchanged. Legacy feature material layouts and sprite
 bindings remain available. The built-in material and graph template call
 `engine_material_indirect_lighting`; custom shaders using the older generic helper
-remain ambient/screen-only. No authored project/desktop adapter or lightmap/UV2
-integration is included. Native shaded-pixel GPU test sources are present but unrun;
+remain ambient/screen-only. Authored project loading and the desktop per-view
+cache hook are exercised by real-adapter HDR tests through `GpuRenderer`,
+including probe selection, SH rotation, view isolation and floating-origin
+rebasing. Lightmap/UV2 integration is not included;
 see [indirect lighting](rendering-indirect.md) for limits, precedence and lifecycle.

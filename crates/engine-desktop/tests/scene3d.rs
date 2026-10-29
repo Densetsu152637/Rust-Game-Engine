@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 fn scene() -> SceneRenderFrame {
     SceneRenderFrame {
+        indirect: None,
+        applied_origin: [0.0; 3],
         sprites: RenderFrame {
             camera: Camera2D {
                 logical_size: [64, 64],

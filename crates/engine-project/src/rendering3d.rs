@@ -671,12 +671,16 @@ pub struct SceneLighting {
     /// Physically based scenes use `1 / (1.2 * 2^EV100)`, for example about
     /// 2.5e-5 for sunlight at EV100 15. Range 1e-8..=1000.
     pub exposure: f32,
+    /// Optional catalog ID of an externally prepared indirect-lighting set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indirect: Option<String>,
 }
 impl Default for SceneLighting {
     fn default() -> Self {
         Self {
             ambient: 0.08,
             exposure: 1.0,
+            indirect: None,
         }
     }
 }
@@ -686,10 +690,11 @@ impl SceneLighting {
             || !(0.0..=1.0).contains(&self.ambient)
             || !self.exposure.is_finite()
             || !(1e-8..=1000.0).contains(&self.exposure)
+            || self.indirect.as_ref().is_some_and(String::is_empty)
         {
             return Err(Error::new(
                 "lighting.invalid",
-                "Camera lighting requires ambient in 0..1 and exposure in 1e-8..1000",
+                "Camera lighting requires ambient in 0..1, exposure in 1e-8..1000 and a nonempty optional indirect asset ID",
             ));
         }
         Ok(())
@@ -782,6 +787,10 @@ pub struct MeshDraw3D {
 pub struct SceneRenderFrame {
     pub sprites: RenderFrame,
     pub camera3d: Option<CameraInstance3D>,
+    /// Camera-selected, immutable authored IBL source; absent uses legacy ambient.
+    pub indirect: Option<Arc<crate::indirect::IndirectAsset>>,
+    /// Applied floating origin matching extracted camera and mesh transforms.
+    pub applied_origin: [f64; 3],
     pub meshes: Vec<MeshDraw3D>,
     /// Enabled light components in stable entity ID order.
     pub lights: Vec<crate::lights::LightInstance3D>,
@@ -818,6 +827,8 @@ impl From<RenderFrame> for SceneRenderFrame {
         Self {
             sprites,
             camera3d: None,
+            indirect: None,
+            applied_origin: [0.0; 3],
             meshes: vec![],
             lights: vec![],
             post: Default::default(),
