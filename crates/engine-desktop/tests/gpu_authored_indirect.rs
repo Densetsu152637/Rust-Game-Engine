@@ -83,6 +83,7 @@ fn authored_project(base: f64, rotated: bool) -> tempfile::TempDir {
     };
     let mut entities = vec![json!({"id":"camera","name":"Camera","components":{
         "Transform":{"position":[0,0,3]},
+        "Camera2D":{"logicalSize":[64,64]},
         "Camera3D":{"projection":{"kind":"orthographic","height":4,"near":0.1,"far":10},
             "lighting":{"ambient":0,"exposure":1,"indirect":"sky"}}
     }})];
@@ -143,6 +144,7 @@ fn hdr(
         .read_scene_hdr(render_pipeline::ViewId::MAIN)
 }
 
+#[track_caller]
 fn close(actual: [f32; 4], expected: [f32; 3], tolerance: f32) {
     for channel in 0..3 {
         assert!(
@@ -231,14 +233,16 @@ fn authored_hdr_priority_blend_disable_resize_and_forget() -> Result<()> {
 
     renderer.resize(96, 96)?;
     let resized = OffscreenTarget::new(&renderer.gpu, 96, 96)?;
+    let resized_image = hdr(&mut renderer, &resized, &frame)?;
     close(
-        hdr(&mut renderer, &resized, &frame)?.pixel(48, 48),
+        resized_image.pixel(resized_image.size[0] / 2, resized_image.size[1] / 2),
         [0.0, 0.0, 3.84],
         0.04,
     );
     renderer.forget_view(render_pipeline::ViewId::MAIN);
+    let forgotten_image = hdr(&mut renderer, &resized, &frame)?;
     close(
-        hdr(&mut renderer, &resized, &frame)?.pixel(48, 48),
+        forgotten_image.pixel(forgotten_image.size[0] / 2, forgotten_image.size[1] / 2),
         [0.0, 0.0, 3.84],
         0.04,
     );

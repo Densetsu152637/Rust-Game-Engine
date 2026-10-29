@@ -534,7 +534,7 @@ fn authored_indirect_appears_in_asset_list_and_camera_uses() {
     let mut scene: Value = serde_json::from_slice(&fs::read(&scene_path).unwrap()).unwrap();
     scene["entities"].as_array_mut().unwrap().push(json!({
         "id":"ibl-camera","name":"IBL Camera","components":{
-            "Transform":{},"Camera3D":{"lighting":{"indirect":"asset:sky"}}
+            "Transform":{"position":[0,0,0]},"Camera3D":{"lighting":{"indirect":"asset:sky"}}
         }
     }));
     fs::write(&scene_path, serde_json::to_vec(&scene).unwrap()).unwrap();
