@@ -105,6 +105,8 @@ errors. Component references to assets must match the declared kind.
 | `Transform` | `position` `[x,y,z]` |
 | `Script` | `asset` (a `script` asset ID) |
 | `MeshRenderer` | `mesh` (mesh asset), optional `texture` (texture asset) |
+| `MeshLods` | requires `MeshRenderer`; `meshes` (up to 7 coarser mesh asset IDs, finest first), `thresholds` (one strictly decreasing screen-height fraction in `(0,1]` per level including level zero, so `meshes.length + 1` values, default `[1]`), `hysteresis` in `[0,1)` (0.1). Selected per camera; shadows keep `MeshRenderer.mesh`. See [mesh LOD](rendering-lod.md#authored-meshlods). |
+| `HiZOccluder` | requires `MeshRenderer`; optional `enabled` (true). Permits the mesh to write the certified Hi-Z occluder depth when the camera enables `engine.hiz.visibility`; native opacity, shader and budget checks may still reject it. See [Hi-Z camera visibility](rendering-hiz.md#camera-visibility-consumer). |
 | `SpriteRenderer` | `texture` (required); optional `size` `[1,1]`, `pivot` `[0.5,0.5]`, `tint` RGBA in `[0,1]` `[1,1,1,1]`, `source` and `frames` atlas rectangles `[x,y,w,h]`, `framesPerSecond` (0), `loop` (true), `layer` (0), `visible` (true) |
 | `Camera2D` | optional `logicalSize` `[320,180]`, `pixelsPerUnit` (16), `center` `[0,0]`, `follow` (entity ID), `pixelSnap` (true) |
 | `Camera3D` | optional `active` (true), `projection` tagged by `kind`: perspective uses `fov_y_radians`, `near`, `far`; orthographic uses `height`, `near`, `far`. Requires `Transform`. |

@@ -272,7 +272,8 @@ remain with their owner; do not resolve or commit their dirty state.
 - Independent source preparation underway: `codex/render-hiz` owns a conservative
   forward-Z MAX pyramid and bounded rectangle queries only. Odd-sized mip levels
   must cover every source texel; invalid/uncertain queries stay visible. Actual
-  LOD visibility consumption remains pending. `codex/render-post-effects` owns
+  LOD visibility consumption is implemented on `feat/codex-hiz-consumer` (see
+  "Hi-Z LOD consumer status" below). `codex/render-post-effects` owns
   native depth-of-field and motion-blur features on existing output-size post I/O;
   authored settings and real GPU validation follow native source handoff.
 - Dependency order after those prerequisites:
@@ -721,3 +722,36 @@ unverified.
   cap, a worker-thread panic propagates to the host, and a native stack overflow
   would abort the process (mitigated by the depth limits and worker stack).
   Remaining unfinished code: the Hi-Z LOD consumer.
+
+## Hi-Z LOD consumer status (`feat/codex-hiz-consumer`)
+
+Implemented on the branch, not yet integrated into `main`:
+
+- Authored `MeshLods` (level meshes, screen-height thresholds, hysteresis) and
+  `HiZOccluder` components with schema, validation, MCP component documentation,
+  asset-usage reporting and runtime extraction (`SceneRenderFrame::mesh_options`).
+- The desktop host selects each draw's CPU LOD per view with
+  `engine-mesh-lod` hysteresis before any camera prepass, uploads levels lazily,
+  budgets/validates them like base meshes and supplies chain-enclosing local
+  bounds, occluder marks and the level-zero shadow mesh.
+- The pipeline has trusted `OccluderDepth` (`engine.hiz.depth`) and `Visibility`
+  (`engine.hiz.visibility`, disabled by default) stages before `Opaque`: a
+  separate certified depth texture, the Hi-Z pyramid, eight-corner jitter-aware
+  queries and `HiZIndirect` compaction feeding real indirect opaque draws.
+  Shadows keep their own level-zero caster plan. Custom material shaders,
+  transparency, runtime geometry overrides, missing capabilities, budget overflow
+  and a disabled depth stage take the visible direct path and are reported in
+  `ViewReport::visibility` and the desktop `RenderStats`.
+- Evidence (RTX 5080, Vulkan, ignored tests `gpu_hiz_consumer` and `gpu_hiz_lod`):
+  indirect `instance_count` readback plus a depth-disabled coverage-counting replay
+  show the occluded instance absent with a pixel-identical frame; occluder
+  movement, resize, jitter, a second view, fallbacks, occluded and off-camera shadow
+  casters, selected-LOD-geometry occlusion, hysteresis and the JSON-authored path.
+
+Residual risks: no performance measurement exists; the normals/motion prepasses
+and the extra occluder depth pass still cover every candidate; the survivor count is
+GPU-only (`ViewReport.instances` counts candidates); level meshes are not
+deduplicated by content; an authored occluder is trusted to be a legitimate
+opaque rasterisation of the draw (holes in its mesh are real holes); XR eyes select
+LODs independently; the compaction WGSL must change with any future instance-layout
+(lightmap) migration.

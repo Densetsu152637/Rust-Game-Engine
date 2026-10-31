@@ -64,10 +64,9 @@ query conservatism. Ignored `gpu_hiz` tests request a real adapter and compare
 every mip and query result against the CPU reference for 3×5, 9×7, 1×17 and
 17×1 views, plus resize, replacement on later frames, independent views and
 input errors and a restricted compute-limit device. Tests upload `R32Float`
-samples, then write `Depth32Float` through a depth-only pass. Build, lint,
-CPU tests, and GPU tests have not yet run at this source checkpoint.
+samples, then write `Depth32Float` through a depth-only pass.
 
-## Opt-in indirect draw adapter prototype
+## Opt-in indirect draw adapter
 
 `engine-render-pipeline::visibility::HiZIndirect` consumes the real GPU
 `VisibilityOutput` from `HiZKernel::encode`. The caller provides one
@@ -99,13 +98,94 @@ Encoding rejects overlapping, gapped, reordered and incomplete batch ranges.
 It also checks mask count, buffer usage, byte arithmetic, alignment,
 binding sizes, dispatch count and device limits before encoding
 work. Errors are explicit; the caller owns direct-draw fallback for the
-whole affected frame. The current built-in mesh path remains direct.
+whole affected frame. The scene pipeline's opt-in use of this adapter is
+described under [Camera visibility consumer](#camera-visibility-consumer).
 
 Ignored real-GPU tests build masks through `HiZKernel::encode`, compare
 compacted IDs and both argument formats with a CPU reference, and render
 indexed and nonindexed diagnostic tiles with depth disabled. They cover
 mixed, all-visible, zero-visible and empty batches, aligned multibatch
-bindings, and restricted storage-binding and bind-group devices. Source
-formatting and metadata checks do not establish GPU behavior; these tests
-remain unrun until the shared validation slot. The trusted-depth stage,
-projected bounds, authored LOD/hysteresis and native frame-pipeline consumer are still pending.
+bindings, and restricted storage-binding and bind-group devices.
+
+## Camera visibility consumer
+
+The scene pipeline consumes the adapter for opaque camera draws. It is opt-in
+per camera: enable `engine.hiz.visibility` in `Camera3D.render_features` (the
+feature is disabled by default) and the host must supply per-draw visibility
+metadata (`ScenePipeline::render_view_with_visibility`, `MeshVisibility`). The
+desktop host does so whenever a draw authors `MeshLods` or `HiZOccluder`, or the
+camera requests the feature. Without the feature the opaque camera draws are the
+unchanged direct path; shadow draws differ only for instances whose selected LOD
+is coarser than level zero, which cast from level-zero geometry.
+
+Frame order for an enabled view:
+
+1. The host selects each draw's CPU LOD for this view, before any camera
+   prepass (`MeshLods`, see [rendering-lod.md](rendering-lod.md#authored-meshlods)).
+   The selected mesh is the draw's geometry for every camera stage.
+2. `OccluderDepth` (`engine.hiz.depth`) draws only certified occluders with the
+   selected geometry into a separate `Depth32Float` texture cleared to 1. The
+   normal depth, the normals/motion prepasses and custom-shader prepass depth
+   are never used: they are not trusted and not read.
+3. `Visibility` (`engine.hiz.visibility`) builds the forward-Z MAX pyramid of
+   that texture, runs one query per opaque instance and compacts the survivors
+   with `HiZIndirect` into indirect draws.
+4. `Opaque` issues the generated indexed/nonindexed indirect commands instead of
+   direct draws. Transparent draws, the normals and motion prepasses and every
+   shadow pass keep direct draws.
+
+Certified occluders: the draw carries `HiZOccluder` (enabled), its material is the
+built-in opaque shader (no custom material shader, not `transparent`), it is not a
+runtime geometry override (skinning, World-generated meshes), it has finite bounds,
+and the per-view budget holds (64 occluders, 200,000 triangles; excess markers stay
+ordinary candidates). Because the depth pass rasterises exactly the vertex
+transform of the colour pass, the certified depth is the depth the colour pass
+writes for those draws; it cannot over-occlude.
+
+Queries: the host supplies one local AABB per draw that encloses every level of
+its LOD chain. Each query projects all eight corners with the same jittered
+view-projection used for rasterisation, pads the rectangle by 2 pixels and
+lowers the nearest depth by 1e-4. Anything uncertain stays visible: a corner
+behind the near plane or outside clip space, a rectangle leaving the view, an
+invalid or missing bound, a nonfinite matrix, an occluder itself, and any
+instance with a custom material shader (displacement or alpha discard can move
+or remove its pixels, so its bound is not trusted).
+
+Shadows use their own caster plan: they draw every shadow-casting opaque
+instance directly, with level-zero geometry (`MeshVisibility::shadow_mesh`),
+whatever the camera culled. An occluded or off-screen caster still shadows the
+view.
+
+Explicit direct fallback. A view that requested the feature but cannot use it
+renders exactly as if it had not, and `ViewReport::visibility` says why
+(`requested`, `active`, `occluders`, `candidates`, `indirect_batches`,
+`fallback`): no metadata, no certified occluder, missing indirect or compute
+capabilities, more than 65,536 opaque instances or 256 indirect batches, a Hi-Z
+view the device cannot create (edge above 4,096 pixels), `engine.hiz.depth`
+disabled, or an encoding error. The desktop `RenderStats` expose
+`hiz_occluders`, `hiz_candidates` and `hiz_indirect`.
+
+Limits and honesty. The camera still pays the normals/motion prepass for every
+candidate and the occluder depth pass; the saving is the opaque colour draw of
+skipped instances. No performance claim is made: culling was verified for
+correctness, not speed. The pyramid is built from the current frame only (no
+history), so a very large occluder set or fine geometry costs a second raster
+pass. The survivor count lives only on the GPU; `ViewReport.instances` counts
+candidates. Scenes whose opaque geometry is mostly custom-material, mostly
+generated by the World, or has no `HiZOccluder` get no culling. Group-3 instance
+records are still the 208-byte layout; a later lightmap instance-layout
+migration must update the compaction WGSL in step.
+
+### Verification
+
+`ScenePipeline::visibility_diagnostic` (tests and tooling) blocks on the GPU and
+returns the `instance_count` each indirect command holds plus a depth-disabled
+replay of those exact commands: pixel alpha counts how many surviving instances
+cover it, so an occluded instance is absent whatever the draw order. Ignored
+real-adapter tests (`gpu_hiz_consumer`, `gpu_hiz_lod`; RTX 5080/Vulkan) cover
+the occluded instance missing from commands and replay with a pixel-identical
+frame, occluder movement (hidden, reappears, hides again), resize, jitter, a
+second independent view, every fallback above, an occluded and an off-camera
+caster that still shadow the floor, the selected LOD geometry (not its bounds)
+deciding occlusion, hysteresis in the rendered image, and the authored path
+from project JSON.

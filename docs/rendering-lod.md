@@ -107,6 +107,25 @@ let params = LodSelectionParams { vertical_fov: 1.0, viewport_height: 1080.0, pi
 let level = select_lod(&errors, &chain.bounds, camera_distance, &params, previous_level);
 ```
 
+## Authored `MeshLods`
+
+`MeshLods` on an entity with a `MeshRenderer` selects among authored mesh assets
+per camera at render time (desktop host, `engine-mesh-lod` selection):
+`MeshRenderer.mesh` is level zero and `meshes` lists up to seven coarser mesh
+assets. `thresholds` has one strictly decreasing value in `(0, 1]` per level
+(`meshes.len() + 1` entries) and `hysteresis` is in `[0, 1)`; the fraction is the
+bounding-sphere diameter over viewport height (`radius * proj[1][1] / distance`
+for perspective, `radius * proj[1][1]` for orthographic), where the sphere is level
+zero's local AABB transformed by the model (largest axis scale). Selection is
+per view and draw ID with the `ScreenSizeLods` dead band; a camera cut
+(`reset_history`) forgets it. Authored LODs never cull. Level zero is always the
+shadow geometry. Runtime geometry overrides (skinning, World-generated meshes)
+are level zero only and ignore `MeshLods`. Level meshes are validated and
+budgeted like base meshes, and uploaded lazily when first selected.
+
+The local bounds the visibility path uses enclose every level of the chain, so
+a coarser level that is not contained by level zero cannot be falsely culled.
+
 ## Measured results (debug build, from the crate tests)
 
 | Case | Result |

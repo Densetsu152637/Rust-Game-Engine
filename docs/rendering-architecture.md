@@ -59,7 +59,9 @@ Per view, in order (render size until Upscale, output size after):
 | `Prepare` | — | uploads, compute (no target bound) |
 | `Shadow` | `engine.shadows` | shadow casters into the view's shadow atlas layers |
 | `Prepass` | `engine.prepass.normals`, `engine.prepass.motion`; `engine.rt.shadows`, `engine.rt.ao`, `engine.rt.reflections`, `engine.rt.gi` (desktop host, disabled by default) | prepasses run only when a running feature (or the host) needs them; the RT features write the screen-lighting inputs ([rendering-raytracing.md](rendering-raytracing.md#frame-integration)) |
-| `Opaque` | `engine.opaque` | instanced opaque engine meshes |
+| `OccluderDepth` | `engine.hiz.depth` | certified current-frame occluders into a separate depth texture; idle unless the camera enables `engine.hiz.visibility` ([rendering-hiz.md](rendering-hiz.md#camera-visibility-consumer)) |
+| `Visibility` | `engine.hiz.visibility` (disabled by default) | Hi-Z pyramid of that depth, conservative queries and GPU compaction into indirect opaque draws |
+| `Opaque` | `engine.opaque` | instanced opaque engine meshes, or the compacted indirect draws when `Visibility` ran |
 | `Sky` | — | background after opaque geometry |
 | `OpaqueEffects` | — | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination |
 | `Transparent` | `engine.transparent` | blended engine meshes, back to front |

@@ -14,6 +14,10 @@ rendering, custom WGSL materials and native render features are available.
 `Camera3D.render_features` enables or disables render features per camera
 (for example `{"engine.shadows": false}`); see
 [render architecture](rendering-architecture.md#authored-data-status-and-mcp).
+`{"engine.hiz.visibility": true}` opts a camera into Hi-Z occlusion culling of
+opaque draws from entities marked `HiZOccluder`, with authored `MeshLods`
+selected per camera; see [camera visibility](rendering-hiz.md#camera-visibility-consumer)
+for what is certified, what always stays visible and the direct fallbacks.
 
 ## Camera and lighting
 
