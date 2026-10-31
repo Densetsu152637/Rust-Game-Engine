@@ -3,6 +3,12 @@ name = "engine-project"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["text-scripting"]
+# Rhai text scripts (`engine.TextScript`, `text_script` assets). Off: the component and asset
+# kind still load and validate their shape, but nothing parses or runs a .rhai source.
+text-scripting = ["engine-script/text"]
+
 [dependencies]
 engine-assets = { path = "../engine-assets" }
 engine-network = { path = "../engine-network" }
@@ -25,7 +31,7 @@ engine-graph = { path = "../engine-graph" }
 engine-material-graph = { path = "../engine-material-graph" }
 engine-mesh-lod = { path = "../engine-mesh-lod" }
 engine-ai = { path = "../engine-ai" }
-engine-script = { path = "../engine-script" }
+engine-script = { path = "../engine-script", default-features = false }
 engine-gameplay = { path = "../engine-gameplay" }
 engine-locale = { path = "../engine-locale" }
 engine-pcg = { path = "../engine-pcg" }

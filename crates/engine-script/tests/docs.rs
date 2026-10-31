@@ -1,5 +1,6 @@
-//! Keeps `docs/visual-scripting.md` honest: the tagged example compiles, every node
-//! type and every graph and trap code appears in the page.
+//! Keeps the scripting docs honest: the tagged example in `docs/visual-scripting.md`
+//! compiles, every node type and every graph and trap code appears in that page, and
+//! every text-backend code (`script.text.*`) appears in `docs/scripting.md`.
 mod common;
 
 use engine_graph::GraphDocument;
@@ -10,6 +11,11 @@ fn page() -> String {
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/visual-scripting.md"
     );
+    std::fs::read_to_string(path).expect("docs page exists")
+}
+
+fn scripting_page() -> String {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/scripting.md");
     std::fs::read_to_string(path).expect("docs page exists")
 }
 
@@ -58,10 +64,16 @@ fn every_node_type_and_code_is_documented() {
             def.name
         );
     }
+    let scripting = scripting_page();
     for code in codes::ALL {
+        let (page, name) = if code.starts_with("script.text.") {
+            (&scripting, "docs/scripting.md")
+        } else {
+            (&text, "docs/visual-scripting.md")
+        };
         assert!(
-            text.contains(&format!("`{code}`")),
-            "code {code} is missing from docs/visual-scripting.md"
+            page.contains(&format!("`{code}`")),
+            "code {code} is missing from {name}"
         );
     }
 }

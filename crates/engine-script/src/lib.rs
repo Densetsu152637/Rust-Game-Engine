@@ -17,6 +17,8 @@ pub mod codes;
 pub mod graph;
 pub mod host;
 pub mod instance;
+#[cfg(feature = "text")]
+pub mod text;
 pub mod trap;
 pub mod value;
 

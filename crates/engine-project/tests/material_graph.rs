@@ -36,7 +36,7 @@ fn fixture() -> tempfile::TempDir {
         dir.path().join("scene.json"),
         json!({"schema":1,"scene_id":"main","entities":[
             {"id":"camera","name":"Camera","components":{"Transform":{"position":[0,0,4]},"Camera3D":{}}},
-            {"id":"mesh","name":"Mesh","components":{"Transform":{},"MeshRenderer":{"mesh":"mesh"},"MeshMaterial":{"shader":"material","texture":"texture","tint":[0.5,0.75,1.0,0.8],"metallic":0.2,"roughness":0.6}}},
+            {"id":"mesh","name":"Mesh","components":{"Transform":{"position":[0,0,0]},"MeshRenderer":{"mesh":"mesh"},"MeshMaterial":{"shader":"material","texture":"texture","tint":[0.5,0.75,1.0,0.8],"metallic":0.2,"roughness":0.6}}},
             {"id":"sprite","name":"Sprite","components":{"Transform":{"position":[0,0,0]},"SpriteRenderer":{"texture":"texture"},"MeshMaterial":{"shader":"material","texture":"texture","tint":[0.5,0.75,1.0,0.8],"unlit":true}}}
         ]}).to_string(),
     ).unwrap();

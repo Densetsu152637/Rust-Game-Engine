@@ -12,6 +12,7 @@ pub mod events;
 pub mod gameplay;
 pub mod gameplay2d;
 pub mod graphs;
+pub mod indirect;
 pub mod input;
 pub mod lighting2d;
 pub mod lights;

@@ -81,19 +81,19 @@ pub(super) fn pose_authority(world: &World, target: Entity) -> Result<()> {
                 "Sequence target/descendant has physics, navigation, or remote pose authority",
             ));
         }
-        if let Some(animation) = other.get::<simulation::AnimationPlayer>() {
-            if bound_pose(world, target, other.id(), &animation.bindings)? {
-                return Err(invalid(
-                    "Sequence target already has animation pose authority",
-                ));
-            }
+        if let Some(animation) = other.get::<simulation::AnimationPlayer>()
+            && bound_pose(world, target, other.id(), &animation.bindings)?
+        {
+            return Err(invalid(
+                "Sequence target already has animation pose authority",
+            ));
         }
-        if let Some(graph) = other.get::<simulation::AnimationGraphPlayer>() {
-            if bound_pose(world, target, other.id(), &graph.bindings)? {
-                return Err(invalid(
-                    "Sequence target already has animation graph pose authority",
-                ));
-            }
+        if let Some(graph) = other.get::<simulation::AnimationGraphPlayer>()
+            && bound_pose(world, target, other.id(), &graph.bindings)?
+        {
+            return Err(invalid(
+                "Sequence target already has animation graph pose authority",
+            ));
         }
         if let Some(ragdoll) = other.get::<physics::Ragdoll>() {
             for bone in &ragdoll.bones {
@@ -372,12 +372,11 @@ impl Capture {
             }
         }
         for (entity, (before, last)) in self.cameras {
-            if !crate::networking::is_remote_replica(world, entity) {
-                if let Some(mut camera) = world.get_mut::<Camera3D>(entity) {
-                    if camera.active == last {
-                        camera.active = before;
-                    }
-                }
+            if !crate::networking::is_remote_replica(world, entity)
+                && let Some(mut camera) = world.get_mut::<Camera3D>(entity)
+                && camera.active == last
+            {
+                camera.active = before;
             }
         }
     }

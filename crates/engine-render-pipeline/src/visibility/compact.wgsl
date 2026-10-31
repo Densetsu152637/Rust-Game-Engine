@@ -38,13 +38,13 @@ var<workgroup> accumulated: u32;
 fn main(@builtin(workgroup_id) workgroup: vec3<u32>,
         @builtin(local_invocation_index) lane: u32) {
     let batch = workgroup.x;
-    let meta = batches[batch];
+    let batch_info = batches[batch];
     if (lane == 0u) { accumulated = 0u; }
     workgroupBarrier();
     for (var block = 0u; block < 1024u; block += 64u) {
         let local = block + lane;
         var visible = false;
-        if (local < meta.count) { visible = masks[meta.first + local] != 0u; }
+        if (local < batch_info.count) { visible = masks[batch_info.first + local] != 0u; }
         flags[lane] = select(0u, 1u, visible);
         workgroupBarrier();
         var prefix = 0u;
@@ -52,8 +52,8 @@ fn main(@builtin(workgroup_id) workgroup: vec3<u32>,
             prefix += flags[i];
         }
         if (visible) {
-            compacted[meta.output_base + accumulated + prefix] =
-                source[meta.first + local];
+            compacted[batch_info.output_base + accumulated + prefix] =
+                source[batch_info.first + local];
         }
         workgroupBarrier();
         if (lane == 0u) {
@@ -64,7 +64,7 @@ fn main(@builtin(workgroup_id) workgroup: vec3<u32>,
         workgroupBarrier();
     }
     if (lane == 0u) {
-        draw_args[batch] = DrawArgs(meta.draw_count, accumulated, 0u, 0u);
-        indexed_args[batch] = IndexedArgs(meta.draw_count, accumulated, 0u, 0, 0u);
+        draw_args[batch] = DrawArgs(batch_info.draw_count, accumulated, 0u, 0u);
+        indexed_args[batch] = IndexedArgs(batch_info.draw_count, accumulated, 0u, 0, 0u);
     }
 }

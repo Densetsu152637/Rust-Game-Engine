@@ -31,10 +31,13 @@ for implemented behavior. See [testing](testing.md), [architecture](architecture
 
 The user set a limit of eight parallel workers for this session. The user also
 confirmed that prior World and AI-gameplay managers are still running elsewhere.
-World is handed off and the AI manager has now stopped; Codex continues scripting in its own worktree. Existing Claude worktrees remain with their owner. This chat owns Animation,
-Editor, platform services, Audio and second-round Rendering. Do not resolve or
-commit the other managers' dirty worktrees. Consume their completed revisions
-after handoff. Root owns this record, cross-stream contracts and integration.
+World is handed off and the AI manager has now stopped. On 2026-10-29 the user
+transferred every task delegated to Codex to the Claude program root; see
+[ownership transfer](#ownership-transfer-2026-10-29). The Claude root owns
+Animation, Editor, platform services, Audio, second-round Rendering and scripting,
+plus this record, cross-stream contracts, integration and publication. Codex owns
+nothing in this plan and must not resume it. Existing `claude/parity-*` worktrees
+remain with their owner; do not resolve or commit their dirty state.
 
 ## Stages
 
@@ -58,11 +61,12 @@ after handoff. Root owns this record, cross-stream contracts and integration.
   needs its own execution gates. Deferred World limits remain documented.
 ### 2. AI-gameplay and scripting completion
 
-- Status: in progress; completed gameplay handed off, scripting transferred to Codex.
+- Status: in progress; completed gameplay handed off. Scripting went to Codex on
+  2026-10-27 and to the Claude root on 2026-10-29.
 - User handoff: Claude stopped at its weekly usage gate. Clean revision
   `d88464d` contains crowds, graph/BT/ST, perception, EQS, smart objects,
   predicted abilities, inventory, quests and dialogue. The author reports focused
-  fmt/Clippy/tests passed; combined Codex validation remains required.
+  fmt/Clippy/tests passed; combined validation remains required.
 - Root-owned continuation: `codex/ai-scripting`, starting from combined `ee57d57`,
   merges the completed AI handoff and implements saved scripting slices V0–V4
   and T1–T2. Claude worktrees and branches remain with their existing owner.
@@ -73,8 +77,8 @@ after handoff. Root owns this record, cross-stream contracts and integration.
 - Acceptance: actual visual and Rhai runtime behavior, adversarial resource and
   capability tests, independent scripting security review with fixes, default and
   no-text builds, strict lint and the final combined workspace gate.
-- Ownership: scripting manager has three slots including itself within the user
-  limit of eight. Root schedules all heavy builds and owns final integration.
+- Ownership: Claude root. Child agents follow the session agent pool and usage
+  gate. Root schedules all heavy builds and owns final integration.
 ### 3. Audio streaming and media clock
 
 - Status: in progress; depends on baseline only.
@@ -585,3 +589,135 @@ root; no shared target directories): `codex-scripting-completion`, restored
 The root checkpoint under main's `target/task-coordination/root-checkpoint.md`
 records exact branches, bases, active build handles and ownership. One heavy
 Cargo/GPU job remains the rule; the user's eight-worker maximum remains in force.
+### Verified follow-up checkpoint
+
+At `5afac3d`, the combined project checks passed 84 tests (58 library, four
+progression, twelve visual scripting, ten tilemap), including all reviewed visual
+scripting fuel, rollback and reload regressions. All four authored World tile
+lighting GPU tests also passed: oriented normal/MR shading, resource reuse and
+recreation, hybrid camera routing, and sprite/clipped-UI ordering. The dead cache
+wrapper warning is removed in `537eee7`.
+
+The reviewed lifecycle stack through `f2ded0b` is integrated at `6ff1eb7`; a
+mechanical GPU test helper repair produces `d129700`. That revision passes
+pipeline/RT/desktop test compilation with DLSS enabled (SDK absent), all 52
+pipeline CPU tests and all eleven pipeline GPU tests on RTX 5080 Vulkan. The
+checks cover opaque-effect ordering through host/native upscale and transparency,
+abort history reset, retained late-UI retry, and view/resize/forget behavior.
+A retry snapshot expires when a newer scene attempt begins. Desktop presentation
+and RT-specific execution after this change remain separate queued checks.
+
+Rhai probe `28172a6` compiles with its locked dependency set. Full backend source
+`adb9019` is undergoing its first focused compilation/tests and independent
+security review; project/MCP integration and adversarial resource checks remain.
+Authored IBL source `3f4a8ac` is being completed with its renderer hook, actual GPU
+oracles and review repairs for file-handle lifetime, verified cache byte accounting
+and an isolated path-escape test. It is not integrated or accepted yet.
+
+Hi-Z consumer implementation is now active on `feat/codex-hiz-consumer`, worktree
+`D:/Git-Worktrees/Rust-Game-Engine/codex-hiz-consumer`, base `d129700`, creator and
+cleanup owner root. Reuse `engine-mesh-lod` selection/hysteresis; keep camera LOD
+and culling separate from shadow geometry. Coordinate desktop hooks with the IBL
+owner and retain the existing 208-byte instance layout until a later explicit
+lightmap migration. The implementation must demonstrate skipped opaque geometry
+with indirect counts and a depth-disabled GPU diagnostic, not merely a mask.
+
+## Ownership transfer (2026-10-29)
+
+The user transferred every task delegated to Codex to the Claude program root,
+whose record is `_records/PROGRAM.md` in the worktree directory. This supersedes
+every earlier Codex ownership statement in this plan, in
+`target/task-coordination/root-checkpoint.md` and in the paused and resumed
+checkpoints above. Codex owns no stage, branch or worktree and must not resume.
+
+The Claude root owns stages 2 to 10, this record, cross-stream contracts, local
+`main` integration and publication. It is creator and cleanup owner of every
+`codex/*` and `feat/codex-*` branch and of the worktrees below. The `codex`
+prefix in branch and worktree names is a label only; keep the names. Codex's
+eight-worker limit is replaced by the Claude session agent pool and usage gate.
+Keep one heavy Cargo or GPU job at a time and per-checkout build caches.
+
+State at transfer: every worktree is clean and no build is running. Integration
+head is `edcface` (authored IBL and probes, 2026-10-29). Main is still `598e395`,
+61 commits ahead of `origin/main`; nothing is pushed.
+
+| Worktree | Branch | Head | Unintegrated | Next |
+| --- | --- | --- | --- | --- |
+| `codex-pending-integration` | `codex/pending-integration` | this commit | — | Desktop presentation and RT checks after the lifecycle merge; integrate the rows below; final gate (stage 10) |
+| `codex-scene-lifecycle` | `feat/codex-scene-lifecycle` | `d985b91` | `d985b91` RT denoiser history fix | Review, integrate, run RT tests |
+| `codex-hiz-consumer` | `feat/codex-hiz-consumer` | `986f505` | `986f505` incomplete LOD/visibility checkpoint | Finish per the Hi-Z design above; prove skipped geometry on GPU |
+| `codex-rhai` | `feat/codex-rhai` | `88e4672` | `068b294`, `28172a6`, `adb9019`, `f316ada`, `88e4672` (last is WIP project integration) | Finish project/MCP integration, adversarial tests, security review |
+| `codex-authored-indirect` | `feat/codex-authored-indirect` | `965673a` | none | Retire after confirming no further IBL work |
+| `codex-scripting-completion` | `codex/scripting-completion` | `488cee5` | none (patch-equivalent) | Retire |
+| `codex-render-indirect` | `codex/render-indirect` | `4458001` | none (patch-equivalent) | Retire |
+| `codex-ai-scripting` | `codex/ai-scripting` | `75d9cb9` | superseded V0 core | Recovery only; retire with the stage 2 gate |
+
+Remaining open work otherwise follows stages 2 to 10 and the execution
+checkpoints above: lightmap UV2 consumption, World-specific shaders, MCP
+execution checks, the scripting security review and the final combined gate.
+The four host-managed creations and the `claude/parity-*` worktrees keep the
+handling recorded in the paused checkpoint.
+
+## Claude root execution checkpoint (2026-10-29)
+
+All results below are on RTX 5080 Vulkan with the per-checkout cache
+`target/validation-build`, one heavy job at a time. Logs and exit codes are under
+`target/combined-validation/claude-*`.
+
+- Scene lifecycle: done. RT denoiser fix `d985b91` integrated at `67b234e`; all
+  58 `engine-render-rt` tests pass, including GPU denoiser suites. The desktop
+  suite passes 334 tests after `2ace124` derives the default render feature count
+  from the world and physics name lists (World shadows added two casters).
+- GPU visibility compaction: done. `35d610d` renames the reserved WGSL `meta`
+  identifier and loads Hi-Z texels with unsigned coordinates; all five
+  `gpu_visibility_indirect` tests, eight `engine-render-hiz` tests and the
+  native indirect suites pass.
+- Visual scripting MCP: done. All 463 `engine-mcp` tests and all 15
+  `engine-tooling` `mcp_exec` tests pass.
+
+- Authored streamed/procedural audio: done. All 46 project `acoustics` tests,
+  including streamed, procedural and fault-cleanup emitters, and all 355 native
+  `engine-audio` tests (two hardware/cost tests ignored) pass.
+- Animation retargeting: done. All five project retargeting tests and the
+  imported-animation test pass.
+- Cinematics sequencer: done. All 31 project sequencer, coordinate and skinning
+  tests and seven native `engine-sequencer` tests pass after the origin-write
+  regression pauses before seeking, matching documented autoplay semantics.
+
+- Combined gate (Claude Sonnet worker, root-reviewed), head `59ede86`: rustfmt
+  check over all tracked workspace sources and strict workspace Clippy pass;
+  `cargo test --workspace --locked` passes 5,645 tests (233 ignored); the desktop
+  examples check and all five standalone example crates pass offline with locally
+  generated, gitignored lockfiles; `validate_fixture.py` passes. Real-adapter GPU
+  suites pass for `engine-world-render` (including all four `gpu_foliage` shadow
+  readbacks), `engine-material-graph` (11), `engine-editor-graph` (6),
+  `engine-ui-render` (33) and project `material_graph`/`physics` (11). Fixes were
+  Clippy cleanups, stale test fixtures and the desktop-2d example's switch to the
+  documented on-demand `audio::load_clip`. Native Opus builds with VS 2019 Build
+  Tools CMake (`CMAKE` and `CMAKE_GENERATOR="Visual Studio 16 2019"`), because the
+  VS 2026 install has no CMake. Local `main` is fast-forwarded to this revision;
+  it is not pushed.
+
+The workspace suite in that gate also covers the editor shell and MCP settings
+tests and the physics-audio project tests. Remaining unfinished code, most complete
+first: the Rhai text backend (`feat/codex-rhai`) and the Hi-Z LOD consumer
+(`feat/codex-hiz-consumer`) from the ownership-transfer table. Hardware-only
+checks (headset, microphone, audio device, HDR display, interactive editor) remain
+unverified.
+
+- Rhai text backend: done, head `2b9bb8d`, fast-forwarded into local `main`.
+  `engine.TextScript` runs `.rhai` handlers in a raw engine with five basic
+  packages, a denying module resolver, `import`/`eval` disabled, bounded depth,
+  collection, variable, function and string limits, and fuel that also charges
+  host requests. Each handler runs on a scoped 8 MiB worker thread behind a
+  rendezvous host bridge; JSON-to-script values are bounded (depth 8, 512 nodes).
+  The `script_check` read tool gives 36 read, 69 with write, 39 with execution and
+  72 with both. Rustfmt on touched files, strict workspace Clippy, the
+  `engine-script`/`engine-project` no-default-features checks, all 466
+  `engine-mcp` tests, 14 `mcp_exec` tests and the workspace suite pass (101
+  binaries; one `link.exe` 0xc000026b crash on `engine-physics`
+  `materials_layers` was a toolchain fault, and that crate passes on rerun).
+  Root security review found no blocking issue. Residual risks: no global heap
+  cap, a worker-thread panic propagates to the host, and a native stack overflow
+  would abort the process (mitigated by the depth limits and worker stack).
+  Remaining unfinished code: the Hi-Z LOD consumer.

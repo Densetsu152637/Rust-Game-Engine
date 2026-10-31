@@ -6,7 +6,8 @@
 - [Architecture](architecture.md): crate layering, one Rust type universe, the ECS
   graph scheduling model, render extraction and the desktop host.
 - [Scripting](scripting.md): native Rust game crates (trusted), the shared script
-  core (typed host functions, capabilities, budgets, staged commits) and how
+  core (typed host functions, capabilities, budgets, staged commits), Rhai text
+  scripts (`engine.TextScript`, limits, traps, what is not isolated) and how
   game code is compiled into generations or scripts are reloaded.
 - [Visual scripting](visual-scripting.md): the `script_graph` kind: entry, flow and
   value nodes, functions, host calls, `engine.ScriptGraph`, limits, traps and codes.

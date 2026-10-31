@@ -25,6 +25,7 @@ mod vertex;
 
 pub use framegen::{MAX_GENERATION_GAP, MAX_PRESENT_SPACING, PresentPacer, presentation_offsets};
 pub use rt::{effects_settings, prepare_ray_tracing, request_ray_tracing, rt_names};
+pub use scene3d::ActiveIndirectBudgetExceeded;
 pub use scene3d::{LIT_WGSL, camera_matrix};
 pub use sprite::{SpriteRenderer, TEXTURED_WGSL};
 pub use temporal::{halton, jitter_matrix, jitter_offset, jitter_phase_count, pixel_motion};
@@ -128,6 +129,7 @@ pub struct GpuRenderer {
     sprites: SpriteRenderer<WgpuBackend>,
     scene: Option<ScenePipeline>,
     uploads: scene3d::SceneUploads,
+    indirect: scene3d::AuthoredIndirectCache,
     #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
     depth_export: Option<Arc<engine_render_pipeline::DepthExport>>,
     status: RenderPipelineStatus,
@@ -349,6 +351,7 @@ impl GpuRenderer {
             sprites,
             scene: None,
             uploads: Default::default(),
+            indirect: Default::default(),
             depth_export: None,
             status: RenderPipelineStatus::default(),
             lighting: LightingStatus::default(),
@@ -452,6 +455,14 @@ impl GpuRenderer {
             self.scene = Some(scene);
         }
         Ok(self.scene.as_mut().expect("created above"))
+    }
+
+    /// Release a view's native targets and authored indirect resource reference.
+    pub fn forget_view(&mut self, view: ViewId) {
+        if let Some(scene) = &mut self.scene {
+            scene.forget_view(view);
+        }
+        self.indirect.forget_view(view);
     }
 
     /// Prepare and add render features (for example from a
@@ -690,6 +701,10 @@ impl GpuRenderer {
         let size = (self.info.width, self.info.height);
         self.sprites.validate_scene(frame, size)?;
         let built = self.sprites.build_overlay(frame, size)?;
+        if let Some(scene) = &mut self.scene {
+            scene.set_indirect(ViewId::MAIN, None)?;
+        }
+        self.indirect.forget_view(ViewId::MAIN);
         if !self.has_overlay_features() {
             copy_streams(
                 &self.sprites,
@@ -786,6 +801,7 @@ impl GpuRenderer {
             sprites: sprite_renderer,
             scene,
             uploads,
+            indirect,
             status,
             lighting,
             post,
@@ -794,6 +810,9 @@ impl GpuRenderer {
         } = self;
         let scene = scene.as_mut().expect("created above");
         let inputs = uploads.sync(gpu, frame)?;
+        let candidate = indirect.resolve(gpu, view.id, frame)?;
+        scene.set_indirect(view.id, candidate.clone())?;
+        indirect.commit(view.id, frame, candidate);
         let copies = stream_copies(frame, &uploads.streams);
         let mut host = DesktopHost {
             sprites: sprite_renderer,

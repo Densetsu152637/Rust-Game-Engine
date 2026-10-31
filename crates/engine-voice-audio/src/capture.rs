@@ -328,10 +328,10 @@ impl CaptureSession {
         self.pump_ingress()
     }
     fn pump_ingress(&mut self) -> Result<Vec<Vec<u8>>> {
-        if let Ok(error) = self.ingress.error.lock() {
-            if let Some(message) = error.as_ref() {
-                return Err(BridgeError::Device(message.clone()));
-            }
+        if let Ok(error) = self.ingress.error.lock()
+            && let Some(message) = error.as_ref()
+        {
+            return Err(BridgeError::Device(message.clone()));
         }
         if self.stream.is_some() && !self.ingress.active.load(Ordering::Acquire) {
             return Err(BridgeError::Device("microphone callback stopped".into()));
@@ -360,22 +360,22 @@ impl CaptureSession {
         Ok(packets)
     }
     fn feed(&mut self, sample: Sample, packets: &mut Vec<Vec<u8>>) -> Result<()> {
-        if let Some(previous) = self.previous {
-            if sample.index > previous.index + 1 {
-                let gap = sample.index - previous.index - 1;
-                if gap > RING_FRAMES as u64 {
-                    self.sender.advance_timestamp(self.partial_len as u32);
-                    self.partial_len = 0;
-                    let target = output_at_or_after(sample.index, self.input_rate);
-                    let skipped = target.saturating_sub(self.next_output);
-                    self.sender.advance_timestamp(skipped as u32);
-                    self.skipped += skipped;
-                    self.next_output = target;
-                    self.previous = None;
-                } else {
-                    for index in previous.index + 1..sample.index {
-                        self.interpolate(Sample { index, value: 0. }, packets)?;
-                    }
+        if let Some(previous) = self.previous
+            && sample.index > previous.index + 1
+        {
+            let gap = sample.index - previous.index - 1;
+            if gap > RING_FRAMES as u64 {
+                self.sender.advance_timestamp(self.partial_len as u32);
+                self.partial_len = 0;
+                let target = output_at_or_after(sample.index, self.input_rate);
+                let skipped = target.saturating_sub(self.next_output);
+                self.sender.advance_timestamp(skipped as u32);
+                self.skipped += skipped;
+                self.next_output = target;
+                self.previous = None;
+            } else {
+                for index in previous.index + 1..sample.index {
+                    self.interpolate(Sample { index, value: 0. }, packets)?;
                 }
             }
         }
@@ -421,7 +421,7 @@ impl CaptureSession {
 fn output_at_or_after(input_index: u64, input_rate: u32) -> u64 {
     let numerator = u128::from(input_index) * u128::from(SAMPLE_RATE);
     let rate = u128::from(input_rate);
-    ((numerator + rate - 1) / rate).min(u128::from(u64::MAX)) as u64
+    numerator.div_ceil(rate).min(u128::from(u64::MAX)) as u64
 }
 impl Drop for CaptureSession {
     fn drop(&mut self) {

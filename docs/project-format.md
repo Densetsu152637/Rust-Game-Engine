@@ -43,7 +43,13 @@ rejected rather than dropped.
 Each asset has a stable `id`, a project-relative `path` and a `kind`. Kinds are
 `script`, `mesh`, `texture`, `font`, `font_face`, `font_config`, `audio`, `scene` and `shader`
 (plus `prefab`, `model`, `animation`, `navigation`, `string_table`, `locale_config`,
-`caption_track` and `graph`; see their pages). A `graph` asset is one JSON graph
+`caption_track`, `indirect`, `graph` and `text_script`; see their pages). A `text_script`
+asset is a `.rhai` source of at most 256 KiB (any other extension is
+`project.script.language`) that the `engine.TextScript` component runs; project
+validation parses it without executing it and reports `script.text.*` diagnostics, see
+[Scripting](scripting.md#text-scripts-rhai). An `indirect` asset
+names a bounded descriptor and binary RGB32F cube faces as documented in
+[Indirect lighting](rendering-indirect.md#authored-project-input). A `graph` asset is one JSON graph
 document (behavior trees today) validated at project load against the kind named in
 the document; see [Graph documents](ai-graphs.md).
 
@@ -137,6 +143,11 @@ a declarative `componentSchemas` file, a `scriptFunctions` file that declares th
 functions visual scripts may call ([Scripting](scripting.md#shared-script-core)) and `prefab` scene-fragment assets. Defaults
 preserve existing schema-1 scenes. See [components and scene commands](meta-programming.md)
 for formats, validation, cloning and runtime integration.
+
+`engine.ScriptGraph` and `engine.TextScript` components attach a `script_graph` graph asset or
+a `text_script` asset to an entity with a fuel budget, explicit read/write/emit capabilities and a
+fault policy; scene validation checks the referenced asset, the source and that capability names
+are catalog components ([Scripting](scripting.md)).
 
 Built-in `engine.SequencePlayer` components embed authored cinematic timeline JSON with
 an explicit entity binding list. They use the same versioned custom-component envelope,

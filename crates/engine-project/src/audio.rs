@@ -150,11 +150,9 @@ fn source_prepared(
                 .iter()
                 .filter(|(id, _)| id.as_str() != asset)
                 .fold(0usize, |bytes, (_, clip)| {
-                    bytes.saturating_add(clip.samples().len() * std::mem::size_of::<f32>())
+                    bytes.saturating_add(std::mem::size_of_val(clip.samples()))
                 });
-            if retained.saturating_add(clip.samples().len() * std::mem::size_of::<f32>())
-                > 128 * 1024 * 1024
-            {
+            if retained.saturating_add(std::mem::size_of_val(clip.samples())) > 128 * 1024 * 1024 {
                 return Err(Error::new(
                     "audio.resident.cache_limit",
                     "Resident cache exceeds 128 MiB",

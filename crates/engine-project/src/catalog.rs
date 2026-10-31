@@ -305,12 +305,14 @@ fn bound(schema: &Value, min: &str, max: &str, value: f64) -> Result<()> {
 
 #[derive(Component, Clone, Debug, Default)]
 pub struct DynamicComponents(pub BTreeMap<String, CustomValue>);
+/// A validated native component write, applied later to one entity.
+pub(crate) type PreparedApply = Box<dyn FnOnce(&mut World, Entity) + Send + Sync>;
 #[derive(Clone, Copy)]
 pub(crate) struct ComponentAdapter {
     pub version: u32,
     type_id: std::any::TypeId,
     insert: fn(&mut World, Entity, &Value) -> Result<()>,
-    prepare: fn(&Value) -> Result<Box<dyn FnOnce(&mut World, Entity) + Send + Sync>>,
+    prepare: fn(&Value) -> Result<PreparedApply>,
     encode: fn(&World, Entity) -> Result<Option<Value>>,
 }
 #[derive(Resource, Default)]
@@ -410,7 +412,7 @@ pub(crate) enum PreparedComponentWrite {
     },
     Native {
         entity: Entity,
-        apply: Box<dyn FnOnce(&mut World, Entity) + Send + Sync>,
+        apply: PreparedApply,
     },
 }
 

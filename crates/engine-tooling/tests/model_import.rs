@@ -1,4 +1,5 @@
 #[path = "../../engine-project/tests/support/model_fixture.rs"]
+#[allow(dead_code)]
 mod fixture;
 use std::process::Command;
 

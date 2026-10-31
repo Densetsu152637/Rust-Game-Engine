@@ -146,7 +146,7 @@ mod tests {
         let scene = app.controller.document().unwrap().snapshot().clone();
         let ctx = egui::Context::default();
         let frame = |app: &mut PortableEditor, events| {
-            ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -156,7 +156,10 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| app.ui(ui, &mut eframe::Frame::_new_kittest()),
-            )
+            );
+            // This test has no egui GPU backend to consume texture updates.
+            output.textures_delta.clear();
+            output
         };
         let output = frame(&mut app, vec![]);
         let target = output

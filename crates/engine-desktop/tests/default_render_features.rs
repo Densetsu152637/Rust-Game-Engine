@@ -12,6 +12,10 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 
+/// Every world and physics feature name, registered once.
+const EXPECTED: usize =
+    engine_world_render::names::ALL.len() + engine_physics_render::names::ALL.len();
+
 fn names(features: &PipelineFeatures) -> Vec<String> {
     features.0.names().into_iter().map(String::from).collect()
 }
@@ -33,7 +37,7 @@ fn default_registration_lists_the_world_and_physics_features() {
     {
         assert!(registered.iter().any(|n| n == name), "{name} registered");
     }
-    assert_eq!(registered.len(), 7 + 5);
+    assert_eq!(registered.len(), EXPECTED);
     assert!(added.world.terrain.is_some() && added.physics.is_some());
     // A second call adds nothing and keeps the names unique.
     let again =
@@ -67,7 +71,7 @@ fn game_supplied_features_win_without_duplicate_names() {
     assert!(added.physics.is_some());
     let merged = names(&features);
     assert_unique(&merged);
-    assert_eq!(merged.len(), 12);
+    assert_eq!(merged.len(), EXPECTED);
 }
 
 /// A project with a 65 x 65 terrain (a ridge along Z), a camera looking at it and a sun.

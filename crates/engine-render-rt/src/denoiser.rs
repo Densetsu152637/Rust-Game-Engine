@@ -277,13 +277,13 @@ impl Denoiser {
         (self.width, self.height)
     }
 
-    /// Frames recorded since creation.
+    /// Frames committed with `finish_scene` since creation.
     pub fn frame_count(&self) -> u64 {
         self.frames
     }
 
     /// The denoised signal (`Rgba16Float`, `STORAGE_BINDING | TEXTURE_BINDING
-    /// | COPY_SRC`), valid after a recorded frame; the same texture every frame.
+    /// | COPY_SRC`), valid after a submitted frame; the same texture every frame.
     pub fn output(&self) -> &wgpu::Texture {
         &self.output.texture
     }

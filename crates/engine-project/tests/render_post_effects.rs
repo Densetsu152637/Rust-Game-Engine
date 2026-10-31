@@ -28,7 +28,7 @@ fn authored_effects_validate_load_extract_and_snapshot() {
         "motion_blur":{"shutter_scale":0.8,"max_radius_pixels":12.0,"edge_tolerance":0.4},
         "spatial_aa":{"edge_threshold":0.08,"strength":0.6}
     }));
-    let mut runtime = Runtime::new(project).unwrap();
+    let runtime = Runtime::new(project).unwrap();
     let frame = runtime.extract_scene_frame().unwrap();
     let camera = frame.camera3d.unwrap().camera;
     assert_eq!(camera.depth_of_field.unwrap().focus_distance, 2.5);
