@@ -345,7 +345,9 @@ fn used_by(cx: &ToolContext<'_>, project: &Project, asset: &Asset) -> (Vec<Value
                 }
             }
             if let Some(lods) = &c.mesh_lods {
-                for mesh in &lods.meshes { fields.push(("MeshLods", "meshes", mesh)); }
+                for mesh in &lods.meshes {
+                    fields.push(("MeshLods", "meshes", mesh));
+                }
             }
             if let Some(material) = &c.material {
                 for (field, reference) in [

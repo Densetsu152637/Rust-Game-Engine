@@ -185,11 +185,15 @@ impl FrameTargets {
     }
 
     pub(crate) fn ensure_occluder_depth(&mut self, device: &wgpu::Device) -> &Target {
-        self.occluder_depth.get_or_insert_with(|| Target::new(
-            device, "engine current-frame occluder depth", self.render_size,
-            DEPTH_FORMAT,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        ))
+        self.occluder_depth.get_or_insert_with(|| {
+            Target::new(
+                device,
+                "engine current-frame occluder depth",
+                self.render_size,
+                DEPTH_FORMAT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+        })
     }
 
     pub(crate) fn ensure_screen_lighting(&mut self, device: &wgpu::Device) {

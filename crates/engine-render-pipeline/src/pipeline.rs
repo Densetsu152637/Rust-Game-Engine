@@ -18,10 +18,12 @@ use crate::shader::ShaderComposer;
 use crate::shadows::ShadowAtlasConfig;
 use crate::targets::{CompositeTargets, FrameTargets, Target};
 use crate::view::{Presentation, VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, Viewport};
-use crate::visibility::{HiZIndirect, MeshVisibility, MAX_INDIRECT_BATCHES, MAX_INDIRECT_INSTANCES};
-use engine_render_hiz::{HiZKernel, HiZView};
+use crate::visibility::{
+    HiZIndirect, MAX_INDIRECT_BATCHES, MAX_INDIRECT_INSTANCES, MeshVisibility, VisibilityReport,
+};
 use anyhow::{Context, Result, bail, ensure};
 use bevy_ecs::world::World;
+use engine_render_hiz::{HiZKernel, HiZView};
 use engine_render_wgpu::GpuContext;
 use std::collections::HashMap;
 
@@ -150,6 +152,8 @@ pub struct ViewReport {
     pub lighting: LightingReport,
     /// The host aborted the frame in its upscale hook.
     pub aborted: bool,
+    /// Optional Hi-Z camera visibility outcome for the scene view.
+    pub visibility: VisibilityReport,
 }
 
 struct ViewState {
@@ -158,6 +162,9 @@ struct ViewState {
     mesh: MeshViewState,
     hiz_view: Option<HiZView>,
     hiz_active: bool,
+    /// The certified occluder depth of this frame was written.
+    hiz_depth_ready: bool,
+    hiz_report: VisibilityReport,
     uniform: wgpu::Buffer,
     /// Light list, shadows, atlas, clusters and the `engine::view` groups.
     lighting: ViewLighting,
@@ -189,6 +196,8 @@ impl ViewState {
             mesh: MeshViewState::default(),
             hiz_view: None,
             hiz_active: false,
+            hiz_depth_ready: false,
+            hiz_report: VisibilityReport::default(),
             uniform,
             lighting,
             report: ViewReport::default(),
@@ -364,8 +373,11 @@ impl ScenePipeline {
         let device = &gpu.device;
         let layouts = layouts(device);
         let mesh = MeshRenderer::new(&gpu, &layouts).context("creating the built-in mesh path")?;
-        let hiz = HiZKernel::new(&gpu).ok().and_then(|kernel|
-            HiZIndirect::new(&gpu).ok().map(|indirect| (kernel, indirect)));
+        let hiz = HiZKernel::new(&gpu).ok().and_then(|kernel| {
+            HiZIndirect::new(&gpu)
+                .ok()
+                .map(|indirect| (kernel, indirect))
+        });
         let output = OutputPass::new(device)?;
         let composite_copy = OutputPass::new(device)?;
         let upscale = UpscalePass::new(device)?;
@@ -560,6 +572,72 @@ impl ScenePipeline {
         Ok(())
     }
 
+    /// Blocking readback diagnostic of `view`'s last compacted opaque camera
+    /// draws, for tests and tooling: the survivor count the GPU wrote into
+    /// every indirect command, and a depth-disabled replay of those exact
+    /// commands at render size. `None` when the last frame used the direct
+    /// path.
+    pub fn visibility_diagnostic(
+        &self,
+        view: ViewId,
+    ) -> Result<Option<crate::visibility::VisibilityDiagnostic>> {
+        use crate::visibility::diagnostic::{read_rgba8, read_survivors};
+        let Some(state) = self.views.get(&view) else {
+            return Ok(None);
+        };
+        let (Some(output), Some(targets)) = (state.mesh.indirect_output(), &state.targets) else {
+            return Ok(None);
+        };
+        let size = targets.render_size;
+        let image = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("engine hiz diagnostic image"),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let image_view = image.create_view(&Default::default());
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("engine hiz diagnostic"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("engine hiz diagnostic"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &image_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            self.mesh.draw_visibility_diagnostic(
+                &mut pass,
+                state.lighting.bind_group(),
+                &state.mesh,
+            )?;
+        }
+        self.gpu.queue.submit([encoder.finish()]);
+        Ok(Some(crate::visibility::VisibilityDiagnostic {
+            size,
+            batches: read_survivors(&self.gpu, output)?,
+            rgba: read_rgba8(&self.gpu, &image)?,
+        }))
+    }
+
     /// Render-size targets of `view`'s last frame.
     pub fn targets(&self, view: ViewId) -> Option<&FrameTargets> {
         self.views.get(&view)?.targets.as_ref()
@@ -677,25 +755,56 @@ impl ScenePipeline {
             return Err(error);
         }
         state.hiz_active = false;
-        if resolved.is_enabled(names::HIZ_VISIBILITY) && self.hiz.is_some()
-            && visibility.is_some()
-            && state.mesh.occluder_count() > 0
-            && state.mesh.candidate_count() <= MAX_INDIRECT_INSTANCES
-            && state.mesh.indirect_batch_count() <= MAX_INDIRECT_BATCHES
-        {
-            let count = state.mesh.candidate_count() as u32;
-            let reuse = state.hiz_view.as_ref().is_some_and(|v|
-                v.size() == view.render_size && v.capacity() >= count);
-            if !reuse {
-                state.hiz_view = self.hiz.as_ref().and_then(|(kernel, _)|
-                    kernel.create_view(&self.gpu, view.render_size, count).ok());
+        state.hiz_depth_ready = false;
+        state.hiz_report = VisibilityReport::default();
+        if resolved.is_enabled(names::HIZ_VISIBILITY) && visibility.is_some() {
+            let count = state.mesh.candidate_count();
+            let fallback = if self.hiz.is_none() {
+                Some("the device lacks the Hi-Z or indirect draw capabilities".to_owned())
+            } else if state.mesh.occluder_count() == 0 {
+                Some("no certified occluder was submitted".to_owned())
+            } else if count > MAX_INDIRECT_INSTANCES {
+                Some(format!(
+                    "{count} opaque instances exceed the {MAX_INDIRECT_INSTANCES} query budget"
+                ))
+            } else if state.mesh.indirect_batch_count() > MAX_INDIRECT_BATCHES {
+                Some(format!("more than {MAX_INDIRECT_BATCHES} indirect batches"))
+            } else {
+                None
+            };
+            state.hiz_report = VisibilityReport {
+                requested: true,
+                active: false,
+                occluders: state.mesh.occluder_count(),
+                candidates: count,
+                indirect_batches: state.mesh.indirect_batch_count(),
+                fallback,
+            };
+            if state.hiz_report.fallback.is_none() {
+                let reuse = state.hiz_view.as_ref().is_some_and(|v| {
+                    v.size() == view.render_size && v.capacity() as usize >= count
+                });
+                if !reuse {
+                    state.hiz_view = None;
+                    if let Some((kernel, _)) = &self.hiz {
+                        match kernel.create_view(&self.gpu, view.render_size, count as u32) {
+                            Ok(created) => state.hiz_view = Some(created),
+                            Err(error) => {
+                                state.hiz_report.fallback = Some(format!("Hi-Z view: {error:#}"));
+                            }
+                        }
+                    }
+                }
+                state.hiz_active = state.hiz_view.is_some() && state.hiz_report.fallback.is_none();
             }
-            state.hiz_active = state.hiz_view.is_some();
         }
         let mut targets = match state.targets.take() {
             Some(t) if t.render_size == view.render_size && t.output_size == view.output_size => t,
             _ => FrameTargets::new(&device, view.render_size, view.output_size),
         };
+        if state.hiz_active {
+            targets.ensure_occluder_depth(&device);
+        }
         if needs.normals {
             targets.ensure_normals(&device);
         }
@@ -927,6 +1036,7 @@ impl ScenePipeline {
             features: resolved.clone(),
             lighting: state.lighting.report.clone(),
             aborted: false,
+            visibility: state.hiz_report.clone(),
         };
         let mut scene_report = state.report.clone();
         for feature in &mut scene_report.features.states {
@@ -1022,6 +1132,7 @@ impl ScenePipeline {
             features: resolved,
             lighting: state.lighting.report.clone(),
             aborted: false,
+            visibility: state.hiz_report.clone(),
         };
         state.report = report.clone();
         Ok(report)
@@ -1622,6 +1733,90 @@ fn abort_scene(state: &mut ViewState, registry: &mut FeatureRegistry, view: View
     reset_feature_histories(registry, view);
 }
 
+/// Draw only certified current-frame occluders into the isolated depth target.
+fn run_hiz_depth(
+    run: &mut StageRun<'_, '_>,
+    encoder: &mut wgpu::CommandEncoder,
+    io: &mut FrameIo,
+) -> Result<bool> {
+    if !run.state.hiz_active {
+        return Ok(false);
+    }
+    let targets = io.targets.as_mut().context("no scene targets")?;
+    let depth = targets.ensure_occluder_depth(&run.gpu.device);
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(names::HIZ_DEPTH),
+        color_attachments: &[],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: &depth.view,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Clear(1.0),
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        ..Default::default()
+    });
+    run.mesh
+        .draw_occluder_depth(&mut pass, run.state.lighting.bind_group(), &run.state.mesh);
+    drop(pass);
+    run.state.hiz_depth_ready = true;
+    Ok(true)
+}
+
+/// Query the pyramid of the isolated depth and compact the opaque instances.
+/// Any failure leaves the unchanged direct opaque path and says why.
+fn run_hiz_visibility(
+    run: &mut StageRun<'_, '_>,
+    encoder: &mut wgpu::CommandEncoder,
+    io: &mut FrameIo,
+) -> Result<bool> {
+    if !run.state.hiz_active {
+        return Ok(false);
+    }
+    let outcome = (|| -> Result<()> {
+        ensure!(
+            run.state.hiz_depth_ready,
+            "engine.hiz.depth is disabled, so no certified depth exists"
+        );
+        let (kernel, adapter) = run.hiz.context("Hi-Z capabilities unavailable")?;
+        let view = run.state.hiz_view.as_ref().context("Hi-Z view missing")?;
+        let targets = io.targets.as_ref().context("no scene targets")?;
+        let depth = targets
+            .occluder_depth
+            .as_ref()
+            .context("occluder depth missing")?;
+        let size = view.size();
+        let masks = kernel.encode(
+            run.gpu,
+            encoder,
+            view,
+            &depth.texture,
+            [0, 0, size[0], size[1]],
+            run.state.mesh.queries(),
+        )?;
+        run.mesh.encode_visibility(
+            run.gpu,
+            encoder,
+            adapter,
+            &masks,
+            &mut run.state.mesh,
+            run.layouts,
+        )
+    })();
+    match outcome {
+        Ok(()) => {
+            run.state.hiz_report.active = true;
+            Ok(true)
+        }
+        Err(error) => {
+            run.state.hiz_active = false;
+            run.state.hiz_report.fallback = Some(format!("{error:#}"));
+            Ok(false)
+        }
+    }
+}
+
 /// Built-in work; `Ok(false)` when there was nothing to do.
 fn run_builtin(
     run: &mut StageRun<'_, '_>,
@@ -1630,6 +1825,11 @@ fn run_builtin(
     io: &mut FrameIo,
     stats: &mut DrawStats,
 ) -> Result<bool> {
+    match name {
+        names::HIZ_DEPTH => return run_hiz_depth(run, encoder, io),
+        names::HIZ_VISIBILITY => return run_hiz_visibility(run, encoder, io),
+        _ => {}
+    }
     if name == names::CLUSTERS {
         if !run.state.lighting.dispatch {
             return Ok(false);
@@ -1748,7 +1948,7 @@ fn run_builtin(
         }
         names::OPAQUE => {
             let mut pass = scene_pass(encoder, targets, "engine opaque");
-            *stats += run.mesh.draw_opaque(&mut pass, view_group, &state.mesh);
+            *stats += run.mesh.draw_opaque(&mut pass, view_group, &state.mesh)?;
             Ok(true)
         }
         names::TRANSPARENT => {

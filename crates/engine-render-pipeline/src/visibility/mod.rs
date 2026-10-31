@@ -2,6 +2,7 @@
 //! instances and indirect commands. This is an opt-in adapter; it does not
 //! change the built-in mesh path or decide projected bounds/LOD.
 use crate::{GpuInstance, GpuMesh};
+pub mod diagnostic;
 pub mod project;
 use anyhow::{Result, ensure};
 use engine_render_hiz::VisibilityOutput;
@@ -9,6 +10,8 @@ use engine_render_wgpu::GpuContext;
 use std::ops::Range;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+pub use diagnostic::{BatchSurvivors, VisibilityDiagnostic};
 
 pub const MAX_INDIRECT_INSTANCES: usize = 65_536;
 pub const MAX_INDIRECT_BATCHES: usize = 256;
@@ -27,6 +30,23 @@ pub struct MeshVisibility {
     pub occluder: bool,
     pub shadow_mesh: Option<Arc<GpuMesh>>,
 }
+/// What the optional Hi-Z camera path did for one view's last frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VisibilityReport {
+    /// The camera enabled `engine.hiz.visibility` and the host supplied metadata.
+    pub requested: bool,
+    /// Opaque camera draws came from GPU-compacted indirect commands.
+    pub active: bool,
+    /// Certified occluders drawn into the isolated depth target.
+    pub occluders: usize,
+    /// Opaque instances queried against the current-frame pyramid.
+    pub candidates: usize,
+    /// Indirect commands issued for the opaque camera draws.
+    pub indirect_batches: usize,
+    /// Why a requested view used the unchanged direct path.
+    pub fallback: Option<String>,
+}
+
 const LANES: u32 = 64;
 const INSTANCE_BYTES: u64 = std::mem::size_of::<GpuInstance>() as u64;
 const DRAW_BYTES: u64 = 16;

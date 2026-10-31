@@ -14,15 +14,18 @@ use engine_project::rendering3d::{
 use engine_render_pipeline::{
     CascadeSettings, EngineVertex, FeatureOverrides, GpuContext, GpuMesh, GpuTexture, Light,
     LightList, LightShape, MaterialParams, MaterialTarget, SceneMesh, ShadowFilter, ShadowSettings,
-    TextureStreams, ViewData, ViewId, compose_material, photometric, validate_params,
+    TextureStreams, ViewData, ViewId, compose_material, names, photometric, validate_params,
+    visibility::MeshVisibility,
 };
 use glam::{Mat4, Vec3};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 mod indirect;
+mod lod;
 pub use indirect::ActiveIndirectBudgetExceeded;
 pub(crate) use indirect::AuthoredIndirectCache;
+use lod::{LodSelections, chain_bounds, mesh_bounds, screen_fraction, select_level, world_sphere};
 
 /// The built-in lit material (`engine::material` contract).
 pub const LIT_WGSL: &str = engine_render_pipeline::LIT_WGSL;
@@ -294,51 +297,118 @@ pub(crate) fn engine_vertices(mesh: &Mesh) -> Vec<EngineVertex> {
 #[derive(Default)]
 pub(crate) struct SceneUploads {
     meshes: HashMap<usize, (Arc<Mesh>, Option<Arc<GpuMesh>>)>,
+    /// Local bounds of every mesh of a drawn LOD chain, by `Arc` address.
+    bounds: HashMap<usize, (Arc<Mesh>, Option<(Vec3, Vec3)>)>,
     textures: HashMap<usize, (Arc<Texture>, Arc<GpuTexture>)>,
+    lods: LodSelections,
     pub streams: TextureStreams,
 }
 
 /// A frame's 3D inputs, borrowing the frame.
 pub(crate) struct SceneInputs<'a> {
     pub meshes: Vec<SceneMesh<'a>>,
+    /// Camera visibility metadata in `meshes` order. Present when a draw
+    /// authors LODs or an occluder, or the camera requests Hi-Z visibility;
+    /// absent keeps the unchanged direct path.
+    pub visibility: Option<Vec<MeshVisibility>>,
     pub stats: RenderStats,
 }
 
 impl SceneUploads {
+    fn upload(
+        &mut self,
+        gpu: &GpuContext,
+        mesh: &Arc<Mesh>,
+        stats: &mut RenderStats,
+    ) -> Result<Option<Arc<GpuMesh>>> {
+        let key = address(mesh);
+        if let Some((_, uploaded)) = self.meshes.get(&key) {
+            return Ok(uploaded.clone());
+        }
+        let uploaded = if mesh.vertices.is_empty() {
+            None
+        } else {
+            Some(GpuMesh::from_engine_vertices(
+                &gpu.device,
+                "engine mesh",
+                &engine_vertices(mesh),
+                &mesh.indices,
+            )?)
+        };
+        stats.mesh_uploads += 1;
+        self.meshes.insert(key, (mesh.clone(), uploaded.clone()));
+        Ok(uploaded)
+    }
+
+    fn bounds_of(&mut self, mesh: &Arc<Mesh>) -> Option<(Vec3, Vec3)> {
+        self.bounds
+            .entry(address(mesh))
+            .or_insert_with(|| (mesh.clone(), mesh_bounds(mesh)))
+            .1
+    }
+
     /// Upload what `frame` needs (after [`validate_meshes`] and the sprite
-    /// frame validation) and build the pipeline's mesh list.
+    /// frame validation) and build the pipeline's mesh list. Authored LOD
+    /// chains select one level per draw for `view` here, before any camera
+    /// prepass; hysteresis memory is per view and draw ID.
     pub fn sync<'a>(
         &mut self,
         gpu: &GpuContext,
         frame: &'a SceneRenderFrame,
+        view: &ViewData,
     ) -> Result<SceneInputs<'a>> {
         let mut stats = RenderStats::default();
         let streams = self.sync_streams(gpu, &frame.streams)?;
         let mut live_meshes = HashSet::new();
+        let mut live_bounds = HashSet::new();
         let mut live_textures = HashSet::new();
+        let requested = view.features.get(names::HIZ_VISIBILITY) == Some(true);
+        let wants_visibility = requested || !frame.mesh_options.is_empty();
+        let camera = view.camera_position();
+        let previous = self.lods.take(view.id, view.reset_history);
+        let mut selected_levels = HashMap::new();
         let mut meshes = Vec::with_capacity(frame.meshes.len());
+        let mut visibility = Vec::with_capacity(frame.meshes.len());
         for draw in &frame.meshes {
-            let key = address(&draw.mesh);
-            live_meshes.insert(key);
-            let entry = match self.meshes.entry(key) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(slot) => {
-                    let uploaded = if draw.mesh.vertices.is_empty() {
-                        None
-                    } else {
-                        Some(GpuMesh::from_engine_vertices(
-                            &gpu.device,
-                            "engine mesh",
-                            &engine_vertices(&draw.mesh),
-                            &draw.mesh.indices,
-                        )?)
-                    };
-                    stats.mesh_uploads += 1;
-                    slot.insert((draw.mesh.clone(), uploaded))
-                }
+            let options = frame.mesh_options.get(&draw.id);
+            let chain: Vec<&Arc<Mesh>> = std::iter::once(&draw.mesh)
+                .chain(options.iter().flat_map(|o| o.levels.iter()))
+                .collect();
+            for mesh in &chain {
+                live_meshes.insert(address(mesh));
+                live_bounds.insert(address(mesh));
+            }
+            let level_bounds: Vec<_> = if wants_visibility {
+                chain.iter().map(|mesh| self.bounds_of(mesh)).collect()
+            } else {
+                Vec::new()
             };
-            let Some(mesh) = entry.1.clone() else {
+            let level = match options.filter(|o| !o.levels.is_empty()) {
+                Some(options) => {
+                    let model = Mat4::from_cols_array_2d(&draw.model);
+                    // The selection sphere is the level-zero mesh's.
+                    let level = match self.bounds_of(&draw.mesh) {
+                        Some(bounds) => {
+                            let (center, radius) = world_sphere(bounds, &model);
+                            let fraction =
+                                screen_fraction(&view.clip_from_view, camera, center, radius);
+                            select_level(options, fraction, previous.get(&draw.id).copied())
+                        }
+                        None => 0,
+                    };
+                    selected_levels.insert(draw.id.clone(), level);
+                    level
+                }
+                None => 0,
+            };
+            let drawn = chain[level];
+            let Some(mesh) = self.upload(gpu, drawn, &mut stats)? else {
                 continue;
+            };
+            let shadow_mesh = if level == 0 {
+                None
+            } else {
+                self.upload(gpu, &draw.mesh, &mut stats)?
             };
             let mut texture = |source: &Option<Arc<Texture>>| -> Result<Option<Arc<GpuTexture>>> {
                 let Some(source) = source else {
@@ -377,12 +447,26 @@ impl SceneUploads {
                 metallic_roughness,
                 normal_map,
             });
+            if wants_visibility {
+                visibility.push(MeshVisibility {
+                    bounds: chain_bounds(&level_bounds)
+                        .map(|(min, max)| (min.to_array(), max.to_array())),
+                    occluder: options.is_some_and(|o| o.occluder),
+                    shadow_mesh,
+                });
+            }
         }
+        self.lods.store(view.id, selected_levels);
         self.meshes.retain(|key, _| live_meshes.contains(key));
+        self.bounds.retain(|key, _| live_bounds.contains(key));
         self.textures.retain(|key, _| live_textures.contains(key));
         stats.cached_meshes = self.meshes.len();
         stats.cached_textures = self.textures.len();
-        Ok(SceneInputs { meshes, stats })
+        Ok(SceneInputs {
+            meshes,
+            visibility: wants_visibility.then_some(visibility),
+            stats,
+        })
     }
 
     /// Upload stream frames; returns the stream textures by the address of

@@ -287,6 +287,24 @@ impl<B: RenderBackend> SpriteRenderer<B> {
                     motion: None,
                     offset: [0.0; 3],
                 }))
+                // Authored LOD levels are validated and budgeted like base meshes.
+                .chain(frame.mesh_options.iter().flat_map(|(id, options)| {
+                    options
+                        .levels
+                        .iter()
+                        .enumerate()
+                        .map(move |(index, mesh)| Draw {
+                            id: format!("lod:{id}:{index}"),
+                            mesh: mesh.clone(),
+                            texture: None,
+                            layer: 0,
+                            space: DrawSpace::World,
+                            clip: None,
+                            state: Default::default(),
+                            motion: None,
+                            offset: [0.0; 3],
+                        })
+                }))
                 .collect(),
         };
         let camera = CameraView::new(&frame.sprites.camera, size.0, size.1)?;
@@ -858,6 +876,7 @@ mod tests {
                 texture_uploads: 1,
                 cached_meshes: 1,
                 cached_textures: 1,
+                ..Default::default()
             }
         );
         let second = renderer

@@ -221,7 +221,10 @@ fn builtin_docs() -> Vec<ComponentDoc> {
             name: "HiZOccluder",
             description: "Explicit permission to consider this MeshRenderer as a current-frame Hi-Z depth writer. Native opacity and geometry budget checks may still reject it. Camera3D render_features must enable engine.hiz.visibility.",
             requires: &["MeshRenderer"],
-            schema: closed(json!({"version":version(),"enabled":{"type":"boolean","default":true}}), &[]),
+            schema: closed(
+                json!({"version":version(),"enabled":{"type":"boolean","default":true}}),
+                &[],
+            ),
             example: json!({"enabled":true}),
         },
         ComponentDoc {

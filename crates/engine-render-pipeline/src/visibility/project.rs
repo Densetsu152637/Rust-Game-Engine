@@ -12,9 +12,14 @@ pub fn project_bounds(
     size: [u32; 2],
 ) -> VisibilityQuery {
     let visible = || VisibilityQuery::new([0; 4], 0.0, true);
-    if size.contains(&0) || !clip_from_world.is_finite() || !world_from_local.is_finite()
-        || !min.is_finite() || !max.is_finite()
-        || min.x > max.x || min.y > max.y || min.z > max.z
+    if size.contains(&0)
+        || !clip_from_world.is_finite()
+        || !world_from_local.is_finite()
+        || !min.is_finite()
+        || !max.is_finite()
+        || min.x > max.x
+        || min.y > max.y
+        || min.z > max.z
     {
         return visible();
     }
@@ -27,8 +32,12 @@ pub fn project_bounds(
                 let clip = matrix * Vec3::new(x, y, z).extend(1.0);
                 // A box crossing any clip plane can project beyond its
                 // corners. Conservatively retain it rather than clip it here.
-                if !clip.is_finite() || clip.w <= 0.0 || clip.z < 0.0
-                    || clip.z > clip.w || clip.x.abs() > clip.w || clip.y.abs() > clip.w
+                if !clip.is_finite()
+                    || clip.w <= 0.0
+                    || clip.z < 0.0
+                    || clip.z > clip.w
+                    || clip.x.abs() > clip.w
+                    || clip.y.abs() > clip.w
                 {
                     return visible();
                 }
@@ -50,8 +59,11 @@ pub fn project_bounds(
         (high[0].ceil() + 2.0) as i32,
         (high[1].ceil() + 2.0) as i32,
     ];
-    if rect[0] < 0 || rect[1] < 0 || rect[2] > size[0] as i32
-        || rect[3] > size[1] as i32 || !low[2].is_finite()
+    if rect[0] < 0
+        || rect[1] < 0
+        || rect[2] > size[0] as i32
+        || rect[3] > size[1] as i32
+        || !low[2].is_finite()
     {
         return visible();
     }
@@ -68,13 +80,21 @@ mod tests {
             (Vec3::new(-0.1, -0.1, -0.1), Vec3::new(0.1, 0.1, 0.1)),
             (Vec3::new(0.1, 0.0, 0.2), Vec3::new(-0.1, 0.0, 0.3)),
         ] {
-            assert_ne!(project_bounds(identity, identity, min, max, [100, 100]).uncertain, 0);
+            assert_ne!(
+                project_bounds(identity, identity, min, max, [100, 100]).uncertain,
+                0
+            );
         }
     }
     #[test]
     fn centered_box_has_padded_viewport_rectangle() {
-        let query = project_bounds(Mat4::IDENTITY, Mat4::IDENTITY,
-            Vec3::new(-0.1, -0.1, 0.2), Vec3::new(0.1, 0.1, 0.3), [100, 100]);
+        let query = project_bounds(
+            Mat4::IDENTITY,
+            Mat4::IDENTITY,
+            Vec3::new(-0.1, -0.1, 0.2),
+            Vec3::new(0.1, 0.1, 0.3),
+            [100, 100],
+        );
         assert_eq!(query.uncertain, 0);
         assert_eq!(query.rect, [43, 43, 57, 57]);
         assert!(query.nearest_depth < 0.2);

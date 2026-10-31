@@ -12,10 +12,13 @@ use crate::shader::{
     LIT_WGSL, MOTION_WGSL, NORMALS_WGSL, SHADOW_WGSL, ShaderComposer, compose_mesh_material,
 };
 use crate::targets::{DEPTH_FORMAT, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT};
-use crate::visibility::{MeshVisibility, VisibilityBatch, IndirectOutput, MAX_INSTANCES_PER_BATCH, MAX_OCCLUDERS, MAX_OCCLUDER_TRIANGLES};
 use crate::visibility::project::project_bounds;
-use engine_render_hiz::VisibilityQuery;
+use crate::visibility::{
+    IndirectOutput, MAX_INSTANCES_PER_BATCH, MAX_OCCLUDER_TRIANGLES, MAX_OCCLUDERS, MeshVisibility,
+    VisibilityBatch,
+};
 use anyhow::{Context, Result, ensure};
+use engine_render_hiz::VisibilityQuery;
 use engine_render_wgpu::GpuContext;
 use glam::Mat4;
 use std::collections::{HashMap, HashSet};
@@ -138,10 +141,21 @@ pub(crate) struct MeshViewState {
     indirect: bool,
 }
 impl MeshViewState {
-    pub(crate) fn queries(&self) -> &[VisibilityQuery] { &self.queries }
-    pub(crate) fn occluder_count(&self) -> usize { self.occluders.len() }
-    pub(crate) fn candidate_count(&self) -> usize { self.opaque_instances.len() }
-    pub(crate) fn indirect_batch_count(&self) -> usize { self.visibility_batches.len() }
+    pub(crate) fn queries(&self) -> &[VisibilityQuery] {
+        &self.queries
+    }
+    pub(crate) fn indirect_output(&self) -> Option<&IndirectOutput> {
+        self.indirect_output.as_ref()
+    }
+    pub(crate) fn occluder_count(&self) -> usize {
+        self.occluders.len()
+    }
+    pub(crate) fn candidate_count(&self) -> usize {
+        self.opaque_instances.len()
+    }
+    pub(crate) fn indirect_batch_count(&self) -> usize {
+        self.visibility_batches.len()
+    }
     pub(crate) fn commit_scene(&mut self) {
         if let Some(models) = self.pending_models.take() {
             self.previous_models = models;
@@ -167,6 +181,7 @@ pub(crate) struct MeshRenderer {
     next_program: u64,
     shadow: wgpu::RenderPipeline,
     occluder_depth: wgpu::RenderPipeline,
+    diagnostic: wgpu::RenderPipeline,
     shadow_layout: wgpu::BindGroupLayout,
     shadow_index: (wgpu::Buffer, wgpu::BindGroup),
     motion: wgpu::RenderPipeline,
@@ -235,7 +250,56 @@ fn mesh_pipeline(
     })
 }
 
+/// Depth-free flat-colour pipeline replaying compacted camera draws.
+fn diagnostic_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("engine hiz diagnostic"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[Some(ENGINE_VERTEX_LAYOUT)],
+        },
+        primitive: Default::default(),
+        // Omitted pixels can only be caused by culling, never by depth.
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 impl MeshRenderer {
+    /// Replay the frame's compacted opaque draws without depth testing.
+    pub(crate) fn draw_visibility_diagnostic(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        view: &wgpu::BindGroup,
+        state: &MeshViewState,
+    ) -> Result<()> {
+        let output = state
+            .indirect_output
+            .as_ref()
+            .context("the view has no compacted camera draws")?;
+        pass.set_pipeline(&self.diagnostic);
+        pass.set_bind_group(0, view, &[]);
+        for index in 0..output.batches.len() {
+            output.draw_batch(pass, index)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn encode_visibility(
         &self,
         gpu: &GpuContext,
@@ -245,18 +309,28 @@ impl MeshRenderer {
         state: &mut MeshViewState,
         layouts: &PipelineLayouts,
     ) -> Result<()> {
-        let output = adapter.encode(gpu, encoder, masks, &state.opaque_instances,
-            &state.visibility_batches, &layouts.instances)?;
+        let output = adapter.encode(
+            gpu,
+            encoder,
+            masks,
+            &state.opaque_instances,
+            &state.visibility_batches,
+            &layouts.instances,
+        )?;
         state.indirect_output = Some(output);
         Ok(())
     }
 
     pub(crate) fn draw_occluder_depth(
-        &self, pass: &mut wgpu::RenderPass<'_>, view: &wgpu::BindGroup,
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        view: &wgpu::BindGroup,
         state: &MeshViewState,
     ) -> DrawStats {
         let mut stats = DrawStats::default();
-        let Some((_, _, instances)) = &state.instances else { return stats; };
+        let Some((_, _, instances)) = &state.instances else {
+            return stats;
+        };
         pass.set_pipeline(&self.occluder_depth);
         pass.set_bind_group(0, view, &[]);
         pass.set_bind_group(3, instances, &[]);
@@ -346,11 +420,20 @@ impl MeshRenderer {
             bind_group_layouts: &[Some(&layouts.view), None, None, Some(&layouts.instances)],
             immediate_size: 0,
         });
-        let (shadow, motion, normals, occluder_depth) = scoped(device, || {
+        let (shadow, motion, normals, occluder_depth, diagnostic) = scoped(device, || {
             let shadow_module = module(device, "engine shadow", &composer.compose(SHADOW_WGSL)?);
             let motion_module = module(device, "engine motion", &composer.compose(MOTION_WGSL)?);
             let normals_module = module(device, "engine normals", &composer.compose(NORMALS_WGSL)?);
-            let occluder_module = module(device, "engine hiz depth", &composer.compose(include_str!("../wgsl/hiz_depth.wgsl"))?);
+            let occluder_module = module(
+                device,
+                "engine hiz depth",
+                &composer.compose(include_str!("../wgsl/hiz_depth.wgsl"))?,
+            );
+            let diagnostic_module = module(
+                device,
+                "engine hiz diagnostic",
+                &composer.compose(include_str!("../wgsl/hiz_diagnostic.wgsl"))?,
+            );
             Ok((
                 mesh_pipeline(
                     device,
@@ -376,7 +459,15 @@ impl MeshRenderer {
                     Some((NORMALS_FORMAT, None)),
                     true,
                 ),
-                mesh_pipeline(device, "engine hiz depth", &prepass_layout, &occluder_module, None, true),
+                mesh_pipeline(
+                    device,
+                    "engine hiz depth",
+                    &prepass_layout,
+                    &occluder_module,
+                    None,
+                    true,
+                ),
+                diagnostic_pipeline(device, &prepass_layout, &diagnostic_module),
             ))
         })?;
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -395,6 +486,7 @@ impl MeshRenderer {
             next_program: 1,
             shadow,
             occluder_depth,
+            diagnostic,
             shadow_layout,
             shadow_index: (index_buffer, index_group),
             motion,
@@ -490,7 +582,10 @@ impl MeshRenderer {
             render_size,
         } = frame;
         if let Some(input) = visibility {
-            ensure!(input.len() == meshes.len(), "visibility metadata must match scene meshes");
+            ensure!(
+                input.len() == meshes.len(),
+                "visibility metadata must match scene meshes"
+            );
         }
         state.indirect_output = None;
         state.opaque_instances.clear();
@@ -686,7 +781,13 @@ impl MeshRenderer {
                         opaque_sources.push(source);
                         if mesh.params.cast_shadows {
                             if let Some(shadows) = &mut state.shadow_base {
-                                shadows.push((visibility.unwrap()[source].shadow_mesh.clone().unwrap_or_else(|| mesh.mesh.clone()), instance_index));
+                                shadows.push((
+                                    visibility.unwrap()[source]
+                                        .shadow_mesh
+                                        .clone()
+                                        .unwrap_or_else(|| mesh.mesh.clone()),
+                                    instance_index,
+                                ));
                             }
                         }
                     }
@@ -710,15 +811,25 @@ impl MeshRenderer {
         }
         state.pending_models = Some(current_models);
         state.draws = meshes.len();
-        state.opaque_instances.extend_from_slice(&instances[..opaque_sources.len()]);
+        state
+            .opaque_instances
+            .extend_from_slice(&instances[..opaque_sources.len()]);
         if let Some(input) = visibility {
             for &source in &opaque_sources {
                 let mesh = &meshes[source];
-                let query = input[source].bounds.map_or_else(
-                    || VisibilityQuery::new([0; 4], 0.0, true),
-                    |(min, max)| project_bounds(clip_from_world, mesh.world_from_local,
-                        glam::Vec3::from_array(min), glam::Vec3::from_array(max), render_size),
-                );
+                // Custom material code may displace vertices or discard
+                // fragments, so its authored bounds are not trustworthy: it
+                // stays a visible candidate.
+                let query = match input[source].bounds {
+                    Some((min, max)) if mesh.shader.is_none() => project_bounds(
+                        clip_from_world,
+                        mesh.world_from_local,
+                        glam::Vec3::from_array(min),
+                        glam::Vec3::from_array(max),
+                        render_size,
+                    ),
+                    _ => VisibilityQuery::new([0; 4], 0.0, true),
+                };
                 state.queries.push(query);
             }
             for batch in &state.opaque {
@@ -726,23 +837,35 @@ impl MeshRenderer {
                 let mut start = batch.instances.start;
                 while start < batch.instances.end {
                     let end = (start + MAX_INSTANCES_PER_BATCH).min(batch.instances.end);
-                    state.visibility_batches.push(VisibilityBatch { mesh: batch.mesh.clone(), instances: start..end });
+                    state.visibility_batches.push(VisibilityBatch {
+                        mesh: batch.mesh.clone(),
+                        instances: start..end,
+                    });
                     start = end;
                 }
-                state.indirect_ranges.push(first..state.visibility_batches.len());
+                state
+                    .indirect_ranges
+                    .push(first..state.visibility_batches.len());
             }
-            let mut marked: Vec<_> = opaque_sources.iter().enumerate()
-                .filter(|(_, &source)| input[source].occluder)
+            let mut marked: Vec<_> = opaque_sources
+                .iter()
+                .enumerate()
+                .filter(|(_, source)| input[**source].occluder)
                 .collect();
             marked.sort_by(|a, b| meshes[*a.1].id.cmp(meshes[*b.1].id));
             let mut triangles = 0u32;
             for (instance, &source) in marked {
                 let mesh = &meshes[source];
                 let count = mesh.mesh.count / 3;
-                if state.occluders.len() == MAX_OCCLUDERS { break; }
-                if mesh.shader.is_none() && !mesh.params.transparent
+                if state.occluders.len() == MAX_OCCLUDERS {
+                    break;
+                }
+                if mesh.shader.is_none()
+                    && !mesh.params.transparent
                     && input[source].bounds.is_some()
-                    && triangles.checked_add(count).is_some_and(|sum| sum <= MAX_OCCLUDER_TRIANGLES)
+                    && triangles
+                        .checked_add(count)
+                        .is_some_and(|sum| sum <= MAX_OCCLUDER_TRIANGLES)
                 {
                     triangles += count;
                     state.occluders.push((mesh.mesh.clone(), instance as u32));
@@ -971,18 +1094,33 @@ impl MeshRenderer {
         let Some(output) = &state.indirect_output else {
             return Ok(self.draw_batches(pass, view, state, &state.opaque, false));
         };
-        let Some((_, _, params)) = &state.params else { return Ok(DrawStats::default()); };
+        let Some((_, _, params)) = &state.params else {
+            return Ok(DrawStats::default());
+        };
         let mut stats = DrawStats::default();
         pass.set_bind_group(0, view, &[]);
         let mut current = None;
         for (batch, segments) in state.opaque.iter().zip(&state.indirect_ranges) {
-            let Some(pipeline) = self.pipeline(batch.program, false) else { continue; };
-            if current != Some(batch.program) { pass.set_pipeline(pipeline); current = Some(batch.program); }
+            let Some(pipeline) = self.pipeline(batch.program, false) else {
+                continue;
+            };
+            if current != Some(batch.program) {
+                pass.set_pipeline(pipeline);
+                current = Some(batch.program);
+            }
             let arena = MaterialArena::new(self.uniform_alignment, state.indirect);
             let offset = u64::from(batch.material) * arena.stride;
             pass.set_bind_group(1, &state.texture_groups[&batch.textures], &[]);
             if state.indirect {
-                pass.set_bind_group(2, params, &[offset as u32, (offset + arena.indirect) as u32, (offset + arena.maps) as u32]);
+                pass.set_bind_group(
+                    2,
+                    params,
+                    &[
+                        offset as u32,
+                        (offset + arena.indirect) as u32,
+                        (offset + arena.maps) as u32,
+                    ],
+                );
             } else {
                 pass.set_bind_group(2, params, &[offset as u32, (offset + arena.maps) as u32]);
             }

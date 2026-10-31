@@ -23,7 +23,12 @@ pub struct MeshLods {
 
 impl Default for MeshLods {
     fn default() -> Self {
-        Self { version: 1, meshes: Vec::new(), thresholds: vec![1.0], hysteresis: 0.1 }
+        Self {
+            version: 1,
+            meshes: Vec::new(),
+            thresholds: vec![1.0],
+            hysteresis: 0.1,
+        }
     }
 }
 
@@ -37,12 +42,16 @@ impl MeshLods {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.version != 1 || self.meshes.len() > 7
+        if self.version != 1
+            || self.meshes.len() > 7
             || self.thresholds.len() != self.meshes.len() + 1
             || self.meshes.iter().any(String::is_empty)
             || self.policy().validate().is_err()
         {
-            return Err(Error::new("mesh_lods.invalid", "MeshLods requires version 1, at most seven additional meshes, and one strictly decreasing screen-height threshold per level"));
+            return Err(Error::new(
+                "mesh_lods.invalid",
+                "MeshLods requires version 1, at most seven additional meshes, and one strictly decreasing screen-height threshold per level",
+            ));
         }
         Ok(())
     }
@@ -58,12 +67,22 @@ pub struct HiZOccluder {
 }
 
 impl Default for HiZOccluder {
-    fn default() -> Self { Self { version: 1, enabled: true } }
+    fn default() -> Self {
+        Self {
+            version: 1,
+            enabled: true,
+        }
+    }
 }
 
 impl HiZOccluder {
     pub fn validate(&self) -> Result<()> {
-        if self.version != 1 { return Err(Error::new("hiz_occluder.invalid", "HiZOccluder requires version 1")); }
+        if self.version != 1 {
+            return Err(Error::new(
+                "hiz_occluder.invalid",
+                "HiZOccluder requires version 1",
+            ));
+        }
         Ok(())
     }
 }

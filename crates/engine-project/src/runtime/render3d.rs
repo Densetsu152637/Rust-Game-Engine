@@ -143,25 +143,46 @@ impl Runtime {
                 material,
                 shader,
             });
-            let authored_lods = entity.get::<MeshLods>();
-            let marked = entity.get::<HiZOccluder>().is_some_and(|marker| marker.enabled);
+            // A runtime geometry override (skinning, World-generated meshes)
+            // replaces level zero, so authored static levels and the
+            // occluder marker do not apply to it.
+            let overridden = entity.get::<crate::GeometryOverride>().is_some();
+            let authored_lods = entity.get::<MeshLods>().filter(|_| !overridden);
+            let marked = entity
+                .get::<HiZOccluder>()
+                .is_some_and(|marker| marker.enabled)
+                && !overridden;
             if authored_lods.is_some() || marked {
                 let levels = authored_lods
-                    .map(|lods| lods.meshes.iter().map(|id| {
-                        self.content.meshes.get(id).cloned()
-                            .ok_or_else(|| Error::new("render.mesh.unknown", id))
-                    }).collect::<Result<Vec<_>>>())
-                    .transpose()?.unwrap_or_default();
-                frame.mesh_options.insert(id.clone(), MeshDrawOptions3D {
-                    levels,
-                    policy: authored_lods.map_or_else(
-                        || engine_mesh_lod::ScreenSizeLods {
-                            thresholds: vec![1.0], cull_below: None, hysteresis: 0.0,
-                        }, MeshLods::policy),
-                    // Runtime geometry overrides, including World-generated
-                    // meshes, are not currently certified occluders.
-                    occluder: marked && entity.get::<crate::GeometryOverride>().is_none(),
-                });
+                    .map(|lods| {
+                        lods.meshes
+                            .iter()
+                            .map(|id| {
+                                self.content
+                                    .meshes
+                                    .get(id)
+                                    .cloned()
+                                    .ok_or_else(|| Error::new("render.mesh.unknown", id))
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                frame.mesh_options.insert(
+                    id.clone(),
+                    MeshDrawOptions3D {
+                        levels,
+                        policy: authored_lods.map_or_else(
+                            || engine_mesh_lod::ScreenSizeLods {
+                                thresholds: vec![1.0],
+                                cull_below: None,
+                                hysteresis: 0.0,
+                            },
+                            MeshLods::policy,
+                        ),
+                        occluder: marked,
+                    },
+                );
             }
             mesh_ids.insert(format!("mesh:{id}"));
         }

@@ -19,6 +19,7 @@ engine-acoustics-gpu = { path = "../engine-acoustics-gpu" }
 engine-core = { path = "../engine-core" }
 engine-audio = { path = "../engine-audio" }
 engine-dlss = { path = "../engine-dlss", optional = true }
+engine-mesh-lod = { path = "../engine-mesh-lod" }
 engine-physics-render = { path = "../engine-physics-render" }
 engine-project = { path = "../engine-project" }
 engine-render = { path = "../engine-render" }

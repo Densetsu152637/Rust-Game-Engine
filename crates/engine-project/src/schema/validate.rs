@@ -98,7 +98,9 @@ impl Scene {
             if let Some(lods) = &c.mesh_lods {
                 lods.validate()?;
                 if c.mesh_renderer.is_none() || lods.meshes.iter().any(|mesh| !identifier(mesh)) {
-                    return Err(bad("MeshLods needs a MeshRenderer and valid mesh asset IDs"));
+                    return Err(bad(
+                        "MeshLods needs a MeshRenderer and valid mesh asset IDs",
+                    ));
                 }
             }
             if let Some(marker) = &c.hiz_occluder {

@@ -287,6 +287,9 @@ fn referenced_assets(project: &Project, entity: &SceneEntity) -> Vec<Value> {
         ids.push(&mesh.mesh);
         ids.extend(mesh.texture.as_deref());
     }
+    if let Some(lods) = &c.mesh_lods {
+        ids.extend(lods.meshes.iter().map(String::as_str));
+    }
     if let Some(sprite) = &c.sprite_renderer {
         ids.push(&sprite.texture);
     }

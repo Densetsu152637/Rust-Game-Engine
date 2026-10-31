@@ -85,6 +85,14 @@ pub struct RenderStats {
     pub texture_uploads: usize,
     pub cached_meshes: usize,
     pub cached_textures: usize,
+    /// Certified Hi-Z occluders drawn for the last 3D view (zero when the
+    /// camera did not request `engine.hiz.visibility`).
+    pub hiz_occluders: usize,
+    /// Opaque instances the last 3D view queried against the Hi-Z pyramid.
+    pub hiz_candidates: usize,
+    /// The last 3D view drew its opaque geometry from GPU-compacted indirect
+    /// commands; false is the unchanged direct path.
+    pub hiz_indirect: bool,
 }
 
 /// One XR eye (or any externally owned view target): a caller-supplied
@@ -809,7 +817,7 @@ impl GpuRenderer {
             ..
         } = self;
         let scene = scene.as_mut().expect("created above");
-        let inputs = uploads.sync(gpu, frame)?;
+        let inputs = uploads.sync(gpu, frame, &view)?;
         let candidate = indirect.resolve(gpu, view.id, frame)?;
         scene.set_indirect(view.id, candidate.clone())?;
         indirect.commit(view.id, frame, candidate);
@@ -821,7 +829,7 @@ impl GpuRenderer {
             stream_copies: copies,
             upscale,
         };
-        let report = scene.render_view(
+        let report = scene.render_view_with_visibility(
             &SceneFrame {
                 view: &view,
                 meshes: &inputs.meshes,
@@ -830,10 +838,14 @@ impl GpuRenderer {
             },
             output,
             &mut host,
+            inputs.visibility.as_deref(),
         )?;
         let mut stats = inputs.stats;
         stats.draws += report.draws;
         stats.batches += report.draw_calls;
+        stats.hiz_occluders = report.visibility.occluders;
+        stats.hiz_candidates = report.visibility.candidates;
+        stats.hiz_indirect = report.visibility.active;
         sprite::add_stats(&mut stats, host.stats);
         let overrides = frame
             .camera3d
@@ -847,6 +859,19 @@ impl GpuRenderer {
             rt.finish(&report);
         }
         Ok((report, stats))
+    }
+
+    /// Blocking diagnostic of the main view's last compacted opaque camera
+    /// draws: the survivor count the GPU wrote into every indirect command
+    /// and a depth-disabled replay of those commands. `None` when the last
+    /// frame used the direct path. For tests and tooling.
+    pub fn visibility_diagnostic(
+        &self,
+    ) -> Result<Option<engine_render_pipeline::visibility::VisibilityDiagnostic>> {
+        match &self.scene {
+            Some(scene) => scene.visibility_diagnostic(ViewId::MAIN),
+            None => Ok(None),
+        }
     }
 
     /// Render `frame`'s 3D scene once per eye into externally owned targets
@@ -1811,7 +1836,10 @@ mod tests {
                 mesh_uploads: 0,
                 texture_uploads: 0,
                 cached_meshes: 0,
-                cached_textures: 0
+                cached_textures: 0,
+                hiz_occluders: 0,
+                hiz_candidates: 0,
+                hiz_indirect: false,
             }
         );
         assert_ne!(zero, RenderStats { batches: 1, ..zero });
