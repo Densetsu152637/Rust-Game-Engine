@@ -8,9 +8,12 @@ use engine_render_pipeline::ViewId;
 use glam::{Mat4, Vec3};
 use std::collections::HashMap;
 
-/// Local AABB `(min, max)` of every finite vertex, or `None` for an empty or
+/// A local axis-aligned box as `(min, max)`.
+pub(crate) type LocalBounds = (Vec3, Vec3);
+
+/// Local AABB of every finite vertex, or `None` for an empty or
 /// nonfinite mesh (which the visibility path then treats as always visible).
-pub(crate) fn mesh_bounds(mesh: &Mesh) -> Option<(Vec3, Vec3)> {
+pub(crate) fn mesh_bounds(mesh: &Mesh) -> Option<LocalBounds> {
     let mut points = mesh.vertices.iter().map(|v| Vec3::from_array(v.position));
     let first = points.next()?;
     let (mut min, mut max) = (first, first);
@@ -27,8 +30,8 @@ pub(crate) fn mesh_bounds(mesh: &Mesh) -> Option<(Vec3, Vec3)> {
 /// The union of every level's bounds, so a bound enclosing the chain stays
 /// valid whichever level is selected. Any level without bounds makes the
 /// whole chain unbounded.
-pub(crate) fn chain_bounds(levels: &[Option<(Vec3, Vec3)>]) -> Option<(Vec3, Vec3)> {
-    let mut union: Option<(Vec3, Vec3)> = None;
+pub(crate) fn chain_bounds(levels: &[Option<LocalBounds>]) -> Option<LocalBounds> {
+    let mut union: Option<LocalBounds> = None;
     for level in levels {
         let (min, max) = (*level)?;
         union = Some(match union {

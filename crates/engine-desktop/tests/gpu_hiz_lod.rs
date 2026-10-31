@@ -162,7 +162,9 @@ fn authored_lod_levels_switch_with_hysteresis_in_the_rendered_image() -> anyhow:
         // Selected geometry, not only colour: the level-one quad has a quarter
         // of the level-zero area.
         let covered = image
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| p[3] == 255 && (p[0] != 0 || p[1] != 0))
             .count();
         eprintln!("distance {distance}: centre {centre:?}, covered pixels {covered}");

@@ -25,7 +25,10 @@ mod indirect;
 mod lod;
 pub use indirect::ActiveIndirectBudgetExceeded;
 pub(crate) use indirect::AuthoredIndirectCache;
-use lod::{LodSelections, chain_bounds, mesh_bounds, screen_fraction, select_level, world_sphere};
+use lod::{
+    LocalBounds, LodSelections, chain_bounds, mesh_bounds, screen_fraction, select_level,
+    world_sphere,
+};
 
 /// The built-in lit material (`engine::material` contract).
 pub const LIT_WGSL: &str = engine_render_pipeline::LIT_WGSL;
@@ -298,7 +301,7 @@ pub(crate) fn engine_vertices(mesh: &Mesh) -> Vec<EngineVertex> {
 pub(crate) struct SceneUploads {
     meshes: HashMap<usize, (Arc<Mesh>, Option<Arc<GpuMesh>>)>,
     /// Local bounds of every mesh of a drawn LOD chain, by `Arc` address.
-    bounds: HashMap<usize, (Arc<Mesh>, Option<(Vec3, Vec3)>)>,
+    bounds: HashMap<usize, (Arc<Mesh>, Option<LocalBounds>)>,
     textures: HashMap<usize, (Arc<Texture>, Arc<GpuTexture>)>,
     lods: LodSelections,
     pub streams: TextureStreams,
@@ -340,7 +343,7 @@ impl SceneUploads {
         Ok(uploaded)
     }
 
-    fn bounds_of(&mut self, mesh: &Arc<Mesh>) -> Option<(Vec3, Vec3)> {
+    fn bounds_of(&mut self, mesh: &Arc<Mesh>) -> Option<LocalBounds> {
         self.bounds
             .entry(address(mesh))
             .or_insert_with(|| (mesh.clone(), mesh_bounds(mesh)))

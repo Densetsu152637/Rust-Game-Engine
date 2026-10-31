@@ -795,16 +795,16 @@ impl MeshRenderer {
                     if !transparent {
                         let instance_index = instances.len() as u32 - 1;
                         opaque_sources.push(source);
-                        if mesh.params.cast_shadows {
-                            if let Some(shadows) = &mut state.shadow_base {
-                                shadows.push((
-                                    visibility.unwrap()[source]
-                                        .shadow_mesh
-                                        .clone()
-                                        .unwrap_or_else(|| mesh.mesh.clone()),
-                                    instance_index,
-                                ));
-                            }
+                        if mesh.params.cast_shadows
+                            && let Some(shadows) = &mut state.shadow_base
+                        {
+                            shadows.push((
+                                visibility.unwrap()[source]
+                                    .shadow_mesh
+                                    .clone()
+                                    .unwrap_or_else(|| mesh.mesh.clone()),
+                                instance_index,
+                            ));
                         }
                     }
                 }

@@ -39,7 +39,9 @@ impl VisibilityDiagnostic {
     pub fn pixels_with_tag(&self, id_hash: u32) -> usize {
         let tag = id_hash & 0x00ff_ffff;
         self.rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|p| {
                 p[3] != 0 && u32::from(p[0]) | u32::from(p[1]) << 8 | u32::from(p[2]) << 16 == tag
             })
