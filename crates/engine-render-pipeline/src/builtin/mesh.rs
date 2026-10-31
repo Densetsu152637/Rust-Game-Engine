@@ -78,6 +78,9 @@ pub(crate) struct MeshPreparation<'a, 'm> {
     pub indirect: Option<&'a IndirectScene>,
     pub ambient: glam::Vec3,
     pub visibility: Option<&'a [MeshVisibility]>,
+    /// Build queries, occluders and indirect batches (`engine.hiz.visibility`
+    /// is enabled); otherwise the metadata only selects shadow geometry.
+    pub cull: bool,
     pub clip_from_world: Mat4,
     pub render_size: [u32; 2],
 }
@@ -590,6 +593,7 @@ impl MeshRenderer {
             indirect,
             ambient,
             visibility,
+            cull,
             clip_from_world,
             render_size,
         } = frame;
@@ -823,10 +827,19 @@ impl MeshRenderer {
         }
         state.pending_models = Some(current_models);
         state.draws = meshes.len();
-        state
-            .opaque_instances
-            .extend_from_slice(&instances[..opaque_sources.len()]);
-        if let Some(input) = visibility {
+        // Casters are drawn one by one only when some keep level-zero geometry;
+        // otherwise the instanced batches already draw exactly their meshes.
+        if let Some(input) = visibility
+            && !opaque_sources.iter().any(|&source| {
+                meshes[source].params.cast_shadows && input[source].shadow_mesh.is_some()
+            })
+        {
+            state.shadow_base = None;
+        }
+        if let Some(input) = visibility.filter(|_| cull) {
+            state
+                .opaque_instances
+                .extend_from_slice(&instances[..opaque_sources.len()]);
             for &source in &opaque_sources {
                 let mesh = &meshes[source];
                 // Custom material code may displace vertices or discard

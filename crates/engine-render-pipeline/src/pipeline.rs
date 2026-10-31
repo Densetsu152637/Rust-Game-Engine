@@ -745,6 +745,7 @@ impl ScenePipeline {
                     indirect: indirect.map(|s| s.as_ref()),
                     ambient: view.ambient,
                     visibility,
+                    cull: resolved.is_enabled(names::HIZ_VISIBILITY),
                     clip_from_world: view.jittered_clip_from_world(),
                     render_size: view.render_size,
                 },
