@@ -20,9 +20,11 @@ pub struct VisibilityDiagnostic {
     pub size: [u32; 2],
     pub batches: Vec<BatchSurvivors>,
     /// `Rgba8Unorm` pixels, row-major without padding. Each surviving
-    /// instance covers its screen footprint with its draw-id hash (low 24
-    /// bits as `r | g << 8 | b << 16`); `a` is 255 where anything was drawn.
-    /// Depth testing is disabled, so absence means culling.
+    /// instance covers its screen footprint: `rgb` holds the draw-id hash of
+    /// the last instance drawn there (low 24 bits as `r | g << 8 | b << 16`)
+    /// and `a` counts the surviving instances covering the pixel. Depth
+    /// testing is disabled, so a culled instance contributes nothing and
+    /// overlap is visible whatever the draw order.
     pub rgba: Vec<u8>,
 }
 
@@ -32,15 +34,21 @@ impl VisibilityDiagnostic {
         self.batches.iter().map(|batch| batch.survivors).sum()
     }
 
-    /// Pixels drawn with exactly the given draw-id hash tag.
+    /// Pixels whose last-drawn surviving instance has the given draw-id
+    /// hash. Overlapped instances may be hidden here; see [`Self::coverage`].
     pub fn pixels_with_tag(&self, id_hash: u32) -> usize {
         let tag = id_hash & 0x00ff_ffff;
         self.rgba
             .chunks_exact(4)
             .filter(|p| {
-                p[3] == 255 && u32::from(p[0]) | u32::from(p[1]) << 8 | u32::from(p[2]) << 16 == tag
+                p[3] != 0 && u32::from(p[0]) | u32::from(p[1]) << 8 | u32::from(p[2]) << 16 == tag
             })
             .count()
+    }
+
+    /// How many surviving instances cover pixel (`x`, `y`).
+    pub fn coverage(&self, x: u32, y: u32) -> u8 {
+        self.rgba[((y * self.size[0] + x) * 4 + 3) as usize]
     }
 }
 

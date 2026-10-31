@@ -1,6 +1,7 @@
 // Depth-free diagnostic of the compacted camera draws: every surviving
-// instance is flat-coloured by the low 24 bits of its draw-id hash at its true
-// screen position, so a culled instance leaves no pixels.
+// instance covers its true screen footprint, colours it with the low 24 bits
+// of its draw-id hash and adds one count to alpha, so a culled instance leaves
+// no pixels and overlap is visible whatever the draw order.
 #import engine::mesh
 
 struct Output {
@@ -21,6 +22,6 @@ struct Output {
         f32(input.tag & 255u),
         f32((input.tag >> 8u) & 255u),
         f32((input.tag >> 16u) & 255u),
-        255.0,
+        1.0,
     ) / 255.0;
 }
