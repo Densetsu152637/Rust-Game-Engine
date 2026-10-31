@@ -328,6 +328,8 @@ fn documented_component_names_match_the_scene_schema() {
         "PostProcess": {},
         "PostProcessVolume": {},
         "RayTracing": {},
+        "MeshLods": {},
+        "HiZOccluder": {},
     });
     let components: Components = serde_json::from_value(full).unwrap();
     let serialized = serde_json::to_value(&components).unwrap();
@@ -344,10 +346,18 @@ fn documented_component_names_match_the_scene_schema() {
 
 #[test]
 fn every_component_example_deserializes_and_validates() {
-    for doc in component_docs() {
-        let entity = json!({"id":"e","name":"E","components":{
-            "Transform": {"position":[0,0,0]},
-            doc.name: doc.example.clone()}});
+    let docs = component_docs();
+    for doc in &docs {
+        let mut components = serde_json::Map::new();
+        components.insert("Transform".into(), json!({"position":[0,0,0]}));
+        // Documented prerequisites ride along with their own examples.
+        for required in doc.requires {
+            if let Some(prerequisite) = docs.iter().find(|d| d.name == *required) {
+                components.insert((*required).into(), prerequisite.example.clone());
+            }
+        }
+        components.insert(doc.name.into(), doc.example.clone());
+        let entity = json!({"id":"e","name":"E","components":components});
         let scene: Scene =
             serde_json::from_value(json!({"schema":1,"scene_id":"s","entities":[entity]}))
                 .unwrap_or_else(|e| panic!("{} example rejected: {e}", doc.name));
