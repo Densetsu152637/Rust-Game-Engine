@@ -725,7 +725,14 @@ unverified.
 
 ## Hi-Z LOD consumer status (`feat/codex-hiz-consumer`)
 
-Implemented on the branch, not yet integrated into `main`:
+Done: head `408328a` is fast-forwarded into local `main` after the root gate.
+The workspace suite passed 5,702 tests (241 ignored). Five failures were load
+timing only: three `mcp_exec` nested builds hit `build_timeout` on the cargo
+package-cache lock, one foliage test exceeded its five-second wall-clock bound,
+and one editor hot-reload teardown failed. All three targets pass on rerun
+(5, 14 and 1). The branch's strict workspace Clippy, rustfmt and real-GPU suites
+are recorded in its commits. No unfinished feature code remains from the
+ownership-transfer table; hardware-only checks remain unverified.
 
 - Authored `MeshLods` (level meshes, screen-height thresholds, hysteresis) and
   `HiZOccluder` components with schema, validation, MCP component documentation,
