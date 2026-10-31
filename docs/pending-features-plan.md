@@ -704,3 +704,20 @@ first: the Rhai text backend (`feat/codex-rhai`) and the Hi-Z LOD consumer
 (`feat/codex-hiz-consumer`) from the ownership-transfer table. Hardware-only
 checks (headset, microphone, audio device, HDR display, interactive editor) remain
 unverified.
+
+- Rhai text backend: done, head `2b9bb8d`, fast-forwarded into local `main`.
+  `engine.TextScript` runs `.rhai` handlers in a raw engine with five basic
+  packages, a denying module resolver, `import`/`eval` disabled, bounded depth,
+  collection, variable, function and string limits, and fuel that also charges
+  host requests. Each handler runs on a scoped 8 MiB worker thread behind a
+  rendezvous host bridge; JSON-to-script values are bounded (depth 8, 512 nodes).
+  The `script_check` read tool gives 36 read, 69 with write, 39 with execution and
+  72 with both. Rustfmt on touched files, strict workspace Clippy, the
+  `engine-script`/`engine-project` no-default-features checks, all 466
+  `engine-mcp` tests, 14 `mcp_exec` tests and the workspace suite pass (101
+  binaries; one `link.exe` 0xc000026b crash on `engine-physics`
+  `materials_layers` was a toolchain fault, and that crate passes on rerun).
+  Root security review found no blocking issue. Residual risks: no global heap
+  cap, a worker-thread panic propagates to the host, and a native stack overflow
+  would abort the process (mitigated by the depth limits and worker stack).
+  Remaining unfinished code: the Hi-Z LOD consumer.
