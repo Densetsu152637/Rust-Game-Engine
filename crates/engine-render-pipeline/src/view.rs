@@ -94,6 +94,11 @@ pub struct ViewData {
     /// HDR post-processing and tonemapping for this view (`None`: the
     /// default clamp output). See [`crate::PostSettings`].
     pub post: Option<crate::post::PostSettings>,
+    /// Screen-space reflection controls (`engine.ssr`). `Some` turns the
+    /// feature on unless the view overrides it; `None` leaves it off unless
+    /// the view enables it, which then uses [`crate::SsrSettings::default`].
+    /// An enabled `engine.rt.reflections` always takes precedence.
+    pub ssr: Option<crate::ssr::SsrSettings>,
     pub presentation: Presentation,
 }
 
@@ -122,6 +127,7 @@ impl ViewData {
             host_needs: FeatureNeeds::default(),
             reset_history: false,
             post: None,
+            ssr: None,
             presentation: Presentation::Enabled,
         };
         view.validate()?;
@@ -152,6 +158,9 @@ impl ViewData {
             self.ambient.is_finite() && self.time.is_finite() && self.delta_time.is_finite(),
             "view ambient and time must be finite"
         );
+        if let Some(ssr) = &self.ssr {
+            ssr.validate()?;
+        }
         Ok(())
     }
 

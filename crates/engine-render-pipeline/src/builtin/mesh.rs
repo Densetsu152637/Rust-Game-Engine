@@ -10,9 +10,11 @@ use crate::resources::{ENGINE_UV2_LAYOUT, ENGINE_VERTEX_LAYOUT, GpuMesh, GpuText
 use crate::scoped;
 use crate::shader::{
     LIT_WGSL, MOTION_WGSL, NORMALS_WGSL, SHADOW_WGSL, ShaderComposer, compose_mesh_material,
-    lit_lightmap_source,
+    lit_lightmap_source, lit_surface_source,
 };
-use crate::targets::{DEPTH_FORMAT, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT};
+use crate::targets::{
+    DEPTH_FORMAT, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT, SURFACE_MATERIAL_FORMAT,
+};
 use crate::visibility::project::project_bounds;
 use crate::visibility::{
     IndirectOutput, MAX_INSTANCES_PER_BATCH, MAX_OCCLUDER_TRIANGLES, MAX_OCCLUDERS, MeshVisibility,
@@ -88,6 +90,9 @@ pub(crate) struct MeshPreparation<'a, 'm> {
     pub cull: bool,
     pub clip_from_world: Mat4,
     pub render_size: [u32; 2],
+    /// Build the surface-material pipelines of the built-in lit programs
+    /// (`engine.ssr` runs in this view).
+    pub surface: bool,
 }
 
 /// `EngineInstance` (208 bytes).
@@ -104,6 +109,9 @@ struct Program {
     id: u64,
     opaque: wgpu::RenderPipeline,
     transparent: wgpu::RenderPipeline,
+    /// Surface-material variant of the built-in lit program, built the first
+    /// time a view runs screen-space reflections. Custom shaders never have one.
+    surface: Option<wgpu::RenderPipeline>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -121,6 +129,8 @@ struct Batch {
     mesh: Arc<GpuMesh>,
     program: u64,
     lightmapped: bool,
+    /// The built-in lit shader (custom shaders have no surface-material output).
+    lit: bool,
     material: u32,
     textures: TextureKey,
     instances: std::ops::Range<u32>,
@@ -264,6 +274,77 @@ fn mesh_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// The surface-material variant of a built-in lit program: three colour
+/// outputs, depth-tested against (not writing) the final scene depth.
+fn surface_material_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    uv2: bool,
+) -> wgpu::RenderPipeline {
+    let target = Some(wgpu::ColorTargetState {
+        format: SURFACE_MATERIAL_FORMAT,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+    });
+    let targets = [target.clone(), target.clone(), target];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("engine surface material"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: if uv2 {
+                &[Some(ENGINE_VERTEX_LAYOUT), Some(ENGINE_UV2_LAYOUT)]
+            } else {
+                &[Some(ENGINE_VERTEX_LAYOUT)]
+            },
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(depth_state(false)),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &targets,
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// Compile the surface-material variant of the built-in lit program.
+fn surface_program_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    indirect: bool,
+    lightmapped: bool,
+) -> Result<wgpu::RenderPipeline> {
+    let lit = if lightmapped {
+        lit_lightmap_source()?
+    } else {
+        LIT_WGSL.to_owned()
+    };
+    let composed = compose_mesh_material(&lit_surface_source(&lit)?, indirect)?;
+    scoped(device, || {
+        let module = module(device, "engine surface material", &composed);
+        Ok(surface_material_pipeline(
+            device,
+            layout,
+            &module,
+            lightmapped,
+        ))
+    })
+    .context("creating the surface-material pipeline")
 }
 
 /// Depth-free flat-colour pipeline replaying compacted camera draws.
@@ -537,10 +618,26 @@ impl MeshRenderer {
         source: Option<&str>,
         indirect: bool,
         lightmapped: bool,
+        surface: bool,
     ) -> Result<u64> {
         let key = source.unwrap_or(LIT_WGSL);
         let variant = if lightmapped { 2 } else { indirect as usize };
+        let surface = surface && source.is_none();
+        let layout = if indirect {
+            self.indirect_pipeline_layout.as_ref()
+        } else {
+            Some(&self.pipeline_layout)
+        };
         if let Some(program) = self.programs[variant].get_mut(key) {
+            if surface && program.surface.is_none() {
+                let layout = layout.context("indirect material layout unavailable")?;
+                program.surface = Some(surface_program_pipeline(
+                    &gpu.device,
+                    layout,
+                    indirect,
+                    lightmapped,
+                )?);
+            }
             return Ok(program.id);
         }
         let composed = if lightmapped {
@@ -553,13 +650,7 @@ impl MeshRenderer {
             compose_mesh_material(key, indirect)?
         };
         let device = &gpu.device;
-        let layout = if indirect {
-            self.indirect_pipeline_layout
-                .as_ref()
-                .context("indirect material layout unavailable")?
-        } else {
-            &self.pipeline_layout
-        };
+        let layout = layout.context("indirect material layout unavailable")?;
         let (opaque, transparent) = scoped(device, || {
             let module = module(device, "engine material", &composed);
             Ok((
@@ -584,6 +675,16 @@ impl MeshRenderer {
             ))
         })
         .context("creating the material pipeline")?;
+        let surface = if surface {
+            Some(surface_program_pipeline(
+                device,
+                layout,
+                indirect,
+                lightmapped,
+            )?)
+        } else {
+            None
+        };
         let id = self.next_program;
         self.next_program += 1;
         self.programs[variant].insert(
@@ -592,6 +693,7 @@ impl MeshRenderer {
                 id,
                 opaque,
                 transparent,
+                surface,
             },
         );
         Ok(id)
@@ -631,6 +733,7 @@ impl MeshRenderer {
             cull,
             clip_from_world,
             render_size,
+            surface,
         } = frame;
         if let Some(input) = visibility {
             ensure!(
@@ -700,8 +803,14 @@ impl MeshRenderer {
         }
         for mesh in meshes {
             programs.push(
-                self.program(gpu, mesh.shader, indirect_enabled, mesh.lightmap.is_some())
-                    .with_context(|| format!("material of mesh {}", mesh.id))?,
+                self.program(
+                    gpu,
+                    mesh.shader,
+                    indirect_enabled,
+                    mesh.lightmap.is_some(),
+                    surface,
+                )
+                .with_context(|| format!("material of mesh {}", mesh.id))?,
             );
         }
 
@@ -872,6 +981,7 @@ impl MeshRenderer {
                     mesh: mesh.mesh.clone(),
                     program: programs[order[first]],
                     lightmapped: mesh.lightmap.is_some(),
+                    lit: mesh.shader.is_none(),
                     material: keys[first].1 as u32,
                     textures: keys[first].3,
                     instances: start..instances.len() as u32,
@@ -1135,6 +1245,91 @@ impl MeshRenderer {
         Ok(())
     }
 
+    /// Bind a batch's texture group (1) and dynamic material offsets (2).
+    fn bind_batch_material(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        state: &MeshViewState,
+        params: &wgpu::BindGroup,
+        batch: &Batch,
+    ) {
+        let arena = MaterialArena::new(self.uniform_alignment, state.indirect);
+        let offset = u64::from(batch.material) * arena.stride;
+        pass.set_bind_group(1, &state.texture_groups[&batch.textures], &[]);
+        if state.indirect {
+            pass.set_bind_group(
+                2,
+                params,
+                &[
+                    offset as u32,
+                    (offset + arena.indirect) as u32,
+                    (offset + arena.maps) as u32,
+                ],
+            );
+        } else {
+            pass.set_bind_group(2, params, &[offset as u32, (offset + arena.maps) as u32]);
+        }
+    }
+
+    fn surface_pipeline(&self, program: u64) -> Option<&wgpu::RenderPipeline> {
+        self.programs
+            .iter()
+            .flat_map(|programs| programs.values())
+            .find(|p| p.id == program)
+            .and_then(|p| p.surface.as_ref())
+    }
+
+    /// The opaque built-in lit batches through their surface-material
+    /// pipelines (shaded normal, roughness, F0, fallback specular). Draws the
+    /// same compacted instances as [`Self::draw_opaque`] when Hi-Z indirect
+    /// draws are active; custom-shader batches are skipped.
+    pub fn draw_surface_material(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        view: &wgpu::BindGroup,
+        state: &MeshViewState,
+    ) -> Result<DrawStats> {
+        let mut stats = DrawStats::default();
+        let (Some((_, _, instances)), Some((_, _, params))) = (&state.instances, &state.params)
+        else {
+            return Ok(stats);
+        };
+        pass.set_bind_group(0, view, &[]);
+        pass.set_bind_group(3, instances, &[]);
+        let mut current = None;
+        for (index, batch) in state.opaque.iter().enumerate() {
+            if !batch.lit {
+                continue;
+            }
+            let Some(pipeline) = self.surface_pipeline(batch.program) else {
+                continue;
+            };
+            if current != Some(batch.program) {
+                pass.set_pipeline(pipeline);
+                current = Some(batch.program);
+            }
+            self.bind_batch_material(pass, state, params, batch);
+            if batch.lightmapped {
+                batch.mesh.bind_uv2(pass);
+            }
+            match &state.indirect_output {
+                Some(output) => {
+                    for segment in state.indirect_ranges[index].clone() {
+                        output.draw_batch(pass, segment)?;
+                        stats.draw_calls += 1;
+                    }
+                    stats.instances += batch.instances.len();
+                }
+                None => {
+                    batch.mesh.draw(pass, batch.instances.clone());
+                    stats.draw_calls += 1;
+                    stats.instances += batch.instances.len();
+                }
+            }
+        }
+        Ok(stats)
+    }
+
     fn draw_batches(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -1159,22 +1354,7 @@ impl MeshRenderer {
                 pass.set_pipeline(pipeline);
                 current = Some(batch.program);
             }
-            let arena = MaterialArena::new(self.uniform_alignment, state.indirect);
-            let offset = u64::from(batch.material) * arena.stride;
-            pass.set_bind_group(1, &state.texture_groups[&batch.textures], &[]);
-            if state.indirect {
-                pass.set_bind_group(
-                    2,
-                    params,
-                    &[
-                        offset as u32,
-                        (offset + arena.indirect) as u32,
-                        (offset + arena.maps) as u32,
-                    ],
-                );
-            } else {
-                pass.set_bind_group(2, params, &[offset as u32, (offset + arena.maps) as u32]);
-            }
+            self.bind_batch_material(pass, state, params, batch);
             if batch.lightmapped {
                 batch.mesh.bind_uv2(pass);
             }
@@ -1208,22 +1388,7 @@ impl MeshRenderer {
                 pass.set_pipeline(pipeline);
                 current = Some(batch.program);
             }
-            let arena = MaterialArena::new(self.uniform_alignment, state.indirect);
-            let offset = u64::from(batch.material) * arena.stride;
-            pass.set_bind_group(1, &state.texture_groups[&batch.textures], &[]);
-            if state.indirect {
-                pass.set_bind_group(
-                    2,
-                    params,
-                    &[
-                        offset as u32,
-                        (offset + arena.indirect) as u32,
-                        (offset + arena.maps) as u32,
-                    ],
-                );
-            } else {
-                pass.set_bind_group(2, params, &[offset as u32, (offset + arena.maps) as u32]);
-            }
+            self.bind_batch_material(pass, state, params, batch);
             for index in segments.clone() {
                 output.draw_batch(pass, index)?;
                 stats.draw_calls += 1;

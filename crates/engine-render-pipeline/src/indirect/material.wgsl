@@ -59,3 +59,20 @@ fn engine_material_indirect_lighting_lightmap(surface: EngineSurface, v: vec3<f3
     let specular = radiance*(f0*brdf.x+vec3<f32>(brdf.y));
     return engine_resolve_indirect_lighting(surface,v,frag,diffuse,specular);
 }
+
+// The specular term of engine_material_indirect_lighting (probe / environment
+// radiance times the split-sum BRDF) without the diffuse and screen inputs.
+// The surface-material pass writes it so screen-space reflections can replace
+// it; it must stay in step with the specular lines above.
+fn engine_material_indirect_specular(surface: EngineSurface, v: vec3<f32>) -> vec3<f32> {
+    let p = engine_indirect_material;
+    let nv = clamp(dot(surface.normal, v), 0.0, 1.0);
+    let f0 = mix(vec3<f32>(0.04), surface.albedo, surface.metallic);
+    let reflected = reflect(-v,surface.normal);
+    let r0 = (p.environment_from_world0*vec4<f32>(reflected,0.0)).xyz;
+    let r1 = (p.environment_from_world1*vec4<f32>(reflected,0.0)).xyz;
+    let radiance = textureSampleLevel(engine_environment0,engine_environment_sampler,r0,surface.roughness*p.weights_lods.z).rgb*p.scales.x*p.weights_lods.x
+        + textureSampleLevel(engine_environment1,engine_environment_sampler,r1,surface.roughness*p.weights_lods.w).rgb*p.scales.y*p.weights_lods.y;
+    let brdf = textureSampleLevel(engine_brdf_lut,engine_environment_sampler,vec2<f32>(nv,surface.roughness),0.0).rg;
+    return radiance*(f0*brdf.x+vec3<f32>(brdf.y));
+}

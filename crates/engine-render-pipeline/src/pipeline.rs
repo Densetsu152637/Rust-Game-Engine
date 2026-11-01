@@ -2,6 +2,7 @@
 
 use crate::builtin::mesh::{MeshPreparation, MeshRenderer, MeshViewState, SceneMesh};
 use crate::builtin::passes::{OutputPass, UpscalePass};
+use crate::builtin::ssr::SsrPass;
 use crate::context::{
     FeatureContext, FeatureSetup, FrameIo, HdrSource, OutputTarget, PipelineLayouts,
     PresentationInput,
@@ -16,6 +17,7 @@ use crate::lights::LightList;
 use crate::overlay::run_presentation;
 use crate::shader::ShaderComposer;
 use crate::shadows::ShadowAtlasConfig;
+use crate::ssr::SsrSettings;
 use crate::targets::{CompositeTargets, FrameTargets, Target};
 use crate::view::{Presentation, VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, Viewport};
 use crate::visibility::{
@@ -44,6 +46,16 @@ pub mod names {
     pub const HIZ_VISIBILITY: &str = "engine.hiz.visibility";
     /// Opaque stage: opaque engine meshes (instanced).
     pub const OPAQUE: &str = "engine.opaque";
+    /// OpaqueEffects stage: shaded normal, roughness, F0 and the opaque pass's
+    /// specular of the built-in lit materials, for `engine.ssr`. Runs only
+    /// while `engine.ssr` does.
+    pub const SURFACE_MATERIAL: &str = "engine.surface_material";
+    /// OpaqueEffects stage: screen-space reflections over the opaque scene
+    /// colour. Disabled by default; superseded by [`RT_REFLECTIONS`].
+    pub const SSR: &str = "engine.ssr";
+    /// The hardware ray-traced reflection feature registered by the desktop
+    /// host. Enabled in a view, it replaces `engine.ssr` there.
+    pub const RT_REFLECTIONS: &str = "engine.rt.reflections";
     /// Transparent stage: blended engine meshes, back to front.
     pub const TRANSPARENT: &str = "engine.transparent";
     /// Upscale stage: bilinear resample when render and output sizes differ.
@@ -324,6 +336,10 @@ pub fn builtin_registry() -> Result<FeatureRegistry> {
         FeatureDescriptor::new(names::HIZ_DEPTH, Stage::OccluderDepth),
         FeatureDescriptor::new(names::HIZ_VISIBILITY, Stage::Visibility).disabled_by_default(),
         FeatureDescriptor::new(names::OPAQUE, Stage::Opaque),
+        FeatureDescriptor::new(names::SURFACE_MATERIAL, Stage::OpaqueEffects).before(names::SSR),
+        FeatureDescriptor::new(names::SSR, Stage::OpaqueEffects)
+            .after(names::SURFACE_MATERIAL)
+            .disabled_by_default(),
         FeatureDescriptor::new(names::TRANSPARENT, Stage::Transparent),
         FeatureDescriptor::new(names::UPSCALE, Stage::Upscale),
         FeatureDescriptor::new(names::POST, Stage::PostProcess).disabled_by_default(),
@@ -357,6 +373,7 @@ pub struct ScenePipeline {
     output: OutputPass,
     composite_copy: OutputPass,
     upscale: UpscalePass,
+    ssr: SsrPass,
     views: HashMap<ViewId, ViewState>,
     next_evaluation_id: u64,
     indirect: HashMap<ViewId, std::sync::Arc<crate::indirect::IndirectScene>>,
@@ -381,6 +398,7 @@ impl ScenePipeline {
         let output = OutputPass::new(device)?;
         let composite_copy = OutputPass::new(device)?;
         let upscale = UpscalePass::new(device)?;
+        let ssr = SsrPass::new(device).context("creating the screen-space reflection pass")?;
         let mut registry = builtin_registry()?;
         let composer = ShaderComposer::new();
         let post = std::sync::Arc::new(crate::post::PostShared::default());
@@ -407,6 +425,7 @@ impl ScenePipeline {
             output,
             composite_copy,
             upscale,
+            ssr,
             views: HashMap::new(),
             next_evaluation_id: 0,
             indirect: HashMap::new(),
@@ -691,7 +710,16 @@ impl ScenePipeline {
                 overrides.0.entry(name.to_owned()).or_insert(true);
             }
         }
+        if view.ssr.is_some() {
+            overrides.0.entry(names::SSR.to_owned()).or_insert(true);
+        }
         let mut resolved = self.registry.resolve(&overrides);
+        // The traced settings of a view that runs screen-space reflections;
+        // zero intensity runs neither the surface-material pass nor the trace.
+        let ssr = resolved
+            .is_enabled(names::SSR)
+            .then(|| view.ssr.unwrap_or_default())
+            .filter(|settings| settings.intensity > 0.0);
         let needs = self.registry.needs(&resolved).union(view.host_needs);
         let device = self.gpu.device.clone();
         let queue = self.gpu.queue.clone();
@@ -748,6 +776,7 @@ impl ScenePipeline {
                     cull: resolved.is_enabled(names::HIZ_VISIBILITY),
                     clip_from_world: view.jittered_clip_from_world(),
                     render_size: view.render_size,
+                    surface: ssr.is_some(),
                 },
             )
             .context("preparing scene meshes")
@@ -814,6 +843,12 @@ impl ScenePipeline {
         }
         if needs.screen_lighting {
             targets.ensure_screen_lighting(&device);
+        }
+        if ssr.is_some() {
+            targets.ensure_surface_material(&device);
+        } else {
+            // Release the three render-size targets once the view stops using them.
+            targets.surface_material = None;
         }
         state.lighting.set_screen(
             &device,
@@ -906,12 +941,14 @@ impl ScenePipeline {
                         hiz: self.hiz.as_ref(),
                         output: &mut self.output,
                         upscale: &self.upscale,
+                        ssr_pass: &self.ssr,
                         shadow_alignment: self.shadow_alignment,
                         lighting: &self.lighting,
                         state,
                         view,
                         frame,
                         needs,
+                        ssr,
                     },
                     stage,
                     &mut encoder,
@@ -999,12 +1036,14 @@ impl ScenePipeline {
                         hiz: self.hiz.as_ref(),
                         output: &mut self.output,
                         upscale: &self.upscale,
+                        ssr_pass: &self.ssr,
                         shadow_alignment: self.shadow_alignment,
                         lighting: &self.lighting,
                         state,
                         view,
                         frame,
                         needs,
+                        ssr,
                     },
                     stage,
                     &mut encoder,
@@ -1538,6 +1577,22 @@ impl ScenePipeline {
         crate::readback::read_rgba16f(&self.gpu, &normals.texture)
     }
 
+    /// Read back the surface material of `view`'s last frame as
+    /// `[normal_roughness, f0_coverage, fallback_specular]`; an error when
+    /// `engine.ssr` did not run in that frame.
+    pub fn read_surface_material(&self, view: ViewId) -> Result<[HdrImage; 3]> {
+        let targets = self
+            .targets(view)
+            .context("no frame was rendered for this view")?;
+        let surface = targets
+            .surface_material
+            .as_ref()
+            .context("this view produced no surface material")?;
+        let [normal, f0, fallback] = surface.targets();
+        let read = |target: &Target| crate::readback::read_rgba16f(&self.gpu, &target.texture);
+        Ok([read(normal)?, read(f0)?, read(fallback)?])
+    }
+
     /// Read back render-size scene HDR colour (before upscale/post).
     pub fn read_scene_hdr(&self, view: ViewId) -> Result<HdrImage> {
         let state = self
@@ -1648,12 +1703,15 @@ struct StageRun<'a, 'f> {
     hiz: Option<&'a (HiZKernel, HiZIndirect)>,
     output: &'a mut OutputPass,
     upscale: &'a UpscalePass,
+    ssr_pass: &'a SsrPass,
     shadow_alignment: u32,
     lighting: &'a LightingRenderer,
     state: &'a mut ViewState,
     view: &'a ViewData,
     frame: &'a SceneFrame<'f>,
     needs: crate::feature::FeatureNeeds,
+    /// Screen-space reflection settings while `engine.ssr` is active in the view.
+    ssr: Option<SsrSettings>,
 }
 
 fn run_stage(
@@ -1818,6 +1876,86 @@ fn run_hiz_visibility(
     }
 }
 
+/// Describe the visible built-in lit surfaces for screen-space reflections:
+/// after every opaque writer, depth-tested against the final scene depth.
+fn run_surface_material(
+    run: &mut StageRun<'_, '_>,
+    encoder: &mut wgpu::CommandEncoder,
+    io: &mut FrameIo,
+    stats: &mut DrawStats,
+) -> Result<bool> {
+    if run.ssr.is_none() {
+        return Ok(false);
+    }
+    let targets = io.targets.as_ref().context("no scene targets")?;
+    let surface = targets
+        .surface_material
+        .as_ref()
+        .context("surface-material targets")?;
+    fn clear(target: &Target) -> Option<wgpu::RenderPassColorAttachment<'_>> {
+        Some(wgpu::RenderPassColorAttachment {
+            view: &target.view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })
+    }
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(names::SURFACE_MATERIAL),
+        color_attachments: &[
+            clear(&surface.normal_roughness),
+            clear(&surface.f0_coverage),
+            clear(&surface.fallback_specular),
+        ],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: &targets.depth.view,
+            // Read-only: the scene depth is only tested against.
+            depth_ops: None,
+            stencil_ops: None,
+        }),
+        ..Default::default()
+    });
+    *stats += run.mesh.draw_surface_material(
+        &mut pass,
+        run.state.lighting.bind_group(),
+        &run.state.mesh,
+    )?;
+    Ok(true)
+}
+
+/// Trace and composite screen-space reflections into a distinct scene colour.
+fn run_ssr(
+    run: &mut StageRun<'_, '_>,
+    encoder: &mut wgpu::CommandEncoder,
+    io: &mut FrameIo,
+) -> Result<bool> {
+    let Some(settings) = run.ssr else {
+        return Ok(false);
+    };
+    let device = &run.gpu.device;
+    let (source, destination) = io.swap_scene(device)?;
+    let targets = io.targets.as_ref().context("no scene targets")?;
+    let surface = targets
+        .surface_material
+        .as_ref()
+        .context("surface-material targets")?;
+    run.ssr_pass.encode(
+        device,
+        &run.gpu.queue,
+        encoder,
+        run.view,
+        &settings,
+        &source,
+        &targets.depth.view,
+        surface,
+        &destination,
+    );
+    Ok(true)
+}
+
 /// Built-in work; `Ok(false)` when there was nothing to do.
 fn run_builtin(
     run: &mut StageRun<'_, '_>,
@@ -1829,6 +1967,8 @@ fn run_builtin(
     match name {
         names::HIZ_DEPTH => return run_hiz_depth(run, encoder, io),
         names::HIZ_VISIBILITY => return run_hiz_visibility(run, encoder, io),
+        names::SURFACE_MATERIAL => return run_surface_material(run, encoder, io, stats),
+        names::SSR => return run_ssr(run, encoder, io),
         _ => {}
     }
     if name == names::CLUSTERS {

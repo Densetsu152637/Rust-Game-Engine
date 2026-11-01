@@ -8,7 +8,10 @@ use crate::view::Viewport;
 use anyhow::Result;
 use std::collections::HashMap;
 
-fn texture_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::BindGroupLayoutEntry {
+pub(super) fn texture_entry(
+    binding: u32,
+    sample_type: wgpu::TextureSampleType,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -34,7 +37,7 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn fullscreen_pipeline(
+pub(super) fn fullscreen_pipeline(
     device: &wgpu::Device,
     label: &str,
     layout: &wgpu::BindGroupLayout,
@@ -73,7 +76,11 @@ fn fullscreen_pipeline(
     })
 }
 
-fn module(device: &wgpu::Device, label: &str, source: &str) -> Result<wgpu::ShaderModule> {
+pub(super) fn module(
+    device: &wgpu::Device,
+    label: &str,
+    source: &str,
+) -> Result<wgpu::ShaderModule> {
     let source = ShaderComposer::new().compose(source)?;
     Ok(device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
