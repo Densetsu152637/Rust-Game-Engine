@@ -190,6 +190,70 @@ impl Default for Projection3D {
 pub const DEPTH_OF_FIELD_FEATURE: &str = "effects.dof";
 pub const MOTION_BLUR_FEATURE: &str = "effects.motion_blur";
 pub const SPATIAL_AA_FEATURE: &str = "effects.spatial_aa";
+/// The built-in screen-space reflection feature of the render pipeline.
+pub const SSR_FEATURE: &str = "engine.ssr";
+
+/// Most trace steps of [`ScreenSpaceReflections3D::max_steps`].
+pub const MAX_SSR_STEPS: u32 = 256;
+
+/// Optional screen-space reflections for one camera. Absent means disabled.
+/// An enabled `engine.rt.reflections` for the same camera replaces them.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ScreenSpaceReflections3D {
+    /// Samples along each projected ray, `1..=256`.
+    pub max_steps: u32,
+    /// Longest ray in view-space units, `(0, 10000]`.
+    pub max_distance: f32,
+    /// Depth thickness a ray may sit behind a surface and still hit it,
+    /// in view-space units, `(0, 100]`.
+    pub thickness: f32,
+    /// Perceptual roughness above which a surface is not reflected, `(0, 1]`.
+    pub roughness_cutoff: f32,
+    /// Screen-edge fade width of the hit position as a screen fraction, `[0, 0.5]`.
+    pub edge_fade: f32,
+    /// Multiplier of the traced radiance, `[0, 4]`; zero skips the pass.
+    pub intensity: f32,
+}
+
+impl Default for ScreenSpaceReflections3D {
+    fn default() -> Self {
+        Self {
+            max_steps: 64,
+            max_distance: 30.0,
+            thickness: 0.5,
+            roughness_cutoff: 0.4,
+            edge_fade: 0.1,
+            intensity: 1.0,
+        }
+    }
+}
+
+impl ScreenSpaceReflections3D {
+    pub fn validate(&self) -> Result<()> {
+        if !(1..=MAX_SSR_STEPS).contains(&self.max_steps)
+            || !self.max_distance.is_finite()
+            || self.max_distance <= 0.0
+            || self.max_distance > 10_000.0
+            || !self.thickness.is_finite()
+            || self.thickness <= 0.0
+            || self.thickness > 100.0
+            || !self.roughness_cutoff.is_finite()
+            || self.roughness_cutoff <= 0.0
+            || self.roughness_cutoff > 1.0
+            || !self.edge_fade.is_finite()
+            || !(0.0..=0.5).contains(&self.edge_fade)
+            || !self.intensity.is_finite()
+            || !(0.0..=4.0).contains(&self.intensity)
+        {
+            return Err(Error::new(
+                "camera3d.screen_space_reflections.invalid",
+                "Screen-space reflections need max_steps in 1..=256, max_distance in (0, 10000], thickness in (0, 100], roughness_cutoff in (0, 1], edge_fade in 0..=0.5 and intensity in 0..=4, all finite",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Optional edge-directed spatial AA for one camera. Absent means disabled.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -323,6 +387,10 @@ pub struct Camera3D {
     /// Absent means off. `render_features["effects.spatial_aa"] = false` wins.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spatial_aa: Option<SpatialAa3D>,
+    /// Absent means off. `render_features["engine.ssr"] = false` wins, and an
+    /// enabled `engine.rt.reflections` replaces it for this camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_space_reflections: Option<ScreenSpaceReflections3D>,
     /// Per-camera render feature overrides by stable feature name
     /// (`engine.opaque`, `world.terrain`, ...): `false` disables a feature in
     /// this camera's view, `true` enables one that is off by default. Names of
@@ -345,6 +413,7 @@ impl Default for Camera3D {
             depth_of_field: None,
             motion_blur: None,
             spatial_aa: None,
+            screen_space_reflections: None,
             render_features: BTreeMap::new(),
         }
     }
@@ -763,6 +832,9 @@ impl Camera3D {
         if self.spatial_aa.is_some() {
             features.entry(SPATIAL_AA_FEATURE.into()).or_insert(true);
         }
+        if self.screen_space_reflections.is_some() {
+            features.entry(SSR_FEATURE.into()).or_insert(true);
+        }
         features
     }
 
@@ -774,6 +846,9 @@ impl Camera3D {
             settings.validate()?;
         }
         if let Some(settings) = self.spatial_aa {
+            settings.validate()?;
+        }
+        if let Some(settings) = self.screen_space_reflections {
             settings.validate()?;
         }
         self.lighting.validate()?;
