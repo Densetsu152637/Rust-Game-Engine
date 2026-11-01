@@ -11,6 +11,7 @@
 //! * `cache.rs`: Arc-keyed mesh/texture handle caches with eviction.
 //! * `vertex.rs`: the 48-byte vertex record and its neutral layout.
 
+mod atmosphere;
 mod cache;
 mod framegen;
 mod material2d;
@@ -44,6 +45,7 @@ use engine_project::runtime::RenderFrame;
 use engine_render::{DrawCommand, RenderCommandBuffer, RenderTarget};
 #[cfg(any(feature = "dlss", test))]
 use engine_render_pipeline::Presentation;
+use engine_render_pipeline::atmosphere::AtmosphereControls;
 use engine_render_pipeline::{
     FeatureOverrides, GpuTexture, HostStages, HostUpscale, LightingReport, OutputTarget,
     OverlayBatch, OverlayItem, PipelineFeatures, PresentationInput, SceneFrame, ScenePipeline,
@@ -145,6 +147,7 @@ pub struct GpuRenderer {
     post: PostStatus,
     post_host: post::PostHost,
     post_effects: PostEffects,
+    atmosphere: AtmosphereControls,
     rt: rt::RtHost,
     /// A camera cut requested for the next native view (`reset_history`).
     native_reset: bool,
@@ -366,6 +369,7 @@ impl GpuRenderer {
             post: PostStatus::default(),
             post_host: post::PostHost::default(),
             post_effects: PostEffects::default(),
+            atmosphere: AtmosphereControls::default(),
             rt: rt::RtHost::default(),
             native_reset: false,
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
@@ -460,6 +464,12 @@ impl GpuRenderer {
             scene.register(DepthOfFieldFeature::new(self.post_effects.clone()))?;
             scene.register(MotionBlurFeature::new(self.post_effects.clone()))?;
             scene.register(SpatialAaFeature::new(self.post_effects.clone()))?;
+            let mut atmosphere = engine_render_pipeline::FeatureRegistry::default();
+            engine_render_pipeline::atmosphere::register_features(
+                &mut atmosphere,
+                &self.atmosphere,
+            )?;
+            scene.add_features(atmosphere)?;
             self.scene = Some(scene);
         }
         Ok(self.scene.as_mut().expect("created above"))
@@ -706,6 +716,7 @@ impl GpuRenderer {
         self.post_effects.set_dof(ViewId::MAIN, None)?;
         self.post_effects.set_motion_blur(ViewId::MAIN, None)?;
         self.post_effects.set_spatial_aa(ViewId::MAIN, None)?;
+        self.atmosphere.set(ViewId::MAIN, None)?;
         let size = (self.info.width, self.info.height);
         self.sprites.validate_scene(frame, size)?;
         let built = self.sprites.build_overlay(frame, size)?;
@@ -797,6 +808,7 @@ impl GpuRenderer {
         let mut view = view;
         let post_status = self.post_host.prepare(frame, &mut view)?;
         post_effects::prepare(&self.post_effects, frame, &mut view, upscale.is_some())?;
+        atmosphere::prepare(&self.atmosphere, frame, &view)?;
         self.rt.prepare(
             &self.gpu,
             self.scene.as_mut().expect("created above"),
@@ -1779,6 +1791,10 @@ pub fn preview_pipeline_status(
     registry.register(DepthOfFieldFeature::new(PostEffects::default()))?;
     registry.register(MotionBlurFeature::new(PostEffects::default()))?;
     registry.register(SpatialAaFeature::new(PostEffects::default()))?;
+    engine_render_pipeline::atmosphere::register_features(
+        &mut registry,
+        &AtmosphereControls::default(),
+    )?;
     if let Some(features) = features {
         registry.absorb(features.0.descriptor_copy()?)?;
     }
