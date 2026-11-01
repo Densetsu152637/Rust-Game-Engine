@@ -19,6 +19,7 @@ mod post_effects;
 mod rt;
 mod scene3d;
 mod sprite;
+mod ssr;
 mod temporal;
 mod upscale;
 mod vertex;
@@ -797,6 +798,7 @@ impl GpuRenderer {
         let mut view = view;
         let post_status = self.post_host.prepare(frame, &mut view)?;
         post_effects::prepare(&self.post_effects, frame, &mut view)?;
+        ssr::prepare(frame, &mut view)?;
         self.rt.prepare(
             &self.gpu,
             self.scene.as_mut().expect("created above"),
