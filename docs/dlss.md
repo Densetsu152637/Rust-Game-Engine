@@ -129,6 +129,23 @@ configuration and a reported native fallback. See
 [Temporal upscaling](rendering3d.md#temporal-upscaling-dlss-super-resolution)
 for its contract and limits. It uses the public `Session` API unchanged.
 
+### Precedence with the native temporal resolve
+
+`Camera3D.upscaler.mode` names exactly one jitter owner and one Upscale winner
+per view: `dlss_sr` (DLSS only), `native_temporal` (the engine's own resolve,
+[rendering-temporal.md](rendering-temporal.md); no NGX involved) or
+`auto_temporal` (DLSS when it can run, otherwise the native resolve). A runtime
+`UpscalerControl.override_settings` replaces the authored request as a whole.
+`dlss_sr` that cannot run renders the plain native frame with the reason; it is
+never replaced by the native temporal resolve (only `auto_temporal` asks for
+that, and then reports `active` with `backend = native_temporal` and the DLSS
+reason in `fallback_reason`). The two share the Halton sequence, the history
+reset rules and the spatial AA yield. The native resolve does not run under DLSS
+Frame Generation: with Frame Generation active, a `native_temporal` request (or
+an `auto_temporal` one DLSS could not serve) renders natively and reports
+`fallback`. Nothing here claims the native resolve
+matches DLSS quality.
+
 `Status` reports adapter identity, raw Vulkan driver version, NGX minimum driver,
 compiled NGX API version, render/output sizes and successfully evaluated frame
 count. A zero count means initialized, not evaluated. Runtime plugin version is
