@@ -12,6 +12,8 @@
 //!   faces, spot views in a [`ShadowAtlasConfig`] atlas; PCF or PCSS).
 //!   `engine.lights.clusters` builds a froxel grid of light lists per view
 //!   and `engine::lighting` shades them (docs/rendering-lights.md).
+//! * [`atmosphere`]: physically based sky and aerial perspective features
+//!   (`engine.atmosphere`, `engine.atmosphere.aerial`, docs/rendering-atmosphere.md).
 //! * [`FrameTargets`]: HDR scene colour (`Rgba16Float`), depth, optional
 //!   normals and motion vectors.
 //! * [`InstanceBatcher`] and the built-in mesh path: identical mesh +
@@ -26,6 +28,7 @@
 //!
 //! See docs/rendering-architecture.md for the contracts.
 
+pub mod atmosphere;
 mod builtin;
 mod context;
 mod feature;
