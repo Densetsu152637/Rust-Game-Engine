@@ -567,6 +567,12 @@ impl TextureStreams {
 }
 
 /// Which temporal upscaler renders the 3D scene before 2D sprites/UI.
+///
+/// Exactly one owner supplies the view's jitter and one Upscale winner runs
+/// per view. The modes are mutually exclusive by construction: the request
+/// names its owner, and a runtime override (`UpscalerControl`) replaces the
+/// authored request as a whole. DLSS never silently becomes the native
+/// resolve: only [`Self::AutoTemporal`] asks for that substitution.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum UpscalerMode {
@@ -578,10 +584,41 @@ pub enum UpscalerMode {
     /// a supported NVIDIA GPU; otherwise the scene renders natively and the
     /// status reports why.
     DlssSr,
+    /// The engine's own vendor-neutral temporal resolve (WGSL): jittered
+    /// colour, depth and motion vectors, history reprojection, neighbourhood
+    /// clipping and disocclusion rejection. `quality` picks the render scale
+    /// (`dlaa` renders at output size: temporal anti-aliasing). It is not
+    /// FSR, XeSS or DLSS and makes no claim of equivalent quality.
+    NativeTemporal,
+    /// DLSS Super Resolution when it can run on this device, otherwise the
+    /// native temporal resolve; the status reports which one ran and why.
+    AutoTemporal,
+}
+
+impl UpscalerMode {
+    /// Whether the request may use DLSS Super Resolution.
+    pub fn requests_dlss(self) -> bool {
+        matches!(self, Self::DlssSr | Self::AutoTemporal)
+    }
+
+    /// Whether the request may use the native temporal resolve.
+    pub fn allows_native_temporal(self) -> bool {
+        matches!(self, Self::NativeTemporal | Self::AutoTemporal)
+    }
+}
+
+/// Which implementation resolved the last frame, when one did.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpscalerBackend {
+    DlssSr,
+    NativeTemporal,
 }
 
 /// DLSS quality preset. `dlaa` keeps the render size equal to the output size
-/// (anti-aliasing only); the others let NGX choose a smaller render size.
+/// (anti-aliasing only); the others let NGX choose a smaller render size. The
+/// native temporal resolve uses the same names with
+/// [`UpscalerQuality::native_render_scale`].
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum UpscalerQuality {
@@ -591,6 +628,26 @@ pub enum UpscalerQuality {
     #[default]
     Quality,
     Dlaa,
+}
+
+impl UpscalerQuality {
+    /// Per-axis render scale of the native temporal resolve. These are the
+    /// conventional preset ratios; they are not a quality claim.
+    pub fn native_render_scale(self) -> f32 {
+        match self {
+            Self::UltraPerformance => 1.0 / 3.0,
+            Self::Performance => 0.5,
+            Self::Balanced => 0.58,
+            Self::Quality => 2.0 / 3.0,
+            Self::Dlaa => 1.0,
+        }
+    }
+
+    /// Render size for `output` (each axis at least one pixel, at most `output`).
+    pub fn native_render_size(self, output: [u32; 2]) -> [u32; 2] {
+        let scale = self.native_render_scale();
+        output.map(|n| ((n as f32 * scale).round() as u32).clamp(1, n.max(1)))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -609,7 +666,8 @@ pub enum UpscalerState {
     NotRendered,
     /// No upscaler was requested; the scene rendered at output resolution.
     Native,
-    /// DLSS evaluated this frame's scene; `render_size` is the NGX input size.
+    /// The requested upscaler (see `UpscalerStatus::backend`) resolved this
+    /// frame's scene; `render_size` is its input size.
     Active,
     /// An upscaler was requested but the scene rendered natively; see `fallback_reason`.
     Fallback,
@@ -619,7 +677,9 @@ pub enum UpscalerState {
 pub const MAX_UPSCALER_REASON_BYTES: usize = 512;
 
 /// Renderer-reported upscaler state. `Active` is reported only for a frame whose
-/// DLSS evaluation succeeded; `evaluated_frames` counts successful evaluations.
+/// DLSS evaluation or native temporal resolve succeeded; `evaluated_frames`
+/// counts successful evaluations. With `auto_temporal`, `Active` plus a
+/// `fallback_reason` means the native resolve ran because DLSS could not.
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 pub struct UpscalerStatus {
     pub requested: UpscalerSettings,
@@ -635,6 +695,12 @@ pub struct UpscalerStatus {
     pub history_resets: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adapter: Option<String>,
+    /// Which implementation resolved the frame (`Active` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<UpscalerBackend>,
+    /// Spatial AA was requested but yielded to the temporal resolve this frame.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub spatial_aa_skipped: bool,
 }
 
 /// `reason` truncated to [`MAX_UPSCALER_REASON_BYTES`] on a character boundary.

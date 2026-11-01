@@ -226,6 +226,94 @@ fn authored_upscaler_round_trips_and_rejects_unknown_values() {
     }
 }
 #[test]
+fn authored_native_temporal_modes_round_trip_and_name_their_owner() {
+    for (name, mode, dlss, native) in [
+        ("none", UpscalerMode::None, false, false),
+        ("dlss_sr", UpscalerMode::DlssSr, true, false),
+        ("native_temporal", UpscalerMode::NativeTemporal, false, true),
+        ("auto_temporal", UpscalerMode::AutoTemporal, true, true),
+    ] {
+        let camera: Camera3D =
+            serde_json::from_value(json!({"upscaler":{"mode":name,"quality":"balanced"}})).unwrap();
+        camera.validate().unwrap();
+        assert_eq!(camera.upscaler.mode, mode);
+        assert_eq!(mode.requests_dlss(), dlss, "{name}");
+        assert_eq!(mode.allows_native_temporal(), native, "{name}");
+        assert_eq!(
+            serde_json::to_value(&camera).unwrap()["upscaler"],
+            json!({"mode":name,"quality":"balanced"})
+        );
+    }
+    for bad in ["native", "temporal", "fsr", "xess", "NATIVE_TEMPORAL"] {
+        assert!(
+            serde_json::from_value::<Camera3D>(json!({"upscaler":{"mode":bad}})).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn native_render_sizes_follow_the_quality_presets() {
+    let output = [1920, 1080];
+    assert_eq!(UpscalerQuality::Dlaa.native_render_size(output), output);
+    assert_eq!(
+        UpscalerQuality::Performance.native_render_size(output),
+        [960, 540]
+    );
+    assert_eq!(
+        UpscalerQuality::Quality.native_render_size(output),
+        [1280, 720]
+    );
+    assert_eq!(
+        UpscalerQuality::UltraPerformance.native_render_size(output),
+        [640, 360]
+    );
+    assert_eq!(
+        UpscalerQuality::Balanced.native_render_size(output),
+        [1114, 626]
+    );
+    // Never zero, never larger than the output, even at tiny targets.
+    for quality in [
+        UpscalerQuality::UltraPerformance,
+        UpscalerQuality::Performance,
+        UpscalerQuality::Balanced,
+        UpscalerQuality::Quality,
+        UpscalerQuality::Dlaa,
+    ] {
+        for output in [[1, 1], [2, 3], [7, 5], [4096, 2160]] {
+            let render = quality.native_render_size(output);
+            assert!(render[0] >= 1 && render[1] >= 1, "{quality:?} {output:?}");
+            assert!(render[0] <= output[0] && render[1] <= output[1]);
+        }
+    }
+}
+
+#[test]
+fn upscaler_status_reports_the_backend_and_a_skipped_spatial_filter() {
+    let status = UpscalerStatus {
+        requested: UpscalerSettings {
+            mode: UpscalerMode::AutoTemporal,
+            quality: UpscalerQuality::Performance,
+        },
+        state: UpscalerState::Active,
+        fallback_reason: Some("DLSS requires an NVIDIA Vulkan adapter".into()),
+        render_size: Some([320, 180]),
+        output_size: Some([640, 360]),
+        backend: Some(UpscalerBackend::NativeTemporal),
+        spatial_aa_skipped: true,
+        ..Default::default()
+    };
+    let value = serde_json::to_value(&status).unwrap();
+    assert_eq!(value["backend"], "native_temporal");
+    assert_eq!(value["spatial_aa_skipped"], true);
+    assert_eq!(value["state"], "active");
+    // Defaults stay out of the report, so absent/disabled output is unchanged.
+    let plain = serde_json::to_value(UpscalerStatus::default()).unwrap();
+    assert!(plain.get("backend").is_none());
+    assert!(plain.get("spatial_aa_skipped").is_none());
+}
+
+#[test]
 fn native_override_wins_over_the_authored_request_and_is_reported() {
     let dir = fixture();
     let mut project = Project::load(dir.path().join("project.json")).unwrap();
