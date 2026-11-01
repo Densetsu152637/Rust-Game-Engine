@@ -360,3 +360,15 @@ boundary blending, SH rotation, view isolation, disable/resize/forget and an
 applied-origin rebase near 1e12. World terrain/foliage material sampling and
 runtime asset reload/status remain separate work; supplied UV2 lightmaps are
 described above.
+
+## Screen-space reflections over image-based specular
+
+`engine.ssr` ([rendering-ssr.md](rendering-ssr.md)) reuses this specular as its
+fallback: the surface-material pass re-evaluates `engine_material_indirect_specular`
+(the probe/environment radiance times the split-sum LUT term, without diffuse or
+screen inputs) for built-in lit materials and the trace replaces it by the
+traced radiance where a ray hits, leaving it untouched on a miss. Because the
+LUT follows the capped shader GGX, a mirror (roughness near 0) keeps only a small
+fraction of the environment; the analytic SSR term does not, so a hit can be
+brighter than the surrounding miss. Native indirect lighting is optional: without
+it the fallback is zero and a miss shows the opaque colour as before.

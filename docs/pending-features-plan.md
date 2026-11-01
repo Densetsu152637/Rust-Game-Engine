@@ -800,3 +800,36 @@ padding handling (bilinear sampling can bleed at region edges); the texel
 convention (irradiance/pi, exposure applied) cannot be verified from data; the
 lightmapped variant is derived from `LIT_WGSL` by anchor replacement guarded by a
 test, so edits to the lit shader must keep those anchors; no performance numbers.
+
+### Screen-space reflection status
+
+Stage 9 dependency item 3 (SSR) is implemented on `feat/render-r9-ssr`, based on
+`feat/render-r9-lightmaps`; see [rendering-ssr.md](rendering-ssr.md). DOF and
+motion blur were already on existing post I/O; this entry covers SSR only.
+
+- Producer decision: the opaque pass and the 208-byte `EngineInstance` are
+  unchanged. `engine.surface_material` (`OpaqueEffects`, idle unless SSR runs)
+  redraws the built-in lit batches, depth-tested against the final scene depth,
+  into three `Rgba16Float` targets: shaded normal (normal-mapped) with
+  perceptual roughness, F0 with coverage, and the specular the opaque pass added.
+  Its shader is derived from `lit.wgsl` (and the lightmapped variant) by replacing
+  the lighting tail, guarded by anchors. Custom-shader and unlit materials are
+  documented as non-reflective; no optional custom-shader output exists.
+- `engine.ssr` (`OpaqueEffects`, disabled by default): bounded screen-space march
+  with perspective-correct depth, thickness test, bisection, roughness cutoff,
+  hit/edge/distance/facing fades; hit radiance replaces the existing image-based
+  specular, a miss is a bit-identical copy. `ViewData::ssr` carries validated
+  settings; `Camera3D.screen_space_reflections` authors them.
+- RT versus SSR: an enabled `engine.rt.reflections` supersedes `engine.ssr` for
+  that view (`Activity::Superseded`, reported as `superseded`), resolved in the
+  feature registry; the choice does not depend on RT hardware actually running.
+- Evidence (RTX 5080, Vulkan, ignored tests): `gpu_ssr` and `gpu_authored_ssr`
+  (see the document's validation section); CPU tests cover settings bounds,
+  registration order, the exclusion and authored JSON.
+
+Residual risks: screen space only, no history, temporal filtering or denoise;
+rough reflections use a five-tap cone approximation; the surface pass doubles
+built-in lit vertex/fragment work; Hi-Z does not accelerate the march; an RT
+reflection request that falls back still turns SSR off; no performance numbers;
+the surface pass relies on the same vertex code producing the same depth as the
+opaque pass (as the existing normal prepass does).

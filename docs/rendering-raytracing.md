@@ -530,6 +530,11 @@ ran (below).
 
 ## Frame integration
 
+> **Screen-space reflections.** `engine.rt.reflections` and the raster
+> `engine.ssr` ([rendering-ssr.md](rendering-ssr.md)) are mutually exclusive per
+> view: an enabled RT reflection effect makes `engine.ssr` report `superseded`
+> for that view, even when the effect itself falls back to its raster path.
+
 The desktop renderer (`engine-desktop`, `src/renderer/rt.rs`) owns the integration;
 `engine-render-pipeline` stays RT-free and only gained the generic screen-lighting inputs
 described in [render architecture](rendering-architecture.md#screen-lighting-inputs).
