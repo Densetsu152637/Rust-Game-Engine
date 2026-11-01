@@ -343,6 +343,7 @@ fn gpu_geomorphing_matches_the_cpu_chunk_meshes() -> Result<()> {
             base_color: None,
             metallic_roughness: None,
             normal_map: None,
+            lightmap: None,
         })
         .collect();
     let mut cpu_pipeline = ScenePipeline::new(gpu.clone())?;
@@ -530,6 +531,7 @@ fn a_native_mesh_receives_a_terrain_shadow() -> Result<()> {
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }];
     let eye = Vec3::new(0.0, 50.0, 45.0);
     let camera = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y).inverse();
@@ -601,6 +603,7 @@ fn an_engine_box_shadows_the_terrain() -> Result<()> {
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }];
     let eye = Vec3::new(0.0, 50.0, 45.0);
     let camera = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y).inverse();

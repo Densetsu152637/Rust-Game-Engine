@@ -112,6 +112,7 @@ fn occluder(gpu: &GpuContext, min: [f32; 2], max: [f32; 2], z: f32) -> SceneMesh
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }
 }
 

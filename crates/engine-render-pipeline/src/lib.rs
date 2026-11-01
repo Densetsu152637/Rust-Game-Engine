@@ -81,7 +81,9 @@ pub use post::{
     BloomSettings, ExposureMode, ExposureSettings, GradingSettings, GrainSettings, Lut3d,
     PostSettings, TonemapOperator, VignetteSettings,
 };
-pub use resources::{ENGINE_VERTEX_LAYOUT, EngineVertex, GpuMesh, GpuTexture, TEXTURE_USAGES};
+pub use resources::{
+    ENGINE_UV2_LAYOUT, ENGINE_VERTEX_LAYOUT, EngineVertex, GpuMesh, GpuTexture, TEXTURE_USAGES,
+};
 pub use shader::{LIT_WGSL, MaterialTarget, ShaderComposer, compose_material, validate_wgsl};
 pub use shadows::{ShadowAtlasConfig, ShadowRenderView, cascade_splits};
 pub use streams::{MAX_STREAMS, StreamMode, TextureStreams};

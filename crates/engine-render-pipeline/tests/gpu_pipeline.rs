@@ -62,6 +62,7 @@ fn unlit(id: &str, mesh: Arc<GpuMesh>, z: f32, tint: [f32; 4]) -> SceneMesh<'_> 
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }
 }
 

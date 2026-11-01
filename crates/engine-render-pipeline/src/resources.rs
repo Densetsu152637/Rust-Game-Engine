@@ -1,6 +1,6 @@
 //! GPU meshes and textures shared by the built-in mesh path and features.
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wgpu::util::DeviceExt;
@@ -36,12 +36,26 @@ pub const ENGINE_VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::Vertex
     attributes: &ENGINE_ATTRIBUTES,
 };
 
+const UV2_ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![4 => Float32x2];
+
+/// Layout of the optional second UV stream at buffer slot 1 (`@location(4)`,
+/// 8 bytes per vertex). Only the lightmapped built-in pipelines declare it;
+/// every other pipeline ignores the buffer even when a mesh carries one.
+pub const ENGINE_UV2_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+    array_stride: std::mem::size_of::<[f32; 2]>() as u64,
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &UV2_ATTRIBUTES,
+};
+
 /// An uploaded triangle-list mesh. Cheap to share through `Arc`; its `id` is
 /// unique for the process and keys instancing batches.
 #[derive(Debug)]
 pub struct GpuMesh {
     id: u64,
     pub vertex: wgpu::Buffer,
+    /// Optional second UV set (one `[f32; 2]` per vertex) bound at slot 1 and
+    /// read only by lightmapped draws.
+    pub uv2: Option<wgpu::Buffer>,
     pub index: Option<wgpu::Buffer>,
     /// Index count when indexed, else vertex count.
     pub count: u32,
@@ -63,6 +77,48 @@ impl GpuMesh {
             std::mem::size_of::<EngineVertex>() as u64,
             indices,
         )
+    }
+
+    /// Upload engine vertices with a second UV set (`uv2` holds one finite pair
+    /// per vertex) and optional `u32` indices (a triangle list).
+    pub fn from_engine_vertices_with_uv2(
+        device: &wgpu::Device,
+        label: &str,
+        vertices: &[EngineVertex],
+        uv2: &[[f32; 2]],
+        indices: &[u32],
+    ) -> Result<Arc<Self>> {
+        ensure!(
+            uv2.len() == vertices.len(),
+            "second UV set has {} entries for {} vertices",
+            uv2.len(),
+            vertices.len()
+        );
+        ensure!(
+            uv2.iter().flatten().all(|v| v.is_finite()),
+            "second UV set must be finite"
+        );
+        let mut mesh = Self::from_bytes(
+            device,
+            label,
+            bytemuck::cast_slice(vertices),
+            std::mem::size_of::<EngineVertex>() as u64,
+            indices,
+        )?;
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::cast_slice(uv2),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        Arc::get_mut(&mut mesh)
+            .context("a freshly created mesh is uniquely owned")?
+            .uv2 = Some(buffer);
+        Ok(mesh)
+    }
+
+    /// Whether the mesh carries a second UV set (required by lightmapped draws).
+    pub fn has_uv2(&self) -> bool {
+        self.uv2.is_some()
     }
 
     /// Upload raw vertex bytes of any layout (`stride` bytes per vertex).
@@ -107,6 +163,7 @@ impl GpuMesh {
         Ok(Arc::new(Self {
             id: next_id(),
             vertex,
+            uv2: None,
             index,
             count: count as u32,
             vertex_stride: stride,
@@ -115,6 +172,21 @@ impl GpuMesh {
 
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Bind slot 0 and, when present, the second UV set at slot 1. Only
+    /// passes that own slot 1 (the built-in mesh path) may call this;
+    /// [`GpuMesh::draw`] never touches slot 1, which instancing features use.
+    pub fn bind_vertex_buffers(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_vertex_buffer(0, self.vertex.slice(..));
+        self.bind_uv2(pass);
+    }
+
+    /// Bind the second UV set at slot 1 when the mesh has one.
+    pub fn bind_uv2(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if let Some(uv2) = &self.uv2 {
+            pass.set_vertex_buffer(1, uv2.slice(..));
+        }
     }
 
     /// Bind the buffers at vertex slot 0 and draw `instances`.

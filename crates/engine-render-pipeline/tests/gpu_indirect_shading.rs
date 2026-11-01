@@ -108,6 +108,7 @@ impl Harness {
             base_color: None,
             metallic_roughness: None,
             normal_map: None,
+            lightmap: None,
         }
     }
     fn resources(&self, environments: &[EnvironmentData]) -> Result<Arc<GpuIndirectResources>> {

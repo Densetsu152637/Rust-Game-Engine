@@ -250,6 +250,54 @@ pub(crate) fn compose_mesh_material(source: &str, indirect: bool) -> Result<Stri
     compose_material_mode(source, MaterialTarget::Mesh, indirect)
 }
 
+/// Anchors of [`LIT_WGSL`] the lightmapped variant extends; each occurs once.
+const LIGHTMAP_ANCHORS: [&str; 4] = [
+    "    @location(3) normal: vec3<f32>,
+}",
+    "@vertex fn vs_main(vertex: EngineVertex, @builtin(instance_index) instance: u32) -> Output {",
+    "    out.normal = (engine_normal_from_local(instance) * vec4<f32>(vertex.normal, 0.0)).xyz;",
+    "let ambient = engine_material_indirect_lighting(surface, v, input.position.xy);",
+];
+
+/// The built-in lit material with a second UV stream (`@location(4)`, vertex
+/// slot 1) and the instance's lightmap binding: the vertex stage forwards
+/// `uv2 * scale + offset` and the lightmap flags, and the fragment stage calls
+/// `engine_material_indirect_lighting_lightmap`. It is derived from
+/// [`LIT_WGSL`] so the shading body can never drift from the default material.
+/// Only the native indirect composition provides that function.
+pub(crate) fn lit_lightmap_source() -> Result<String> {
+    // Checkouts with CRLF line endings embed CRLF source text.
+    let lit = LIT_WGSL.replace("\r\n", "\n");
+    for anchor in LIGHTMAP_ANCHORS {
+        ensure!(
+            lit.matches(anchor).count() == 1,
+            "the built-in lit shader changed; lightmap anchor missing: {anchor}"
+        );
+    }
+    Ok(lit
+        .replace(
+            LIGHTMAP_ANCHORS[0],
+            "    @location(3) normal: vec3<f32>,
+    @location(4) lightmap_uv: vec2<f32>,
+    @location(5) @interpolate(flat) lightmap_flags: u32,
+}",
+        )
+        .replace(
+            LIGHTMAP_ANCHORS[1],
+            "@vertex fn vs_main(vertex: EngineVertex, @location(4) uv2: vec2<f32>, @builtin(instance_index) instance: u32) -> Output {",
+        )
+        .replace(
+            LIGHTMAP_ANCHORS[2],
+            "    out.normal = (engine_normal_from_local(instance) * vec4<f32>(vertex.normal, 0.0)).xyz;
+    out.lightmap_uv = engine_lightmap_uv(instance, uv2);
+    out.lightmap_flags = engine_lightmap_flags(instance);",
+        )
+        .replace(
+            LIGHTMAP_ANCHORS[3],
+            "let ambient = engine_material_indirect_lighting_lightmap(surface, v, input.position.xy, input.lightmap_uv, input.lightmap_flags);",
+        ))
+}
+
 fn compose_material_mode(source: &str, target: MaterialTarget, indirect: bool) -> Result<String> {
     let mut composer = ShaderComposer::for_target(target);
     if indirect {
@@ -274,7 +322,7 @@ fn compose_material_mode(source: &str, target: MaterialTarget, indirect: bool) -
     }
     let mut allowed = material_bindings(target).to_vec();
     if indirect {
-        allowed.extend_from_slice(&[(1, 4), (1, 5), (1, 6), (1, 7), (2, 1)]);
+        allowed.extend_from_slice(&[(1, 4), (1, 5), (1, 6), (1, 7), (1, 8), (2, 1)]);
     }
     let mut seen = BTreeSet::new();
     for (_, global) in module.global_variables.iter() {
@@ -326,6 +374,70 @@ mod tests {
             );
             compose_material(&custom, target).unwrap();
         }
+    }
+
+    #[test]
+    fn lightmapped_lit_variant_composes_only_against_native_indirect() {
+        let source = lit_lightmap_source().unwrap();
+        let composed = compose_mesh_material(&source, true).unwrap();
+        let module = validate_wgsl(&composed).unwrap();
+        let vertex = module
+            .entry_points
+            .iter()
+            .find(|e| e.stage == naga::ShaderStage::Vertex)
+            .unwrap();
+        let locations: Vec<u32> = vertex
+            .function
+            .arguments
+            .iter()
+            .flat_map(|argument| match &module.types[argument.ty].inner {
+                naga::TypeInner::Struct { members, .. } => members
+                    .iter()
+                    .filter_map(|m| match m.binding {
+                        Some(naga::Binding::Location { location, .. }) => Some(location),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => match argument.binding {
+                    Some(naga::Binding::Location { location, .. }) => vec![location],
+                    _ => Vec::new(),
+                },
+            })
+            .collect();
+        assert_eq!(
+            locations,
+            [0, 1, 2, 3, 4],
+            "vertex inputs: engine vertex + uv2"
+        );
+        // The legacy material has no lightmap-aware lighting function.
+        assert!(compose_mesh_material(&source, false).is_err());
+        // The default lit shader keeps the four-attribute vertex ABI.
+        let plain = compose_mesh_material(LIT_WGSL, true).unwrap();
+        assert!(!plain.contains("@location(4) uv2"));
+    }
+
+    #[test]
+    fn lightmap_variant_changes_only_the_extension_points_of_the_lit_shader() {
+        let source = lit_lightmap_source().unwrap();
+        assert!(source.contains("engine_material_indirect_lighting_lightmap"));
+        // Everything outside the four anchors is byte-for-byte the default material.
+        let mut stripped = source.clone();
+        for removed in [
+            "    @location(4) lightmap_uv: vec2<f32>,
+    @location(5) @interpolate(flat) lightmap_flags: u32,
+",
+            "
+    out.lightmap_uv = engine_lightmap_uv(instance, uv2);
+    out.lightmap_flags = engine_lightmap_flags(instance);",
+            "@location(4) uv2: vec2<f32>, ",
+        ] {
+            stripped = stripped.replace(removed, "");
+        }
+        let stripped = stripped.replace(
+            "engine_material_indirect_lighting_lightmap(surface, v, input.position.xy, input.lightmap_uv, input.lightmap_flags)",
+            "engine_material_indirect_lighting(surface, v, input.position.xy)",
+        );
+        assert_eq!(stripped, LIT_WGSL.replace("\r\n", "\n"));
     }
 
     #[test]

@@ -12,6 +12,8 @@ struct EngineIndirectMaterial {
 @group(1) @binding(5) var engine_environment1: texture_cube<f32>;
 @group(1) @binding(6) var engine_brdf_lut: texture_2d<f32>;
 @group(1) @binding(7) var engine_environment_sampler: sampler;
+// The draw's supplied lightmap (a neutral 1x1 black image when it has none).
+@group(1) @binding(8) var engine_lightmap: texture_2d<f32>;
 @group(2) @binding(1) var<uniform> engine_indirect_material: EngineIndirectMaterial;
 
 fn engine_diffuse_polynomial(c: array<vec4<f32>, 9>, n: vec3<f32>) -> vec3<f32> {
@@ -22,6 +24,14 @@ fn engine_diffuse_polynomial(c: array<vec4<f32>, 9>, n: vec3<f32>) -> vec3<f32> 
 // Materials opt in by calling this helper. Legacy engine_indirect_lighting
 // remains ambient/screen-only, and the sprite implementation remains neutral.
 fn engine_material_indirect_lighting(surface: EngineSurface, v: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
+    return engine_material_indirect_lighting_lightmap(surface, v, frag, vec2<f32>(0.0), 0u);
+}
+
+// As engine_material_indirect_lighting, with a supplied lightmap. `flags` are the
+// instance lightmap flags (bit 0 enabled, bit 1 add); `lightmap_uv` is already
+// uv2 * scale + offset. Baked texels are incident diffuse radiance (irradiance/pi,
+// exposure applied), weighted like the probe diffuse term. Specular is unchanged.
+fn engine_material_indirect_lighting_lightmap(surface: EngineSurface, v: vec3<f32>, frag: vec2<f32>, lightmap_uv: vec2<f32>, flags: u32) -> vec3<f32> {
     let p = engine_indirect_material;
     let n0 = (p.environment_from_world0 * vec4<f32>(surface.normal, 0.0)).xyz;
     let n1 = (p.environment_from_world1 * vec4<f32>(surface.normal, 0.0)).xyz;
@@ -31,9 +41,15 @@ fn engine_material_indirect_lighting(surface: EngineSurface, v: vec3<f32>, frag:
     let incident0 = mix(p.diffuse0[0].rgb,engine_diffuse_polynomial(p.diffuse0,n0),p.scales.z)*p.scales.x;
     let incident1 = engine_diffuse_polynomial(p.diffuse1,n1)*p.scales.y;
     // Missing global data preserves legacy ambient, including its weighting.
-    let diffuse = surface.albedo*(1.0-surface.metallic) * (
+    let probe_diffuse = surface.albedo*(1.0-surface.metallic) * (
         incident0*p.weights_lods.x*mix(vec3<f32>(1.0),vec3<f32>(1.0)-fresnel,p.scales.z)
         + incident1*p.weights_lods.y*(vec3<f32>(1.0)-fresnel));
+    var diffuse = probe_diffuse;
+    if (flags & 1u) != 0u {
+        let baked = textureSampleLevel(engine_lightmap, engine_environment_sampler, lightmap_uv, 0.0).rgb;
+        let lightmap_diffuse = surface.albedo*(1.0-surface.metallic)*baked*(vec3<f32>(1.0)-fresnel);
+        diffuse = select(lightmap_diffuse, probe_diffuse + lightmap_diffuse, (flags & 2u) != 0u);
+    }
     let reflected = reflect(-v,surface.normal);
     let r0 = (p.environment_from_world0*vec4<f32>(reflected,0.0)).xyz;
     let r1 = (p.environment_from_world1*vec4<f32>(reflected,0.0)).xyz;

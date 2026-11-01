@@ -241,11 +241,19 @@ fn native_indirect_metadata_rejects_bad_rotations_intensities_and_limits() {
         assert!(EnvironmentLighting::new(0, Quat::IDENTITY, intensity).is_err());
     }
     assert!(check_material_limits(&wgpu::Limits::default()).is_ok());
-    let textures = wgpu::Limits {
-        max_sampled_textures_per_shader_stage: 10,
+    // Eleven textures were enough before the per-draw lightmap binding.
+    for count in [10, 11] {
+        let textures = wgpu::Limits {
+            max_sampled_textures_per_shader_stage: count,
+            ..Default::default()
+        };
+        assert!(check_material_limits(&textures).is_err(), "{count}");
+    }
+    let enough = wgpu::Limits {
+        max_sampled_textures_per_shader_stage: 12,
         ..Default::default()
     };
-    assert!(check_material_limits(&textures).is_err());
+    assert!(check_material_limits(&enough).is_ok());
     let dynamic = wgpu::Limits {
         max_dynamic_uniform_buffers_per_pipeline_layout: 2,
         ..Default::default()

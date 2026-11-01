@@ -16,7 +16,11 @@ struct EngineInstance {
     normal_from_local: mat4x4<f32>,
     // Last frame's transform (equal after a history reset or for new draws).
     previous_world_from_local: mat4x4<f32>,
-    // x: 32-bit hash of the draw id (picking); yzw reserved.
+    // x: 32-bit hash of the draw id (picking). yzw: the lightmap binding read by
+    // the built-in lit material (y: bit 0 enabled, bit 1 add instead of replace;
+    // z: atlas scale and w: atlas offset, each as pack2x16unorm). Zero = none.
+    // Custom materials must not repurpose them; copies of this record (Hi-Z
+    // compaction) move all 208 bytes unchanged.
     params: vec4<u32>,
 }
 
@@ -32,4 +36,14 @@ fn engine_normal_from_local(instance: u32) -> mat4x4<f32> {
 
 fn engine_previous_world_from_local(instance: u32) -> mat4x4<f32> {
     return engine_instances[instance].previous_world_from_local;
+}
+
+fn engine_lightmap_flags(instance: u32) -> u32 {
+    return engine_instances[instance].params.y;
+}
+
+// Atlas region of the instance's lightmap: uv = uv2 * scale + offset.
+fn engine_lightmap_uv(instance: u32, uv2: vec2<f32>) -> vec2<f32> {
+    let params = engine_instances[instance].params;
+    return uv2 * unpack2x16unorm(params.z) + unpack2x16unorm(params.w);
 }

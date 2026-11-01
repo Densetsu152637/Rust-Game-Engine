@@ -86,6 +86,7 @@ fn unlit<'a>(
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }
 }
 
@@ -594,6 +595,7 @@ fn draw<'a>(
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }
 }
 

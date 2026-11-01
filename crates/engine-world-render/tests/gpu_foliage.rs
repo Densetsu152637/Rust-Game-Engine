@@ -525,6 +525,7 @@ fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }];
     let lights = LightList {
         lights: vec![
@@ -707,6 +708,7 @@ fn shadow_toggle_preserves_foliage_colour_pose_at_lod_hysteresis_edge() -> Resul
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }];
     let edge = render_scene(&gpu, &mut pipeline, &world, &far, &receiver, &lights)?;
     let reference = |height: f32| -> Result<World> {

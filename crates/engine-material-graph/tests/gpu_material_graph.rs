@@ -436,6 +436,7 @@ fn draw_mesh(
         base_color: Some(image),
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     };
     let lights = LightList {
         lights: vec![Light::directional(Vec3::NEG_Z, Vec3::ONE, 10.0)],

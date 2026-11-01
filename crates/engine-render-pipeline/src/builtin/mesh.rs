@@ -3,13 +3,14 @@
 
 use crate::context::PipelineLayouts;
 use crate::indirect::{
-    INDIRECT_UNIFORM_BYTES, IndirectScene, MAX_INDIRECT_MATERIALS, MaterialArena,
+    INDIRECT_UNIFORM_BYTES, IndirectScene, LightmapBinding, MAX_INDIRECT_MATERIALS, MaterialArena,
 };
 use crate::instancing::{DrawStats, Grouping, group_keys};
-use crate::resources::{ENGINE_VERTEX_LAYOUT, GpuMesh, GpuTexture};
+use crate::resources::{ENGINE_UV2_LAYOUT, ENGINE_VERTEX_LAYOUT, GpuMesh, GpuTexture};
 use crate::scoped;
 use crate::shader::{
     LIT_WGSL, MOTION_WGSL, NORMALS_WGSL, SHADOW_WGSL, ShaderComposer, compose_mesh_material,
+    lit_lightmap_source,
 };
 use crate::targets::{DEPTH_FORMAT, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT};
 use crate::visibility::project::project_bounds;
@@ -69,6 +70,10 @@ pub struct SceneMesh<'a> {
     pub base_color: Option<Arc<GpuTexture>>,
     pub metallic_roughness: Option<Arc<GpuTexture>>,
     pub normal_map: Option<Arc<GpuTexture>>,
+    /// Supplied lightmap region sampled by the built-in lit shader. Requires an
+    /// indirect scene on the view holding that lightmap, `shader: None` and a
+    /// mesh with a second UV set. `None` leaves the draw exactly as before.
+    pub lightmap: Option<LightmapBinding>,
 }
 
 pub(crate) struct MeshPreparation<'a, 'm> {
@@ -102,7 +107,7 @@ struct Program {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct TextureKey([u64; 6]);
+struct TextureKey([u64; 7]);
 
 #[derive(PartialEq, Eq, Hash)]
 struct MaterialKey {
@@ -115,6 +120,7 @@ struct MaterialKey {
 struct Batch {
     mesh: Arc<GpuMesh>,
     program: u64,
+    lightmapped: bool,
     material: u32,
     textures: TextureKey,
     instances: std::ops::Range<u32>,
@@ -180,7 +186,9 @@ pub(crate) struct MeshRenderer {
     indirect_pipeline_layout: Option<wgpu::PipelineLayout>,
     uniform_alignment: u32,
     black_cube: Option<wgpu::TextureView>,
-    programs: [HashMap<String, Program>; 2],
+    black_lightmap: Option<wgpu::TextureView>,
+    /// Legacy, native-indirect and lightmapped (native-indirect) programs.
+    programs: [HashMap<String, Program>; 3],
     next_program: u64,
     shadow: wgpu::RenderPipeline,
     occluder_depth: wgpu::RenderPipeline,
@@ -218,6 +226,7 @@ fn mesh_pipeline(
     module: &wgpu::ShaderModule,
     target: Option<(wgpu::TextureFormat, Option<wgpu::BlendState>)>,
     depth_write: bool,
+    uv2: bool,
 ) -> wgpu::RenderPipeline {
     let targets = target.map(|(format, blend)| wgpu::ColorTargetState {
         format,
@@ -232,7 +241,11 @@ fn mesh_pipeline(
             module,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
-            buffers: &[Some(ENGINE_VERTEX_LAYOUT)],
+            buffers: if uv2 {
+                &[Some(ENGINE_VERTEX_LAYOUT), Some(ENGINE_UV2_LAYOUT)]
+            } else {
+                &[Some(ENGINE_VERTEX_LAYOUT)]
+            },
         },
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
@@ -457,6 +470,7 @@ impl MeshRenderer {
                     &shadow_module,
                     None,
                     true,
+                    false,
                 ),
                 mesh_pipeline(
                     device,
@@ -465,6 +479,7 @@ impl MeshRenderer {
                     &motion_module,
                     Some((MOTION_FORMAT, None)),
                     true,
+                    false,
                 ),
                 mesh_pipeline(
                     device,
@@ -473,6 +488,7 @@ impl MeshRenderer {
                     &normals_module,
                     Some((NORMALS_FORMAT, None)),
                     true,
+                    false,
                 ),
                 mesh_pipeline(
                     device,
@@ -481,6 +497,7 @@ impl MeshRenderer {
                     &occluder_module,
                     None,
                     true,
+                    false,
                 ),
                 diagnostic_pipeline(device, &prepass_layout, &diagnostic_module),
             ))
@@ -497,6 +514,7 @@ impl MeshRenderer {
             indirect_pipeline_layout,
             uniform_alignment: device.limits().min_uniform_buffer_offset_alignment,
             black_cube: None,
+            black_lightmap: None,
             programs: std::array::from_fn(|_| HashMap::new()),
             next_program: 1,
             shadow,
@@ -513,12 +531,27 @@ impl MeshRenderer {
 
     /// Compile (or reuse) the program of a material source. Invalid shaders
     /// fail here, before anything is submitted.
-    fn program(&mut self, gpu: &GpuContext, source: Option<&str>, indirect: bool) -> Result<u64> {
+    fn program(
+        &mut self,
+        gpu: &GpuContext,
+        source: Option<&str>,
+        indirect: bool,
+        lightmapped: bool,
+    ) -> Result<u64> {
         let key = source.unwrap_or(LIT_WGSL);
-        if let Some(program) = self.programs[indirect as usize].get_mut(key) {
+        let variant = if lightmapped { 2 } else { indirect as usize };
+        if let Some(program) = self.programs[variant].get_mut(key) {
             return Ok(program.id);
         }
-        let composed = compose_mesh_material(key, indirect)?;
+        let composed = if lightmapped {
+            ensure!(
+                indirect && source.is_none(),
+                "lightmaps need the native indirect path and the built-in lit shader"
+            );
+            compose_mesh_material(&lit_lightmap_source()?, true)?
+        } else {
+            compose_mesh_material(key, indirect)?
+        };
         let device = &gpu.device;
         let layout = if indirect {
             self.indirect_pipeline_layout
@@ -537,6 +570,7 @@ impl MeshRenderer {
                     &module,
                     Some((HDR_FORMAT, None)),
                     true,
+                    lightmapped,
                 ),
                 mesh_pipeline(
                     device,
@@ -545,13 +579,14 @@ impl MeshRenderer {
                     &module,
                     Some((HDR_FORMAT, Some(wgpu::BlendState::ALPHA_BLENDING))),
                     false,
+                    lightmapped,
                 ),
             ))
         })
         .context("creating the material pipeline")?;
         let id = self.next_program;
         self.next_program += 1;
-        self.programs[indirect as usize].insert(
+        self.programs[variant].insert(
             key.to_owned(),
             Program {
                 id,
@@ -626,6 +661,9 @@ impl MeshRenderer {
         if indirect_enabled && self.black_cube.is_none() {
             self.black_cube = Some(crate::indirect::black_cube(gpu));
         }
+        if indirect_enabled && self.black_lightmap.is_none() {
+            self.black_lightmap = Some(crate::indirect::black_lightmap(gpu));
+        }
         let arena = MaterialArena::new(self.uniform_alignment, indirect_enabled);
         let mut ids = HashSet::with_capacity(meshes.len());
         let mut programs = Vec::with_capacity(meshes.len());
@@ -643,6 +681,10 @@ impl MeshRenderer {
                 mesh.id
             );
             validate_params(&mesh.params).with_context(|| format!("mesh {}", mesh.id))?;
+            if let Some(binding) = &mesh.lightmap {
+                validate_lightmap(mesh, binding, indirect)
+                    .with_context(|| format!("lightmap of mesh {}", mesh.id))?;
+            }
             sources.insert(mesh.shader.unwrap_or(LIT_WGSL));
             ensure!(
                 !indirect_enabled || sources.len() <= MAX_INDIRECT_MATERIALS,
@@ -653,9 +695,12 @@ impl MeshRenderer {
         // not evict one another's compiled material pipelines every frame.
         self.programs[indirect_enabled as usize]
             .retain(|source, _| sources.contains(source.as_str()));
+        if !meshes.iter().any(|mesh| mesh.lightmap.is_some()) {
+            self.programs[2].clear();
+        }
         for mesh in meshes {
             programs.push(
-                self.program(gpu, mesh.shader, indirect_enabled)
+                self.program(gpu, mesh.shader, indirect_enabled, mesh.lightmap.is_some())
                     .with_context(|| format!("material of mesh {}", mesh.id))?,
             );
         }
@@ -694,6 +739,10 @@ impl MeshRenderer {
             let resolved = indirect
                 .map(|scene| scene.resolve(mesh.world_from_local.w_axis.truncate(), ambient))
                 .transpose()?;
+            let lightmap_id = match (&mesh.lightmap, indirect) {
+                (Some(binding), Some(scene)) => scene.lightmap(binding)?.id(),
+                _ => 0,
+            };
             let textures = TextureKey([
                 mesh.base_color.as_ref().map_or(0, |t| t.id()),
                 mesh.metallic_roughness.as_ref().map_or(0, |t| t.id()),
@@ -701,6 +750,7 @@ impl MeshRenderer {
                 resolved.as_ref().map_or(0, |r| r.key[0]),
                 resolved.as_ref().map_or(0, |r| r.key[1]),
                 resolved.as_ref().map_or(0, |r| r.key[2]),
+                lightmap_id,
             ]);
             if let Some(value) = &resolved {
                 indirect_sources.insert(textures, value.environments);
@@ -786,11 +836,20 @@ impl MeshRenderer {
                         state.previous_models.get(mesh.id).copied().unwrap_or(model)
                     };
                     current_models.insert(mesh.id.to_owned(), model);
+                    let [lightmap_flags, lightmap_scale, lightmap_offset] = mesh
+                        .lightmap
+                        .as_ref()
+                        .map_or([0; 3], LightmapBinding::instance_words);
                     instances.push(GpuInstance {
                         world_from_local: model.to_cols_array_2d(),
                         normal_from_local: model.inverse().transpose().to_cols_array_2d(),
                         previous_world_from_local: previous.to_cols_array_2d(),
-                        params: [id_hash(mesh.id), 0, 0, 0],
+                        params: [
+                            id_hash(mesh.id),
+                            lightmap_flags,
+                            lightmap_scale,
+                            lightmap_offset,
+                        ],
                     });
                     if !transparent {
                         let instance_index = instances.len() as u32 - 1;
@@ -812,6 +871,7 @@ impl MeshRenderer {
                 let batch = Batch {
                     mesh: mesh.mesh.clone(),
                     program: programs[order[first]],
+                    lightmapped: mesh.lightmap.is_some(),
                     material: keys[first].1 as u32,
                     textures: keys[first].3,
                     instances: start..instances.len() as u32,
@@ -1023,6 +1083,14 @@ impl MeshRenderer {
                     .get(&batch.textures)
                     .context("resolved indirect textures missing")?;
                 let black = self.black_cube.as_ref().context("neutral cube missing")?;
+                let black_lightmap = self
+                    .black_lightmap
+                    .as_ref()
+                    .context("neutral lightmap missing")?;
+                let lightmap_view = match &mesh.lightmap {
+                    Some(binding) => &scene.lightmap(binding)?.view,
+                    None => black_lightmap,
+                };
                 let source = |slot: usize| {
                     environments[slot].map_or(black, |i| &scene.resources().environments[i].view)
                 };
@@ -1042,6 +1110,10 @@ impl MeshRenderer {
                     wgpu::BindGroupEntry {
                         binding: 7,
                         resource: wgpu::BindingResource::Sampler(&scene.resources().sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(lightmap_view),
                     },
                 ]);
                 &layouts
@@ -1102,6 +1174,9 @@ impl MeshRenderer {
                 );
             } else {
                 pass.set_bind_group(2, params, &[offset as u32, (offset + arena.maps) as u32]);
+            }
+            if batch.lightmapped {
+                batch.mesh.bind_uv2(pass);
             }
             batch.mesh.draw(pass, batch.instances.clone());
             stats.draw_calls += 1;
@@ -1259,6 +1334,25 @@ fn material_values(mesh: &SceneMesh<'_>) -> ([f32; 8], [f32; 4]) {
             0.0,
         ],
     )
+}
+
+/// Checks a mesh's lightmap binding against the draw and the view's indirect set.
+fn validate_lightmap(
+    mesh: &SceneMesh<'_>,
+    binding: &LightmapBinding,
+    indirect: Option<&IndirectScene>,
+) -> Result<()> {
+    ensure!(
+        mesh.shader.is_none(),
+        "lightmaps apply only to the built-in lit shader, not to custom material shaders"
+    );
+    let scene = indirect.context("a lightmap needs an indirect scene configured on the view")?;
+    scene.lightmap(binding)?;
+    ensure!(
+        mesh.mesh.has_uv2(),
+        "the mesh has no second UV set (UV2) to address the lightmap"
+    );
+    Ok(())
 }
 
 /// Range checks of the built-in material values.

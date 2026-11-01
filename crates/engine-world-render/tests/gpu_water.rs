@@ -249,6 +249,7 @@ fn unlit<'a>(id: &'a str, mesh: &Arc<GpuMesh>, tint: [f32; 4]) -> SceneMesh<'a> 
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }
 }
 
@@ -485,6 +486,7 @@ fn opted_in_water_casts_animated_opaque_depth() -> Result<()> {
         base_color: None,
         metallic_roughness: None,
         normal_map: None,
+        lightmap: None,
     }];
     let light = LightList {
         lights: vec![

@@ -1,6 +1,8 @@
 //! Native per-view IBL configuration and per-draw resolved material inputs.
-use super::{GpuIndirectResources, MAX_PROBES, ProbeVolume, select_probe};
-use anyhow::{Result, ensure};
+use super::{
+    GpuIndirectResources, GpuRadianceImage, LightmapBinding, MAX_PROBES, ProbeVolume, select_probe,
+};
+use anyhow::{Context, Result, ensure};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec3};
 use std::sync::Arc;
@@ -89,6 +91,21 @@ impl IndirectScene {
         &self.resources
     }
 
+    /// The prepared lightmap a binding names, or a clear error when the view's
+    /// resource set holds fewer lightmaps.
+    pub fn lightmap(&self, binding: &LightmapBinding) -> Result<&GpuRadianceImage> {
+        self.resources
+            .lightmaps
+            .get(binding.lightmap())
+            .with_context(|| {
+                format!(
+                    "lightmap {} is missing: the view's indirect set holds {} lightmap(s)",
+                    binding.lightmap(),
+                    self.resources.lightmaps.len()
+                )
+            })
+    }
+
     pub(crate) fn resolve(&self, world: Vec3, ambient: Vec3) -> Result<ResolvedIndirect> {
         let selection = select_probe(&self.volumes, world)?;
         let local = selection.local.map(|i| self.probes[i].lighting);
@@ -162,13 +179,14 @@ pub struct IndirectMaterialLayouts {
     pub params: wgpu::BindGroupLayout,
 }
 
-/// Existing view/material resources plus 2 cubes, a LUT, sampler and uniform.
+/// Existing view/material resources plus 2 cubes, a LUT, a lightmap, a sampler
+/// and uniform.
 /// Rejection leaves the ordinary material path available.
 pub fn check_material_limits(limits: &wgpu::Limits) -> Result<()> {
     ensure!(
-        limits.max_sampled_textures_per_shader_stage >= 11
+        limits.max_sampled_textures_per_shader_stage >= 12
             && limits.max_samplers_per_shader_stage >= 3,
-        "indirect material unavailable: needs 11 sampled textures and 3 samplers per fragment stage"
+        "indirect material unavailable: needs 12 sampled textures and 3 samplers per fragment stage"
     );
     ensure!(
         limits.max_uniform_buffers_per_shader_stage >= 4
@@ -212,6 +230,7 @@ pub(crate) fn material_layouts(device: &wgpu::Device) -> Option<IndirectMaterial
             texture(5, cube, fragment),
             texture(6, d2, fragment),
             sampler(7, fragment),
+            texture(8, d2, fragment),
         ],
     });
     let uniform = |binding, size, visibility| wgpu::BindGroupLayoutEntry {
@@ -233,6 +252,35 @@ pub(crate) fn material_layouts(device: &wgpu::Device) -> Option<IndirectMaterial
         ],
     });
     Some(IndirectMaterialLayouts { textures, params })
+}
+
+/// Neutral 1x1 black lightmap bound where a draw samples none.
+pub(crate) fn black_lightmap(gpu: &crate::GpuContext) -> wgpu::TextureView {
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("indirect neutral lightmap"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    gpu.queue.write_texture(
+        texture.as_image_copy(),
+        &[0; 8],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(8),
+            rows_per_image: Some(1),
+        },
+        texture.size(),
+    );
+    texture.create_view(&Default::default())
 }
 
 pub(crate) fn black_cube(gpu: &crate::GpuContext) -> wgpu::TextureView {

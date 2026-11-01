@@ -449,6 +449,7 @@ impl SceneUploads {
                 base_color,
                 metallic_roughness,
                 normal_map,
+                lightmap: None,
             });
             if wants_visibility {
                 visibility.push(MeshVisibility {

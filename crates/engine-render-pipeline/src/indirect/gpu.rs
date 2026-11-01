@@ -31,8 +31,14 @@ pub fn check_capabilities(gpu: &GpuContext) -> Result<()> {
 
 #[derive(Debug)]
 pub struct GpuRadianceImage {
+    id: u64,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+}
+impl GpuRadianceImage {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
 }
 
 #[derive(Debug)]
@@ -155,7 +161,11 @@ impl GpuIndirectResources {
                     data.pixels().iter().map(|p| [p[0], p[1], p[2], 1.0]),
                 );
                 let view = texture.create_view(&Default::default());
-                GpuRadianceImage { texture, view }
+                GpuRadianceImage {
+                    id: NEXT_RESOURCE_ID.fetch_add(1, Ordering::Relaxed),
+                    texture,
+                    view,
+                }
             })
             .collect();
         let texture = texture(gpu, "indirect BRDF LUT", [brdf.size(); 2], 1, 1);

@@ -101,7 +101,7 @@ impl IndirectOutput {
             .get(index)
             .ok_or_else(|| anyhow::anyhow!("indirect batch index out of range"))?;
         pass.set_bind_group(3, &batch.instance_bind_group, &[]);
-        pass.set_vertex_buffer(0, batch.mesh.vertex.slice(..));
+        batch.mesh.bind_vertex_buffers(pass);
         if let Some(indices) = &batch.mesh.index {
             pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed_indirect(&self.indexed_args, batch.indexed_offset);
