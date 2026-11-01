@@ -821,3 +821,39 @@ test, so edits to the lit shader must keep those anchors; no performance numbers
   run). Frame generation keeps the filter in the scene segment before late UI.
 - No temporal resolve, jitter change or vendor-named algorithm was added; the
   native temporal resolve/upscaler of dependency item 4 is still pending.
+
+### Atmosphere status (`feat/render-r9-atmosphere`)
+
+- First of the dependency item 5 slices: sky, planet, sun disk and aerial
+  perspective only. Fog and clouds are not started. Two engine features,
+  `engine.atmosphere` (Sky, additive at far-plane pixels) and
+  `engine.atmosphere.aerial` (OpaqueEffects), both disabled by default and idle
+  without per-view `AtmosphereControls`; authored as `Camera3D.atmosphere`
+  (absent = byte-identical output). Design, parameters and limits are in
+  [rendering-atmosphere.md](rendering-atmosphere.md).
+- Model: single-scattering Rayleigh + Mie + ozone absorption in a spherical shell,
+  numerically integrated per pixel with quadratic step spacing; transmittance to
+  the sun by a short march; planet shadow; Lambertian ground below the horizon;
+  clamped sun disk. The sun is the view's first directional light in shading
+  units, so no separate calibration exists. Heights use `u / (|P| + R)` to stay
+  accurate in `f32` at planetary radii; the altitude is computed in `f64` from the
+  applied floating origin plus the camera height.
+- A `f64` CPU reference of the same integral (`atmosphere/model.rs`) backs unit
+  tests (phase normalisation, vertical optical depth against the exponential
+  integral, monotonic transmittance, intersections, planet blocking, sun disk
+  energy) and the GPU comparisons: sky pixels, a 30 km camera, an orbit view and an
+  aerial-perspective wall at 300 m, 3 km and 30 km matched it within 4 to 6 percent
+  (observed below 1 percent away from the sun disk).
+- Evidence (RTX 5080, Vulkan, ignored tests): `gpu_atmosphere` in
+  `engine-render-pipeline` (sun, density, depth and altitude effects, albedo,
+  disabled/unconfigured/sunless frames identical to a pipeline without the
+  features, two views, resize, `forget_view`, orthographic) and an authored
+  project-to-`GpuRenderer` test in `engine-desktop` including floating-origin
+  equivalence. Wind is not applicable until clouds.
+- Open work: no multiple-scattering or precomputed LUTs (sky and twilight are
+  darker than a full model; cost is brute force per pixel, no performance numbers
+  taken); transparent surfaces get no aerial perspective; direct sunlight on
+  surfaces is not reddened by extinction; the sky does not feed ambient, IBL or
+  reflections (a generated environment would be its own slice); the sun is the
+  first directional light only. Fog, clouds, light shafts and cloud shadows
+  remain pending slices of item 5.

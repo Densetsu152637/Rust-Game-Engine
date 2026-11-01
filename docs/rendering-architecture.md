@@ -62,8 +62,8 @@ Per view, in order (render size until Upscale, output size after):
 | `OccluderDepth` | `engine.hiz.depth` | certified current-frame occluders into a separate depth texture; idle unless the camera enables `engine.hiz.visibility` ([rendering-hiz.md](rendering-hiz.md#camera-visibility-consumer)) |
 | `Visibility` | `engine.hiz.visibility` (disabled by default) | Hi-Z pyramid of that depth, conservative queries and GPU compaction into indirect opaque draws |
 | `Opaque` | `engine.opaque` | instanced opaque engine meshes, or the compacted indirect draws when `Visibility` ran |
-| `Sky` | — | background after opaque geometry |
-| `OpaqueEffects` | — | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination |
+| `Sky` | optional `engine.atmosphere` (host-registered, disabled by default) | background after opaque geometry; the atmosphere adds sky, planet and sun disk where depth is still at the far plane ([rendering-atmosphere.md](rendering-atmosphere.md)) |
+| `OpaqueEffects` | optional `engine.atmosphere.aerial` (host-registered, disabled by default) | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination; aerial perspective tints opaque geometry by view distance and leaves transparent geometry untouched |
 | `Transparent` | `engine.transparent` | blended engine meshes, back to front |
 | `Upscale` | `engine.upscale` | bilinear when sizes differ; a host (DLSS) may replace the stage |
 | `PostProcess` | `engine.post`; optional `effects.dof`, `effects.motion_blur`, `effects.spatial_aa` | HDR ping-pong at output size; spatial AA is the last HDR filter, before Tonemap and without touching Overlay/Composite ([placement and DLSS rules](rendering-post.md#camera-spatial-antialiasing)) |
