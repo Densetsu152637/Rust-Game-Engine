@@ -11,7 +11,9 @@ The authored project-to-GPU HDR fixtures have been exercised on a real adapter.
 Declare a project asset of kind `indirect` and reference its ID from
 `Camera3D.lighting.indirect`. Absence uses constant ambient. Unsupported
 authored requests return an error. A version-1 descriptor contains
-`environments`, optional `global`, and `probes`:
+`environments`, optional `global`, `probes` and optional `lightmaps` (see
+[Supplied lightmaps](#supplied-lightmaps-uv2)); a set needs a global environment,
+a probe or a lightmap:
 
 ```json
 {
@@ -44,7 +46,7 @@ path checks and opening a file are not an atomic cross-platform operation. GPU
 resources are separately bounded to 128 MiB across active view sets. The
 native integrator generates the BRDF LUT; supplied cube chains must already
 be GGX-prefiltered. This path does not capture probes, prefilter environments,
-consume lightmaps, or bake a scene.
+or bake a scene; supplied lightmaps are consumed per mesh (below), never produced.
 
 Probe `positionAbsolute` is f64 world space. Extraction subtracts the applied
 floating origin in f64 before producing local f32 probe volumes. A rebase
@@ -158,6 +160,60 @@ wgpu ownership. Preparation issues uploads and checks currently recorded errors;
 it does not wait for GPU completion or confirm presented pixels. Tests use actual
 readback to establish completion. There is no camera/history/scene-stage coupling.
 
+## Supplied lightmaps (UV2)
+
+The built-in lit shader samples a supplied lightmap through a second UV set and a
+per-instance atlas region. This consumes baked data only: nothing in the engine
+bakes, unwraps UVs, denoises, packs atlases or estimates visibility, and
+validation cannot tell whether a texture really holds irradiance.
+
+- **Lightmap data.** `indirect` descriptors list up to 8 `lightmaps`:
+  `{"size": [w, h], "path": "x.rgb32f"}`, each `w * h * 12` bytes of little-endian,
+  top-row-first RGB32F (1..=2048 per edge, finite, 0..=65504), counted in the same
+  decoded and resident byte budgets as the cube faces. Texels are **incident diffuse
+  radiance (irradiance / pi) with exposure already applied**, the same convention as
+  `DiffusePolynomial`; they are uploaded as `Rgba16Float` with no sRGB conversion.
+  The natively prepared set is `GpuIndirectResources::lightmaps`.
+- **Second UV set.** `GpuMesh::from_engine_vertices_with_uv2` adds one finite pair
+  per vertex in a separate vertex buffer (slot 1, `@location(4)`; `ENGINE_UV2_LAYOUT`),
+  so `EngineVertex`, `ENGINE_VERTEX_LAYOUT` and every other pipeline are unchanged.
+  Project `Mesh` assets carry `uv2` (glTF `TEXCOORD_1`, v down, imported when every
+  vertex has it). v = 0 addresses the first (top) texel row.
+- **Binding.** `SceneMesh::lightmap: Option<LightmapBinding>` selects the prepared
+  lightmap index, an atlas region and a mode. The sampled coordinate is
+  `uv2 * scale + offset`; the region must lie in the atlas (scale in `(0, 1]`,
+  offset in `[0, 1]`, `offset + scale <= 1`), so two instances sharing one mesh can
+  address different regions, or different lightmaps. Authoring is the
+  `MeshLightmap` component ([project format](project-format.md#scenes)).
+  Absent binding means the draw uses the unchanged pipelines and shaders.
+- **Modes.** `Replace` makes the lightmap the diffuse indirect term (the probe or
+  constant-ambient diffuse is dropped for that draw); `Add` adds it to the probe or
+  ambient diffuse. The baked term is `albedo * (1 - metallic) * texel * (1 - F)`,
+  using the same roughness Fresnel energy weight as the probe diffuse. Specular
+  IBL, direct lighting, screen AO/GI/reflection precedence and unlit materials keep
+  their roles (screen GI still replaces the selected diffuse term).
+- **Validation.** `LightmapBinding::new` rejects nonfinite values, an index of 8 or
+  more and regions outside the atlas. Rendering rejects, naming the mesh: no
+  indirect scene on the view, an index beyond that scene's lightmaps, a mesh
+  without UV2, and a custom `shader` (only the built-in lit shader is lightmapped;
+  custom materials and sprites are unaffected and cannot opt in). Project extraction
+  checks the same rules earlier, including every `MeshLods` level.
+- **Instance layout (decision).** The 208-byte `EngineInstance` is unchanged. A
+  binding occupies the reserved `params.yzw` words: `y` bit 0 enabled and bit 1 add,
+  `z` and `w` the atlas scale and offset as `pack2x16unorm` (16-bit fractions, step
+  1/65535 of the atlas, so the region is quantised; at a 2048 texel atlas that is
+  0.03 texel). The lightmap *index* is not in the instance: it selects a bind group
+  (`@group(1) @binding(8)`), so instances with different lightmaps are separate
+  batches while instances with the same lightmap and different regions share one.
+  Hi-Z compaction copies whole 208-byte records, so it needed no shader change; a
+  test proves compacted survivors keep their regions.
+- **Cost and limits.** Lightmapped draws use a derived pipeline (the lit shader plus
+  a second vertex stream); other draws are untouched apart from the extra neutral
+  binding. Bilinear filtering can bleed neighbouring atlas texels at region borders;
+  pad regions when baking. Multiple UV-set conflicts, lightmap streaming, directional
+  or spherical-harmonic lightmaps, lightmapped World terrain/foliage/water and custom
+  shader opt-in remain unimplemented.
+
 ## Verification
 
 CPU source tests in `tests/indirect.rs` cover invalid data, dimensions/mips, signed
@@ -182,6 +238,19 @@ set, and read LUT texels against CPU quadrature. They require a real adapter:
 ```text
 cargo test -p engine-render-pipeline --test indirect
 cargo test -p engine-render-pipeline --test gpu_indirect -- --ignored --test-threads=1 --nocapture
+```
+
+Ignored `tests/gpu_lightmap.rs` tests read the scene HDR target for lightmapped
+meshes: four instances of one mesh in four atlas quadrants plus a second lightmap
+and texel orientation, replace/add against constant ambient and a probe environment
+(a metallic surface is unchanged, so specular is unaffected), unbound and UV2-less
+draws identical to the unlightmapped path with clear errors for bad bindings, and
+the Hi-Z compacted path. The authored `gpu_authored_lightmap` desktop test runs the
+same through project JSON:
+
+```text
+cargo test -p engine-render-pipeline --test gpu_lightmap -- --ignored --test-threads=1 --nocapture
+cargo test -p engine-desktop --test gpu_authored_lightmap -- --ignored --test-threads=1
 ```
 
 ## Native material adapter
@@ -226,9 +295,10 @@ The native variant adds these bindings:
 | 1/4, 1/5 | global/local specular cube, or a shared black cube |
 | 1/6 | BRDF LUT |
 | 1/7 | linear clamp environment sampler |
+| 1/8 | the draw's lightmap (a neutral 1x1 black image when it has none) |
 | 2/1 | 448-byte dynamic uniform: two diffuse coefficient sets, inverse rotations, weights, mip bounds and intensity flags |
 
-Material limits are 11 sampled textures, 3 samplers and 4 uniform bindings per
+Material limits are 12 sampled textures, 3 samplers and 4 uniform bindings per
 fragment stage, plus 3 dynamic uniform bindings. A restricted device keeps the
 legacy pipeline; `set_indirect` returns a named error before changing the previous
 configuration. Cross-device resource sets are rejected. No fifth group, instance
@@ -287,6 +357,6 @@ cargo test -p engine-desktop --lib failed_budget_admission_keeps_previous_view_a
 The HDR fixture loads the project, extracts a runtime frame, then renders it
 through `GpuRenderer`. It checks global irradiance, local probe priority and
 boundary blending, SH rotation, view isolation, disable/resize/forget and an
-applied-origin rebase near 1e12. Supplied UV2 lightmap consumption, World
-terrain/foliage material sampling and runtime asset reload/status remain
-separate work.
+applied-origin rebase near 1e12. World terrain/foliage material sampling and
+runtime asset reload/status remain separate work; supplied UV2 lightmaps are
+described above.

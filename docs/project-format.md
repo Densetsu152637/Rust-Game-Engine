@@ -48,7 +48,8 @@ asset is a `.rhai` source of at most 256 KiB (any other extension is
 `project.script.language`) that the `engine.TextScript` component runs; project
 validation parses it without executing it and reports `script.text.*` diagnostics, see
 [Scripting](scripting.md#text-scripts-rhai). An `indirect` asset
-names a bounded descriptor and binary RGB32F cube faces as documented in
+names a bounded descriptor, binary RGB32F cube faces and optional supplied RGB32F
+`lightmaps` as documented in
 [Indirect lighting](rendering-indirect.md#authored-project-input). A `graph` asset is one JSON graph
 document (behavior trees today) validated at project load against the kind named in
 the document; see [Graph documents](ai-graphs.md).
@@ -60,7 +61,10 @@ the document; see [Graph documents](ai-graphs.md).
 - `texture` assets are PNG (up to 8192 per axis, 128 MiB encoded) or ASCII P3 PPM
   (maximum value 255); pixels load as top-left RGBA8 with straight alpha. `mesh`
   assets are the text format `CGMESH 1` followed by `vertex x y z u v` triples
-  (a non-empty triangle list of at most 1,000,000 vertices). `font` assets are
+  (a non-empty triangle list of at most 1,000,000 vertices); a JSON mesh (an object
+  with `vertices`, `indices` and optional `normals`) may also carry `uv2`, one finite
+  pair per vertex, the second UV set that `MeshLightmap` addresses (the glTF importer
+  writes it from `TEXCOORD_1` when every vertex has it). `font` assets are
   bitmap-atlas JSON referencing a separately declared texture asset; `audio`
   assets are WAV; `scene` assets are scene JSON for runtime room changes; `shader`
   assets are WGSL. `font_face` assets are TrueType/OpenType files (`.ttf`, `.otf`, `.ttc`,
@@ -106,6 +110,7 @@ errors. Component references to assets must match the declared kind.
 | `Script` | `asset` (a `script` asset ID) |
 | `MeshRenderer` | `mesh` (mesh asset), optional `texture` (texture asset) |
 | `MeshLods` | requires `MeshRenderer`; `meshes` (up to 7 coarser mesh asset IDs, finest first), `thresholds` (one strictly decreasing screen-height fraction in `(0,1]` per level including level zero, so `meshes.length + 1` values, default `[1]`), `hysteresis` in `[0,1)` (0.1). Selected per camera; shadows keep `MeshRenderer.mesh`. See [mesh LOD](rendering-lod.md#authored-meshlods). |
+| `MeshLightmap` | requires `MeshRenderer`; `lightmap` (index 0..7 into the active `Camera3D.lighting.indirect` asset's `lightmaps`, default 0), `scale` and `offset` (atlas region, `uv2 * scale + offset`; scale in `(0,1]`, offset in `[0,1]`, `offset + scale <= 1`, defaults `[1,1]` and `[0,0]`), `mode` (`replace` (default) makes the lightmap the diffuse indirect term, `add` adds it to the probe or ambient diffuse). The mesh and every `MeshLods` level need `uv2`, the camera must name an indirect asset holding that lightmap, and `MeshMaterial.shader` must be unset; otherwise extraction fails with `render.lightmap.*`. Supplied data only. See [supplied lightmaps](rendering-indirect.md#supplied-lightmaps-uv2). |
 | `HiZOccluder` | requires `MeshRenderer`; optional `enabled` (true). Permits the mesh to write the certified Hi-Z occluder depth when the camera enables `engine.hiz.visibility`; native opacity, shader and budget checks may still reject it. See [Hi-Z camera visibility](rendering-hiz.md#camera-visibility-consumer). |
 | `SpriteRenderer` | `texture` (required); optional `size` `[1,1]`, `pivot` `[0.5,0.5]`, `tint` RGBA in `[0,1]` `[1,1,1,1]`, `source` and `frames` atlas rectangles `[x,y,w,h]`, `framesPerSecond` (0), `loop` (true), `layer` (0), `visible` (true) |
 | `Camera2D` | optional `logicalSize` `[320,180]`, `pixelsPerUnit` (16), `center` `[0,0]`, `follow` (entity ID), `pixelSnap` (true) |

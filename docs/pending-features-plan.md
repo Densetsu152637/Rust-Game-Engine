@@ -762,3 +762,41 @@ deduplicated by content; an authored occluder is trusted to be a legitimate
 opaque rasterisation of the draw (holes in its mesh are real holes); XR eyes select
 LODs independently; the compaction WGSL must change with any future instance-layout
 (lightmap) migration.
+
+### Supplied lightmap consumption status
+
+Stage 9 dependency item 2 is implemented on `feat/render-r9-lightmaps` for the
+built-in lit mesh shader. It consumes supplied baked data only; nothing bakes,
+unwraps UVs, packs atlases or denoises.
+
+- Meshes carry an optional second UV set (`GpuMesh::from_engine_vertices_with_uv2`,
+  vertex slot 1, `@location(4)`; project `Mesh.uv2`, imported from glTF
+  `TEXCOORD_1`). `EngineVertex` and every other pipeline are unchanged.
+- `indirect` project assets list up to 8 RGB32F `lightmaps` (lightmap-only sets are
+  valid) inside the existing byte budgets. `MeshLightmap` binds an entity to a
+  lightmap index, an atlas region (`uv2 * scale + offset`, validated inside the
+  atlas) and `replace`/`add` against the probe or ambient diffuse. Specular IBL is
+  untouched. Extraction and the renderer reject missing UV2 (including `MeshLods`
+  levels), a missing indirect asset or lightmap index, nonfinite or out-of-atlas
+  regions and custom shaders, each with a named error.
+- Layout decision: the 208-byte `EngineInstance` and the Hi-Z compaction WGSL are
+  unchanged. The binding uses the reserved `params.yzw` words (flags, and the atlas
+  scale/offset as unorm16 pairs, step 1/65535). The lightmap index selects a bind
+  group (`1/8`), so different lightmaps batch separately and different regions of
+  one lightmap share a batch. A spare-field encoding avoided a layout migration;
+  its cost is the 16-bit region quantisation. Native material limits now need 12
+  sampled textures.
+- Evidence (RTX 5080, Vulkan, ignored tests): `gpu_lightmap` reads back four atlas
+  regions of one shared mesh, a second lightmap and texel orientation, replace/add
+  against ambient and a probe environment, unbound and UV2-less draws equal to the
+  old path, rejected bindings and Hi-Z compacted survivors keeping their regions;
+  `gpu_authored_lightmap` runs project JSON through the runtime and `GpuRenderer`,
+  including the compacted camera path. CPU tests cover descriptor bounds and path
+  confinement, component validation, snapshots, extraction errors and UV2 import.
+
+Residual risks: custom shaders, sprites and World terrain/foliage/water are not
+lightmapped; no lightmap streaming, directional or SH lightmaps, mip or border
+padding handling (bilinear sampling can bleed at region edges); the texel
+convention (irradiance/pi, exposure applied) cannot be verified from data; the
+lightmapped variant is derived from `LIT_WGSL` by anchor replacement guarded by a
+test, so edits to the lit shader must keep those anchors; no performance numbers.

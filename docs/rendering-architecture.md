@@ -338,7 +338,10 @@ consecutive identical draws after back-to-front sorting. Per-instance data is
 `EngineInstance` (208 bytes, `engine::mesh`, group 3 binding 0):
 `world_from_local`, `normal_from_local` (inverse transpose),
 `previous_world_from_local` (by stable draw id; equal after a reset or for new
-draws), `params: vec4<u32>` (x: FNV-1a hash of the draw id for picking).
+draws), `params: vec4<u32>` (x: FNV-1a hash of the draw id for picking;
+yzw: the built-in lit shader's lightmap binding: `y` bit 0 enabled and bit 1 add, `z`/`w` atlas scale and
+offset as `pack2x16unorm`; zero when unbound. Custom materials must not repurpose them, and the Hi-Z
+compaction copy moves the whole record).
 
 ## WGSL composition
 
@@ -359,7 +362,9 @@ HDR colour, alpha for blending). It declares **no bindings**: any
 `unsupported material binding (group g, binding b)`. Available to the shader:
 
 - `EngineVertex` input: `@location(0) position: vec3`, `1 uv: vec2`,
-  `2 color: vec4`, `3 normal: vec3` (zero when the mesh has no normals);
+  `2 color: vec4`, `3 normal: vec3` (zero when the mesh has no normals); a second UV
+  set exists only as the optional slot-1 `@location(4)` stream of lightmapped
+  built-in draws, which custom materials cannot read;
   `@builtin(instance_index)` selects the instance.
 - `engine_world_from_local(i)`, `engine_normal_from_local(i)`,
   `engine_previous_world_from_local(i)`, `engine_clip_from_world()`,
@@ -586,5 +591,10 @@ bindings remain available. The built-in material and graph template call
 remain ambient/screen-only. Authored project loading and the desktop per-view
 cache hook are exercised by real-adapter HDR tests through `GpuRenderer`,
 including probe selection, SH rotation, view isolation and floating-origin
-rebasing. Lightmap/UV2 integration is not included;
+rebasing. Supplied lightmaps are consumed by the built-in lit shader through an
+optional second UV vertex stream (`GpuMesh::from_engine_vertices_with_uv2`, slot 1)
+and a per-instance atlas binding stored in the reserved `EngineInstance.params.yzw`
+words, so the 208-byte instance ABI, Hi-Z compaction and custom material ABI are
+unchanged; the native material layout gains one lightmap texture (`1/8`). Nothing is
+baked and custom shaders, sprites and World materials are not lightmapped;
 see [indirect lighting](rendering-indirect.md) for limits, precedence and lifecycle.

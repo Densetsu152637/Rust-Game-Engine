@@ -77,6 +77,15 @@ for normal maps are reconstructed from world-position/UV derivatives; degenerate
 UV triangles retain their geometric/smooth normal. Authored tangent vectors and
 MikkTSpace-specific tangent seams are not consumed.
 
+Meshes may also carry `uv2`, a second UV set (glTF `TEXCOORD_1`), used only by
+the `MeshLightmap` component: the built-in lit shader samples a supplied
+lightmap at `uv2 * scale + offset`, so instances sharing one mesh can address
+different atlas regions, and replaces or adds to the probe or ambient diffuse.
+Specular is unchanged, custom material shaders and sprites are not lightmapped
+(a custom shader with a binding is an error), and nothing is baked: lightmaps are
+supplied RGB32F data in an `indirect` asset. Details and limits are in
+[indirect lighting](rendering-indirect.md#supplied-lightmaps-uv2).
+
 The model importer maps glTF base-color, metallic/roughness factors and textures,
 normal textures/scale and source normals into renderable assets. These textures
 must share UV set 0 or 1; conflicting sets are rejected rather than remapped
