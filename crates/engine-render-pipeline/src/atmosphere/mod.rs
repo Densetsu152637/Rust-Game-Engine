@@ -642,12 +642,15 @@ mod tests {
         assert!(bad(|s| s.intensity = 1001.0));
         assert!(bad(|s| s.aerial_perspective_scale = f32::NAN));
         // Zero is a valid extreme: no medium, no disk, no aerial perspective.
-        let mut empty = AtmosphereSettings::default();
-        empty.rayleigh_scattering = [0.0; 3];
-        empty.mie_scattering = 0.0;
-        empty.sun_angular_diameter = 0.0;
-        empty.aerial_perspective_scale = 0.0;
-        empty.validate().unwrap();
+        AtmosphereSettings {
+            rayleigh_scattering: [0.0; 3],
+            mie_scattering: 0.0,
+            sun_angular_diameter: 0.0,
+            aerial_perspective_scale: 0.0,
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
     }
 
     #[test]

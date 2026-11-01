@@ -671,7 +671,7 @@ fn higher_camera_altitude_thins_the_sky() -> Result<()> {
     // From space the planet fills the lower view and the limb glows.
     let mut space = Shot::new(8);
     space.altitude = 400_000.0;
-    space.pitch = -1.5707;
+    space.pitch = -std::f32::consts::FRAC_PI_2;
     space.sun_elevation = 60.0;
     let image = rig.render(&space)?;
     assert!(all_pixels(&image).all(|p| p.iter().all(|v| v.is_finite())));

@@ -397,18 +397,17 @@ mod tests {
             (-beta * h * (1.0 - (-m.thickness / h).exp())).exp()
         };
         let t = path_transmittance(&m, 0.0, [0.0, 1.0, 0.0], m.thickness, 20_000);
-        for k in 0..3 {
-            let expected = analytic(m.rayleigh[k]);
+        for (k, (&transmitted, &beta)) in t.iter().zip(&m.rayleigh).enumerate() {
+            let expected = analytic(beta);
             assert!(
-                (t[k] - expected).abs() < 2e-4,
-                "channel {k}: {} vs {expected}",
-                t[k]
+                (transmitted - expected).abs() < 2e-4,
+                "channel {k}: {transmitted} vs {expected}"
             );
         }
         // The renderer's own sun-ray integral agrees at the zenith sun.
         let renderer = sun_depth(&m, 0.0, m.planet_radius);
-        for k in 0..3 {
-            assert!(((-renderer[k]).exp() - analytic(m.rayleigh[k])).abs() < 5e-3);
+        for (depth, &beta) in renderer.iter().zip(&m.rayleigh) {
+            assert!(((-depth).exp() - analytic(beta)).abs() < 5e-3);
         }
     }
 
