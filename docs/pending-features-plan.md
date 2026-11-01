@@ -762,3 +762,24 @@ deduplicated by content; an authored occluder is trusted to be a legitimate
 opaque rasterisation of the draw (holes in its mesh are real holes); XR eyes select
 LODs independently; the compaction WGSL must change with any future instance-layout
 (lightmap) migration.
+
+### Spatial AA completion status (`feat/render-r9-spatial-aa`)
+
+- `effects.spatial_aa` already existed from `ec013a6` (native feature, authored
+  `Camera3D.spatial_aa`, desktop adapter). This slice added the missing evidence
+  and rules rather than a second feature: real-GPU readbacks that AA off holds two
+  colours and AA on adds intermediate edge pixels, flat and sub-threshold images are
+  unchanged within 1/255, an authored desktop edge/flat/HUD-overlay test (HUD pixels
+  and the scene outside them are bit-exact against the AA-off and HUD-free frames),
+  and a CPU test of the camera-to-view mapping.
+- Placement stays in HDR `PostProcess` before `Tonemap`/`Overlay` (documented in
+  `rendering-post.md`). Colour above 1.0 is now mixed in a reversible compressed
+  domain (identity up to 1.0). Measured on an 8.0 edge: display-space error 4.73 with
+  linear HDR blending, about 3.4 with the compressed mix, 2.1 unfiltered; so bright
+  edges remain only partly anti-aliased. A display-referred pass would need a new
+  stage between `Tonemap` and `Overlay`.
+- DLSS Super Resolution takes precedence: the desktop renderer disables the filter for
+  a draw whose Upscale stage the host owns (unit-tested; no NGX SDK, so no live DLSS
+  run). Frame generation keeps the filter in the scene segment before late UI.
+- No temporal resolve, jitter change or vendor-named algorithm was added; the
+  native temporal resolve/upscaler of dependency item 4 is still pending.
