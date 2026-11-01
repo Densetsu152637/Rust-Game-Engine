@@ -7,9 +7,9 @@ use engine_desktop::{
 };
 use engine_project::{
     Camera2D,
-    content::{Mesh, Vertex},
+    content::{Mesh, Texture, Vertex, sprite_quad},
     rendering3d::*,
-    runtime::RenderFrame,
+    runtime::{Draw, DrawSpace, DrawState, RenderFrame},
 };
 use glam::{Mat4, Vec3};
 use std::sync::Arc;
@@ -136,6 +136,27 @@ fn headless_preview_lists_the_camera_effect_descriptors() {
     assert!(!motion.enabled);
     assert!(!spatial.enabled);
     assert!(status.unknown_overrides.is_empty());
+
+    // Disabled by default, enabled by the authored setting, and ordered after
+    // upscale/bloom/DOF/motion blur and before the tonemap and overlays.
+    let enabled = Camera3D {
+        spatial_aa: Some(SpatialAa3D::default()),
+        ..Default::default()
+    };
+    let status = preview_pipeline_status(None, &enabled.effective_render_features()).unwrap();
+    let position = |name: &str| {
+        status
+            .features
+            .iter()
+            .position(|feature| feature.name == name)
+            .unwrap_or_else(|| panic!("{name} is not listed"))
+    };
+    let spatial = &status.features[position(SPATIAL_AA_FEATURE)];
+    assert!(spatial.enabled && spatial.source == "view_override");
+    assert!(position("engine.upscale") < position("engine.post"));
+    assert!(position("engine.post") < position(SPATIAL_AA_FEATURE));
+    assert!(position(MOTION_BLUR_FEATURE) < position(SPATIAL_AA_FEATURE));
+    assert!(position(SPATIAL_AA_FEATURE) < position("engine.output"));
 }
 
 #[test]
@@ -225,6 +246,168 @@ fn authored_spatial_aa_changes_diagonal_and_clears_on_disable_resize() -> Result
             .iter()
             .zip(resized_aa.as_chunks::<4>().0)
             .any(|(a, b)| a[0].abs_diff(b[0]) > 2)
+    );
+    Ok(())
+}
+
+fn rgba(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let index = ((y * width + x) * 4) as usize;
+    pixels[index..index + 4].try_into().unwrap()
+}
+
+/// A pixel-aligned opaque green HUD rectangle in the sprite overlay.
+fn with_overlay(mut scene: SceneRenderFrame) -> Result<SceneRenderFrame> {
+    let white = Arc::new(Texture {
+        width: 1,
+        height: 1,
+        pixels: vec![255; 4],
+    });
+    scene.sprites.camera.pixels_per_unit = 1.0;
+    scene.sprites.draws.push(Draw {
+        id: "hud".into(),
+        mesh: Arc::new(sprite_quad(
+            [-9.0, -9.0, 0.5],
+            [18.0, 18.0],
+            [0.0, 0.0],
+            [0, 0, 1, 1],
+            &white,
+            [0.0, 1.0, 0.0, 1.0],
+        )?),
+        texture: Some(white),
+        layer: 0,
+        space: DrawSpace::World,
+        clip: None,
+        state: DrawState::default(),
+        motion: None,
+        offset: [0.0; 3],
+    });
+    Ok(scene)
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn authored_spatial_aa_edge_pixels_flat_regions_and_hud_overlay() -> Result<()> {
+    let size = [65u32, 43];
+    let gpu = GpuContext::headless_with_options(&WgpuOptions::default())?;
+    let target = OffscreenTarget::new(&gpu, size[0], size[1])?;
+    let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default())?;
+    let mesh = diagonal();
+    let off = Camera3D::default();
+    let on = Camera3D {
+        spatial_aa: Some(SpatialAa3D::default()),
+        ..off.clone()
+    };
+    let plain = render(
+        &mut renderer,
+        &target,
+        &frame(off.clone(), 0.0, size, mesh.clone()),
+    )?;
+    let aa = render(
+        &mut renderer,
+        &target,
+        &frame(on.clone(), 0.0, size, mesh.clone()),
+    )?;
+
+    // AA off: the rasterised edge holds the two source colours only.
+    let mut colours: Vec<[u8; 4]> = plain.as_chunks::<4>().0.to_vec();
+    colours.sort_unstable();
+    colours.dedup();
+    assert_eq!(colours.len(), 2, "plain edge colours: {colours:?}");
+    // AA on: intermediate edge pixels exist...
+    let intermediate = aa
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[0] > 8 && pixel[0] < 247)
+        .count();
+    assert!(intermediate >= 10, "{intermediate} intermediate pixels");
+    // ...and every pixel more than two pixels from any colour change is untouched.
+    let mut checked = 0;
+    for y in 2..size[1] - 2 {
+        for x in 2..size[0] - 2 {
+            let centre = rgba(&plain, size[0], x, y);
+            let flat = (-2i32..=2).all(|dy| {
+                (-2i32..=2).all(|dx| {
+                    rgba(
+                        &plain,
+                        size[0],
+                        (x as i32 + dx) as u32,
+                        (y as i32 + dy) as u32,
+                    ) == centre
+                })
+            });
+            if flat {
+                checked += 1;
+                let value = rgba(&aa, size[0], x, y);
+                assert!(
+                    value.iter().zip(centre).all(|(a, b)| a.abs_diff(b) <= 1),
+                    "flat pixel ({x}, {y}) changed: {value:?} vs {centre:?}"
+                );
+            }
+        }
+    }
+    assert!(checked > 500, "only {checked} flat pixels were compared");
+
+    // The HUD sprite overlay is composed after the scene: it stays exactly as
+    // drawn and the scene outside it matches the AA frame without a HUD.
+    let hud_plain = render(
+        &mut renderer,
+        &target,
+        &with_overlay(frame(off, 0.0, size, mesh.clone()))?,
+    )?;
+    let hud_aa = render(
+        &mut renderer,
+        &target,
+        &with_overlay(frame(on, 0.0, size, mesh))?,
+    )?;
+    let green = |p: [u8; 4]| p == [0, 255, 0, 255];
+    let covered: Vec<(u32, u32)> = (0..size[1])
+        .flat_map(|y| (0..size[0]).map(move |x| (x, y)))
+        .filter(|&(x, y)| green(rgba(&hud_plain, size[0], x, y)))
+        .collect();
+    assert!(
+        covered.len() >= 100,
+        "HUD sprite covers {} pixels",
+        covered.len()
+    );
+    let (min_x, max_x) = (
+        covered.iter().map(|c| c.0).min().unwrap(),
+        covered.iter().map(|c| c.0).max().unwrap(),
+    );
+    let (min_y, max_y) = (
+        covered.iter().map(|c| c.1).min().unwrap(),
+        covered.iter().map(|c| c.1).max().unwrap(),
+    );
+    assert_eq!(
+        covered.len() as u32,
+        (max_x - min_x + 1) * (max_y - min_y + 1)
+    );
+    let mut edge_pixels_under_hud = 0;
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            let inside = (min_x..=max_x).contains(&x) && (min_y..=max_y).contains(&y);
+            if inside {
+                assert_eq!(
+                    rgba(&hud_aa, size[0], x, y),
+                    [0, 255, 0, 255],
+                    "HUD pixel ({x}, {y}) changed"
+                );
+                if rgba(&plain, size[0], x, y) != rgba(&aa, size[0], x, y) {
+                    edge_pixels_under_hud += 1;
+                }
+            } else {
+                assert_eq!(
+                    rgba(&hud_aa, size[0], x, y),
+                    rgba(&aa, size[0], x, y),
+                    "scene pixel ({x}, {y}) differs from the HUD-free AA frame"
+                );
+                assert_eq!(rgba(&hud_plain, size[0], x, y), rgba(&plain, size[0], x, y));
+            }
+        }
+    }
+    assert!(
+        edge_pixels_under_hud >= 3,
+        "the HUD must overlap filtered edge pixels to test the overlay ({edge_pixels_under_hud})"
     );
     Ok(())
 }
