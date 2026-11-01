@@ -101,6 +101,7 @@ fn runtime_geometry_overrides_are_level_zero_and_never_certified() {
     let mut runtime = Runtime::new(load(&dir)).unwrap();
     let entity = runtime.entity("lod").unwrap();
     let replacement = Arc::new(Mesh {
+        uv2: vec![],
         normals: vec![],
         vertices: [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]]
             .into_iter()

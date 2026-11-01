@@ -661,6 +661,7 @@ fn evaluated_geometry_overrides_static_assets_in_both_render_paths() {
         Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
     let entity = runtime.entity("mesh").unwrap();
     let geometry = Arc::new(Mesh {
+        uv2: vec![],
         normals: vec![],
         vertices: vec![
             Vertex {

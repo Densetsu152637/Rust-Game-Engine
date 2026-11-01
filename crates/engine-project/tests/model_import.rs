@@ -318,3 +318,79 @@ fn morph_import_builds_live_prefab_controls_and_keeps_bindings_during_instantiat
         0
     );
 }
+
+#[test]
+fn importer_carries_texcoord_1_as_the_lightmap_uv_set() {
+    use serde_json::json;
+    let temp = tempfile::tempdir().unwrap();
+    fixture::write_project(temp.path());
+    fixture::write_source(temp.path(), false);
+    let file = temp.path().join("source/model.gltf");
+    let mut source: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    let data = temp.path().join("source/geometry.bin");
+    let mut bytes = fs::read(&data).unwrap();
+    let offset = bytes.len();
+    let lightmap_uv = [0.25f32, 0.5, 0.75, 0.5, 0.25, 1.0];
+    for v in lightmap_uv {
+        bytes.extend(v.to_le_bytes());
+    }
+    source["buffers"][0]["byteLength"] = json!(bytes.len());
+    source["bufferViews"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"buffer":0,"byteOffset":offset,"byteLength":24}));
+    source["accessors"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"bufferView":5,"componentType":5126,"count":3,"type":"VEC2"}));
+    source["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_1"] = json!(5);
+    fs::write(&file, serde_json::to_vec(&source).unwrap()).unwrap();
+    fs::write(data, bytes).unwrap();
+    let project = Project::load(temp.path().join("project.json")).unwrap();
+    import_model(&project, Path::new("source/model.gltf"), "baked").unwrap();
+    let project = Project::load(&project.manifest).unwrap();
+    let mesh = content::load_mesh(&project.resolve_asset("baked:mesh:0:0").unwrap()).unwrap();
+    assert_eq!(mesh.uv2, vec![[0.25, 0.5], [0.75, 0.5], [0.25, 1.0]]);
+    // The base-colour UV set (TEXCOORD_0) is independent of the lightmap set.
+    assert_eq!(mesh.vertices[1].uv, [1.0, 0.0]);
+    // A primitive without TEXCOORD_1 imports without a second UV set.
+    let plain = tempfile::tempdir().unwrap();
+    fixture::write_project(plain.path());
+    fixture::write_source(plain.path(), false);
+    let project = Project::load(plain.path().join("project.json")).unwrap();
+    import_model(&project, Path::new("source/model.gltf"), "plain").unwrap();
+    let project = Project::load(&project.manifest).unwrap();
+    let mesh = content::load_mesh(&project.resolve_asset("plain:mesh:0:0").unwrap()).unwrap();
+    assert!(mesh.uv2.is_empty());
+}
+
+#[test]
+fn mesh_loader_validates_the_second_uv_set() {
+    let temp = tempfile::tempdir().unwrap();
+    let vertices = vec![serde_json::json!({"position":[0,0,0],"uv":[0,0],"color":[1,1,1,1]}); 3];
+    let load = |uv2: serde_json::Value| {
+        let path = temp.path().join("mesh.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(
+                &serde_json::json!({"vertices":vertices,"indices":[0,1,2],"uv2":uv2}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        content::load_mesh(&path)
+    };
+    assert_eq!(
+        load(serde_json::json!([[0, 0], [1, 0], [0, 1]]))
+            .unwrap()
+            .uv2
+            .len(),
+        3
+    );
+    assert!(load(serde_json::json!([])).unwrap().uv2.is_empty());
+    assert!(
+        load(serde_json::json!([[0, 0]])).is_err(),
+        "one pair per vertex"
+    );
+    assert!(load(serde_json::json!([[0, 0], [1, 0], [0, "x"]])).is_err());
+}

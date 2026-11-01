@@ -865,6 +865,7 @@ fn quad(rect: [f32; 4], color: [f32; 4]) -> Mesh {
         color,
     };
     Mesh {
+        uv2: vec![],
         normals: vec![],
         vertices: vec![
             vertex(x, y, 0.0, 0.0),
