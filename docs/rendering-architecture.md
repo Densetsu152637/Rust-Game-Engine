@@ -66,7 +66,7 @@ Per view, in order (render size until Upscale, output size after):
 | `OpaqueEffects` | `engine.surface_material`, `engine.ssr` (disabled by default) | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination. `engine.surface_material` describes the visible built-in lit surfaces and `engine.ssr` traces screen-space reflections over them ([rendering-ssr.md](rendering-ssr.md)); `engine.ssr` yields to an enabled `engine.rt.reflections` |
 | `Transparent` | `engine.transparent` | blended engine meshes, back to front |
 | `Upscale` | `engine.upscale` | bilinear when sizes differ; a host (DLSS) may replace the stage |
-| `PostProcess` | — | HDR ping-pong at output size |
+| `PostProcess` | `engine.post`; optional `effects.dof`, `effects.motion_blur`, `effects.spatial_aa` | HDR ping-pong at output size; spatial AA is the last HDR filter, before Tonemap and without touching Overlay/Composite ([placement and DLSS rules](rendering-post.md#camera-spatial-antialiasing)) |
 | `Tonemap` | `engine.output` (required) | the output operator into the target viewport |
 | `Overlay` | `engine.sprites` (host node), ordered producers | after tonemapping: UI, gizmos, debug draw |
 | `Composite` | optional final filters | readable display-colour ping-pong after overlays, including 2D-only frames |

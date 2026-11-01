@@ -16,9 +16,12 @@ Both are disabled by default and switched on for a view that has
 either name wins). A view without settings runs exactly the old linear-clamp
 `engine.output`, so existing images do not change. Depth of field and motion
 blur are separate optional HDR features documented in
-[rendering-depth-motion.md](rendering-depth-motion.md). Screen-space reflections
-are an `OpaqueEffects` feature (before transparents and the upscale), documented in
-[rendering-ssr.md](rendering-ssr.md). Not in this release: SSAO and TAA/FXAA.
+[rendering-depth-motion.md](rendering-depth-motion.md); a native spatial
+(single-frame) anti-aliasing filter is described under
+[Camera spatial antialiasing](#camera-spatial-antialiasing). Screen-space
+reflections are an `OpaqueEffects` feature (before transparents and the upscale),
+documented in [rendering-ssr.md](rendering-ssr.md). Not in this release: SSAO
+and temporal anti-aliasing (TAA).
 
 ## Order of operations
 
@@ -186,15 +189,40 @@ numbers in 0..=1 (defaults 0.12 and 0.75). An explicit
 The desktop renderer clears controls when the camera setting is removed,
 disabled or replaced, including between views and after resize.
 
-The current-frame HDR pass runs after upscale, bloom/grading, depth of field
-and motion blur, before tonemapping and UI. It estimates local luma contrast
-and an edge tangent from a 3×3 neighborhood, then blends a bounded set of
-samples along that tangent. Pixels below the threshold return the original
-color; the pass keeps the original alpha. It handles a render-size HDR source
+Placement: `effects.spatial_aa` is a `PostProcess` feature ordered after
+`engine.post` (bloom, grading) and `effects.motion_blur`, so it runs at output
+size on the upscaled current-frame HDR, before `Tonemap`. It therefore never sees
+the `Overlay`/`Composite` stages: UI, sprites, gizmos and final filters are drawn
+afterwards and keep their exact pixels (checked by a desktop readback). It
+estimates local luma contrast (tone-bounded `x/(1+x)` luma, 3x3 Sobel) and an edge
+tangent, then blends a bounded set of samples along that tangent. Pixels below the
+relative threshold return the original colour; alpha is kept. Colour is mixed in a
+reversible compressed domain that is the identity up to 1.0 and maps larger
+values through `2 - 1/x`, so display-range images blend linearly and very bright
+HDR sides do not dominate every mixed pixel. It handles a render-size HDR source
 when built-in upscale is disabled by sampling from the source's actual size.
-This is a spatial filter: it has no jitter, motion-vector resolve or color
-history. It can soften fine geometry and does not recover subpixel detail
-missing from the input. It is not FSR, XeSS or temporal antialiasing.
+
+Upscalers and frame generation:
+
+- Built-in bilinear upscale runs first; the filter runs at output size.
+- With DLSS Super Resolution the host owns the Upscale stage. DLSS already
+  resolves anti-aliasing from jittered history, so the desktop renderer switches
+  `effects.spatial_aa` off for that draw (the pipeline report lists it as
+  `disabled`) and restores the authored setting when the draw falls back to
+  native rendering. This rule is unit-tested; live DLSS was not run (no NGX SDK).
+- DLSS Frame Generation renders the scene without overlays and late-composes UI;
+  the filter is part of the scene segment, so generated and real frames share the
+  same filtered scene and an unblurred UI.
+
+Limits: this is a spatial filter with no jitter, motion-vector resolve or colour
+history. It can soften fine geometry and does not recover subpixel detail missing
+from the input. It filters along the edge rather than estimating coverage across
+it, so it is not a replacement for MSAA or a temporal resolver. Because it runs
+before the tonemap, a very bright (above 1.0) edge cannot be fully anti-aliased
+as the tonemapped image will show it: on an 8.0 edge the display-space error was
+3.4 against 2.1 unfiltered (linear HDR blending gave 4.7). A truly display-referred
+variant needs a new stage between `Tonemap` and `Overlay` and is not implemented.
+It is not FSR, XeSS or temporal anti-aliasing.
 
 ## Measured results
 

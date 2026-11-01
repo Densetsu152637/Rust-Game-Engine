@@ -797,7 +797,7 @@ impl GpuRenderer {
         self.pipeline()?;
         let mut view = view;
         let post_status = self.post_host.prepare(frame, &mut view)?;
-        post_effects::prepare(&self.post_effects, frame, &mut view)?;
+        post_effects::prepare(&self.post_effects, frame, &mut view, upscale.is_some())?;
         ssr::prepare(frame, &mut view)?;
         self.rt.prepare(
             &self.gpu,

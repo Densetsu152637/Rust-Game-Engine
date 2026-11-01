@@ -53,6 +53,20 @@ struct Pixel { @location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32 }
 }
 "#;
 
+// Variants of `AA_SCENE_SHADER`, selected by `aa_mode` 2.. in order: the covered
+// side is an HDR 8.0 instead of 1.0; a flat image; an edge below the contrast
+// threshold (0.95 against 1.0).
+fn aa_variant_shaders() -> [String; 3] {
+    [
+        AA_SCENE_SHADER.replace("select(0.0, 1.0,", "select(0.0, 8.0,"),
+        AA_SCENE_SHADER.replace(
+            "let diagonal = p.x >= 0.63 * p.y + 17.37;",
+            "let diagonal = true;",
+        ),
+        AA_SCENE_SHADER.replace("select(0.0, 1.0,", "select(0.95, 1.0,"),
+    ]
+}
+
 const MOTION_SHADER: &str = r#"
 @group(0) @binding(0) var<uniform> mode: vec4<f32>;
 @vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -117,6 +131,7 @@ fn pipeline(
 struct SceneProducer {
     pipeline: Option<wgpu::RenderPipeline>,
     aa_pipeline: Option<wgpu::RenderPipeline>,
+    aa_variants: Vec<wgpu::RenderPipeline>,
     aa_mode: Arc<AtomicU32>,
 }
 
@@ -125,6 +140,7 @@ impl SceneProducer {
         Self {
             pipeline: None,
             aa_pipeline: None,
+            aa_variants: Vec::new(),
             aa_mode,
         }
     }
@@ -149,16 +165,21 @@ impl PipelineFeature for SceneProducer {
             true,
             None,
         ));
+        self.aa_variants = aa_variant_shaders()
+            .iter()
+            .map(|shader| pipeline(&setup.gpu.device, shader, HDR_FORMAT, true, None))
+            .collect();
         Ok(())
     }
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
         let mut pass = ctx.scene_pass("test scene depth and colour")?;
-        let selected = if self.aa_mode.load(Ordering::Relaxed) == 0 {
-            &self.pipeline
-        } else {
-            &self.aa_pipeline
+        let mode = self.aa_mode.load(Ordering::Relaxed) as usize;
+        let selected = match mode {
+            0 => self.pipeline.as_ref(),
+            1 => self.aa_pipeline.as_ref(),
+            _ => self.aa_variants.get(mode - 2),
         };
-        pass.set_pipeline(selected.as_ref().context("scene pipeline")?);
+        pass.set_pipeline(selected.context("scene pipeline")?);
         pass.draw(0..3, 0..1);
         Ok(())
     }
@@ -415,6 +436,121 @@ fn spatial_aa_tracks_supersampled_diagonal_without_erasing_detail() -> Result<()
     rig.controls.set_spatial_aa(id, None)?;
     let disabled = rig.frame(id, size, size, projection, false, false, false)?;
     assert!(close(disabled.pixel(28, 17), plain.pixel(28, 17), 0.002));
+    Ok(())
+}
+
+/// Values up to 1.0 blend linearly; the part above 1.0 is mixed in a compressed
+/// domain so a very bright side does not dominate every partially covered pixel
+/// once a tonemap is applied. See the measurement comment below.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn spatial_aa_blends_bright_hdr_edges_in_a_display_compressed_domain() -> Result<()> {
+    // Reinhard stands in for the display operator applied after PostProcess.
+    let display = |value: f32| value / (1.0 + value);
+    let mut rig = Rig::new()?;
+    rig.aa_mode.store(2, Ordering::Relaxed);
+    let id = ViewId(44);
+    let size = [65, 43];
+    let projection = perspective(size[0] as f32 / size[1] as f32);
+    let plain = rig.frame(id, size, size, projection, false, false, false)?;
+    rig.controls
+        .set_spatial_aa(id, Some(SpatialAaSettings::default()))?;
+    let aa = rig.frame(id, size, size, projection, false, false, false)?;
+    let mut plain_error = 0.0;
+    let mut aa_error = 0.0;
+    for y in 9..40 {
+        for x in 10..55 {
+            let truth = diagonal_coverage(x, y) * display(8.0);
+            plain_error += (display(plain.pixel(x, y)[0]) - truth).powi(2);
+            aa_error += (display(aa.pixel(x, y)[0]) - truth).powi(2);
+        }
+    }
+    eprintln!("bright HDR edge display-space error: plain {plain_error} aa {aa_error}");
+    // Measured on the RTX 5080: blending in linear HDR gave 4.73 (worse than
+    // the unfiltered 2.14 because the 8.0 side dominates every mixed pixel);
+    // the compressed-domain mix gives about 3.4. The along-edge kernel still
+    // does not estimate coverage across the edge, so this bounds the
+    // regression and documents the limit instead of claiming parity.
+    assert!(
+        aa_error < 4.0,
+        "bright HDR edges regressed towards linear HDR blending: {aa_error} (plain {plain_error})"
+    );
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            let value = aa.pixel(x, y)[0];
+            assert!(
+                value.is_finite() && (-1e-4..=8.0 + 1e-3).contains(&value),
+                "pixel ({x}, {y}) left the source range: {value}"
+            );
+        }
+    }
+    assert!(close(aa.pixel(2, 20), plain.pixel(2, 20), 0.002));
+    assert!(close(aa.pixel(58, 20), plain.pixel(58, 20), 0.002));
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn spatial_aa_off_has_two_colours_and_flat_or_low_contrast_images_are_identity() -> Result<()> {
+    let mut rig = Rig::new()?;
+    let size = [65, 43];
+    let projection = perspective(size[0] as f32 / size[1] as f32);
+    let id = ViewId(45);
+    // Hard edge: AA off shows exactly the two source colours; AA on adds
+    // intermediate edge pixels and nothing else changes away from the edge.
+    rig.aa_mode.store(3, Ordering::Relaxed);
+    let flat = rig.frame(id, size, size, projection, false, false, false)?;
+    rig.aa_mode.store(1, Ordering::Relaxed);
+    let plain = rig.frame(id, size, size, projection, false, false, false)?;
+    let mut colours: Vec<u32> = (0..size[1])
+        .flat_map(|y| (0..size[0]).map(move |x| (x, y)))
+        .map(|(x, y)| plain.pixel(x, y)[0].to_bits())
+        .collect();
+    colours.sort_unstable();
+    colours.dedup();
+    assert_eq!(
+        colours.len(),
+        2,
+        "AA off must contain the two source colours only"
+    );
+    rig.controls
+        .set_spatial_aa(id, Some(SpatialAaSettings::default()))?;
+    let aa = rig.frame(id, size, size, projection, false, false, false)?;
+    let intermediate = (0..size[1])
+        .flat_map(|y| (0..size[0]).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let red = aa.pixel(x, y)[0];
+            red > 0.02 && red < 0.98
+        })
+        .count();
+    assert!(
+        intermediate >= 20,
+        "AA on produced {intermediate} intermediate pixels"
+    );
+    // A flat image has no contrast anywhere.
+    rig.aa_mode.store(3, Ordering::Relaxed);
+    let flat_aa = rig.frame(id, size, size, projection, false, false, false)?;
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            assert!(
+                close(flat_aa.pixel(x, y), flat.pixel(x, y), 1.0 / 255.0),
+                "flat pixel ({x}, {y}) changed"
+            );
+        }
+    }
+    // An edge under the relative luma threshold is left untouched.
+    rig.aa_mode.store(4, Ordering::Relaxed);
+    let low_aa = rig.frame(id, size, size, projection, false, false, false)?;
+    rig.controls.set_spatial_aa(id, None)?;
+    let low_plain = rig.frame(id, size, size, projection, false, false, false)?;
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            assert!(
+                close(low_aa.pixel(x, y), low_plain.pixel(x, y), 1.0 / 255.0),
+                "low-contrast pixel ({x}, {y}) changed"
+            );
+        }
+    }
     Ok(())
 }
 
