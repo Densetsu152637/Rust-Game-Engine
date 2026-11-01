@@ -30,6 +30,22 @@ fn luma(color: vec4<f32>) -> f32 {
     return dot(bounded, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
+// Blending happens in a display-compressed domain. Values up to 1.0 are
+// untouched (identity), values above 1.0 follow 2 - 1/x so that a very bright
+// side of an edge cannot dominate every partially covered pixel after the
+// later tonemap. This is a monotonic, reversible per-channel map; it does not
+// change which pixels are filtered, only how the filtered samples are mixed.
+fn compress(color: vec3<f32>) -> vec3<f32> {
+    let bright = vec3<f32>(2.0) - vec3<f32>(1.0) / max(color, vec3<f32>(1.0));
+    return select(bright, color, color <= vec3<f32>(1.0));
+}
+
+fn expand(color: vec3<f32>) -> vec3<f32> {
+    let limited = min(color, vec3<f32>(1.99999));
+    let bright = vec3<f32>(1.0) / (vec3<f32>(2.0) - limited);
+    return select(bright, color, color <= vec3<f32>(1.0));
+}
+
 @fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let pixel = floor(position.xy);
     let center = color_at(pixel);
@@ -56,9 +72,9 @@ fn luma(color: vec4<f32>) -> f32 {
     let length = sqrt(gx * gx + gy * gy);
     if length <= 0.00001 { return center; }
     let tangent = vec2<f32>(-gy, gx) / length;
-    let along = (color_at(pixel - tangent * 0.5).rgb
-        + color_at(pixel + tangent * 0.5).rgb
-        + color_at(pixel - tangent).rgb
-        + color_at(pixel + tangent).rgb) * 0.25;
-    return vec4<f32>(mix(center.rgb, along, p.geometry.w), center.a);
+    let along = (compress(color_at(pixel - tangent * 0.5).rgb)
+        + compress(color_at(pixel + tangent * 0.5).rgb)
+        + compress(color_at(pixel - tangent).rgb)
+        + compress(color_at(pixel + tangent).rgb)) * 0.25;
+    return vec4<f32>(expand(mix(compress(center.rgb), along, p.geometry.w)), center.a);
 }
