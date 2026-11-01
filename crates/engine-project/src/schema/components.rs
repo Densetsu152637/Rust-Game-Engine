@@ -200,6 +200,12 @@ pub struct Components {
     )]
     pub hiz_occluder: Option<crate::rendering3d::HiZOccluder>,
     #[serde(
+        rename = "MeshLightmap",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mesh_lightmap: Option<crate::rendering3d::MeshLightmap>,
+    #[serde(
         rename = "SpriteRenderer",
         default,
         skip_serializing_if = "Option::is_none"

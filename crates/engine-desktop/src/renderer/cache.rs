@@ -174,6 +174,7 @@ mod tests {
             color: [1.0; 4],
         };
         Arc::new(Mesh {
+            uv2: vec![],
             normals: vec![],
             vertices: vec![vertex; 3],
             indices: vec![],

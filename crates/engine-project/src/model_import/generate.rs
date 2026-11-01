@@ -174,6 +174,13 @@ pub(super) fn generate(
                     .iter()
                     .map(|v| v.normal.unwrap_or([0.0; 3]))
                     .collect(),
+                // glTF TEXCOORD_1 is the lightmap UV set. It is kept only when
+                // every vertex has it, so a partial set never reaches the GPU.
+                uv2: if primitive.vertices.iter().all(|v| v.uv1.is_some()) {
+                    primitive.vertices.iter().filter_map(|v| v.uv1).collect()
+                } else {
+                    Vec::new()
+                },
                 vertices: primitive
                     .vertices
                     .iter()

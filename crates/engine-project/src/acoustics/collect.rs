@@ -204,6 +204,7 @@ fn physics_box_mesh(half_extents: [f32; 3]) -> Mesh {
         .collect();
     Mesh {
         normals: vec![],
+        uv2: Vec::new(),
         vertices,
         indices: vec![
             0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 3, 7, 6, 3, 6, 2, 0, 4, 7, 0, 7,

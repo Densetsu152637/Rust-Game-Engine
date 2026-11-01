@@ -41,6 +41,7 @@ fn stripes() -> Arc<Mesh> {
         indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
     }
     Arc::new(Mesh {
+        uv2: vec![],
         normals: vec![],
         vertices,
         indices,
@@ -49,6 +50,7 @@ fn stripes() -> Arc<Mesh> {
 
 fn diagonal() -> Arc<Mesh> {
     Arc::new(Mesh {
+        uv2: vec![],
         normals: vec![],
         vertices: [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0]]
             .into_iter()
@@ -75,6 +77,7 @@ fn frame(camera: Camera3D, camera_x: f32, size: [u32; 2], mesh: Arc<Mesh>) -> Sc
         world: Mat4::from_translation(Vec3::new(camera_x, 0.0, 0.0)).to_cols_array_2d(),
     });
     frame.meshes.push(MeshDraw3D {
+        lightmap: None,
         id: "stripes".into(),
         mesh,
         texture: None,

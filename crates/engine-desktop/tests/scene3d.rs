@@ -41,8 +41,10 @@ fn sun(toward: [f32; 3], light: DirectionalLight) -> LightInstance3D {
 }
 fn triangle(id: &str, z: f32, tint: [f32; 4]) -> MeshDraw3D {
     MeshDraw3D {
+        lightmap: None,
         id: id.into(),
         mesh: Arc::new(Mesh {
+            uv2: vec![],
             normals: vec![],
             vertices: [[-0.8, -0.8, 0.0], [0.8, -0.8, 0.0], [0.0, 0.8, 0.0]]
                 .into_iter()
@@ -228,6 +230,7 @@ fn quad(id: &str, z: f32, half: f32) -> MeshDraw3D {
     let mut draw = triangle(id, z, [0.65, 0.25, 0.1, 1.0]);
     draw.material.unlit = false;
     draw.mesh = Arc::new(Mesh {
+        uv2: vec![],
         vertices: [
             ([-half, -half, 0.0], [0.0, 0.0]),
             ([half, -half, 0.0], [1.0, 0.0]),

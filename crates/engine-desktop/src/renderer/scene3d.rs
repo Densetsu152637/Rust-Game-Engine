@@ -9,12 +9,15 @@ use engine_project::lights::{
     DirectionalShadows, LightInstance3D, LightShadows, SceneLight, ShadowFilterMode,
 };
 use engine_project::rendering3d::{
-    CameraInstance3D, MeshDraw3D, Projection3D, SceneRenderFrame, StreamFrame, TextureStreamMode,
+    CameraInstance3D, MeshDraw3D, MeshLightmap, Projection3D, SceneRenderFrame, StreamFrame,
+    TextureStreamMode,
 };
 use engine_render_pipeline::{
     CascadeSettings, EngineVertex, FeatureOverrides, GpuContext, GpuMesh, GpuTexture, Light,
     LightList, LightShape, MaterialParams, MaterialTarget, SceneMesh, ShadowFilter, ShadowSettings,
-    TextureStreams, ViewData, ViewId, compose_material, names, photometric, validate_params,
+    TextureStreams, ViewData, ViewId, compose_material,
+    indirect::{LightmapBinding, LightmapMode},
+    names, photometric, validate_params,
     visibility::MeshVisibility,
 };
 use glam::{Mat4, Vec3};
@@ -271,6 +274,19 @@ pub(crate) fn validate_meshes(frame: &SceneRenderFrame) -> Result<()> {
         );
         draw.material.validate()?;
         validate_params(&material_params(draw))?;
+        if let Some(lightmap) = &draw.lightmap {
+            lightmap_binding(lightmap).with_context(|| format!("lightmap of mesh {}", draw.id))?;
+            ensure!(
+                draw.shader.is_none(),
+                "mesh {}: lightmaps apply only to the built-in lit shader",
+                draw.id
+            );
+            ensure!(
+                frame.indirect.is_some(),
+                "mesh {}: a lightmap needs Camera3D.lighting.indirect",
+                draw.id
+            );
+        }
         let source = draw.shader.as_deref().unwrap_or(LIT_WGSL);
         if shaders.insert(source) {
             compose_material(source, MaterialTarget::Mesh)
@@ -278,6 +294,19 @@ pub(crate) fn validate_meshes(frame: &SceneRenderFrame) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The pipeline binding of an authored `MeshLightmap` (revalidated natively).
+fn lightmap_binding(lightmap: &MeshLightmap) -> Result<LightmapBinding> {
+    LightmapBinding::new(
+        lightmap.lightmap,
+        lightmap.scale,
+        lightmap.offset,
+        match lightmap.mode {
+            engine_project::rendering3d::LightmapMode::Replace => LightmapMode::Replace,
+            engine_project::rendering3d::LightmapMode::Add => LightmapMode::Add,
+        },
+    )
 }
 
 pub(crate) fn engine_vertices(mesh: &Mesh) -> Vec<EngineVertex> {
@@ -330,11 +359,19 @@ impl SceneUploads {
         }
         let uploaded = if mesh.vertices.is_empty() {
             None
-        } else {
+        } else if mesh.uv2.is_empty() {
             Some(GpuMesh::from_engine_vertices(
                 &gpu.device,
                 "engine mesh",
                 &engine_vertices(mesh),
+                &mesh.indices,
+            )?)
+        } else {
+            Some(GpuMesh::from_engine_vertices_with_uv2(
+                &gpu.device,
+                "engine mesh",
+                &engine_vertices(mesh),
+                &mesh.uv2,
                 &mesh.indices,
             )?)
         };
@@ -449,7 +486,7 @@ impl SceneUploads {
                 base_color,
                 metallic_roughness,
                 normal_map,
-                lightmap: None,
+                lightmap: draw.lightmap.as_ref().map(lightmap_binding).transpose()?,
             });
             if wants_visibility {
                 visibility.push(MeshVisibility {

@@ -24,6 +24,7 @@ const STEP: f32 = 0.15;
 
 fn mesh(vertices: &[[f32; 3]], indices: Vec<u32>) -> Arc<Mesh> {
     Arc::new(Mesh {
+        uv2: vec![],
         vertices: vertices
             .iter()
             .map(|&position| Vertex {
@@ -39,6 +40,7 @@ fn mesh(vertices: &[[f32; 3]], indices: Vec<u32>) -> Arc<Mesh> {
 
 fn draw(id: &str, mesh: Arc<Mesh>, model: Mat4, tint: [f32; 4]) -> MeshDraw3D {
     MeshDraw3D {
+        lightmap: None,
         id: id.into(),
         mesh,
         texture: None,

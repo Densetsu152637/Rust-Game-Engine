@@ -27,8 +27,10 @@ fn scene(x: f32) -> SceneRenderFrame {
         world: Mat4::from_translation(Vec3::new(x, 0.0, 0.0)).to_cols_array_2d(),
     });
     frame.meshes.push(MeshDraw3D {
+        lightmap: None,
         id: "wall".into(),
         mesh: Arc::new(Mesh {
+            uv2: vec![],
             normals: vec![],
             vertices: [[-20.0, -20.0, 0.0], [20.0, -20.0, 0.0], [0.0, 20.0, 0.0]]
                 .into_iter()

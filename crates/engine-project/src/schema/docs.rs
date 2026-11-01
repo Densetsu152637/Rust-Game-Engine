@@ -1,7 +1,7 @@
 //! Shared built-in authoring component documentation.
 use serde_json::{Value, json};
 /// The component keys of an entity's `components` object, in schema order.
-pub const COMPONENT_NAMES: [&str; 18] = [
+pub const COMPONENT_NAMES: [&str; 19] = [
     "Camera3D",
     "MeshMaterial",
     "EventBindings",
@@ -10,6 +10,7 @@ pub const COMPONENT_NAMES: [&str; 18] = [
     "MeshRenderer",
     "MeshLods",
     "HiZOccluder",
+    "MeshLightmap",
     "SpriteRenderer",
     "Camera2D",
     "Collider2D",
@@ -226,6 +227,20 @@ fn builtin_docs() -> Vec<ComponentDoc> {
                 &[],
             ),
             example: json!({"enabled":true}),
+        },
+        ComponentDoc {
+            name: "MeshLightmap",
+            description: "Samples a supplied lightmap of the active Camera3D's indirect asset with the mesh's second UV set (glTF TEXCOORD_1): uv = uv2 * scale + offset, so entities sharing one mesh can address different atlas regions. mode `replace` makes the lightmap the diffuse indirect term, `add` adds it to the probe or ambient diffuse; specular IBL is unchanged. The mesh and every MeshLods level need UV2; custom MeshMaterial.shader is rejected. Supplied data only: nothing is baked.",
+            requires: &["MeshRenderer"],
+            schema: closed(
+                json!({"version":version(),
+                    "lightmap":{"type":"integer","minimum":0,"maximum":7,"default":0,"description":"Index into the indirect asset's `lightmaps`."},
+                    "scale":{"type":"array","items":{"type":"number","minimum":0.0000152590219,"maximum":1},"minItems":2,"maxItems":2,"default":[1,1]},
+                    "offset":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":2,"maxItems":2,"default":[0,0],"description":"offset + scale must not exceed 1 on either axis."},
+                    "mode":{"enum":["replace","add"],"default":"replace"}}),
+                &[],
+            ),
+            example: json!({"lightmap":0,"scale":[0.5,0.5],"offset":[0.5,0],"mode":"replace"}),
         },
         ComponentDoc {
             name: "SpriteRenderer",

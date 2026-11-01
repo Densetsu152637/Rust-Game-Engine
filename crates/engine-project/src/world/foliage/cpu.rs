@@ -107,6 +107,7 @@ pub fn merge_instances(mesh: &Mesh, instances: &[Instance]) -> Mesh {
     let n = mesh.vertices.len();
     let mut out = Mesh {
         normals: Vec::new(),
+        uv2: Vec::new(),
         vertices: Vec::with_capacity(n * instances.len()),
         indices: Vec::with_capacity(mesh.indices.len() * instances.len()),
     };
@@ -163,6 +164,7 @@ pub fn impostor_mesh(size: [f32; 2]) -> Mesh {
         .collect();
     Mesh {
         normals: vec![[0.0, 1.0, 0.0]; IMPOSTOR_VERTICES],
+        uv2: Vec::new(),
         vertices,
         indices,
     }
@@ -440,6 +442,7 @@ mod tests {
 
     fn triangle() -> Mesh {
         Mesh {
+            uv2: vec![],
             normals: vec![[0.0, 0.0, 1.0]; 3],
             vertices: vec![
                 Vertex {

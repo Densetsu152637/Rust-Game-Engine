@@ -69,6 +69,7 @@ fn frame(hiz: bool) -> SceneRenderFrame {
 /// A quad of half extent `half` with a uniform vertex colour.
 fn quad(half: f32, color: [f32; 4]) -> Arc<Mesh> {
     Arc::new(Mesh {
+        uv2: vec![],
         normals: vec![],
         vertices: [[-half, -half], [half, -half], [half, half], [-half, half]]
             .into_iter()
@@ -84,6 +85,7 @@ fn quad(half: f32, color: [f32; 4]) -> Arc<Mesh> {
 
 fn draw(id: &str, mesh: &Arc<Mesh>, position: Vec3, tint: [f32; 4]) -> MeshDraw3D {
     MeshDraw3D {
+        lightmap: None,
         id: id.into(),
         mesh: mesh.clone(),
         texture: None,

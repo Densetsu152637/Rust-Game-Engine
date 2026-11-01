@@ -818,6 +818,7 @@ fn surface_mesh(body: &Body, shore: Option<&[[f32; 2]]>) -> Mesh {
         let (positions, uvs, indices) = river.ribbon(across);
         return Mesh {
             normals: vec![[0.0, 1.0, 0.0]; positions.len()],
+            uv2: Vec::new(),
             vertices: positions
                 .iter()
                 .zip(&uvs)
@@ -875,6 +876,7 @@ fn surface_mesh(body: &Body, shore: Option<&[[f32; 2]]>) -> Mesh {
     }
     Mesh {
         normals,
+        uv2: Vec::new(),
         vertices,
         indices,
     }

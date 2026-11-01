@@ -112,6 +112,7 @@ fn authored_camera_overrides_disable_features_in_rendering_and_status() -> anyho
 
 fn quad_mesh() -> Arc<Mesh> {
     Arc::new(Mesh {
+        uv2: vec![],
         normals: vec![],
         vertices: [
             ([-3.0, -3.0, 0.0], [0.0, 1.0]),
@@ -152,6 +153,7 @@ fn streamed_scene(stream: &StreamFrame) -> SceneRenderFrame {
         },
         camera3d: Some(camera()),
         meshes: vec![MeshDraw3D {
+            lightmap: None,
             id: "screen".into(),
             mesh: quad_mesh(),
             texture: Some(stream.texture.clone()),
@@ -261,6 +263,7 @@ fn xr_eyes_render_into_external_targets_with_their_own_views() -> anyhow::Result
     let output = OffscreenTarget::new(&gpu, SIZE, SIZE)?;
     let mut renderer = GpuRenderer::new(gpu.clone(), output.info, RenderLimits::default())?;
     let red = Arc::new(Mesh {
+        uv2: vec![],
         normals: vec![],
         vertices: [
             [-0.2, -0.2, 0.0],
@@ -287,6 +290,7 @@ fn xr_eyes_render_into_external_targets_with_their_own_views() -> anyhow::Result
         },
         camera3d: Some(camera()),
         meshes: vec![MeshDraw3D {
+            lightmap: None,
             id: "red".into(),
             mesh: red,
             texture: None,

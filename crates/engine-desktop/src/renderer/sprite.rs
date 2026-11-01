@@ -1107,6 +1107,7 @@ mod tests {
         let (mut renderer, _) = renderer(RenderLimits::default());
         let mesh = |vertices: Vec<Vertex>, indices: Vec<u32>| {
             let mesh = Arc::new(Mesh {
+                uv2: vec![],
                 normals: vec![],
                 vertices,
                 indices,
@@ -1136,6 +1137,7 @@ mod tests {
             ..Default::default()
         });
         let tri = Arc::new(Mesh {
+            uv2: vec![],
             normals: vec![],
             vertices: vec![vertex([0.0; 3]); 3],
             indices: vec![],
@@ -1151,6 +1153,7 @@ mod tests {
             pixels: vec![0; 16],
         });
         let tri = Arc::new(Mesh {
+            uv2: vec![],
             normals: vec![],
             vertices: vec![vertex([0.0; 3]); 3],
             indices: vec![],
@@ -1182,6 +1185,7 @@ mod tests {
             pixels: vec![0; 20],
         });
         let tri = Arc::new(Mesh {
+            uv2: vec![],
             normals: vec![],
             vertices: vec![vertex([0.0; 3]); 3],
             indices: vec![],

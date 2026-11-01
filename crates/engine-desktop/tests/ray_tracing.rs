@@ -40,6 +40,7 @@ fn mesh(parts: &[Part]) -> Arc<Mesh> {
         indices.extend(part_indices.iter().map(|i| i + base));
     }
     Arc::new(Mesh {
+        uv2: vec![],
         normals,
         vertices,
         indices,
@@ -88,6 +89,7 @@ fn box_mesh(min: [f32; 3], max: [f32; 3]) -> Arc<Mesh> {
 
 fn draw(id: &str, mesh: Arc<Mesh>, material: MeshMaterial) -> MeshDraw3D {
     MeshDraw3D {
+        lightmap: None,
         id: id.into(),
         mesh,
         texture: None,

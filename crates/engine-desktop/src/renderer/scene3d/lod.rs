@@ -121,6 +121,7 @@ mod tests {
 
     fn mesh(points: &[[f32; 3]]) -> Mesh {
         Mesh {
+            uv2: vec![],
             normals: vec![],
             vertices: points
                 .iter()

@@ -43,6 +43,7 @@ fn quad(width: f32, height: f32) -> Arc<Mesh> {
         color: [1.0; 4],
     };
     Arc::new(Mesh {
+        uv2: vec![],
         normals: Vec::new(),
         vertices: vec![
             v(-hw, 0.0, 0.0, 1.0),
@@ -466,6 +467,7 @@ fn offscreen_alpha_foliage_casts_wind_animated_shadows() -> Result<()> {
         color: [1.0; 4],
     };
     let mesh = Arc::new(Mesh {
+        uv2: vec![],
         vertices: vec![
             leaf(0.0, -1.0, 0.0),
             leaf(0.0, 1.0, 1.0),

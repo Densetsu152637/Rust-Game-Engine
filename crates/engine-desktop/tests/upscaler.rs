@@ -24,6 +24,7 @@ const HEIGHT: u32 = 384;
 
 fn mesh(vertices: &[[f32; 3]], indices: Vec<u32>, color: [f32; 4]) -> Arc<Mesh> {
     Arc::new(Mesh {
+        uv2: vec![],
         vertices: vertices
             .iter()
             .map(|&position| Vertex {
@@ -39,6 +40,7 @@ fn mesh(vertices: &[[f32; 3]], indices: Vec<u32>, color: [f32; 4]) -> Arc<Mesh> 
 
 fn draw(id: &str, mesh: Arc<Mesh>, model: Mat4, tint: [f32; 4], unlit: bool) -> MeshDraw3D {
     MeshDraw3D {
+        lightmap: None,
         id: id.into(),
         mesh,
         texture: None,

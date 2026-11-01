@@ -34,6 +34,7 @@ pub fn sprite_quad(
     let v1 = (source[1] + source[3]) as f32 / texture.height as f32;
     Ok(Mesh {
         normals: vec![],
+        uv2: Vec::new(),
         vertices: vec![
             Vertex {
                 position: [x, y, z],

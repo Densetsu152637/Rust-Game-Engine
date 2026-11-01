@@ -1,5 +1,6 @@
-//! Bounded CPU loading of externally prepared image-based lighting.
-//! Cube faces contain linear, unexposed RGB32F texels; no convolution or baking occurs here.
+//! Bounded CPU loading of externally prepared image-based lighting and lightmaps.
+//! Cube faces and lightmaps contain linear RGB32F texels; no convolution,
+//! UV unwrapping or baking occurs here.
 use crate::{
     Error, Project, Result,
     schema::{confined_file, read_bounded},
@@ -18,6 +19,9 @@ const MAX_DESCRIPTORS_BYTES: u64 = 16 * MAX_DESCRIPTOR_BYTES;
 pub const MAX_INDIRECT_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_EDGE: u32 = 256;
 const MAX_ENVIRONMENTS: usize = 17;
+/// Matches the native indirect set limits (`MAX_LIGHTMAPS`, `MAX_RADIANCE_EDGE`).
+pub const MAX_LIGHTMAPS: usize = 8;
+const MAX_LIGHTMAP_EDGE: u32 = 2048;
 const MAX_PROBES: usize = 16;
 const MAX_HALF: f32 = 65_504.0;
 const MAX_OPEN_FACES: usize = 4096;
@@ -29,6 +33,13 @@ fn invalid(message: impl Into<String>) -> Error {
 #[derive(Clone, Debug)]
 pub struct RadianceFace {
     pub size: u32,
+    pub pixels: Vec<[f32; 3]>,
+}
+/// A supplied baked lightmap: linear RGB32F incident diffuse radiance
+/// (irradiance / pi, exposure applied), top row first. Addressed by mesh UV2.
+#[derive(Clone, Debug)]
+pub struct LightmapImage {
+    pub size: [u32; 2],
     pub pixels: Vec<[f32; 3]>,
 }
 #[derive(Clone, Debug)]
@@ -59,6 +70,8 @@ pub struct IndirectAsset {
     pub environments: Vec<IndirectEnvironment>,
     pub global: Option<EnvironmentLightingAsset>,
     pub probes: Vec<IndirectProbeAsset>,
+    /// Supplied lightmaps, indexed by `MeshLightmap.lightmap`.
+    pub lightmaps: Vec<LightmapImage>,
     pub decoded_bytes: u64,
     pub texture_bytes: u64,
 }
@@ -67,9 +80,19 @@ pub struct IndirectAsset {
 #[serde(deny_unknown_fields)]
 struct Source {
     version: u32,
+    #[serde(default)]
     environments: Vec<EnvironmentSource>,
     global: Option<EnvironmentLightingAsset>,
+    #[serde(default)]
     probes: Vec<IndirectProbeAsset>,
+    #[serde(default)]
+    lightmaps: Vec<LightmapSource>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LightmapSource {
+    size: [u32; 2],
+    path: PathBuf,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,6 +104,7 @@ struct EnvironmentSource {
 struct PreparedSource {
     source: Source,
     faces: Vec<[PreparedFace; 6]>,
+    lightmaps: Vec<PreparedFace>,
     decoded_bytes: u64,
     texture_bytes: u64,
 }
@@ -117,14 +141,15 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
         if source.version != 1
             || source.environments.len() > MAX_ENVIRONMENTS
             || source.probes.len() > MAX_PROBES
+            || source.lightmaps.len() > MAX_LIGHTMAPS
         {
             return Err(invalid(
-                "version must be 1, with at most 17 environments and 16 probes",
+                "version must be 1, with at most 17 environments, 16 probes and 8 lightmaps",
             ));
         }
-        if source.global.is_none() && source.probes.is_empty() {
+        if source.global.is_none() && source.probes.is_empty() && source.lightmaps.is_empty() {
             return Err(invalid(
-                "indirect set needs a global environment or a local probe",
+                "indirect set needs a global environment, a local probe or a lightmap",
             ));
         }
         if source
@@ -220,6 +245,42 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
                 prepared_faces.push(resolved);
             }
         }
+        let mut lightmaps = Vec::new();
+        for lightmap in &source.lightmaps {
+            let [width, height] = lightmap.size;
+            if width == 0 || height == 0 || width > MAX_LIGHTMAP_EDGE || height > MAX_LIGHTMAP_EDGE
+            {
+                return Err(invalid(format!(
+                    "lightmap {:?} dimensions must be 1..={MAX_LIGHTMAP_EDGE}",
+                    lightmap.path
+                )));
+            }
+            open_faces = open_faces
+                .checked_add(1)
+                .ok_or_else(|| invalid("file count overflow"))?;
+            if open_faces > MAX_OPEN_FACES {
+                return Err(invalid(
+                    "indirect assets reference more than 4096 face and lightmap files",
+                ));
+            }
+            let texels = u64::from(width) * u64::from(height);
+            let expected = texels * 12;
+            let path = confined_file(&project.root, &lightmap.path)?;
+            let file = fs::File::open(&path)?;
+            if file.metadata()?.len() != expected {
+                return Err(invalid(format!(
+                    "lightmap {:?} needs exactly {expected} bytes for {width}x{height} RGB32F",
+                    lightmap.path
+                )));
+            }
+            decoded_bytes = decoded_bytes
+                .checked_add(expected)
+                .ok_or_else(|| invalid("indirect size overflow"))?;
+            texture_bytes = texture_bytes
+                .checked_add(texels * 8)
+                .ok_or_else(|| invalid("indirect size overflow"))?;
+            lightmaps.push(PreparedFace { path, file });
+        }
         if decoded_bytes + 64 * 64 * 8 > MAX_INDIRECT_BYTES
             || texture_bytes + 64 * 64 * 8 > MAX_INDIRECT_BYTES
         {
@@ -236,6 +297,7 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
             PreparedSource {
                 source,
                 faces: prepared_faces,
+                lightmaps,
                 decoded_bytes,
                 texture_bytes,
             },
@@ -299,12 +361,58 @@ pub fn load_indirect_assets(project: &Project) -> Result<BTreeMap<String, Arc<In
                 mips,
             });
         }
+        let mut lightmaps = Vec::new();
+        for (spec, file) in prepared
+            .source
+            .lightmaps
+            .iter()
+            .zip(&mut prepared.lightmaps)
+        {
+            let expected = u64::from(spec.size[0]) * u64::from(spec.size[1]) * 12;
+            let mut bytes = Vec::new();
+            (&mut file.file)
+                .take(expected + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 != expected {
+                return Err(invalid(format!(
+                    "lightmap changed size during load: {:?}",
+                    file.path
+                )));
+            }
+            let pixels = bytes
+                .as_chunks::<12>()
+                .0
+                .iter()
+                .map(|p| {
+                    [
+                        f32::from_le_bytes(p[0..4].try_into().unwrap()),
+                        f32::from_le_bytes(p[4..8].try_into().unwrap()),
+                        f32::from_le_bytes(p[8..12].try_into().unwrap()),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            if !pixels
+                .iter()
+                .flatten()
+                .all(|v| v.is_finite() && (0.0..=MAX_HALF).contains(v))
+            {
+                return Err(invalid(format!(
+                    "nonfinite or out-of-range radiance in {:?}",
+                    file.path
+                )));
+            }
+            lightmaps.push(LightmapImage {
+                size: spec.size,
+                pixels,
+            });
+        }
         result.insert(
             id,
             Arc::new(IndirectAsset {
                 environments,
                 global: prepared.source.global,
                 probes: prepared.source.probes,
+                lightmaps,
                 decoded_bytes: prepared.decoded_bytes,
                 texture_bytes: prepared.texture_bytes,
             }),

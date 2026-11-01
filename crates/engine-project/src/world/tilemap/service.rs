@@ -216,6 +216,7 @@ fn visual_mesh(geometry: &geometry::ChunkGeometry, opacity: f32, tint: [f32; 4])
     let color = [tint[0], tint[1], tint[2], tint[3] * opacity];
     Mesh {
         normals: Vec::new(),
+        uv2: Vec::new(),
         vertices: geometry
             .positions
             .iter()

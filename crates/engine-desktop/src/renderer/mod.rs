@@ -2090,8 +2090,10 @@ mod tests {
                 .collect()
         };
         frame.meshes.push(MeshDraw3D {
+            lightmap: None,
             id: "red".into(),
             mesh: Arc::new(Mesh {
+                uv2: vec![],
                 vertices: vertices(
                     &[[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
                     [1.0; 4],
@@ -2113,6 +2115,7 @@ mod tests {
         frame.sprites.draws.push(engine_project::runtime::Draw {
             id: "ui".into(),
             mesh: Arc::new(Mesh {
+                uv2: vec![],
                 vertices: vertices(
                     &[
                         [0.0, 0.0, 0.5],

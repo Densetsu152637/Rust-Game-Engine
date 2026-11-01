@@ -651,6 +651,7 @@ fn to_mesh_data(mesh: &Mesh) -> Result<MeshData, ToolFailure> {
 fn from_mesh_data(data: &MeshData) -> Mesh {
     let uv = |i: usize| data.uvs.as_ref().map_or([0.0; 2], |u| u[i].to_array());
     Mesh {
+        uv2: vec![],
         normals: data
             .normals
             .as_ref()

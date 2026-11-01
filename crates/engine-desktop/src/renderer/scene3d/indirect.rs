@@ -67,7 +67,22 @@ fn resident_bytes(source: &IndirectAsset) -> Result<u64> {
         source.environments.len() <= 17 && source.probes.len() <= 16,
         "authored indirect source exceeds environment/probe count limits"
     );
+    ensure!(
+        source.lightmaps.len() <= 8,
+        "authored indirect source exceeds the lightmap count limit"
+    );
     let mut bytes = LUT_BYTES;
+    for lightmap in &source.lightmaps {
+        let texels = u64::from(lightmap.size[0]) * u64::from(lightmap.size[1]);
+        ensure!(
+            lightmap.pixels.len() as u64 == texels,
+            "authored lightmap texel count does not match its dimensions"
+        );
+        bytes = texels
+            .checked_mul(8)
+            .and_then(|resident| bytes.checked_add(resident))
+            .ok_or_else(|| anyhow::anyhow!("authored lightmap resident size overflow"))?;
+    }
     for environment in &source.environments {
         for faces in &environment.mips {
             for face in faces {
@@ -142,13 +157,18 @@ impl AuthoredIndirectCache {
                     EnvironmentData::new(diffuse, mips)
                 })
                 .collect::<Result<Vec<_>>>()?;
+            let lightmaps = source
+                .lightmaps
+                .iter()
+                .map(|lightmap| RadianceImage::new(lightmap.size, lightmap.pixels.clone()))
+                .collect::<Result<Vec<_>>>()?;
             if self.lut.is_none() {
                 self.lut = Some(BrdfLut::prepare(64, 256)?);
             }
             let resources = Arc::new(GpuIndirectResources::prepare(
                 gpu,
                 &data,
-                &[],
+                &lightmaps,
                 self.lut.as_ref().expect("prepared above"),
             )?);
             self.sources.insert(
@@ -281,6 +301,7 @@ mod tests {
                 intensity: 1.0,
             }),
             probes: vec![],
+            lightmaps: vec![],
             decoded_bytes: 0,
             texture_bytes: 0,
         });

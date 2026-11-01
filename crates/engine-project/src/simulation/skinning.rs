@@ -321,6 +321,7 @@ impl Skins {
             }
             let mesh = Arc::new(Mesh {
                 normals: normals.iter().map(|n| n.to_array()).collect(),
+                uv2: Vec::new(),
                 vertices: binding
                     .source
                     .vertices

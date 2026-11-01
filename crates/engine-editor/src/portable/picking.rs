@@ -322,6 +322,7 @@ mod tests {
     }
     fn triangle(z: f32) -> Mesh {
         Mesh {
+            uv2: vec![],
             normals: vec![],
             indices: vec![0, 1, 2],
             vertices: [[-0.8, -0.8, z], [0.8, -0.8, z], [0.0, 0.8, z]]

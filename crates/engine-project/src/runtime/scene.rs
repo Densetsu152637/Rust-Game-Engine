@@ -387,6 +387,11 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
     } else {
         e.remove::<crate::rendering3d::HiZOccluder>();
     }
+    if let Some(v) = &c.mesh_lightmap {
+        e.insert(v.clone());
+    } else {
+        e.remove::<crate::rendering3d::MeshLightmap>();
+    }
     if let Some(v) = &c.sprite_renderer {
         e.insert(v.clone());
     }

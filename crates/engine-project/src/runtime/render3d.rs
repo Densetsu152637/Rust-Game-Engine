@@ -113,6 +113,19 @@ impl Runtime {
                 .map(|id| self.resolve_texture(id, &mut frame.streams))
                 .transpose()?;
             let shader = self.material_shader(&material)?;
+            let lightmap = entity
+                .get::<MeshLightmap>()
+                .map(|binding| {
+                    check_lightmap(
+                        &id,
+                        binding,
+                        &mesh,
+                        shader.is_some(),
+                        frame.indirect.as_deref(),
+                    )
+                })
+                .transpose()?
+                .cloned();
             frame.meshes.push(MeshDraw3D {
                 id: id.clone(),
                 mesh,
@@ -142,6 +155,7 @@ impl Runtime {
                 model: crate::world_transform(world, entity.id())?.matrix,
                 material,
                 shader,
+                lightmap: lightmap.clone(),
             });
             // A runtime geometry override (skinning, World-generated meshes)
             // replaces level zero, so authored static levels and the
@@ -168,6 +182,17 @@ impl Runtime {
                     })
                     .transpose()?
                     .unwrap_or_default();
+                if lightmap.is_some()
+                    && let Some(level) = levels.iter().position(|level| level.uv2.is_empty())
+                {
+                    return Err(Error::new(
+                        "render.lightmap.uv2",
+                        format!(
+                            "{id}: MeshLods level {} has no second UV set; a lightmapped mesh needs UV2 on every level",
+                            level + 1
+                        ),
+                    ));
+                }
                 frame.mesh_options.insert(
                     id.clone(),
                     MeshDrawOptions3D {
@@ -717,4 +742,51 @@ fn extract_lights(world: &World) -> Result<Vec<crate::lights::LightInstance3D>> 
     }
     lights.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(lights)
+}
+
+/// Validates one authored lightmap binding against its mesh and the camera's
+/// indirect asset, so a bad binding is a named extraction error rather than a
+/// renderer failure. `custom_shader` draws are rejected: only the built-in lit
+/// shader samples lightmaps.
+fn check_lightmap<'a>(
+    id: &str,
+    binding: &'a MeshLightmap,
+    mesh: &crate::content::Mesh,
+    custom_shader: bool,
+    indirect: Option<&crate::indirect::IndirectAsset>,
+) -> Result<&'a MeshLightmap> {
+    binding
+        .validate()
+        .map_err(|e| Error::new("render.lightmap.invalid", format!("{id}: {e}")))?;
+    if custom_shader {
+        return Err(Error::new(
+            "render.lightmap.shader",
+            format!(
+                "{id}: lightmaps apply only to the built-in lit shader, not MeshMaterial.shader"
+            ),
+        ));
+    }
+    let asset = indirect.ok_or_else(|| {
+        Error::new(
+            "render.lightmap.indirect",
+            format!("{id}: MeshLightmap needs Camera3D.lighting.indirect to name an asset with lightmaps"),
+        )
+    })?;
+    if binding.lightmap >= asset.lightmaps.len() {
+        return Err(Error::new(
+            "render.lightmap.indirect",
+            format!(
+                "{id}: lightmap {} is missing; the indirect asset holds {}",
+                binding.lightmap,
+                asset.lightmaps.len()
+            ),
+        ));
+    }
+    if mesh.uv2.is_empty() {
+        return Err(Error::new(
+            "render.lightmap.uv2",
+            format!("{id}: the mesh has no second UV set (UV2) to address a lightmap"),
+        ));
+    }
+    Ok(binding)
 }

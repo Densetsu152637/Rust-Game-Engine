@@ -207,6 +207,7 @@ mod layout_tests {
     #[test]
     fn mesh_resource_carries_vertices_and_indices_verbatim() {
         let mesh = Mesh {
+            uv2: vec![],
             normals: vec![],
             vertices: vec![
                 engine_project::content::Vertex {

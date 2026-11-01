@@ -109,6 +109,12 @@ impl Scene {
                     return Err(bad("HiZOccluder needs a MeshRenderer"));
                 }
             }
+            if let Some(lightmap) = &c.mesh_lightmap {
+                lightmap.validate()?;
+                if c.mesh_renderer.is_none() {
+                    return Err(bad("MeshLightmap needs a MeshRenderer"));
+                }
+            }
             if (c.sprite_renderer.is_some() || c.collider_2d.is_some()) && c.transform.is_none() {
                 return Err(bad("SpriteRenderer and Collider2D require Transform"));
             }

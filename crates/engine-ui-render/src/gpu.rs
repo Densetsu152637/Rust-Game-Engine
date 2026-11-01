@@ -217,6 +217,7 @@ mod tests {
 
     fn mesh(vertices: usize, indices: &[u32]) -> Mesh {
         Mesh {
+            uv2: vec![],
             normals: vec![],
             vertices: (0..vertices)
                 .map(|i| Vertex {

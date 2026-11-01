@@ -612,6 +612,7 @@ fn screen_quad(id: String, layer: i32, color: [f32; 4]) -> engine_project::runti
         layer,
         space: DrawSpace::Ui,
         mesh: std::sync::Arc::new(Mesh {
+            uv2: vec![],
             vertices: positions
                 .into_iter()
                 .map(|position| Vertex {

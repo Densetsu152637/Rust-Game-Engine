@@ -769,6 +769,7 @@ fn chunk_mesh(
     let data = build_chunk_mesh(field, layout, node, viewer);
     Mesh {
         normals: data.normals,
+        uv2: Vec::new(),
         vertices: data
             .positions
             .iter()

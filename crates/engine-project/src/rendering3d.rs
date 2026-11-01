@@ -87,6 +87,82 @@ impl HiZOccluder {
     }
 }
 
+/// How a baked lightmap combines with the probe or ambient diffuse of a draw.
+/// Specular image-based lighting is never affected.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LightmapMode {
+    /// The lightmap supplies the diffuse indirect term.
+    #[default]
+    Replace,
+    /// The lightmap diffuse is added to the probe or ambient diffuse.
+    Add,
+}
+
+/// Binds a mesh entity to one supplied lightmap of the active camera's
+/// `Camera3D.lighting.indirect` asset. The mesh (and each `MeshLods` level)
+/// must carry a second UV set; sampling uses `uv2 * scale + offset`, so
+/// entities sharing one mesh can address different atlas regions. Supplied
+/// data only: nothing here bakes, unwraps or denoises. Applies to the built-in
+/// lit shader; a `MeshMaterial.shader` makes the binding an error.
+#[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MeshLightmap {
+    pub version: u32,
+    /// Index into the indirect asset's `lightmaps`.
+    pub lightmap: usize,
+    /// Atlas region size as a fraction of the lightmap, each within (0, 1].
+    pub scale: [f32; 2],
+    /// Atlas region origin as a fraction of the lightmap; the region must fit.
+    pub offset: [f32; 2],
+    pub mode: LightmapMode,
+}
+
+impl Default for MeshLightmap {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            lightmap: 0,
+            scale: [1.0, 1.0],
+            offset: [0.0, 0.0],
+            mode: LightmapMode::Replace,
+        }
+    }
+}
+
+impl MeshLightmap {
+    /// Most lightmaps one indirect asset (and the native set) holds.
+    pub const MAX_LIGHTMAPS: usize = crate::indirect::MAX_LIGHTMAPS;
+
+    pub fn validate(&self) -> Result<()> {
+        let bad = |message: &str| Err(Error::new("mesh_lightmap.invalid", message));
+        if self.version != 1 {
+            return bad("MeshLightmap requires version 1");
+        }
+        if self.lightmap >= Self::MAX_LIGHTMAPS {
+            return bad("MeshLightmap.lightmap must be below 8");
+        }
+        if !self.scale.iter().chain(&self.offset).all(|v| v.is_finite()) {
+            return bad("MeshLightmap scale and offset must be finite");
+        }
+        // The native instance stores each as an unsigned 16-bit fraction.
+        if !self
+            .scale
+            .iter()
+            .all(|&s| (1.0 / 65535.0..=1.0).contains(&s))
+        {
+            return bad("MeshLightmap.scale must be within 1/65535..=1 on both axes");
+        }
+        if !self.offset.iter().all(|&o| (0.0..=1.0).contains(&o)) {
+            return bad("MeshLightmap.offset must be within 0..=1 on both axes");
+        }
+        if (0..2).any(|i| self.offset[i] + self.scale[i] > 1.0 + 1e-6) {
+            return bad("MeshLightmap region (offset + scale) must lie inside the atlas");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Projection3D {
@@ -860,6 +936,8 @@ pub struct MeshDraw3D {
     /// An asset source snapshot, validated by the renderer before submission.
     /// None selects the built-in lit shader.
     pub shader: Option<Arc<str>>,
+    /// Validated lightmap binding against the frame's `indirect` asset.
+    pub lightmap: Option<MeshLightmap>,
 }
 /// Optional authored camera LOD and trusted-depth request for a mesh draw.
 /// The first level remains in `MeshDraw3D.mesh`; these are the coarser levels.
