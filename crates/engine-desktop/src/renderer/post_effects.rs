@@ -9,10 +9,23 @@ use engine_render_post_effects::{
     DepthOfFieldSettings, MotionBlurSettings, PostEffects, SpatialAaSettings,
 };
 
-/// `host_upscaled` is true when a host upscaler (DLSS Super Resolution) owns
-/// the Upscale stage of this draw. Spatial AA is then switched off for the view:
-/// DLSS already resolves anti-aliasing and a second spatial filter would only
-/// soften its output. The pipeline report shows the feature as `disabled`.
+/// Whether the camera asks for spatial AA (a present setting that
+/// `render_features` does not explicitly disable).
+pub(super) fn spatial_aa_requested(camera: &engine_project::rendering3d::Camera3D) -> bool {
+    camera.spatial_aa.is_some()
+        && camera
+            .effective_render_features()
+            .get(SPATIAL_AA_FEATURE)
+            .copied()
+            != Some(false)
+}
+
+/// `host_upscaled` is true when a temporal resolve (DLSS Super Resolution or
+/// the native temporal resolve) owns the Upscale stage of this draw. Spatial AA
+/// is then switched off for the view: the temporal resolve already
+/// anti-aliases and a second spatial filter would only soften its output. The
+/// pipeline report shows the feature as `disabled` and the upscaler status
+/// sets `spatial_aa_skipped`.
 pub(super) fn prepare(
     controls: &PostEffects,
     frame: &SceneRenderFrame,

@@ -12,12 +12,25 @@
 use super::temporal::TemporalHistory;
 use crate::dlss::UpscalerDevice;
 use engine_project::rendering3d::{
-    UpscalerQuality, UpscalerSettings, UpscalerState, UpscalerStatus, bounded_upscaler_reason,
+    UpscalerBackend, UpscalerQuality, UpscalerSettings, UpscalerState, UpscalerStatus,
+    bounded_upscaler_reason,
 };
 
 /// Request key that a sticky failure applies to: retried only after the
 /// quality or output size changes.
 type FailureKey = (UpscalerQuality, [u32; 2]);
+
+/// A frame an upscaler resolved, for [`Upscaler::active`].
+pub(super) struct ActiveFrame {
+    pub backend: UpscalerBackend,
+    pub render_size: [u32; 2],
+    pub output_size: [u32; 2],
+    pub adapter: String,
+    /// Spatial AA was requested and yielded to this resolve.
+    pub spatial_aa_skipped: bool,
+    /// Why a different upscaler than the preferred one ran (`auto_temporal`).
+    pub note: Option<String>,
+}
 
 pub(crate) struct Upscaler {
     pub(super) device: UpscalerDevice,
@@ -26,6 +39,9 @@ pub(crate) struct Upscaler {
     pub(super) evaluated: u64,
     pub(super) resets: u64,
     pub(super) failure: Option<(FailureKey, String)>,
+    /// Render and output size of the last native temporal frame; a change is
+    /// a history break the host requests explicitly.
+    pub(super) native_sizes: Option<([u32; 2], [u32; 2])>,
     #[cfg(feature = "dlss")]
     pub(super) dlss: Option<dlss_stage::DlssStage>,
 }
@@ -39,6 +55,7 @@ impl Upscaler {
             evaluated: 0,
             resets: 0,
             failure: None,
+            native_sizes: None,
             #[cfg(feature = "dlss")]
             dlss: None,
         }
@@ -56,6 +73,7 @@ impl Upscaler {
         }
         self.device = device;
         self.failure = None;
+        self.native_sizes = None;
         self.history.clear();
     }
 
@@ -88,24 +106,19 @@ impl Upscaler {
         };
     }
 
-    /// A frame whose DLSS evaluation succeeded.
-    #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
-    pub fn active(
-        &mut self,
-        requested: UpscalerSettings,
-        render_size: [u32; 2],
-        output_size: [u32; 2],
-        adapter: String,
-    ) {
+    /// A frame an upscaler resolved successfully.
+    pub fn active(&mut self, requested: UpscalerSettings, frame: ActiveFrame) {
         self.status = UpscalerStatus {
             requested,
             state: UpscalerState::Active,
-            fallback_reason: None,
-            render_size: Some(render_size),
-            output_size: Some(output_size),
+            fallback_reason: frame.note.as_deref().map(bounded_upscaler_reason),
+            render_size: Some(frame.render_size),
+            output_size: Some(frame.output_size),
             evaluated_frames: self.evaluated,
             history_resets: self.resets,
-            adapter: Some(adapter),
+            adapter: Some(frame.adapter),
+            backend: Some(frame.backend),
+            spatial_aa_skipped: frame.spatial_aa_skipped,
         };
     }
 
@@ -489,14 +502,21 @@ mod tests {
         upscaler.evaluated = 3;
         upscaler.active(
             dlss(UpscalerQuality::Quality),
-            [427, 240],
-            [640, 360],
-            "GPU".into(),
+            ActiveFrame {
+                backend: UpscalerBackend::DlssSr,
+                render_size: [427, 240],
+                output_size: [640, 360],
+                adapter: "GPU".into(),
+                spatial_aa_skipped: true,
+                note: None,
+            },
         );
         let status = upscaler.status();
         assert_eq!(status.state, UpscalerState::Active);
         assert_eq!(status.render_size, Some([427, 240]));
         assert_eq!(status.output_size, Some([640, 360]));
         assert_eq!(status.evaluated_frames, 3);
+        assert_eq!(status.backend, Some(UpscalerBackend::DlssSr));
+        assert!(status.spatial_aa_skipped);
     }
 }
