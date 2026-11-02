@@ -3,6 +3,9 @@
 ## Getting started
 
 - [Repository README](../README.md): workspace layout, prerequisites, build and test.
+- [Using the engine](using-the-engine.md): the `engine` facade crate, tag-pinned git
+  dependency, features, co-development with `[patch]`, why not submodules and the game
+  template.
 - [Architecture](architecture.md): crate layering, one Rust type universe, the ECS
   graph scheduling model, render extraction and the desktop host.
 - [Scripting](scripting.md): native Rust game crates (trusted), the shared script
