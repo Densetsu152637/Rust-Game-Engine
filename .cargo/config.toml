@@ -1,0 +1,5 @@
+# Use the LLVM linker that ships with the pinned toolchain (rust-lld) instead of
+# link.exe on Windows MSVC. Measured faster links; see docs/building.md.
+# Rollback: delete this section.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

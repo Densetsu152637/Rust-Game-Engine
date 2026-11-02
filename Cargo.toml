@@ -25,6 +25,13 @@ regex = "1"
 engine-render = { path = "crates/engine-render" }
 engine-render-wgpu = { path = "crates/engine-render-wgpu" }
 
+# Dev build speed and memory: see docs/building.md for measurements and rollback.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

@@ -88,6 +88,8 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+Build speed settings and measurements: [Building quickly](docs/building.md).
+
 Tests that need real hardware are `#[ignore]` and are run explicitly; see
 [Testing and CI](docs/testing.md). The standalone example crates are tested with
 `--manifest-path`:

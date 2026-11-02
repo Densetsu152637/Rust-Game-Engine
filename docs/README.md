@@ -15,6 +15,7 @@
   exit codes.
 - [Project and scene format](project-format.md): version 1 manifest, scene, asset and
   validation contract.
+- [Building quickly on Windows](building.md): measured dev build settings, jobs and target directory advice.
 - [Testing and CI](testing.md): test commands, hardware-gated tests and the GitHub
   Actions workflow.
 - [Expansion validation](engine-expansion-validation.md): integrated 2D/3D,
