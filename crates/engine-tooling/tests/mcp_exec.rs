@@ -445,6 +445,20 @@ fn write_access_edits_a_real_project_over_stdio() {
 
 // ---- execution tools (real native builds) -----------------------------------------------------
 
+/// Warnings that come from the project's own source. The host linker can add `rust.linker_messages`
+/// warnings of its own (macOS `ld` reports "__eh_frame section too large" for the fixture's native
+/// library); they carry no source file, say nothing about the project, and vary with the toolchain.
+fn source_warnings(build: &Value) -> Vec<&Value> {
+    build["warnings"]
+        .as_array()
+        .map(|all| {
+            all.iter()
+                .filter(|w| w["code"] != "rust.linker_messages")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn generation_dirs(root: &Path) -> Vec<String> {
     let mut names: Vec<_> = fs::read_dir(root.join(".derived/native"))
         .map(|dir| {
@@ -473,7 +487,7 @@ fn build_run_input_reuse_failure_and_timeouts_over_stdio() {
     let executable = build["executable"].as_str().unwrap();
     assert!(executable.starts_with(".derived/native/"), "{executable}");
     assert!(root.join(executable).is_file());
-    assert_eq!(build["warning_count"], 0);
+    assert!(source_warnings(build).is_empty(), "{build}");
     assert_eq!(generation_dirs(&root), std::slice::from_ref(&generation));
     assert!(
         !built.responses[0]
@@ -886,9 +900,9 @@ fn build_results_never_carry_host_paths() {
     let built = mcp(&exec, &[], &[call(1, "project_build", json!({}))]);
     let build = result_of(&built, 0);
     assert_eq!(build["ok"], true, "{build}\n{}", built.stderr);
-    assert!(build["warning_count"].as_u64().unwrap() >= 1, "{build}");
+    assert!(!source_warnings(build).is_empty(), "{build}");
     assert_no_host_paths(&built.responses[0].to_string(), &root);
-    for warning in build["warnings"].as_array().unwrap() {
+    for warning in source_warnings(build) {
         let file = warning["file"].as_str().unwrap();
         assert_eq!(file, "src/lib.rs", "{warning}");
         let rendered = warning["rendered"].as_str().unwrap();

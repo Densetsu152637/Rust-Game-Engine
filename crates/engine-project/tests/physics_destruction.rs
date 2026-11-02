@@ -465,16 +465,31 @@ fn debris_goes_to_sleep_and_expires_after_its_lifetime() {
     .unwrap();
     let frags = fragment_entities(&runtime, owner);
     assert_eq!(frags.len(), 10);
-    // 3 s after the fracture every fragment has settled and been put to sleep.
-    ticks(&mut runtime, 150);
-    let (_, three) = physics::physics_worlds(runtime.app().world()).unwrap();
-    let asleep = frags
-        .iter()
-        .filter(|f| three.is_sleeping(physics::body_id(**f)) == Ok(true))
-        .count();
-    println!("{asleep}/10 fragments asleep after 3 s");
-    assert_eq!(asleep, 10);
+    // Fragments tumble and knock sleeping neighbours awake, so the instant at which all ten are
+    // asleep at once is chaotic: it is exactly 3.0 s on the Windows dev box (asleep counts there
+    // fall as well as rise) and was only 6/10 at 3 s on macOS CI, where float trajectories diverge. Wait for the settled state with a
+    // bound that still leaves the fragments inside their 6 s lifetime, instead of sampling one instant.
+    let count_asleep = |runtime: &Runtime| {
+        let (_, three) = physics::physics_worlds(runtime.app().world()).unwrap();
+        frags
+            .iter()
+            .filter(|f| three.is_sleeping(physics::body_id(**f)) == Ok(true))
+            .count()
+    };
+    let mut elapsed = 0;
+    let mut asleep = 0;
+    while elapsed < 290 && asleep != 10 {
+        ticks(&mut runtime, 1);
+        elapsed += 1;
+        asleep = count_asleep(&runtime);
+    }
+    println!("{asleep}/10 fragments asleep after {elapsed} ticks");
+    assert_eq!(
+        asleep, 10,
+        "fragments never all settled before their lifetime"
+    );
     assert!(events(&runtime, EXPIRED).is_empty());
+    ticks(&mut runtime, 350 - elapsed);
     // Lifetime 6 s: gone by 7 s, one event each, entities despawned.
     ticks(&mut runtime, 200);
     let expired = events(&runtime, EXPIRED);

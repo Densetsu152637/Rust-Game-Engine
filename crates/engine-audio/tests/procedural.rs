@@ -413,7 +413,11 @@ fn parameter_updates_become_audible_with_bounded_lead_and_finish_drains() {
         }])
         .unwrap();
     let mut heard = false;
-    for _ in 0..600 {
+    // The mixer consumes one frame per call and the producer refills a 2-frame queue only as it is
+    // woken, so starved calls consume nothing. Bound the wait by time (a hang guard), not by a
+    // call count that coarse timers (15 ms Sleep on Windows runners) can exhaust first.
+    let limit = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < limit {
         let mut out = [0.; 2];
         e.mix(&mut out).unwrap();
         if out[0] == 0.5 {
@@ -431,7 +435,8 @@ fn parameter_updates_become_audible_with_bounded_lead_and_finish_drains() {
     }
     assert!(heard, "updated parameter never reached mixed PCM");
     stream.finish().unwrap();
-    for _ in 0..600 {
+    let limit = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < limit {
         e.mix(&mut [0.; 8]).unwrap();
         if e.stream_snapshot(stream.voice()).unwrap().is_none() {
             break;
