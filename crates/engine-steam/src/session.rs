@@ -1,20 +1,24 @@
 //! The process-wide Steam session: owns the backend and is also the game-facing
 //! handle, inserted into the game world as a resource.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use bevy_ecs::prelude::Resource;
 
 use crate::backend::SteamBackend;
-use crate::error::SteamResult;
+use crate::cloud::{CloudReport, CloudSync};
+use crate::error::{SteamError, SteamResult};
 use crate::stats::StatsService;
-use crate::types::{StatValue, SteamStatus};
+use crate::types::{StatValue, SteamEvent, SteamStatus};
 
 pub(crate) struct SessionState {
     pub(crate) backend: Box<dyn SteamBackend + Send>,
     pub(crate) started: bool,
     pub(crate) relaunching: bool,
     pub(crate) stats: StatsService,
+    /// Events raised outside `run_callbacks`, delivered on the next tick.
+    pub(crate) pending: Vec<SteamEvent>,
+    pub(crate) cloud_report: Option<CloudReport>,
 }
 
 /// The process-wide owner of the Steam backend. Clone it into every runner
@@ -39,6 +43,8 @@ impl SteamSession {
                 started: false,
                 relaunching: false,
                 stats: StatsService::default(),
+                pending: Vec::new(),
+                cloud_report: None,
             })),
         }
     }
@@ -47,6 +53,30 @@ impl SteamSession {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A non-owning handle, for callbacks stored inside the game world.
+    pub(crate) fn downgrade(&self) -> WeakSession {
+        WeakSession(Arc::downgrade(&self.inner))
+    }
+
+    /// Uploads a just-saved slot. Failures become `CloudSyncFailed` events; a
+    /// disabled Cloud is the documented local-only mode and is silent.
+    pub(crate) fn push_cloud(&self, cloud: &CloudSync, slot: &str) {
+        let mut state = self.lock();
+        match cloud.push_slot(state.backend.as_mut(), slot) {
+            Ok(()) | Err(SteamError::CloudDisabled) => {}
+            Err(error) => state.pending.push(SteamEvent::CloudSyncFailed {
+                slot: slot.to_owned(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    /// The outcome of the startup Cloud sync, or `None` when Cloud sync is off for
+    /// this project (`steam.cloud` false) or has not run.
+    pub fn cloud_report(&self) -> Option<CloudReport> {
+        self.lock().cloud_report.clone()
     }
 
     /// The backend current status.
@@ -101,5 +131,15 @@ impl SteamSession {
         let mut state = self.lock();
         let SessionState { backend, stats, .. } = &mut *state;
         stats.flush(backend.as_mut())
+    }
+}
+
+/// A [`SteamSession`] that does not keep the backend alive.
+#[derive(Clone)]
+pub(crate) struct WeakSession(Weak<Mutex<SessionState>>);
+
+impl WeakSession {
+    pub(crate) fn upgrade(&self) -> Option<SteamSession> {
+        self.0.upgrade().map(|inner| SteamSession { inner })
     }
 }

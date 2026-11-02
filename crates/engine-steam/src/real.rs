@@ -325,4 +325,89 @@ impl SteamBackend for RealBackend {
             .store_stats()
             .map_err(|()| SteamError::Rejected("storing stats failed".into()))
     }
+
+    fn cloud_enabled_for_app(&self) -> SteamResult<bool> {
+        Ok(self.client()?.remote_storage().is_cloud_enabled_for_app())
+    }
+
+    fn cloud_enabled_for_account(&self) -> SteamResult<bool> {
+        Ok(self
+            .client()?
+            .remote_storage()
+            .is_cloud_enabled_for_account())
+    }
+
+    fn cloud_list(&self) -> SteamResult<Vec<String>> {
+        Ok(self
+            .client()?
+            .remote_storage()
+            .files()
+            .into_iter()
+            .map(|file| file.name)
+            .collect())
+    }
+
+    fn cloud_timestamp(&self, name: &str) -> SteamResult<i64> {
+        check_cloud_name(name)?;
+        let file = self.client()?.remote_storage().file(name);
+        if file.exists() {
+            Ok(file.timestamp())
+        } else {
+            Err(SteamError::NotFound(name.to_owned()))
+        }
+    }
+
+    fn cloud_read(&self, name: &str) -> SteamResult<Vec<u8>> {
+        use std::io::Read;
+        check_cloud_name(name)?;
+        let file = self.client()?.remote_storage().file(name);
+        if !file.exists() {
+            return Err(SteamError::NotFound(name.to_owned()));
+        }
+        let mut data = Vec::new();
+        file.read()
+            .read_to_end(&mut data)
+            .map_err(|e| SteamError::Rejected(format!("reading {name:?} failed: {e}")))?;
+        Ok(data)
+    }
+
+    fn cloud_write(&mut self, name: &str, data: &[u8]) -> SteamResult<()> {
+        use std::io::Write;
+        check_cloud_name(name)?;
+        let storage = self.client()?.remote_storage();
+        if !(storage.is_cloud_enabled_for_app() && storage.is_cloud_enabled_for_account()) {
+            return Err(SteamError::CloudDisabled);
+        }
+        let mut writer = storage.file(name).write();
+        // Steam reports a write failure for exceeded quota or an invalid name; the
+        // binding exposes no quota query, so both surface as `QuotaExceeded`.
+        writer
+            .write_all(data)
+            .map_err(|_| SteamError::QuotaExceeded)?;
+        drop(writer);
+        if storage.file(name).exists() {
+            Ok(())
+        } else {
+            Err(SteamError::Rejected(format!("{name:?} was not stored")))
+        }
+    }
+
+    fn cloud_delete(&mut self, name: &str) -> SteamResult<()> {
+        check_cloud_name(name)?;
+        let file = self.client()?.remote_storage().file(name);
+        if file.delete() {
+            Ok(())
+        } else {
+            Err(SteamError::NotFound(name.to_owned()))
+        }
+    }
+}
+
+/// The `steamworks` crate builds C strings with `unwrap`, so names are checked first.
+fn check_cloud_name(name: &str) -> SteamResult<()> {
+    if crate::backend::valid_cloud_name(name) {
+        Ok(())
+    } else {
+        Err(SteamError::InvalidName(name.to_owned()))
+    }
 }

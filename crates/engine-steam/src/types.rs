@@ -132,6 +132,11 @@ pub enum SteamEvent {
     CloudConflict {
         name: String,
     },
+    /// A Steam Cloud sync of a save slot failed (the local save is unaffected).
+    CloudSyncFailed {
+        slot: String,
+        message: String,
+    },
     LobbyCreated(LobbyId),
     LobbyJoined(LobbyId),
     LobbyMemberJoined {

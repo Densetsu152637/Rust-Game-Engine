@@ -107,3 +107,45 @@ fn stats() {
     assert!(steam.stat("definitely_not_a_stat").is_err());
     assert!(steam.achievement("definitely_not_an_achievement").is_err());
 }
+
+/// Round trip through Steam Cloud on App 480: write, list, timestamp, read, delete.
+/// When Cloud is disabled for the app or account, checks the degrade path instead.
+#[test]
+#[ignore = "needs a running Steam client"]
+fn cloud() {
+    let Some((_guard, mut steam)) = steam_live() else {
+        return;
+    };
+    let app = steam.cloud_enabled_for_app().expect("app flag");
+    let account = steam.cloud_enabled_for_account().expect("account flag");
+    println!("cloud enabled: app={app} account={account}");
+    let name = "saves/engine_steam_live.json";
+    let payload = br#"{"schema":1,"content_version":1,"data":{"live":true}}"#;
+    if !(app && account) {
+        assert_eq!(
+            steam.cloud_write(name, payload),
+            Err(SteamError::CloudDisabled)
+        );
+        println!("degrade path verified: writes are refused, the game stays local-only");
+        return;
+    }
+    steam.cloud_write(name, payload).expect("write");
+    assert!(steam.cloud_list().expect("list").iter().any(|n| n == name));
+    let stamp = steam.cloud_timestamp(name).expect("timestamp");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    println!("cloud timestamp {stamp}, now {now}");
+    assert!((now - stamp).abs() < 600);
+    assert_eq!(steam.cloud_read(name).expect("read"), payload);
+    assert_eq!(
+        steam.cloud_write("../x", payload),
+        Err(SteamError::InvalidName("../x".into()))
+    );
+    steam.cloud_delete(name).expect("delete");
+    assert!(matches!(
+        steam.cloud_timestamp(name),
+        Err(SteamError::NotFound(_))
+    ));
+}

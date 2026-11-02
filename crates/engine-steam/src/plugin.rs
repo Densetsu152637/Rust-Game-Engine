@@ -11,6 +11,11 @@ use engine_project::{
 };
 use serde_json::{Value, json};
 
+use std::sync::Arc;
+
+use engine_project::runtime::Persistence;
+
+use crate::cloud::CloudSync;
 use crate::session::{SessionState, SteamSession};
 use crate::types::{AppId, SteamEvent, SteamStatus};
 
@@ -81,6 +86,26 @@ impl HostService for SteamPlugin {
                 message: format!("Steam is required but unavailable: {}", describe(&status)),
             });
         }
+        if self.manifest.cloud && status.is_ready() {
+            // Pull before the game loads anything, then mirror every later save.
+            let store = runtime
+                .app()
+                .world()
+                .get_resource::<Persistence>()
+                .map(|p| p.0.clone());
+            if let Some(store) = store {
+                let cloud = CloudSync::new(store.clone());
+                let report = cloud.sync_all(state.backend.as_mut());
+                state.pending.extend(report.events.iter().cloned());
+                state.cloud_report = Some(report);
+                let weak = session.downgrade();
+                store.set_save_listener(Some(Arc::new(move |slot: &str| {
+                    if let Some(session) = weak.upgrade() {
+                        session.push_cloud(&cloud, slot);
+                    }
+                })));
+            }
+        }
         drop(state);
         let world = runtime.app_mut().world_mut();
         world.insert_resource(SteamRuntimeStatus(status));
@@ -95,8 +120,9 @@ impl HostService for SteamPlugin {
         };
         let events = {
             let mut state = session.lock();
+            let mut events = std::mem::take(&mut state.pending);
             let SessionState { backend, stats, .. } = &mut *state;
-            let events = backend.run_callbacks();
+            events.extend(backend.run_callbacks());
             // A failed store is retried after the throttle interval.
             let _ = stats.tick(backend.as_mut(), tick);
             events
@@ -177,6 +203,10 @@ pub fn event_json(event: &SteamEvent) -> (&'static str, Value) {
         SteamEvent::StatsReceived => ("steam.stats_received", json!({})),
         SteamEvent::StatsStored => ("steam.stats_stored", json!({})),
         SteamEvent::CloudConflict { name } => ("steam.cloud_conflict", json!({"name": name})),
+        SteamEvent::CloudSyncFailed { slot, message } => (
+            "steam.cloud_sync_failed",
+            json!({"slot": slot, "message": message}),
+        ),
         SteamEvent::LobbyCreated(id) => ("steam.lobby_created", json!({"lobby": id.0.to_string()})),
         SteamEvent::LobbyJoined(id) => ("steam.lobby_joined", json!({"lobby": id.0.to_string()})),
         SteamEvent::LobbyMemberJoined { lobby, user } => (

@@ -39,8 +39,18 @@ impl PersistenceOptions {
         }
     }
 }
+/// Called after a successful [`PersistenceStore::save`] with the slot name. It runs
+/// after the slot lock is released, on the thread that saved.
+pub type SaveListener = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+/// Version header of a stored snapshot (its data is not parsed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotHeader {
+    pub schema: u32,
+    pub content_version: u32,
+}
 pub struct PersistenceStore {
     options: PersistenceOptions,
+    listener: std::sync::Mutex<Option<SaveListener>>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,7 +84,117 @@ impl PersistenceStore {
                 "Invalid persistence options",
             ));
         }
-        Ok(Self { options })
+        Ok(Self {
+            options,
+            listener: std::sync::Mutex::new(None),
+        })
+    }
+    /// Registers (or clears) the post-save listener used to mirror saves elsewhere.
+    pub fn set_save_listener(&self, listener: Option<SaveListener>) {
+        *self.listener.lock().unwrap_or_else(|p| p.into_inner()) = listener;
+    }
+    fn notify_saved(&self, slot: &str) {
+        let listener = self
+            .listener
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(listener) = listener {
+            listener(slot);
+        }
+    }
+    /// The validated, link-checked path of a save slot file (it may not exist yet).
+    pub fn slot_path(&self, slot: &str) -> Result<PathBuf> {
+        self.path("saves", slot)
+    }
+    /// Names of the existing save slots, sorted.
+    pub fn slots(&self) -> Result<Vec<String>> {
+        let probe = self.path("saves", "probe")?;
+        let Some(dir) = probe.parent() else {
+            return Ok(Vec::new());
+        };
+        let mut slots = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let name = entry?.file_name().to_string_lossy().into_owned();
+            if let Some(stem) = name.strip_suffix(".json")
+                && safe_name(stem)
+            {
+                slots.push(stem.to_owned());
+            }
+        }
+        slots.sort();
+        Ok(slots)
+    }
+    /// The version header of a slot, or `None` when the slot does not exist.
+    pub fn slot_header(&self, slot: &str) -> Result<Option<SlotHeader>> {
+        let path = self.path("saves", slot)?;
+        let _lock = Self::lock(&path)?;
+        reject_link(&path)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.parse_header(&read_bounded(&path, self.options.max_bytes)?)
+            .map(Some)
+    }
+    /// Validates snapshot bytes (size, nesting, version header) and returns the header.
+    pub fn parse_header(&self, bytes: &[u8]) -> Result<SlotHeader> {
+        if bytes.len() as u64 > self.options.max_bytes {
+            return Err(Error::new(
+                "persistence.size.exceeded",
+                "Snapshot exceeds byte limit",
+            ));
+        }
+        if !parser_nesting_within(bytes) {
+            return Err(Error::new(
+                "persistence.depth.exceeded",
+                "Snapshot exceeds parser nesting safety limit",
+            ));
+        }
+        let value: Value = serde_json::from_slice(bytes)
+            .map_err(|e| Error::new("persistence.corrupt", e.to_string()))?;
+        if !depth(&value, 0, self.options.max_depth) {
+            return Err(Error::new(
+                "persistence.depth.exceeded",
+                "Snapshot JSON nesting exceeds limit",
+            ));
+        }
+        let field = |name: &str| {
+            value
+                .get(name)
+                .and_then(Value::as_u64)
+                .filter(|v| *v > 0 && *v <= u32::MAX as u64)
+                .map(|v| v as u32)
+                .ok_or_else(|| Error::new("persistence.corrupt", format!("Invalid {name}")))
+        };
+        let header = SlotHeader {
+            schema: field("schema")?,
+            content_version: field("content_version")?,
+        };
+        if header.schema > self.options.schema_version
+            || header.content_version > self.options.content_version
+        {
+            return Err(Error::new(
+                "persistence.version.newer",
+                "Snapshot was written by a newer schema/content version",
+            ));
+        }
+        serde_json::from_value::<Envelope>(value)
+            .map_err(|e| Error::new("persistence.corrupt", e.to_string()))?;
+        Ok(header)
+    }
+    /// Installs already-serialised snapshot bytes (for example from a cloud copy) as
+    /// a slot, keeping the previous file as the backup. The bytes are validated like
+    /// a read; invalid or newer-version bytes leave the slot untouched. No migration
+    /// runs: the stored versions are preserved.
+    pub fn install_slot_bytes(&self, slot: &str, bytes: &[u8]) -> Result<()> {
+        self.parse_header(bytes)?;
+        let path = self.path("saves", slot)?;
+        let _lock = Self::lock(&path)?;
+        if path.exists() {
+            let previous = read_bounded(&path, self.options.max_bytes)?;
+            atomic_replace(&path.with_extension("json.bak"), &previous, None)?;
+        }
+        atomic_replace(&path, bytes, self.options.fail)
     }
     pub fn options(&self) -> &PersistenceOptions {
         &self.options
@@ -279,8 +399,12 @@ impl PersistenceStore {
         migration: Option<Migration>,
     ) -> Result<()> {
         let path = self.path("saves", slot)?;
-        let _lock = Self::lock(&path)?;
-        self.write(&path, data, migration)
+        {
+            let _lock = Self::lock(&path)?;
+            self.write(&path, data, migration)?;
+        }
+        self.notify_saved(slot);
+        Ok(())
     }
     pub fn load_backup(
         &self,

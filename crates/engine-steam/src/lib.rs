@@ -7,6 +7,7 @@
 //! `Unavailable(NotCompiled)`.
 
 mod backend;
+mod cloud;
 mod error;
 mod fake;
 mod null;
@@ -21,6 +22,7 @@ mod stats;
 mod types;
 
 pub use backend::SteamBackend;
+pub use cloud::{CloudReport, CloudSync, SyncAction};
 pub use error::{SteamError, SteamResult, UnavailableReason};
 pub use fake::FakeBackend;
 pub use null::NullBackend;

@@ -50,6 +50,24 @@ impl SteamBackend for Spy {
     fn store_stats(&mut self) -> SteamResult<()> {
         self.fake.lock().unwrap().store_stats()
     }
+    fn cloud_enabled_for_app(&self) -> SteamResult<bool> {
+        self.fake.lock().unwrap().cloud_enabled_for_app()
+    }
+    fn cloud_enabled_for_account(&self) -> SteamResult<bool> {
+        self.fake.lock().unwrap().cloud_enabled_for_account()
+    }
+    fn cloud_list(&self) -> SteamResult<Vec<String>> {
+        self.fake.lock().unwrap().cloud_list()
+    }
+    fn cloud_timestamp(&self, name: &str) -> SteamResult<i64> {
+        self.fake.lock().unwrap().cloud_timestamp(name)
+    }
+    fn cloud_read(&self, name: &str) -> SteamResult<Vec<u8>> {
+        self.fake.lock().unwrap().cloud_read(name)
+    }
+    fn cloud_write(&mut self, name: &str, data: &[u8]) -> SteamResult<()> {
+        self.fake.lock().unwrap().cloud_write(name, data)
+    }
     fn set_rich_presence(&mut self, key: &str, value: Option<&str>) -> SteamResult<()> {
         self.fake.lock().unwrap().set_rich_presence(key, value)
     }
@@ -258,4 +276,89 @@ fn batched_stats_are_stored_when_the_run_ends() {
         h.fake.lock().unwrap().stored_stats()["games"],
         StatValue::Int(4)
     );
+}
+
+fn cloud_manifest(cloud: bool) -> SteamManifest {
+    SteamManifest {
+        cloud,
+        ..manifest(false)
+    }
+}
+
+fn save_data(n: i64) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::json!({ "n": n }).as_object().unwrap().clone()
+}
+
+#[test]
+fn cloud_pulls_before_the_first_load_and_pushes_every_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let incoming = br#"{"schema":1,"content_version":1,"data":{"n":41}}"#;
+    let h =
+        harness(FakeBackend::ready(AppId(480), "tester").with_cloud_file("saves/a.json", incoming));
+    let mut rt = runtime();
+    rt.set_user_data_root(dir.path().to_owned()).unwrap();
+    let mut plugin = SteamPlugin::new(h.session.clone(), cloud_manifest(true));
+    plugin.before_graphics(&mut rt).unwrap();
+    let store = rt
+        .app()
+        .world()
+        .resource::<engine_project::runtime::Persistence>()
+        .0
+        .clone();
+    // Nothing has loaded yet, and the cloud copy is already local.
+    assert_eq!(store.load("a", None).unwrap(), save_data(41));
+    assert_eq!(
+        h.session.cloud_report().unwrap().slots,
+        [("a".to_owned(), SyncAction::Pulled)]
+    );
+    store.save("b", save_data(2), None).unwrap();
+    let pushed = h
+        .fake
+        .lock()
+        .unwrap()
+        .cloud_file("saves/b.json")
+        .map(<[u8]>::to_vec);
+    assert_eq!(
+        pushed.unwrap(),
+        std::fs::read(store.slot_path("b").unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn cloud_stays_off_unless_the_manifest_asks() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = harness(FakeBackend::ready(AppId(480), "tester"));
+    let mut rt = runtime();
+    rt.set_user_data_root(dir.path().to_owned()).unwrap();
+    let mut plugin = SteamPlugin::new(h.session.clone(), cloud_manifest(false));
+    plugin.before_graphics(&mut rt).unwrap();
+    let store = rt
+        .app()
+        .world()
+        .resource::<engine_project::runtime::Persistence>()
+        .0
+        .clone();
+    store.save("b", save_data(2), None).unwrap();
+    assert!(h.session.cloud_report().is_none());
+    assert_eq!(h.fake.lock().unwrap().call_count("cloud_write"), 0);
+}
+
+#[test]
+fn a_failed_cloud_push_is_an_event_and_never_a_failed_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = harness(FakeBackend::ready(AppId(480), "tester").with_cloud_quota(2));
+    let mut rt = runtime();
+    rt.set_user_data_root(dir.path().to_owned()).unwrap();
+    let mut plugin = SteamPlugin::new(h.session.clone(), cloud_manifest(true));
+    plugin.before_graphics(&mut rt).unwrap();
+    let store = rt
+        .app()
+        .world()
+        .resource::<engine_project::runtime::Persistence>()
+        .0
+        .clone();
+    store.save("b", save_data(2), None).unwrap();
+    assert_eq!(store.load("b", None).unwrap(), save_data(2));
+    plugin.before_tick(&mut rt, 0);
+    assert!(h.fake.lock().unwrap().cloud_file("saves/b.json").is_none());
 }

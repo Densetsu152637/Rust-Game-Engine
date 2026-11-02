@@ -1541,3 +1541,75 @@ fn junction_roots_and_ancestors_are_refused_for_ordinary_and_verbatim_paths() {
     assert!(fs::read_dir(&destination).unwrap().next().is_none());
     fs::remove_dir(&link).unwrap();
 }
+
+#[test]
+fn save_listener_fires_after_successful_saves_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = store(dir.path());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = seen.clone();
+    s.set_save_listener(Some(std::sync::Arc::new(move |slot: &str| {
+        sink.lock().unwrap().push(slot.to_owned());
+    })));
+    s.save("a", n(1), None).unwrap();
+    assert!(s.save("../x", n(1), None).is_err());
+    let failing = store_with(dir.path(), |o| o.fail = Some(|_| true));
+    failing.set_save_listener(Some(std::sync::Arc::new(|_: &str| panic!("not called"))));
+    assert!(failing.save("b", n(1), None).is_err());
+    assert_eq!(*seen.lock().unwrap(), ["a"]);
+    s.set_save_listener(None);
+    s.save("a", n(2), None).unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn slots_and_headers_describe_existing_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = store(dir.path());
+    assert!(s.slots().unwrap().is_empty());
+    assert_eq!(s.slot_header("a").unwrap(), None);
+    s.save("b", n(1), None).unwrap();
+    s.save("a", n(1), None).unwrap();
+    s.save("a", n(2), None).unwrap();
+    assert_eq!(s.slots().unwrap(), ["a", "b"]);
+    assert_eq!(
+        s.slot_header("a").unwrap(),
+        Some(SlotHeader {
+            schema: 1,
+            content_version: 1
+        })
+    );
+    assert_eq!(
+        s.slot_path("a").unwrap(),
+        fs::canonicalize(primary(dir.path(), "a")).unwrap()
+    );
+    assert!(s.slot_path("../x").is_err());
+}
+
+#[test]
+fn installed_bytes_replace_a_slot_and_keep_the_previous_as_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = store(dir.path());
+    s.save("a", n(1), None).unwrap();
+    let incoming =
+        serde_json::to_vec(&json!({"schema": 1, "content_version": 1, "data": {"n": 9}})).unwrap();
+    s.install_slot_bytes("a", &incoming).unwrap();
+    assert_eq!(s.load("a", None).unwrap(), n(9));
+    assert_eq!(s.load_backup("a", None).unwrap(), n(1));
+    s.install_slot_bytes("fresh", &incoming).unwrap();
+    assert_eq!(s.load("fresh", None).unwrap(), n(9));
+}
+
+#[test]
+fn installed_bytes_are_validated_and_bad_input_leaves_the_slot_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = store(dir.path());
+    s.save("a", n(1), None).unwrap();
+    let newer =
+        serde_json::to_vec(&json!({"schema": 1, "content_version": 2, "data": {}})).unwrap();
+    for bad in [&b"not json"[..], &newer[..], &b"{\"schema\":1}"[..]] {
+        assert!(s.install_slot_bytes("a", bad).is_err());
+    }
+    assert!(s.install_slot_bytes("../x", &newer).is_err());
+    assert_eq!(s.load("a", None).unwrap(), n(1));
+}

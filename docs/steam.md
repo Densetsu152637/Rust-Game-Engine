@@ -184,6 +184,42 @@ readable), so do not wait for it: reads fail softly with `NotFound` until stats 
 Other events: `steam.achievement_unlocked` (`{"name"}`; progress-only notifications are
 not unlocks) and `steam.stats_stored`.
 
+## Steam Cloud saves
+
+With `"cloud": true` in the manifest `steam` block and a ready Steam, the plugin mirrors
+the game save slots (`PersistenceStore` files `<user data>/<project>/saves/<slot>.json`)
+to Steam Remote Storage files named `saves/<slot>.json`. The store stays authoritative
+and a game that never enables Cloud is unaffected. (Steam Auto-Cloud, configured in the
+Steamworks partner site by pointing it at the save directory, is an alternative that
+needs no code.)
+
+- **Pull at startup:** in `before_graphics`, before the runtime starts and so before any
+  load, every slot is synced (`CloudSync::sync_all`). The result is available as
+  `SteamSession::cloud_report()`.
+- **Push after save:** the plugin registers a post-save listener on the store
+  (`PersistenceStore::set_save_listener`, an additive hook that runs after the slot lock
+  is released). Each successful `save` uploads that slot. `save_settings` and the `.bak`
+  file are not mirrored.
+- **Conflict policy** (slot on both sides with different bytes): the higher
+  `content_version` wins; on a tie the newer modification time (whole seconds) wins; a
+  full tie keeps the local file and raises `steam.cloud_conflict` (`{"name": slot}`)
+  without changing either side. A pulled file replaces the local one through the same
+  atomic write and the previous local file becomes the `.bak`.
+- **Safety:** only `saves/<slot>.json` names whose slot is a safe identifier
+  (`[A-Za-z0-9_-]{1,64}`) are considered; any other cloud name, and any slot or cloud
+  name such as `../x`, is rejected. Cloud copies are validated like a normal read (size,
+  nesting, schema and `content_version` not newer than the game) before they can replace
+  a local file; invalid copies are reported and ignored.
+- **Failures never break saving:** a failed sync or push (quota exceeded, Steam error,
+  invalid cloud copy) leaves the local save intact and raises
+  `steam.cloud_sync_failed` (`{"slot", "message"}`).
+- **Disabled Cloud:** `is_cloud_enabled_for_app` / `..._for_account` are checked. If
+  either is off, or Steam is absent, the report has `local_only: true`, nothing is read
+  or written in the cloud and saving continues locally.
+
+The real backend cannot query the remaining quota (the `steamworks` binding has no
+`GetQuota`), so a failed write is reported as `QuotaExceeded`.
+
 ## Live tests
 
 Live tests are `#[ignore]` and use App ID 480 (Spacewar). With the Steam client open:
@@ -195,7 +231,9 @@ cargo test -p engine-steam --features steam -- --ignored core --nocapture
 With Steam closed the same command passes and prints `skipped: Steam not running`.
 `-- --ignored stats` (read-only; never writes to the account) lists Spacewar stats such as
 `NumGames` and achievements such as `ACH_WIN_ONE_GAME`. Live tests share one Steam
-client per process and take turns.
+client per process and take turns. `-- --ignored cloud` writes, lists, reads and deletes
+the file `saves/engine_steam_live.json` on App 480 and prints whether Cloud is enabled
+for the app and account; when it is disabled it checks that writes are refused instead.
 
 A Steam-feature test or example executable needs the `steam_api` library at start-up,
 and Cargo only leaves it in a build-script output directory. `crates/engine-steam/build.rs`
@@ -234,7 +272,6 @@ advice.
 Everything below is planned in `docs/platform-and-steam-plan.md` and is not implemented
 at this stage.
 
-- S5: Steam Cloud save sync beside the persistence store.
 - S6: Steam Networking Sockets transport for `MessageEndpoint`.
 - S7: lobbies and matchmaking.
 - S8: Steam Input as an input source.
