@@ -191,6 +191,9 @@
   `string_table`/`locale_config` assets, `@key` text references in the game UI, message
   bindings with plural arguments, the runtime language switch, per-locale fonts and asset
   overrides and the `locale_*` MCP tools.
+- [Steam integration](steam.md): the optional `engine-steam` crate and `steam` feature,
+  build variants, the backend/testing seam, Valve's redistribution terms for the
+  bundled `steam_api` libraries and the not-yet-implemented roadmap.
 - [Multiplayer](networking.md): authoritative sessions, mutual-TLS 1.3 transport,
   replication, ownership, runtime integration and plaintext trusted-LAN limits; delta mode
   over any transport (TCP or QUIC) with the `engine.NetworkReplication`, `NetworkHitboxes`,
