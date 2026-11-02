@@ -22,6 +22,7 @@ pub(crate) struct SessionState {
     pub(crate) pending: Vec<SteamEvent>,
     pub(crate) cloud_report: Option<CloudReport>,
     pub(crate) net: NetRouter,
+    pub(crate) input: crate::input::InputState,
 }
 
 /// What a networking endpoint owns, so one backend event queue can serve several endpoints.
@@ -82,6 +83,7 @@ impl SteamSession {
                 pending: Vec::new(),
                 cloud_report: None,
                 net: NetRouter::default(),
+                input: Default::default(),
             })),
         }
     }
@@ -102,7 +104,10 @@ impl SteamSession {
     /// Pumps Steam callbacks and returns their events. A host running `SteamPlugin` never
     /// calls this (the plugin pumps once per tick); tests and hosts without the plugin do.
     pub fn run_callbacks(&self) -> Vec<SteamEvent> {
-        self.with_backend(|backend| backend.run_callbacks())
+        let mut state = self.lock();
+        let mut events = std::mem::take(&mut state.pending);
+        events.extend(state.backend.run_callbacks());
+        events
     }
 
     pub(crate) fn net_register(&self) -> u32 {

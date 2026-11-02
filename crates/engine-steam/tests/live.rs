@@ -408,3 +408,41 @@ mod lobby_live {
         let _ = session.run_callbacks();
     }
 }
+
+/// Steam Input enumeration. Spacewar has no action manifest of ours, so this only checks
+/// that init, `RunFrame` and controller listing work; it skips cleanly with no controller.
+#[test]
+#[ignore = "needs a running Steam client"]
+fn input_enumeration() {
+    let Some((_guard, mut steam)) = steam_live() else {
+        let mut backend = RealBackend::new();
+        assert!(backend.input_init(None).is_err());
+        assert!(backend.controllers().is_err());
+        return;
+    };
+    // Before init the Input calls are refused, not undefined.
+    assert!(steam.controllers().is_err());
+    steam.input_init(None).expect("Steam Input init");
+    steam.input_init(None).expect("init is idempotent");
+    let mut controllers = Vec::new();
+    for _ in 0..10 {
+        steam.input_run_frame().expect("run frame");
+        let _ = steam.run_callbacks();
+        controllers = steam.controllers().expect("controllers");
+        if !controllers.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(controllers.iter().all(|c| c.0 != 0));
+    if controllers.is_empty() {
+        println!("skipped: no Steam Input controller connected");
+        return;
+    }
+    println!("controllers: {controllers:?}");
+    // An action Spacewar's manifest does not define is NotFound, not a crash.
+    assert!(matches!(
+        steam.input_digital(controllers[0], "engine_steam_no_such_action"),
+        Err(SteamError::NotFound(_))
+    ));
+}

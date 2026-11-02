@@ -145,6 +145,41 @@ pub trait SteamBackend {
     fn activate_action_set(&mut self, _controller: ControllerId, _set: &str) -> SteamResult<()> {
         Err(self.unavailable())
     }
+    /// Initialises Steam Input for explicit `input_run_frame` calls (idempotent).
+    /// `manifest` loads a local action manifest (development; shipped games get theirs
+    /// from the app's Steamworks configuration).
+    fn input_init(&mut self, _manifest: Option<&std::path::Path>) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    /// Synchronises Steam Input with the latest controller state; call once per tick
+    /// before reading `controllers` or action data.
+    fn input_run_frame(&mut self) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    fn input_digital(
+        &self,
+        _controller: ControllerId,
+        _action: &str,
+    ) -> SteamResult<DigitalActionState> {
+        Err(self.unavailable())
+    }
+    fn input_analog(
+        &self,
+        _controller: ControllerId,
+        _action: &str,
+    ) -> SteamResult<AnalogActionState> {
+        Err(self.unavailable())
+    }
+    /// Display data for the controls an action is bound to within an action set.
+    fn input_glyphs(
+        &self,
+        _controller: ControllerId,
+        _set: &str,
+        _action: &str,
+        _kind: InputActionKind,
+    ) -> SteamResult<Vec<ActionGlyph>> {
+        Err(self.unavailable())
+    }
 
     /// The lobby surface of this backend, if it has one (see [`crate::SteamLobbies`]).
     fn lobby_backend(&mut self) -> Option<&mut dyn crate::LobbyBackend> {

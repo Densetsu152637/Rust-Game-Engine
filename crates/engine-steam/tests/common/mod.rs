@@ -112,3 +112,53 @@ macro_rules! forward_lobby {
 }
 #[allow(unused_imports)]
 pub(crate) use forward_lobby;
+
+/// Forwards the Steam Input methods of `SteamBackend` to `self.fake`.
+#[allow(unused_macros)]
+macro_rules! forward_input {
+    () => {
+        fn controllers(&self) -> SteamResult<Vec<ControllerId>> {
+            self.fake.lock().unwrap().controllers()
+        }
+        fn activate_action_set(&mut self, controller: ControllerId, set: &str) -> SteamResult<()> {
+            self.fake
+                .lock()
+                .unwrap()
+                .activate_action_set(controller, set)
+        }
+        fn input_init(&mut self, manifest: Option<&std::path::Path>) -> SteamResult<()> {
+            self.fake.lock().unwrap().input_init(manifest)
+        }
+        fn input_run_frame(&mut self) -> SteamResult<()> {
+            self.fake.lock().unwrap().input_run_frame()
+        }
+        fn input_digital(
+            &self,
+            controller: ControllerId,
+            action: &str,
+        ) -> SteamResult<DigitalActionState> {
+            self.fake.lock().unwrap().input_digital(controller, action)
+        }
+        fn input_analog(
+            &self,
+            controller: ControllerId,
+            action: &str,
+        ) -> SteamResult<AnalogActionState> {
+            self.fake.lock().unwrap().input_analog(controller, action)
+        }
+        fn input_glyphs(
+            &self,
+            controller: ControllerId,
+            set: &str,
+            action: &str,
+            kind: InputActionKind,
+        ) -> SteamResult<Vec<ActionGlyph>> {
+            self.fake
+                .lock()
+                .unwrap()
+                .input_glyphs(controller, set, action, kind)
+        }
+    };
+}
+#[allow(unused_imports)]
+pub(crate) use forward_input;

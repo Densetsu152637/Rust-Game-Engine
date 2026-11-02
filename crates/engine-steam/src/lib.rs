@@ -12,6 +12,7 @@ mod error;
 mod fake;
 mod fake_lobby;
 mod fake_net;
+mod input;
 mod lobby;
 mod net;
 mod null;
@@ -23,6 +24,11 @@ mod plugin;
     any(windows, target_os = "linux", target_os = "macos")
 ))]
 mod real;
+#[cfg(all(
+    feature = "steam",
+    any(windows, target_os = "linux", target_os = "macos")
+))]
+mod real_input;
 #[cfg(all(
     feature = "steam",
     any(windows, target_os = "linux", target_os = "macos")
@@ -43,6 +49,7 @@ pub use backend::SteamBackend;
 pub use cloud::{CloudReport, CloudSync, SyncAction};
 pub use error::{SteamError, SteamResult, UnavailableReason};
 pub use fake::FakeBackend;
+pub use input::{STEAM_INPUT_DEVICE_ID, SteamInputLayout, SteamInputSource};
 pub use lobby::{
     ConnectIdentity, EnterError, HOST_KEY, LobbyBackend, LobbyEvent, LobbyRaw, LobbyView,
     MAX_LOBBY_MEMBERS, PORT_KEY, SteamLobbies, listed_identity,

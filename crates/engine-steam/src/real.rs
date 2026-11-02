@@ -21,7 +21,10 @@ use crate::backend::SteamBackend;
 use crate::error::{SteamError, SteamResult};
 use crate::net::*;
 use crate::real_net::{AuthEvents, RealNet};
-use crate::types::{AppId, AuthTicket, StatValue, SteamEvent, SteamId, SteamStatus, SteamUser};
+use crate::types::{
+    ActionGlyph, AnalogActionState, AppId, AuthTicket, ControllerId, DigitalActionState,
+    InputActionKind, StatValue, SteamEvent, SteamId, SteamStatus, SteamUser,
+};
 
 /// `SteamAPI_Init` may only be paired with one `SteamAPI_Shutdown` per process.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
@@ -65,6 +68,7 @@ pub struct RealBackend {
     stats_requested: bool,
     stats_received: Arc<AtomicBool>,
     net: RealNet,
+    input_ready: bool,
     pub(crate) lobby_events: crate::real_lobby::LobbyEvents,
 }
 
@@ -80,6 +84,7 @@ impl RealBackend {
             stats_requested: false,
             stats_received: Arc::new(AtomicBool::new(false)),
             net: RealNet::default(),
+            input_ready: false,
             lobby_events: Arc::default(),
         }
     }
@@ -88,6 +93,18 @@ impl RealBackend {
         match (&self.live, self.status.is_ready()) {
             (Some(live), true) => Ok(&live.client),
             _ => Err(self.unavailable()),
+        }
+    }
+
+    /// The client, once Steam Input is initialised.
+    fn input_client(&self) -> SteamResult<&Client> {
+        let client = self.client()?;
+        if self.input_ready {
+            Ok(client)
+        } else {
+            Err(SteamError::Rejected(
+                "Steam Input is not initialised".into(),
+            ))
         }
     }
 
@@ -201,9 +218,68 @@ fn reject_nul(text: &str) -> SteamResult<()> {
     }
 }
 
+impl Drop for RealBackend {
+    fn drop(&mut self) {
+        // Steam Input must be shut down before the client; fields drop after this runs.
+        if self.input_ready
+            && let Some(live) = &self.live
+        {
+            live.client.input().shutdown();
+        }
+    }
+}
+
 impl SteamBackend for RealBackend {
     fn lobby_backend(&mut self) -> Option<&mut dyn crate::LobbyBackend> {
         Some(self)
+    }
+
+    fn controllers(&self) -> SteamResult<Vec<ControllerId>> {
+        crate::real_input::controllers(self.input_client()?)
+    }
+
+    fn activate_action_set(&mut self, controller: ControllerId, set: &str) -> SteamResult<()> {
+        crate::real_input::activate_action_set(self.input_client()?, controller, set)
+    }
+
+    fn input_init(&mut self, manifest: Option<&std::path::Path>) -> SteamResult<()> {
+        if self.input_ready {
+            return Ok(());
+        }
+        crate::real_input::init(self.client()?, manifest)?;
+        self.input_ready = true;
+        Ok(())
+    }
+
+    fn input_run_frame(&mut self) -> SteamResult<()> {
+        self.input_client()?.input().run_frame();
+        Ok(())
+    }
+
+    fn input_digital(
+        &self,
+        controller: ControllerId,
+        action: &str,
+    ) -> SteamResult<DigitalActionState> {
+        crate::real_input::digital(self.input_client()?, controller, action)
+    }
+
+    fn input_analog(
+        &self,
+        controller: ControllerId,
+        action: &str,
+    ) -> SteamResult<AnalogActionState> {
+        crate::real_input::analog(self.input_client()?, controller, action)
+    }
+
+    fn input_glyphs(
+        &self,
+        controller: ControllerId,
+        set: &str,
+        action: &str,
+        kind: InputActionKind,
+    ) -> SteamResult<Vec<ActionGlyph>> {
+        crate::real_input::glyphs(self.input_client()?, controller, set, action, kind)
     }
 
     fn status(&self) -> SteamStatus {

@@ -407,6 +407,125 @@ know; Steam sends only the five documented values. The old synchronous lobby met
 `SteamBackend` (`create_lobby` and friends) are the S1 sketch and are superseded by
 `LobbyBackend`.
 
+## Steam Input (S8)
+
+`SteamInputSource` (in `crates/engine-steam/src/input.rs`) feeds Steam Input actions into the
+engine's `InputDevices`, so a Steam Input action binds to an engine action exactly like any
+other native peripheral. Keyboard, mouse and the existing gamepad path are unchanged; Steam
+Input is an additional device.
+
+### `steamworks` 0.13.1 Input surface (verified)
+
+The `steamworks::Input` wrapper (`input()` on the client) offers: `init(explicit_run_frame)`,
+`shutdown`, `run_frame`, `get_connected_controllers(_slice)`,
+`set_input_action_manifest_file_path`, `get_action_set_handle`, `activate_action_set_handle`,
+`get_digital_action_handle` / `get_analog_action_handle`,
+`get_digital_action_data` (`bState`, `bActive`) / `get_analog_action_data` (`eMode`, `x`, `y`,
+`bActive`), `get_digital_action_origins` / `get_analog_action_origins`,
+`get_string_for_action_origin`, `get_glyph_for_action_origin` (the legacy glyph-path call),
+`get_input_type_for_handle`, `get_motion_data` and `show_binding_panel`. That covers an
+action-based source. Binding quirks the backend works around:
+
+- `get_connected_controllers` returns a vector padded to 16 with zero handles (its
+  `shrink_to` does not truncate); the backend uses the slice variant and its count.
+- `sys` is private in the wrapper, so the 16-controller limit is a local constant.
+- Not exposed: the newer PNG/SVG glyph calls, controller connect/disconnect callbacks (the
+  source diffs the controller list each poll instead), haptics/LEDs, and `EInputActionOrigin`
+  as a Rust enum (origins are carried as their numeric value, `ActionOrigin`).
+
+### Using it
+
+```rust
+let layout = SteamInputLayout::new()
+    .digital("jump")          // button control "jump"
+    .digital("menu_select")
+    .analog("move");          // axis controls "move.x" and "move.y"
+register_input_source(world, SteamInputSource::new(session, layout)?)?;
+// Bind the controls to engine actions (device id is STEAM_INPUT_DEVICE_ID, "steam_input"):
+//   Jump    <- steam_input / jump
+//   Forward <- steam_input / move.y (positive)     Back <- steam_input / move.y (negative)
+```
+
+The names in the layout must match the action names in the action manifest. Steam reports
+analog `y` positive for up/forward; bind `AxisDirection::Negative` for the opposite direction.
+`SteamInputLayout::with_manifest(path)` loads a local manifest (development only).
+
+Each tick the engine polls the source once: it calls `RunFrame`, lists controllers, then reads
+every declared action on every controller. Several controllers merge (a button is down if any
+controller holds it; an axis takes the largest magnitude). With Steam absent, or no controller
+connected, the device is disconnected (no error); an action missing from the manifest is
+reported as a device error in `InputDevices::snapshot`. Steam Input is initialised
+(`ISteamInput::Init(true)`, explicit `RunFrame`) by the first poll and shut down when the real
+backend is dropped.
+
+Through `SteamSession`:
+
+- `set_action_set("gameplay")` activates a Steam action set on every connected controller and
+  remembers it, so controllers that connect later get it on the next poll. An unknown set is
+  rejected and changes nothing. Actions outside a controller's active set read as neutral.
+- `controllers()` lists the connected controllers.
+- `action_glyphs(controller, set, action, kind)` returns, per physical control the action is
+  bound to, its localised name and a glyph image path, for on-screen prompts.
+- `ControllerConnected` / `ControllerDisconnected` events are raised from the poll and surface
+  as `steam.controller_connected` / `steam.controller_disconnected` engine events on the
+  next tick (`SteamSession::run_callbacks` also returns them for hosts without the plugin).
+
+### Action manifest
+
+Steam Input needs an action manifest configured for the app. Upload it in the Steamworks
+partner site (Steam Input, "Game Actions File") for a shipped game; for development set it with
+`SteamInputLayout::with_manifest`. A sample `game_actions_480.vdf` matching the layout above
+(`game_actions_<appid>.vdf`; keep action names lowercase and identical to the layout):
+
+```text
+"In Game Actions"
+{
+    "actions"
+    {
+        "gameplay"
+        {
+            "title"   "#Set_Gameplay"
+            "StickPadGyro"
+            {
+                "move"
+                {
+                    "title"      "#Action_Move"
+                    "input_mode" "joystick_move"
+                }
+            }
+            "Button"
+            {
+                "jump"   "#Action_Jump"
+            }
+        }
+        "menu"
+        {
+            "title"   "#Set_Menu"
+            "Button"
+            {
+                "menu_select"   "#Action_Select"
+            }
+        }
+    }
+    "localization"
+    {
+        "english"
+        {
+            "Set_Gameplay"   "Gameplay"
+            "Set_Menu"       "Menu"
+            "Action_Move"    "Move"
+            "Action_Jump"    "Jump"
+            "Action_Select"  "Select"
+        }
+    }
+}
+```
+
+Players (and you, during development) then choose or edit a controller configuration in Steam
+for the app; without a configuration for the manifest's actions, Steam Input reports the
+actions as inactive. App 480 (Spacewar) has no manifest of ours, so the live test only
+enumerates controllers.
+
 ## Live tests
 
 Live tests are `#[ignore]` and use App ID 480 (Spacewar). With the Steam client open:
@@ -421,6 +540,9 @@ changes its metadata, observes Steam's confirmations and leaves it.
 local listen socket with auth tickets; `net_p2p`: `ConnectP2P` to the signed-in account's own
 SteamID through the relay network): both exchange ordered reliable messages, a 200 KB message and a
 sequenced datagram, then disconnect. Run them with `--test-threads=1`.
+
+`-- --ignored input` initialises Steam Input, runs frames and lists controllers; it prints
+`skipped: no Steam Input controller connected` when none is plugged in.
 
 With Steam closed the same command passes and prints `skipped: Steam not running`.
 `-- --ignored stats` (read-only; never writes to the account) lists Spacewar stats such as
@@ -466,8 +588,6 @@ advice.
 Everything below is planned in `docs/platform-and-steam-plan.md` and is not implemented
 at this stage.
 
-- S7: lobbies and matchmaking.
-- S8: Steam Input as an input source.
 - S9: Workshop service (create, update, subscribe, query).
 - S10: Workshop content loading through extra read-only asset roots.
 - S11: Steam packaging (depot layout), `engine` facade feature, tooling and CI.
