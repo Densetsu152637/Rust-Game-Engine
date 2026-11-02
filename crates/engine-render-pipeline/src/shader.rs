@@ -38,6 +38,8 @@ pub(crate) const POST_EXPOSURE_WGSL: &str = include_str!("wgsl/post_exposure.wgs
 pub(crate) const POST_OUTPUT_WGSL: &str = include_str!("wgsl/post_output.wgsl");
 pub(crate) const SSR_WGSL: &str = include_str!("wgsl/ssr.wgsl");
 pub(crate) const DECALS_WGSL: &str = include_str!("wgsl/decals.wgsl");
+pub(crate) const PARTICLES_SIM_WGSL: &str = include_str!("wgsl/particles_sim.wgsl");
+pub(crate) const PARTICLES_DRAW_WGSL: &str = include_str!("wgsl/particles_draw.wgsl");
 
 /// Longest composed shader accepted, in bytes.
 pub const MAX_COMPOSED_BYTES: usize = 4 * 1024 * 1024;
@@ -573,6 +575,8 @@ mod tests {
             POST_OUTPUT_WGSL,
             SSR_WGSL,
             DECALS_WGSL,
+            PARTICLES_SIM_WGSL,
+            PARTICLES_DRAW_WGSL,
         ] {
             validate_wgsl(&composer.compose(source).unwrap()).unwrap();
         }

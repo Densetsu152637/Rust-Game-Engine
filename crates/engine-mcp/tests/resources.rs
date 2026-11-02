@@ -331,6 +331,7 @@ fn documented_component_names_match_the_scene_schema() {
         "MeshLods": {},
         "HiZOccluder": {},
         "MeshLightmap": {},
+        "ParticleEmitter": {},
     });
     let components: Components = serde_json::from_value(full).unwrap();
     let serialized = serde_json::to_value(&components).unwrap();

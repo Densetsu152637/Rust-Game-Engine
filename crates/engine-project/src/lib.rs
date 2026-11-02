@@ -21,6 +21,7 @@ pub mod localization;
 pub mod ml;
 pub mod model_import;
 pub mod networking;
+pub mod particles;
 pub mod persistence;
 pub mod post;
 pub mod raytracing;

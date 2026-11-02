@@ -69,6 +69,12 @@ impl Scene {
             if let Some(rt) = &c.ray_tracing {
                 rt.validate()?;
             }
+            if let Some(emitter) = &c.particle_emitter {
+                emitter.validate()?;
+                if c.transform.is_none() {
+                    return Err(bad("ParticleEmitter requires Transform"));
+                }
+            }
             if let Some(volume) = &c.post_process_volume {
                 volume.validate()?;
                 if volume.is_local() && c.transform.is_none() {

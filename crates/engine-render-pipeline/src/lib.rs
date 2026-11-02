@@ -39,6 +39,7 @@ pub mod jitter;
 mod lighting;
 mod lights;
 mod overlay;
+pub mod particles;
 mod pipeline;
 pub mod post;
 pub mod readback;
@@ -83,6 +84,13 @@ pub use lights::{
     SHADOW_RESOLUTIONS, ShadowFilter, ShadowSettings, ShadowView, photometric,
 };
 pub use overlay::{OverlayBatch, OverlayItem, OverlayOrderKey};
+pub use particles::{
+    EMITTER_UNIFORM_BYTES, EmitterCursor, EmitterUniform, GpuParticle, MAX_EMITTERS,
+    MAX_PARTICLES_PER_EMITTER, MAX_TICK_DT, MAX_TOTAL_PARTICLES, ParticleBlend, ParticleCounters,
+    ParticleEmitter, ParticleEmitterReport, ParticleReadback, ParticleReference, ParticleReport,
+    ParticleTick, ParticleTickReport, ParticleViewReport, REFERENCE_TOLERANCE, SpawnPlan,
+    validate_tick,
+};
 pub use pipeline::{
     AutoExposureState, HdrImage, HostStages, HostUpscale, NoHost, SceneFrame, ScenePipeline,
     SceneTextures, ViewReport, builtin_registry, names,

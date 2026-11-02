@@ -49,6 +49,8 @@ pub struct Runtime {
     started: bool,
     stopped: bool,
     ticks: u64,
+    /// Seconds of the last completed tick (the particle clock's step).
+    last_dt: f32,
     elapsed: f64,
     scene_revision: u64,
     geometry: RefCell<BTreeMap<String, (blake3::Hash, Arc<Mesh>)>>,
@@ -163,6 +165,7 @@ impl Runtime {
             started: false,
             stopped: false,
             ticks: 0,
+            last_dt: 0.0,
             elapsed: 0.0,
             scene_revision: 0,
             geometry: RefCell::new(BTreeMap::new()),
@@ -400,6 +403,7 @@ impl Runtime {
             self.transition(request)?;
         }
         self.ticks += 1;
+        self.last_dt = dt;
         self.elapsed += dt as f64;
         Ok(())
     }

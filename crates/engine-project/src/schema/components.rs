@@ -253,4 +253,10 @@ pub struct Components {
         skip_serializing_if = "Option::is_none"
     )]
     pub ray_tracing: Option<crate::raytracing::RayTracing>,
+    #[serde(
+        rename = "ParticleEmitter",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub particle_emitter: Option<crate::particles::ParticleEmitter>,
 }

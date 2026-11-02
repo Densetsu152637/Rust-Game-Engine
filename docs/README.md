@@ -64,6 +64,10 @@
   volume blending and post status.
 - [Atmosphere](rendering-atmosphere.md): physically based single-scattering sky, planet,
   sun disk and aerial perspective (`Camera3D.atmosphere`), model, placement and limits.
+- [GPU particles](rendering-particles.md): `engine.particles` fixed-capacity GPU
+  emitters simulated once per scene tick (tick contract, seeded CPU reference,
+  bounded overflow), depth-tested billboards in the `Transparent` stage, limits and
+  the authored `ParticleEmitter` component.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Projected decals](rendering-decals.md): `engine.decals` depth-projected box

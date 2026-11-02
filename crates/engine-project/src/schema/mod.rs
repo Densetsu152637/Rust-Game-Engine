@@ -15,6 +15,7 @@ mod docs;
 mod files;
 mod light_docs;
 mod model;
+mod particle_docs;
 mod post_docs;
 mod project;
 mod validate;

@@ -127,6 +127,7 @@ pub fn snapshot_entity(world: &World, entity: Entity) -> Result<SceneEntity> {
             post_process: e.get::<crate::post::PostProcess>().cloned(),
             post_process_volume: e.get::<crate::post::PostProcessVolume>().cloned(),
             ray_tracing: e.get::<crate::raytracing::RayTracing>().cloned(),
+            particle_emitter: e.get::<crate::particles::ParticleEmitter>().cloned(),
         },
     })
 }
