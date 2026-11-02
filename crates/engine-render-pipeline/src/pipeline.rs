@@ -1982,7 +1982,7 @@ fn run_builtin(
         names::OUTPUT => {
             let hdr = io.current_hdr.clone().context("no HDR colour to output")?;
             let target = io.output.as_ref().context("no output target")?;
-            run.output.encode(
+            run.output.encode_with(
                 device,
                 &run.gpu.queue,
                 encoder,
@@ -1990,6 +1990,7 @@ fn run_builtin(
                 &target.view,
                 target.format,
                 target.viewport,
+                run.view.linear_output,
             )?;
             Ok(true)
         }

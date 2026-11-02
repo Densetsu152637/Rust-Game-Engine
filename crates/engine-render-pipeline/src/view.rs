@@ -95,6 +95,12 @@ pub struct ViewData {
     /// default clamp output). See [`crate::PostSettings`].
     pub post: Option<crate::post::PostSettings>,
     pub presentation: Presentation,
+    /// Write display-linear colour for a later HDR output transform
+    /// ([`crate::HdrOutputPass`]): the output and tonemap stages skip the
+    /// 0..1 clamp, the tonemap operator and the sRGB encode, so `1.0` is
+    /// paper white and brighter values survive in a float target. `false`
+    /// (the default) is the SDR path, unchanged.
+    pub linear_output: bool,
 }
 
 impl ViewData {
@@ -123,6 +129,7 @@ impl ViewData {
             reset_history: false,
             post: None,
             presentation: Presentation::Enabled,
+            linear_output: false,
         };
         view.validate()?;
         Ok(view)

@@ -8,8 +8,9 @@
 //! math), `engine::lighting` (direct lighting of the light list),
 //! `engine::mesh` (engine vertex input, group 3 instance data),
 //! `engine::material` (material bindings, groups 1 and 2, plus lighting) and
-//! `engine::fullscreen`. Features register their own modules with
-//! [`ShaderComposer::register_module`] to keep shared code in separate files.
+//! `engine::fullscreen`, `engine::tonemap` and `engine::hdr`. Features
+//! register their own modules with [`ShaderComposer::register_module`] to keep
+//! shared code in separate files.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,6 +23,9 @@ pub const MATERIAL_WGSL: &str = include_str!("wgsl/material.wgsl");
 pub const SPRITE_MATERIAL_WGSL: &str = include_str!("wgsl/material_sprite.wgsl");
 pub const FULLSCREEN_WGSL: &str = include_str!("wgsl/fullscreen.wgsl");
 pub const TONEMAP_WGSL: &str = include_str!("wgsl/tonemap.wgsl");
+/// `engine::hdr`: PQ / scRGB encoding, Rec.709 to Rec.2020 and the roll-off to
+/// the display peak. Mirrors `src/hdr.rs`.
+pub const HDR_WGSL: &str = include_str!("wgsl/hdr.wgsl");
 /// The built-in metallic-roughness material (selected when a material has no
 /// custom shader). Also a reference implementation of the contract.
 pub const LIT_WGSL: &str = include_str!("wgsl/lit.wgsl");
@@ -36,6 +40,7 @@ pub(crate) const POST_MAIN_WGSL: &str = include_str!("wgsl/post_main.wgsl");
 pub(crate) const POST_BLOOM_WGSL: &str = include_str!("wgsl/post_bloom.wgsl");
 pub(crate) const POST_EXPOSURE_WGSL: &str = include_str!("wgsl/post_exposure.wgsl");
 pub(crate) const POST_OUTPUT_WGSL: &str = include_str!("wgsl/post_output.wgsl");
+pub(crate) const HDR_OUTPUT_WGSL: &str = include_str!("wgsl/hdr_output.wgsl");
 
 /// Longest composed shader accepted, in bytes.
 pub const MAX_COMPOSED_BYTES: usize = 4 * 1024 * 1024;
@@ -80,6 +85,7 @@ impl ShaderComposer {
         modules.insert("engine::lighting".to_owned(), LIGHTING_WGSL.to_owned());
         modules.insert("engine::fullscreen".to_owned(), FULLSCREEN_WGSL.to_owned());
         modules.insert("engine::tonemap".to_owned(), TONEMAP_WGSL.to_owned());
+        modules.insert("engine::hdr".to_owned(), HDR_WGSL.to_owned());
         let material = match target {
             MaterialTarget::Mesh => MATERIAL_WGSL,
             MaterialTarget::Sprite => SPRITE_MATERIAL_WGSL,
@@ -490,6 +496,7 @@ mod tests {
             POST_BLOOM_WGSL,
             POST_EXPOSURE_WGSL,
             POST_OUTPUT_WGSL,
+            HDR_OUTPUT_WGSL,
         ] {
             validate_wgsl(&composer.compose(source).unwrap()).unwrap();
         }

@@ -975,7 +975,7 @@ impl PipelineFeature for TonemapFeature {
             ],
             [v.intensity, v.smoothness, v.center[0], v.center[1]],
             [v.color[0], v.color[1], v.color[2], frame as f32],
-            [n.intensity, n.response, 0.0, 0.0],
+            [n.intensity, n.response, flag(ctx.view.linear_output), 0.0],
         ];
         ctx.gpu.queue.write_buffer(&entry.0, 0, &f32_bytes(&params));
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
