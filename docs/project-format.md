@@ -9,7 +9,7 @@ in a derived directory such as `.derived/`.
 ## Manifest
 
 Required fields are `schema` (must be `1`), `name`, `startup_scene` and `assets`.
-Optional fields are `rust`, `inputActions` and `inputBindings`. Unknown fields are
+Optional fields are `rust`, `inputActions`, `inputBindings` and `steam`. Unknown fields are
 rejected rather than dropped.
 
 ```json
@@ -37,6 +37,19 @@ rejected rather than dropped.
   for the same action. Tokens come from the shared binding registry (keyboard keys,
   mouse buttons and wheel, gamepad buttons and signed axes); see
   [Input and UI](desktop-input-ui.md).
+
+- `steam` (optional) configures the Steam integration; see [Steam](steam.md). It is
+  parsed as plain data in every build, whether or not Steam support is compiled in:
+  `app_id` (required, non-zero), `cloud` (default `false`), `required` (default
+  `false`) and `rich_presence` (string defaults set once Steam is ready; at most 20
+  keys, keys 1-64 bytes, values up to 256 bytes, no NUL). Unknown keys inside the block
+  are rejected with `project.steam.invalid`/a parse error. With `required: true` the
+  game exits with code `4` before creating a window or GPU device when Steam is not
+  available. Without the block the game never touches Steam.
+
+  ```json
+  "steam": { "app_id": 480, "required": false, "rich_presence": { "status": "Main menu" } }
+  ```
 
 ### Assets
 

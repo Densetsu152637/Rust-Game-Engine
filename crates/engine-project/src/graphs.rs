@@ -277,6 +277,7 @@ mod tests {
             assets: BTreeMap::new(),
             input_actions: BTreeMap::new(),
             input_bindings: BTreeMap::new(),
+            steam: None,
             scene: Scene {
                 schema: 1,
                 id: "scene".into(),

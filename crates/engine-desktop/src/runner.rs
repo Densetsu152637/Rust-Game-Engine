@@ -10,7 +10,7 @@ use engine_acoustics::ServiceMode;
 use engine_acoustics_gpu::{GpuOptions, gpu_backends};
 use engine_audio::{AudioConfig, AudioEngine};
 use engine_project::{
-    EventSchedule, EventTrace, Runtime,
+    EventSchedule, EventTrace, HostService, Runtime,
     acoustics::{AcousticControl, AcousticHost},
     input::{ActionMapper, RawInput, merge_input},
     remap_ui::RawInputTokens,
@@ -174,9 +174,23 @@ pub fn run(runtime: Runtime, options: RunOptions) -> Result<RunReport> {
 /// even for headless runs, so typos surface). `Some(backends)` ignores the
 /// environment. Headless runs never create a device.
 pub fn run_with_wgpu_backends(
+    runtime: Runtime,
+    options: RunOptions,
+    backends: Option<WgpuBackends>,
+) -> Result<RunReport> {
+    run_with_services(runtime, options, backends, Vec::new())
+}
+
+/// [`run_with_wgpu_backends`] with host services. Each service's
+/// `before_graphics` runs once, in order, before any audio or graphics device
+/// exists (an error ends the run); `before_tick` runs once before every fixed
+/// tick; `after_gpu_idle` runs in reverse order once the runtime has stopped and
+/// the GPU is idle. Services also run in headless mode.
+pub fn run_with_services(
     mut runtime: Runtime,
     options: RunOptions,
     backends: Option<WgpuBackends>,
+    mut services: Vec<Box<dyn HostService>>,
 ) -> Result<RunReport> {
     let backends = resolve_backends_from_environment(backends)?;
     ensure!(
@@ -199,6 +213,15 @@ pub fn run_with_wgpu_backends(
     if let Some(path) = &options.user_data {
         runtime.set_user_data_root(path.clone())?;
     }
+    for index in 0..services.len() {
+        if let Err(exit) = services[index].before_graphics(&mut runtime) {
+            for service in services[..index].iter_mut().rev() {
+                service.after_gpu_idle();
+            }
+            return Err(anyhow::Error::new(exit)
+                .context(format!("host service {}", services[index].name())));
+        }
+    }
     // Default world and physics render features, merged with the game's own;
     // headless runs only list them in the preview status.
     if options.headless {
@@ -219,7 +242,7 @@ pub fn run_with_wgpu_backends(
         return Err(stop_after_error(&mut runtime, error.into()));
     }
     if options.headless {
-        return run_headless(runtime, options, audio);
+        return run_headless(runtime, options, audio, services);
     }
     let event_loop = match EventLoop::new() {
         Ok(event_loop) => event_loop,
@@ -236,6 +259,7 @@ pub fn run_with_wgpu_backends(
         audio,
         options,
         backends,
+        services,
         surface: None,
         mapper,
         raw: RawInput::default(),
@@ -267,6 +291,9 @@ pub fn run_with_wgpu_backends(
         .surface
         .as_ref()
         .map_or(Ok(()), |host| host.renderer.gpu.wait_idle());
+    for service in app.services.iter_mut().rev() {
+        service.after_gpu_idle();
+    }
     combine(
         app.error.take().map_or(event_result, Err),
         combine(
@@ -309,6 +336,7 @@ fn run_headless(
     mut runtime: Runtime,
     options: RunOptions,
     mut audio: AudioEngine,
+    mut services: Vec<Box<dyn HostService>>,
 ) -> Result<RunReport> {
     let mut previous = BTreeSet::new();
     let mut ticks = 0;
@@ -322,6 +350,9 @@ fn run_headless(
             let actions = options.inputs.get(&tick).cloned().unwrap_or_default();
             let input = merge_input(&Default::default(), &actions, &mut previous);
             runtime.enqueue_scheduled_events(&options.events, tick)?;
+            for service in &mut services {
+                service.before_tick(&mut runtime, tick);
+            }
             runtime.tick(FIXED_DELTA as f32, input)?;
             event_trace.capture(&runtime, tick);
             audio.mix(&mut audio_frame)?;
@@ -332,6 +363,9 @@ fn run_headless(
     let acoustics = runtime.acoustics_status();
     let cleanup = runtime.stop().map_err(anyhow::Error::from);
     audio.shutdown();
+    for service in services.iter_mut().rev() {
+        service.after_gpu_idle();
+    }
     combine(result, cleanup)?;
     Ok(RunReport {
         event_trace,
@@ -404,6 +438,7 @@ struct DesktopRunner {
     audio: AudioEngine,
     options: RunOptions,
     backends: WgpuBackends,
+    services: Vec<Box<dyn HostService>>,
     surface: Option<WindowSurface>,
     mapper: ActionMapper,
     raw: RawInput,
@@ -562,6 +597,9 @@ impl DesktopRunner {
             .insert_resource(RawInputTokens {
                 down: self.raw.down.clone(),
             });
+        for service in &mut self.services {
+            service.before_tick(&mut self.runtime, self.ticks);
+        }
         self.runtime.tick(FIXED_DELTA as f32, input)?;
         // Particles simulate once per scene tick, here, and never from drawing.
         if let Some(host) = &mut self.surface {

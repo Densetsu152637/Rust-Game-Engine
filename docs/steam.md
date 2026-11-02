@@ -4,12 +4,12 @@ The `engine-steam` crate is the engine's optional Steamworks integration. Steam 
 off by default: a normal build contains no Steam code and no Steam dependency, and
 nothing in a game changes unless it opts in.
 
-Status: the skeleton (stage S1) and the real backend core (stage S2) of
+Status: the skeleton (S1), the real backend core (S2) and the host integration (S3) of
 `docs/platform-and-steam-plan.md` exist: the backend trait, the null and fake
 backends, the status and error types, the build feature, and a `RealBackend` that
 initialises Steam, reports identity, issues auth tickets, opens the overlay, sets rich
-presence and turns Steam callbacks into events. No engine, desktop or project code uses
-the crate yet. The features listed under [Roadmap](#roadmap-not-yet-implemented) do not
+presence and turns Steam callbacks into events; `SteamPlugin` runs it inside the desktop
+runner for projects with a `steam` manifest block. The features listed under [Roadmap](#roadmap-not-yet-implemented) do not
 exist.
 
 ## The `steam` feature
@@ -98,6 +98,57 @@ only) and `ConnectionChanged`. The callback handles are owned by the backend and
 long as it. Steam's "shutdown requested" notification is not exposed by `steamworks`
 0.13.1, so `ShutdownRequested` is not produced by the real backend yet.
 
+## Host integration (`steam` manifest block)
+
+A project with a `steam` block (see [Project format](project-format.md)) gets the Steam
+host service when it runs through `engine_tooling::runtime_entry::run` (the entry point
+of generated game binaries). The block is plain data in every build; to link the real
+backend build `engine-tooling` with `--features steam`, otherwise the status is
+`not_compiled`.
+
+The desktop runner knows nothing about Steam. `engine_desktop::run_with_services` takes
+`Vec<Box<dyn HostService>>` (trait in `engine_project::host_service`; `run` and
+`run_with_wgpu_backends` pass none):
+
+1. `before_graphics(&mut Runtime)` runs once per service, in order, before the audio
+   device, window or GPU device exists and before the runtime starts. An error is
+   returned as the run error, wrapping a `HostServiceExit { code, message }`.
+2. `before_tick(&mut Runtime, tick)` runs exactly once before every fixed tick, in both
+   headless and windowed runs, on the tick thread.
+3. `after_gpu_idle()` runs in reverse order after the runtime stopped, the GPU is idle
+   and audio is shut down.
+
+`SteamPlugin` (a `HostService`) uses a `SteamSession`, the process-wide owner of the
+backend. The first `before_graphics` calls `restart_app_if_necessary(app_id)` and, if
+that is not a relaunch, `init(Some(app_id))`, then sets the manifest `rich_presence`
+defaults. Later runner generations in the same process reuse the session, so
+`restart_app_if_necessary` and `init` happen at most once. The backend drops (Steam
+shuts down) when the last session holder drops, after the GPU is idle.
+
+Per tick, `run_callbacks()` is called once and each `SteamEvent` becomes an engine
+event named `steam.<event>` (for example `steam.overlay_toggled` with payload
+`{"active": true}`, `steam.status_changed`, `steam.connection_changed`); SteamIDs and
+other 64-bit ids are decimal strings. Games bind handlers with `EventBindings` like any
+engine event. The Steam status is also available as the `SteamRuntimeStatus` resource,
+and a run report from `runtime_entry` carries a `steam` object with `state`
+(`ready`, `not_running`, `init_failed`, `not_compiled`).
+
+Exit behaviour (`runtime_entry`):
+
+| Situation | Result |
+| --- | --- |
+| no `steam` block | Steam is never touched |
+| Steam unavailable, `required: false` | soft: the game runs, status is not `ready` |
+| Steam unavailable, `required: true` | exit code `4`, before any window or GPU device |
+| Steam asks for a relaunch (`restart_app_if_necessary` is true) | exit code `0`, result `{"steam":"relaunching"}`, no window |
+| editor play generation (`ENGINE_GENERATION_READY_FILE` set) | Steam is never constructed |
+
+When launched outside Steam, `SteamAPI_RestartAppIfNecessary` returns true (and asks
+Steam to relaunch the game) unless `steam_appid.txt` is in the working directory or the
+`SteamAppId` environment variable is set; set `SteamAppId=<app_id>` for development
+runs. `ShutdownRequested` is part of the event type, but `steamworks` 0.13.1 does not
+expose Steam's shutdown notification, so the real backend never produces it yet.
+
 ## Live tests
 
 Live tests are `#[ignore]` and use App ID 480 (Spacewar). With the Steam client open:
@@ -145,8 +196,6 @@ advice.
 Everything below is planned in `docs/platform-and-steam-plan.md` and is not implemented
 at this stage.
 
-- S3: desktop runner host hook, `SteamPlugin`, per-tick pump and the `steam` project
-  manifest block (`app_id`, `cloud`, `required`).
 - S4: achievements and stats service with batched stat storing.
 - S5: Steam Cloud save sync beside the persistence store.
 - S6: Steam Networking Sockets transport for `MessageEndpoint`.

@@ -22,7 +22,14 @@ engine-platform = { path = "../engine-platform" }
 engine-desktop = { path = "../engine-desktop" }
 engine-editor = { path = "../engine-editor" }
 engine-mcp = { path = "../engine-mcp" }
+engine-steam = { path = "../engine-steam" }
 tempfile = "3"
+
+[features]
+default = []
+# Real Steamworks backend for runtime builds. Needs the steam_api library next to
+# the executable; without it Steam settings in a project report "not compiled".
+steam = ["engine-steam/steam"]
 
 [[bin]]
 name = "engine"

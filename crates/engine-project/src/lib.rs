@@ -12,6 +12,7 @@ pub mod events;
 pub mod gameplay;
 pub mod gameplay2d;
 pub mod graphs;
+pub mod host_service;
 pub mod indirect;
 pub mod input;
 pub mod lighting2d;
@@ -49,6 +50,7 @@ pub use events::{
     EngineEvent, EventBinding, EventBindings, EventLimits, emit_event, emit_events,
     register_event_handler,
 };
+pub use host_service::{HostService, HostServiceExit};
 pub use input::{ActionFrame, ActionMapper, InputSnapshot, RawInput};
 pub use runtime::{
     AuthoredId, NativeScript, RenderFrame, Runtime, RuntimeSnapshot, ScriptFactory, ScriptRegistry,

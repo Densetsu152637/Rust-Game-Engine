@@ -10,6 +10,7 @@ mod backend;
 mod error;
 mod fake;
 mod null;
+mod plugin;
 #[cfg(all(
     feature = "steam",
     any(windows, target_os = "linux", target_os = "macos")
@@ -21,6 +22,9 @@ pub use backend::SteamBackend;
 pub use error::{SteamError, SteamResult, UnavailableReason};
 pub use fake::FakeBackend;
 pub use null::NullBackend;
+pub use plugin::{
+    REQUIRED_EXIT_CODE, SteamPlugin, SteamRuntimeStatus, SteamSession, event_json, status_json,
+};
 #[cfg(all(
     feature = "steam",
     any(windows, target_os = "linux", target_os = "macos")
@@ -36,7 +40,7 @@ pub const STEAM_COMPILED: bool = cfg!(all(
 
 /// The backend a game should use by default: the real one when compiled in,
 /// otherwise [`NullBackend`].
-pub fn default_backend() -> Box<dyn SteamBackend> {
+pub fn default_backend() -> Box<dyn SteamBackend + Send> {
     #[cfg(all(
         feature = "steam",
         any(windows, target_os = "linux", target_os = "macos")
