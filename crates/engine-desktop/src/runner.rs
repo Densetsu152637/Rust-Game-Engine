@@ -563,6 +563,11 @@ impl DesktopRunner {
                 down: self.raw.down.clone(),
             });
         self.runtime.tick(FIXED_DELTA as f32, input)?;
+        // Particles simulate once per scene tick, here, and never from drawing.
+        if let Some(host) = &mut self.surface {
+            let particles = self.runtime.extract_particles()?;
+            host.renderer.advance_particles(&particles)?;
+        }
         if let Some(host) = &self.surface {
             let ui = self.runtime.app().world().resource::<GameUi>();
             self.text.sync(&host.window, ui, &camera);

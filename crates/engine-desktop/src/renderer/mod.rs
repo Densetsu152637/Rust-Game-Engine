@@ -14,6 +14,7 @@
 mod cache;
 mod framegen;
 mod material2d;
+mod particles;
 mod post;
 mod post_effects;
 mod rt;
@@ -34,6 +35,7 @@ use crate::{GpuContext, RenderTargetInfo, UpscalerDevice};
 use anyhow::{Context, Result, ensure};
 use engine_core::bevy_ecs::world::World;
 use engine_project::lights::LightingStatus;
+use engine_project::particles::ParticleFrame;
 use engine_project::post::PostStatus;
 use engine_project::rendering3d::{
     FrameGenerationMode, FrameGenerationSettings, FrameGenerationStatus, RenderFeatureView,
@@ -46,8 +48,9 @@ use engine_render::{DrawCommand, RenderCommandBuffer, RenderTarget};
 use engine_render_pipeline::Presentation;
 use engine_render_pipeline::{
     FeatureOverrides, GpuTexture, HostStages, HostUpscale, LightingReport, OutputTarget,
-    OverlayBatch, OverlayItem, PipelineFeatures, PresentationInput, SceneFrame, ScenePipeline,
-    SceneTextures, Stage, ViewData, ViewId, ViewKind, ViewReport, Viewport, names,
+    OverlayBatch, OverlayItem, ParticleReport, ParticleTickReport, PipelineFeatures,
+    PresentationInput, SceneFrame, ScenePipeline, SceneTextures, Stage, ViewData, ViewId, ViewKind,
+    ViewReport, Viewport, names,
 };
 use engine_render_post_effects::{
     DepthOfFieldFeature, MotionBlurFeature, PostEffects, SpatialAaFeature,
@@ -471,6 +474,34 @@ impl GpuRenderer {
             scene.forget_view(view);
         }
         self.indirect.forget_view(view);
+    }
+
+    /// Advance the GPU particle simulation by one scene tick.
+    ///
+    /// Call this once after each scene tick with that tick's
+    /// [`Runtime::extract_particles`](engine_project::Runtime::extract_particles)
+    /// frame. It is the only way the simulation advances: `render_scene`,
+    /// `render_eyes`, `render_generated` and `present_generated` only draw the
+    /// current pools, so several views of one tick, repeated redraws between
+    /// ticks and DLSS Frame Generation presentations never simulate again. A
+    /// repeated `frame.tick` is a no-op (the report says `advanced: false`),
+    /// a frame before the first tick (`dt == 0`) does nothing, and a step
+    /// longer than `engine_project::particles::MAX_PARTICLE_DT` is clamped.
+    /// The pipeline is created on first use only when there is something to
+    /// simulate. See docs/rendering-particles.md.
+    pub fn advance_particles(&mut self, frame: &ParticleFrame) -> Result<ParticleTickReport> {
+        if frame.emitters.is_empty() && self.scene.is_none() {
+            return Ok(ParticleTickReport {
+                tick: frame.tick,
+                ..Default::default()
+            });
+        }
+        particles::advance(self.pipeline()?, frame)
+    }
+
+    /// The particle clock and live emitters; `None` before the 3D pipeline exists.
+    pub fn particle_report(&self) -> Option<ParticleReport> {
+        self.scene.as_ref().map(ScenePipeline::particle_report)
     }
 
     /// Prepare and add render features (for example from a
