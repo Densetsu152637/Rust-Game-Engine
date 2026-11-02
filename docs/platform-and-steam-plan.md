@@ -40,9 +40,18 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: none (in progress as task `engine-facade`, branch `feat/engine-facade`, worktree `D:/Git-Worktrees/Rust-Game-Engine/engine-facade`).
 - Owned paths: `crates/engine/**`, workspace `Cargo.toml`/`Cargo.lock`, `examples/*/Cargo.toml` and sources, `docs/using-the-engine.md`, template location chosen by the task.
 - Acceptance checks: `cargo metadata --format-version 1 --no-deps` lists package `engine`; `cargo test -p engine`; the switched examples' `cargo test --manifest-path ...` and `scripts/ci/check-desktop-examples.sh` pass; `cargo clippy --workspace --all-targets --locked -- -D warnings`; merged into `main`.
-- Status: in progress
+- Status: done
+- Outcome: `d4f6a8e`..`b445c8d` merged as `d463fe2`. Workspace clippy `--locked` clean; `cargo test -p engine` 2 tests + 1 doctest; first-project 13, desktop-2d 77, native-extension 1, programmable-world 1 passed; examples script and `validate_fixture.py` pass. Template is `templates/game/` (no CLI command yet), pinned to tag `v0.1.0`, which does not exist yet; a test keeps the tag equal to the workspace version. Features: `desktop` (default), `text-scripting` (default), `dlss`, `system-clipboard`, `deterministic-physics`.
+- Handoff notes: S1 and S11 edit the same manifests; they start only after F0 is merged so lockfile edits are serialized. With `desktop` on, `text-scripting` cannot be turned off (engine-desktop pulls engine-project defaults). Non-default feature combinations are not yet built in CI (add in P4 or S11).
+
+## Stage F1: `engine run` and editor play for git-dependency games
+- Objective: `engine-tooling`'s native compiler (`crates/engine-tooling/src/compiler/workspace.rs`) links `engine-core`, `engine-project` and `engine-desktop` from the engine checkout by path. A game that depends on `engine` by git tag then has a second copy of those crates (split type universe) under `engine run`/editor play. Make the compiler reuse the game's resolved `engine` dependency (or patch the game's dependency to the running engine's checkout) so one copy exists.
+- Depends on: F0.
+- Owned paths: `crates/engine-tooling/src/compiler/**`, `crates/engine-tooling/tests/`, `docs/using-the-engine.md`, `templates/game/`.
+- Acceptance checks: a test builds a temp game crate that depends on `engine` (path or git-style dependency) through the native compiler and `cargo tree` of the generated workspace shows exactly one `engine-project`; `engine run` on that game runs `--headless --ticks 3`; existing `engine-tooling` compiler and `mcp_exec` tests pass; the docs' "use plain cargo run" caveat is removed or narrowed to what remains true.
+- Status: pending
 - Outcome:
-- Handoff notes: S1 and S11 edit the same manifests; they start only after F0 is merged so lockfile edits are serialized.
+- Handoff notes: reported by the F0 implementer; until fixed, games using a git-tag dependency should run with plain `cargo run`/`cargo test` or `[patch]` the engine to the same checkout.
 
 ## Stage P1: CI environment repair
 - Objective: remove runner disk exhaustion (Windows LNK1318/LNK1140 at 85 MB free; Linux linker SIGBUS) and unmask hidden failures.
@@ -233,4 +242,4 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Outcome:
 - Handoff notes:
 
-Execution order (one implementer at a time): F0 (running) → P1 → P2 → P3 → P4 → P5 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → P6 → P7 → P8 → P9 → S11 → P10.
+Execution order (one implementer at a time): F0 (done) → F1 → P1 → P2 → P3 → P4 → P5 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → P6 → P7 → P8 → P9 → S11 → P10.
