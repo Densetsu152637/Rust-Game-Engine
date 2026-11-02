@@ -1,6 +1,6 @@
 # Plan: Linux/macOS support, release packaging and Steam integration
 
-Revision: 2026-11-02, plan-gate round 1 applied (base `main` 27bf7e7; owner: Claude root, single writer)
+Revision: 2026-11-02, plan-gate rounds 1-2 applied (converged) (base `main` 27bf7e7; owner: Claude root, single writer)
 
 Goals (each must be true at close):
 1. CI green on all platforms: one `main` run has "Workspace tests (Windows)", "(Linux)", "(macOS)", "Format and Clippy (Windows)", every example job and "Test count gate" succeeding, with Linux and macOS included in the count gate. Check: `gh run view <id> --json jobs`.
@@ -33,7 +33,7 @@ Relevant paths: `.github/workflows/ci.yml`, `scripts/ci/`, `crates/engine-toolin
 
 Related docs: `docs/platforms.md`, `docs/desktop-packaging.md`, `docs/building.md`, `docs/testing.md`, `docs/video.md`, `docs/project-format.md`, `docs/using-the-engine.md` (facade). Feature docs win on behaviour; this plan wins on sequencing and open decisions.
 
-Execution rules: one implementer at a time (user rule); each stage commits on its own branch and is merged into `main` by root after acceptance; Cargo targets at `D:/cargo-targets/Rust-Game-Engine/<task-id>`; worktrees at `D:/Git-Worktrees/Rust-Game-Engine/<task-id>`. `ci.yml` runs on `push: main` and `pull_request` only, so a CI-dependent stage (P1–P4, P7–P9, S11) is accepted on its pull request's checks (`gh pr checks <n>` all passing, run id recorded); opening those PRs needs the user's go-ahead at P1. A `main` run (`gh run view <id> --json jobs`) is the final evidence for P4 and P10. Any stage that edits `Cargo.toml`/`Cargo.lock` re-runs `cargo check --workspace --locked` and the standalone example tests before acceptance.
+Execution rules: one implementer at a time (user rule); each stage commits on its own branch and is merged into `main` by root after acceptance; Cargo targets at `D:/cargo-targets/Rust-Game-Engine/<task-id>`; worktrees at `D:/Git-Worktrees/Rust-Game-Engine/<task-id>`. `ci.yml` runs on `push: main` and `pull_request` only, so a CI-dependent stage (P1–P4, P7–P9, S11) is accepted on its pull request's checks (`gh pr checks <n>` all passing, run id recorded); opening those PRs needs the user's go-ahead at P1. After P4, every stage that changes Rust code (P5, S1–S10, P6–P8, S11) is also accepted on its pull request's checks with all required jobs green on all three OSes, so platform-specific regressions (for example S10's symlink/junction handling) surface at that stage. F0 runs before P1 starts; it merges first, and every later stage branch starts from the `main` that contains it. A `main` run (`gh run view <id> --json jobs`) is the final evidence for P4 and P10. Any stage that edits `Cargo.toml`/`Cargo.lock` re-runs `cargo check --workspace --locked` and the standalone example tests before acceptance.
 
 ## Stage F0: Facade crate on main
 - Objective: the `engine` facade crate (`crates/engine`, re-exports, features, prelude), examples switched to it, `docs/using-the-engine.md`, and a versioned game template exist on `main`.
@@ -48,7 +48,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: remove runner disk exhaustion (Windows LNK1318/LNK1140 at 85 MB free; Linux linker SIGBUS) and unmask hidden failures.
 - Depends on: none (needs a push to observe CI).
 - Owned paths: `.github/workflows/ci.yml`, `scripts/ci/`.
-- Acceptance checks: Linux free-disk step and `df -h` diagnostics present in every job that builds the workspace (including "Format and Clippy (Windows)"); CI debuginfo reduced (`CARGO_PROFILE_DEV_DEBUG=0`/`CARGO_PROFILE_TEST_DEBUG=0` or equivalent) and Windows target dir on the larger volume; Linux and macOS run `cargo test --workspace --locked --no-fail-fast`; "Workspace tests (Windows)" and "(Linux)" finish without LNK1318/LNK1140/SIGBUS; "Format and Clippy (Windows)" still passes; workflow syntax validated (`actionlint` or `gh workflow view`).
+- Acceptance checks: Linux free-disk step and `df -h` diagnostics present in every job that builds the workspace (including "Format and Clippy (Windows)"); CI debuginfo reduced (`CARGO_PROFILE_DEV_DEBUG=0`/`CARGO_PROFILE_TEST_DEBUG=0` or equivalent) and Windows target dir on the larger volume; Linux and macOS run `cargo test --workspace --locked --no-fail-fast`; "Workspace tests (Windows)" and "(Linux)" finish without LNK1318/LNK1140/SIGBUS; "Format and Clippy (Windows)" still passes; runner images pinned (`windows-2025`/`ubuntu-24.04`/`macos-15` or current equivalents) or the choice to float recorded; workflow syntax validated (`actionlint` or `gh workflow view`).
 - Status: pending
 - Outcome:
 - Handoff notes: the last data point is run 40858178120 on 12de3e2; current main has not run in CI. Linux cause is inferred (no disk warning printed) — confirm with `df -h`.
@@ -66,7 +66,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: every workspace test passes on macOS CI.
 - Depends on: P1.
 - Owned paths: `crates/engine-audio` (failure-race test and stream code), other macOS failures, `ci.yml`.
-- Acceptance checks: a written root cause (with the evidence that established it) in Outcome; "Workspace tests (macOS)" green; in one macOS job, `for i in $(seq 200); do cargo test -p engine-audio refresh_retains_decoder_and_dsp_errors_published_before_worker_status -- --test-threads=1 || exit 1; done` passes (temporary PR-only job, removed after); audio tests still pass on Windows.
+- Acceptance checks: a written root cause (with the evidence that established it) in Outcome; "Workspace tests (macOS)" green; in one macOS job, `for i in $(seq 200); do cargo test -p engine-audio refresh_retains_decoder_and_dsp_errors_published_before_worker_status -- --test-threads=1 || exit 1; done` passes (temporary PR-only job, removed after; root cause and loop log copied into the PR description); audio tests still pass on Windows.
 - Status: pending
 - Outcome:
 - Handoff notes: failure is "producer never reached failure publication barrier" (`sources.rs:541`, 5 s deadline). Suspect: the pause is a thread-local consumed at stream shared-state creation (`stream.rs:244`); check where macOS creates/starts the stream. Root-cause before any ignore.
@@ -81,10 +81,10 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Handoff notes: calibrate per-OS minimums from observed counts; a sum alone would let one OS regress behind the others.
 
 ## Stage P5: Platform runtime fixes
-- Objective: macOS user-data root, bundled FFmpeg lookup, bundle-relative game resolution, and a resolve-only mode (flag or environment variable) that prints the resolved `project.json` path and exits, for packaging checks.
+- Objective: macOS user-data root, bundled FFmpeg lookup, bundle-relative game resolution, and a resolve-only mode selected by an environment variable (for example `ENGINE_RESOLVE_ONLY=1`, so the binary still starts with no arguments) that prints the resolved `project.json` path and exits, for packaging checks.
 - Depends on: P2, P3.
 - Owned paths: `crates/engine-project/src/persistence/mod.rs`, `crates/engine-video/` (decoder tool lookup), `crates/engine-tooling/src/runtime_entry.rs`, `docs/platforms.md`, `docs/desktop-services.md`, `docs/video.md`.
-- Acceptance checks: path-builder unit tests for each OS root (executed per OS in CI); `tools/` lookup order test (`ENGINE_VIDEO_FFMPEG` > `tools/` > `PATH`); runtime with no arguments finds `../Resources/game/project.json` inside a `.app` layout and `game/project.json` beside the runtime (test with a temp layout).
+- Acceptance checks: path-builder unit tests for each OS root (executed per OS in CI); `tools/` lookup order test (`ENGINE_VIDEO_FFMPEG` > `tools/` > `PATH`); runtime with no arguments finds `../Resources/game/project.json` inside a `.app` layout and `game/project.json` beside the runtime (test with a temp layout); resolve-only mode prints the resolved path and exits 0 for both layouts and exits non-zero when neither exists (test).
 - Status: pending
 - Outcome:
 - Handoff notes: macOS root move needs no migration (macOS was unverified, no known saves); document it.
@@ -218,8 +218,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 ## Stage S11: Steam packaging, facade, tooling and CI
 - Objective: `engine/steam` facade feature, `--format steam-depot` (per-platform depot directories, copied `steam_api` library, `app_build.vdf`/`depot_build_*.vdf` templates, no `steam_appid.txt`), MCP read-only `steam_status`, CI `cargo check`/`clippy --features steam` on all three OSes, docs pass.
 - Depends on: S1–S10, P9, facade merged.
-- Owned paths: `crates/engine` (facade features), `crates/engine-tooling/src/packaging/steam.rs`, `crates/engine-mcp/src/tools/`, `ci.yml`, `docs/steam.md`, `docs/desktop-packaging.md`.
-- Acceptance checks: `cargo check -p engine --features steam` and `cargo build -p engine-steam --features steam --all-targets` pass on all OSes in CI; on the Windows CI runner a Steam-feature runtime with the library staged runs `--headless --ticks 3` (no Steam client: soft status); default `cargo tree -p engine` has no `steamworks`; depot layout test passes; the release workflow smoke-runs the Steam-variant package per OS; `cargo test --workspace --locked` passes.
+- Owned paths: `crates/engine` (facade features), `crates/engine-tooling/src/packaging/steam.rs`, `crates/engine-mcp/src/tools/`, `ci.yml`, `.github/workflows/release.yml` (Steam-variant rows), `docs/steam.md`, `docs/desktop-packaging.md`.
+- Acceptance checks: `cargo check -p engine --features steam`, `cargo build -p engine-steam --features steam --all-targets` and `cargo clippy -p engine-steam --features steam --all-targets -- -D warnings` pass on all OSes in CI; a CI step asserts `cargo tree -p engine-desktop -p engine | grep -c steamworks` = 0 for default features; on the Windows CI runner a Steam-feature runtime with the library staged runs `--headless --ticks 3` (no Steam client: soft status); default `cargo tree -p engine` has no `steamworks`; depot layout test passes; a `workflow_dispatch` release run has green Steam-variant smoke steps on all three OSes (run id recorded); `cargo test --workspace --locked` passes.
 - Status: pending
 - Outcome:
 - Handoff notes: real depot upload stays manual (SteamCMD + partner credentials).
@@ -228,7 +228,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: README and `docs/platforms.md` move Linux/macOS from "unverified" to CI-verified with exact limits; `docs/building.md` per-OS prerequisites; fold durable decisions into feature docs, then remove this plan.
 - Depends on: all stages.
 - Owned paths: `README.md`, `docs/platforms.md`, `docs/building.md`, `docs/steam.md`.
-- Acceptance checks: goals 1–6 above all true with recorded evidence.
+- Acceptance checks: goals 1–6 above all true with recorded evidence; before this plan is deleted, its evidence (goal 1/3 run ids, goal 5 live Steam results, P3 root cause) is copied into `docs/steam.md`, `docs/platforms.md` or the final PR description.
 - Status: pending
 - Outcome:
 - Handoff notes:
