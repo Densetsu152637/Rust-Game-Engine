@@ -158,3 +158,23 @@ fn a_successful_read_applies_the_queue_and_unknown_names_are_dropped() {
     assert_eq!(stats.pending_len(), 0);
     assert!(stats.is_dirty());
 }
+
+#[test]
+fn the_pre_delivery_queue_is_capped() {
+    let mut fake = ready().with_delayed_stats();
+    let mut stats = StatsService::default();
+    for n in 0..MAX_PENDING_CHANGES {
+        assert_eq!(stats.unlock(&mut fake, &format!("ACH_{n}")), Ok(true));
+    }
+    assert!(matches!(
+        stats.unlock(&mut fake, "ONE_TOO_MANY"),
+        Err(SteamError::Rejected(_))
+    ));
+    assert!(matches!(
+        stats.set_stat(&mut fake, "extra", StatValue::Int(1)),
+        Err(SteamError::Rejected(_))
+    ));
+    // A repeat of a queued name still fits, and updating a queued stat does not grow it.
+    assert_eq!(stats.unlock(&mut fake, "ACH_0"), Ok(false));
+    assert_eq!(stats.pending_len(), MAX_PENDING_CHANGES);
+}

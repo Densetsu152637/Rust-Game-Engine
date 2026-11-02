@@ -186,6 +186,12 @@ impl FakeBackend {
         self.lobby_world.sim_destroy(lobby);
     }
 
+    /// The next `reads` snapshot reads of any lobby come back empty, as a transient
+    /// Steam hiccup would.
+    pub fn glitch_lobby_info(&mut self, reads: u32) {
+        self.lobby_world.glitch_info(reads);
+    }
+
     /// The next `lobby_create` fails with this reason.
     pub fn fail_next_lobby_create(&mut self, reason: &str) {
         self.lobby_world.fail_next_create(reason);

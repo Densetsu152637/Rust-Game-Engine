@@ -49,10 +49,7 @@ fn remote_of(identity: &NetworkingIdentity) -> NetRemote {
     if let Some(id) = identity.steam_id() {
         return NetRemote::Steam(SteamId(id.raw()));
     }
-    identity
-        .debug_string()
-        .strip_prefix("ip:")
-        .and_then(|text| text.parse::<SocketAddr>().ok())
+    crate::net::parse_ip_identity(&identity.debug_string())
         .map_or(NetRemote::Unknown, NetRemote::Ip)
 }
 

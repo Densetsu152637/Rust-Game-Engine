@@ -16,6 +16,9 @@ enum Pending {
     SetStat(String, StatValue),
 }
 
+/// Most distinct changes held while Steam has not delivered the stats.
+pub const MAX_PENDING_CHANGES: usize = 256;
+
 /// Fixed ticks (10 seconds at 60 Hz) between automatic stat stores.
 pub const DEFAULT_STORE_INTERVAL_TICKS: u64 = 600;
 
@@ -47,6 +50,15 @@ impl StatsService {
             interval_ticks,
             pending: Vec::new(),
         }
+    }
+
+    fn check_room(&self) -> SteamResult<()> {
+        if self.pending.len() >= MAX_PENDING_CHANGES {
+            return Err(SteamError::Rejected(format!(
+                "more than {MAX_PENDING_CHANGES} changes queued before Steam delivered the stats"
+            )));
+        }
+        Ok(())
     }
 
     /// Number of changes waiting for Steam to deliver the stats.
@@ -109,7 +121,9 @@ impl StatsService {
     }
 
     /// Unlocks an achievement. Returns `true` only when this call unlocked it;
-    /// unlocking an already unlocked achievement does nothing.
+    /// unlocking an already unlocked achievement does nothing. While Steam has not
+    /// delivered the stats the unlock is queued and this returns `Ok(true)` even if the
+    /// achievement turns out to be unlocked already (the queue then changes nothing).
     pub fn unlock(&mut self, backend: &mut dyn SteamBackend, name: &str) -> SteamResult<bool> {
         self.request(backend)?;
         self.apply_pending(backend);
@@ -121,6 +135,7 @@ impl StatsService {
                 if self.pending.contains(&queued) {
                     return Ok(false);
                 }
+                self.check_room()?;
                 self.pending.push(queued);
                 return Ok(true);
             }
@@ -154,6 +169,7 @@ impl StatsService {
                 // The latest queued value for a stat wins.
                 self.pending
                     .retain(|p| !matches!(p, Pending::SetStat(n, _) if n == name));
+                self.check_room()?;
                 self.pending.push(Pending::SetStat(name.to_owned(), value));
                 return Ok(());
             }

@@ -2,6 +2,7 @@
 //! [`LobbyRaw`] callbacks, remote players scripted with `sim_*`, and delivery control
 //! (hold, then release in order or reversed) to exercise out-of-order callbacks.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::error::{SteamError, SteamResult};
@@ -24,6 +25,8 @@ pub(crate) struct FakeLobbies {
     held: Vec<LobbyRaw>,
     hold: bool,
     fail_create: Option<String>,
+    /// Number of upcoming `info` reads that fail (transient empty reads).
+    glitches: Cell<u32>,
 }
 
 impl Default for FakeLobbies {
@@ -35,6 +38,7 @@ impl Default for FakeLobbies {
             held: Vec::new(),
             hold: false,
             fail_create: None,
+            glitches: Cell::new(0),
         }
     }
 }
@@ -153,6 +157,10 @@ impl FakeLobbies {
     }
 
     pub(crate) fn info(&self, lobby: LobbyId) -> Option<LobbyInfo> {
+        if self.glitches.get() > 0 {
+            self.glitches.set(self.glitches.get() - 1);
+            return None;
+        }
         self.rooms.get(&lobby).map(|r| LobbyInfo {
             id: lobby,
             owner: r.owner,
@@ -167,6 +175,10 @@ impl FakeLobbies {
     }
 
     // ---- scripting ----
+
+    pub(crate) fn glitch_info(&self, reads: u32) {
+        self.glitches.set(reads);
+    }
 
     pub(crate) fn fail_next_create(&mut self, reason: &str) {
         self.fail_create = Some(reason.to_owned());

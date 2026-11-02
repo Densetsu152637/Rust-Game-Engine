@@ -5,7 +5,8 @@
 //! Mapping: the session id is the low 53 bits of the lobby id (the protocol keeps ids
 //! exactly representable as JSON numbers; Steam lobby ids are larger). A player is its
 //! decimal SteamID. Steam reports only that a member is gone, so every departure is
-//! `LeaveReason::Left`. Host changes raise the epoch by one. Created, joined, list and
+//! `LeaveReason::Left`. Host changes raise the epoch by one; the epoch is local to this
+//! adapter (it restarts at 1 for each client and is not shared between players). Created, joined, list and
 //! failure events have no notification form and map to `None`: they answer requests the
 //! game made, and the game already holds the typed result. There are no join tokens or
 //! fingerprints because Steam authenticates the link itself.
@@ -71,6 +72,7 @@ impl OnlineAdapter {
                     code: None,
                 })
             }
+            LobbyEvent::DataChanged { key, .. } if key == HOST_KEY || key == PORT_KEY => None,
             LobbyEvent::DataChanged { lobby, .. } => {
                 let view = lobbies.lobby(*lobby)?;
                 let attributes = view

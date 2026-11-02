@@ -717,3 +717,76 @@ fn a_backlogged_request_does_not_stall_other_events() {
         "{events:?}"
     );
 }
+
+#[test]
+fn an_unauthenticated_peer_cannot_evict_a_pending_validation() {
+    let (session, fake) = session_for(ready());
+    let addr: std::net::SocketAddr = "127.0.0.1:27040".parse().unwrap();
+    let mut server =
+        SteamServerEndpoint::listen(session.clone(), SteamServerConfig::ip(addr)).unwrap();
+    let hello = |ticket: &[u8]| {
+        let mut f = vec![0x80, 1];
+        f.extend_from_slice(&me().0.to_le_bytes());
+        f.extend_from_slice(ticket);
+        f
+    };
+    let real = fake.lock().unwrap().auth_session_ticket().unwrap().handle;
+    let open = |server: &mut SteamServerEndpoint| {
+        let conn = fake.lock().unwrap().net_connect_ip(addr).unwrap();
+        server.poll(full()).unwrap();
+        server.poll(full()).unwrap();
+        Raw {
+            fake: fake.clone(),
+            conn,
+        }
+    };
+    let honest = open(&mut server);
+    let attacker = open(&mut server);
+    // The honest login is validating when the attacker claims the same SteamID with junk.
+    honest.send(&hello(&real.to_le_bytes()));
+    server.poll(full()).unwrap();
+    assert_eq!(server.pending_peers(), 2);
+    attacker.send(&hello(b"junk"));
+    for _ in 0..4 {
+        server.poll(full()).unwrap();
+    }
+    assert_eq!(
+        server.connected_peers().len(),
+        1,
+        "the honest login survived"
+    );
+    assert_eq!(server.pending_peers(), 0);
+    assert_eq!(fake.lock().unwrap().net_auth_sessions(), 1);
+}
+
+#[test]
+fn a_stale_verdict_for_a_superseded_ticket_does_not_admit_the_new_peer() {
+    let (session, fake) = session_for(ready());
+    let mut server =
+        SteamServerEndpoint::listen(session.clone(), SteamServerConfig::p2p(0)).unwrap();
+    let hello = |ticket: u32| {
+        let mut f = vec![0x80, 1];
+        f.extend_from_slice(&me().0.to_le_bytes());
+        f.extend_from_slice(&ticket.to_le_bytes());
+        f
+    };
+    let (t1, t2) = {
+        let mut f = fake.lock().unwrap();
+        (
+            f.auth_session_ticket().unwrap().handle,
+            f.auth_session_ticket().unwrap().handle,
+        )
+    };
+    // The second ticket is rejected by Steam; the first one's (accepted) verdict is still
+    // queued when the second claim supersedes it, and must not admit the second peer.
+    fake.lock().unwrap().cancel_auth_ticket(t2).unwrap();
+    let a = Raw::open(&session, &fake, &mut server);
+    let b = Raw::open(&session, &fake, &mut server);
+    a.send(&hello(t1));
+    b.send(&hello(t2));
+    for _ in 0..4 {
+        server.poll(full()).unwrap();
+    }
+    assert!(server.connected_peers().is_empty());
+    assert_eq!(server.pending_peers(), 0);
+}

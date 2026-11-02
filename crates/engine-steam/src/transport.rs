@@ -196,6 +196,9 @@ struct Dial {
     started: Instant,
 }
 
+/// Concurrent validations one SteamID may have when the claimant is not Steam-authenticated.
+const MAX_PENDING_PER_USER: usize = 1;
+
 /// Frames requested from the backend per call.
 const RECEIVE_BATCH: usize = 8;
 
@@ -773,9 +776,8 @@ impl Core {
             self.reject_peer(id, "this SteamID is already connected");
             return false;
         }
-        // A newer claim for a SteamID still being validated supersedes the older pending
-        // one (an unauthenticated peer must not be able to hold a SteamID hostage).
-        let superseded: Vec<PeerId> = self
+        // Peers whose ticket for this SteamID is still being validated.
+        let pending: Vec<PeerId> = self
             .peers
             .iter()
             .filter(|(other, p)| {
@@ -783,8 +785,21 @@ impl Core {
             })
             .map(|(other, _)| *other)
             .collect();
-        for old in superseded {
-            self.reject_peer(old, "superseded by a newer login for this SteamID");
+        if remote == NetRemote::Steam(user) {
+            // Steam itself authenticated this connection as `user`, so it may replace an
+            // older pending claim (the old one cannot be the real account's).
+            for old in pending {
+                self.reject_peer(old, "superseded by a newer login for this SteamID");
+            }
+            // Verdicts already queued for the superseded ticket must not admit this peer.
+            self.gather_events();
+            self.backlog
+                .retain(|e| !matches!(e, NetEvent::AuthResult { user: u, .. } if *u == user));
+        } else if pending.len() >= MAX_PENDING_PER_USER {
+            // An unauthenticated peer can claim any SteamID; it must not be able to evict
+            // a pending validation, so the newcomer is the one refused.
+            self.reject_peer(id, "a login for this SteamID is already being validated");
+            return false;
         }
         match auth {
             AuthPolicy::IdentityOnly => {

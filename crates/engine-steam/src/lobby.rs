@@ -71,6 +71,57 @@ pub enum LobbyRaw {
     Changed(LobbyId),
 }
 
+/// Bounded queue of raw callbacks for backends fed by Steam callbacks that nobody may be
+/// draining: `Changed` is coalesced per lobby (only the fact of change matters) and the
+/// total is capped, dropping the oldest `Changed` first.
+#[derive(Debug, Default)]
+#[cfg_attr(not(feature = "steam"), allow(dead_code))]
+pub(crate) struct RawQueue {
+    items: VecDeque<LobbyRaw>,
+}
+
+/// Most callbacks held between polls.
+#[cfg_attr(not(feature = "steam"), allow(dead_code))]
+pub(crate) const RAW_QUEUE_CAP: usize = 256;
+
+#[cfg_attr(not(feature = "steam"), allow(dead_code))]
+impl RawQueue {
+    pub(crate) fn push(&mut self, raw: LobbyRaw) {
+        if let LobbyRaw::Changed(id) = &raw
+            && self
+                .items
+                .iter()
+                .any(|r| matches!(r, LobbyRaw::Changed(other) if other == id))
+        {
+            return;
+        }
+        if self.items.len() >= RAW_QUEUE_CAP {
+            // Replies to requests are rare and matter; a lost change only delays a diff.
+            if let Some(at) = self
+                .items
+                .iter()
+                .position(|r| matches!(r, LobbyRaw::Changed(_)))
+            {
+                self.items.remove(at);
+            } else if matches!(raw, LobbyRaw::Changed(_)) {
+                return;
+            } else {
+                self.items.pop_front();
+            }
+        }
+        self.items.push_back(raw);
+    }
+
+    pub(crate) fn drain(&mut self) -> Vec<LobbyRaw> {
+        self.items.drain(..).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.items.len()
+    }
+}
+
 /// The Steam lobby surface. All calls are made from the tick thread; requests are
 /// asynchronous and answered through [`LobbyBackend::lobby_poll`].
 pub trait LobbyBackend {
@@ -175,6 +226,10 @@ pub struct SteamLobbies {
     /// Virtual ports to publish for lobbies being created, in request order.
     creating: VecDeque<Option<i32>>,
     joining: BTreeSet<LobbyId>,
+    /// Lobbies left while their join was still in flight; a late `Entered` undoes them.
+    left_joining: BTreeSet<LobbyId>,
+    /// Lobbies whose last snapshot looked gone; a second look confirms (L2).
+    suspect: BTreeSet<LobbyId>,
     lists: usize,
     joined: BTreeMap<LobbyId, LobbyView>,
     /// Change callbacks for lobbies not known yet; replayed when they become known.
@@ -214,6 +269,8 @@ impl SteamLobbies {
             me: user.id,
             creating: VecDeque::new(),
             joining: BTreeSet::new(),
+            left_joining: BTreeSet::new(),
+            suspect: BTreeSet::new(),
             lists: 0,
             joined: BTreeMap::new(),
             early: VecDeque::new(),
@@ -270,18 +327,26 @@ impl SteamLobbies {
             return Ok(());
         }
         self.backend(|b| b.lobby_join(lobby))?;
+        self.left_joining.remove(&lobby);
         self.joining.insert(lobby);
         Ok(())
     }
 
     /// Leaves a lobby; `Left` is returned by the next `poll`.
     pub fn leave(&mut self, lobby: LobbyId) -> SteamResult<()> {
-        if self.joined.remove(&lobby).is_none() && !self.joining.remove(&lobby) {
-            return Err(SteamError::NotFound(format!("lobby {}", lobby.0)));
+        self.suspect.remove(&lobby);
+        if self.joined.remove(&lobby).is_some() {
+            let result = self.backend(|b| b.lobby_leave(lobby));
+            self.out.push(LobbyEvent::Left { lobby });
+            return result;
         }
-        let result = self.backend(|b| b.lobby_leave(lobby));
-        self.out.push(LobbyEvent::Left { lobby });
-        result
+        if self.joining.remove(&lobby) {
+            // Steam cannot cancel a join in flight: leave as soon as it completes.
+            self.left_joining.insert(lobby);
+            self.out.push(LobbyEvent::Left { lobby });
+            return Ok(());
+        }
+        Err(SteamError::NotFound(format!("lobby {}", lobby.0)))
     }
 
     /// Requests a lobby list; `ListReceived` arrives from `poll`.
@@ -369,6 +434,11 @@ impl SteamLobbies {
 
     /// Pumps Steam callbacks into normalised events.
     pub fn poll(&mut self) -> Vec<LobbyEvent> {
+        // Second look at lobbies that looked gone on the previous poll.
+        for lobby in std::mem::take(&mut self.suspect) {
+            self.suspect.insert(lobby);
+            self.refresh(lobby);
+        }
         let raws = self
             .session
             .with_backend(|b| b.lobby_backend().map(|l| l.lobby_poll()))
@@ -407,6 +477,11 @@ impl SteamLobbies {
                 if self.joined.contains_key(&lobby) {
                     return; // The creator is also told it entered; already handled.
                 }
+                if !self.joining.contains(&lobby) && self.left_joining.remove(&lobby) {
+                    // Left while joining: undo the entry that has now completed.
+                    let _ = self.backend(|b| b.lobby_leave(lobby));
+                    return;
+                }
                 if self.joining.remove(&lobby) {
                     self.enter(lobby);
                     self.out.push(LobbyEvent::Joined { lobby });
@@ -420,6 +495,7 @@ impl SteamLobbies {
                 lobby,
                 result: Err(reason),
             } => {
+                self.left_joining.remove(&lobby);
                 if self.joining.remove(&lobby) {
                     self.out.push(LobbyEvent::JoinFailed { lobby, reason });
                 }
@@ -489,17 +565,21 @@ impl SteamLobbies {
         let Some(old) = self.joined.get(&lobby).cloned() else {
             return;
         };
-        let Some(new) = self.snapshot(lobby) else {
-            // The lobby no longer exists for us.
-            self.joined.remove(&lobby);
-            self.out.push(LobbyEvent::Left { lobby });
+        let new = self
+            .snapshot(lobby)
+            .filter(|view| view.members.contains(&self.me));
+        let Some(new) = new else {
+            // Gone, or the local user is missing from the members. A single empty read can
+            // be transient, so only a second consecutive one ends the membership.
+            if self.suspect.remove(&lobby) {
+                self.joined.remove(&lobby);
+                self.out.push(LobbyEvent::Left { lobby });
+            } else {
+                self.suspect.insert(lobby);
+            }
             return;
         };
-        if !new.members.contains(&self.me) {
-            self.joined.remove(&lobby);
-            self.out.push(LobbyEvent::Left { lobby });
-            return;
-        }
+        self.suspect.remove(&lobby);
         for user in new.members.difference(&old.members) {
             self.out
                 .push(LobbyEvent::MemberJoined { lobby, user: *user });
@@ -539,10 +619,40 @@ fn identity_of(view: &LobbyView) -> Option<ConnectIdentity> {
     (host == view.owner).then_some(ConnectIdentity { host, virtual_port })
 }
 
-/// Identity published by a lobby listing (before joining), when it names the owner.
+/// Identity published by a lobby listing (before joining). It is only a hint for showing
+/// the lobby: listings need not expose the owner, so it is **not** checked against it.
+/// Never dial it; join the lobby and use [`SteamLobbies::connect_identity`] or
+/// [`SteamLobbies::connect_client`], which verify the host against the current owner.
 pub fn listed_identity(info: &LobbyInfo) -> Option<ConnectIdentity> {
     let host = SteamId(info.data.get(HOST_KEY)?.parse().ok()?);
     let virtual_port = info.data.get(PORT_KEY)?.parse().ok()?;
     // Listings may not expose the owner; the join re-checks it against the owner.
     Some(ConnectIdentity { host, virtual_port })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changes_are_coalesced_per_lobby_and_the_queue_is_capped() {
+        let mut queue = RawQueue::default();
+        for _ in 0..1000 {
+            queue.push(LobbyRaw::Changed(LobbyId(1)));
+        }
+        assert_eq!(queue.len(), 1);
+        for id in 0..10_000 {
+            queue.push(LobbyRaw::Changed(LobbyId(id)));
+        }
+        assert_eq!(queue.len(), RAW_QUEUE_CAP);
+        // Replies survive a flood of changes.
+        queue.push(LobbyRaw::Created(Ok(LobbyId(7))));
+        for id in 20_000..30_000 {
+            queue.push(LobbyRaw::Changed(LobbyId(id)));
+        }
+        let drained = queue.drain();
+        assert!(drained.len() <= RAW_QUEUE_CAP);
+        assert!(drained.contains(&LobbyRaw::Created(Ok(LobbyId(7)))));
+        assert_eq!(queue.len(), 0);
+    }
 }

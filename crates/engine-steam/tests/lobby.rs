@@ -304,6 +304,8 @@ fn losing_the_lobby_is_reported_as_left() {
     w.lobbies.join(id).unwrap();
     w.lobbies.poll();
     w.fake().sim_lobby_destroy(id);
+    // One empty read is not enough; the next poll confirms.
+    assert!(w.lobbies.poll().is_empty());
     assert_eq!(w.lobbies.poll(), vec![LobbyEvent::Left { lobby: id }]);
     assert!(w.lobbies.lobby(id).is_none());
 }
@@ -430,4 +432,60 @@ fn stale_host_metadata_is_ignored() {
             .connect_client(id, SteamClientConfig::default())
             .is_err()
     );
+}
+
+#[test]
+fn a_transient_empty_read_is_not_a_false_left() {
+    let mut w = world();
+    let id = w.fake().sim_add_lobby(other(1), 4, &[]);
+    w.lobbies.join(id).unwrap();
+    w.lobbies.poll();
+    w.fake().sim_lobby_join(id, other(2));
+    w.fake().glitch_lobby_info(1);
+    assert!(w.lobbies.poll().is_empty(), "no Left on one empty read");
+    assert!(w.lobbies.lobby(id).is_some());
+    // The next look sees the lobby again and reports the change that was pending.
+    assert_eq!(
+        w.lobbies.poll(),
+        vec![LobbyEvent::MemberJoined {
+            lobby: id,
+            user: other(2)
+        }]
+    );
+    // A later single glitch does not carry over as a confirmation.
+    w.fake().sim_lobby_set_data(id, "a", "1");
+    w.fake().glitch_lobby_info(1);
+    w.lobbies.poll();
+    w.fake().sim_lobby_set_data(id, "b", "2");
+    let events = w.lobbies.poll();
+    assert!(
+        !events.contains(&LobbyEvent::Left { lobby: id }),
+        "{events:?}"
+    );
+    assert!(w.lobbies.lobby(id).is_some());
+}
+
+#[test]
+fn leaving_while_a_join_is_in_flight_undoes_it() {
+    let mut w = world();
+    let id = w.fake().sim_add_lobby(other(1), 4, &[]);
+    w.fake().hold_lobby_callbacks(true);
+    w.lobbies.join(id).unwrap();
+    w.lobbies.leave(id).unwrap();
+    assert_eq!(w.lobbies.poll(), vec![LobbyEvent::Left { lobby: id }]);
+    assert_eq!(
+        w.fake().call_count("lobby_leave"),
+        0,
+        "nothing to leave yet"
+    );
+    w.fake().release_lobby_callbacks(false);
+    w.fake().hold_lobby_callbacks(false);
+    // The late success is undone: no Joined, and the account leaves the room.
+    assert!(w.lobbies.poll().is_empty());
+    assert!(w.lobbies.lobby(id).is_none());
+    assert_eq!(w.fake().call_count("lobby_leave"), 1);
+    assert!(!w.fake().lobby_info(id).unwrap().members.contains(&me()));
+    // Joining again afterwards works normally.
+    w.lobbies.join(id).unwrap();
+    assert_eq!(w.lobbies.poll(), vec![LobbyEvent::Joined { lobby: id }]);
 }

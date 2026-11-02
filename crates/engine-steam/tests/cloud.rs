@@ -265,3 +265,27 @@ fn a_corrupt_local_slot_is_never_uploaded() {
     assert_eq!(report.failures.len(), 1);
     assert!(fake.cloud_file("saves/a.json").is_none());
 }
+
+#[test]
+fn corrupt_local_and_corrupt_cloud_copies_leave_the_local_file_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path(), 1);
+    store.save("a", data(1), None).unwrap();
+    let path = store.slot_path("a").unwrap();
+    std::fs::write(&path, b"{ local garbage").unwrap();
+    let mut fake = ready().with_cloud_file("saves/a.json", b"cloud garbage");
+    let report = CloudSync::new(store).sync_all(&mut fake);
+    assert_eq!(report.failures.len(), 1);
+    assert!(
+        report
+            .events
+            .iter()
+            .all(|e| matches!(e, SteamEvent::CloudSyncFailed { .. }))
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"{ local garbage");
+    assert!(
+        !path.with_extension("json.bak").exists(),
+        "nothing was installed"
+    );
+    assert_eq!(fake.cloud_file("saves/a.json"), Some(&b"cloud garbage"[..]));
+}

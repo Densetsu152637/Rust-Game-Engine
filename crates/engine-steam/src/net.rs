@@ -73,3 +73,44 @@ pub enum NetEvent {
         reason: String,
     },
 }
+
+/// The address in the text form of an IP `SteamNetworkingIdentity`
+/// (`ip:1.2.3.4:27015`, `ip:[::1]:27015`, `ip:[::ffff:1.2.3.4]:27015`). Any other text,
+/// including `steamid:` and `str:` identities, is `None`.
+#[cfg_attr(not(feature = "steam"), allow(dead_code))]
+pub(crate) fn parse_ip_identity(text: &str) -> Option<SocketAddr> {
+    text.strip_prefix("ip:")?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ip_identity_text_forms_parse() {
+        assert_eq!(
+            parse_ip_identity("ip:127.0.0.1:27015"),
+            Some("127.0.0.1:27015".parse().unwrap())
+        );
+        assert_eq!(
+            parse_ip_identity("ip:[::1]:27015"),
+            Some("[::1]:27015".parse().unwrap())
+        );
+        assert_eq!(
+            parse_ip_identity("ip:[::ffff:10.1.2.3]:9"),
+            Some("[::ffff:10.1.2.3]:9".parse().unwrap())
+        );
+        for bad in [
+            "",
+            "ip:",
+            "ip:127.0.0.1",
+            "ip:not-an-address:1",
+            "steamid:76561198929353896",
+            "str:hello",
+            "127.0.0.1:27015",
+            "IP:127.0.0.1:1",
+        ] {
+            assert_eq!(parse_ip_identity(bad), None, "{bad:?}");
+        }
+    }
+}

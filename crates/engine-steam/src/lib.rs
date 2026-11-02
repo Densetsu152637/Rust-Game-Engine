@@ -58,7 +58,7 @@ pub use plugin::{REQUIRED_EXIT_CODE, SteamPlugin, SteamRuntimeStatus, event_json
 ))]
 pub use real::RealBackend;
 pub use session::SteamSession;
-pub use stats::{DEFAULT_STORE_INTERVAL_TICKS, StatsService};
+pub use stats::{DEFAULT_STORE_INTERVAL_TICKS, MAX_PENDING_CHANGES, StatsService};
 pub use transport::{
     AuthPolicy, SteamClientConfig, SteamClientEndpoint, SteamLimits, SteamListen,
     SteamServerConfig, SteamServerEndpoint,

@@ -63,6 +63,10 @@ fn lobby_events_become_online_notifications() {
         "engine keys are internal"
     );
 
+    // Reserved connect-identity keys produce no attribute notification.
+    fake.lock().unwrap().sim_lobby_set_data(id, HOST_KEY, "2");
+    assert!(convert(&mut lobbies, &mut adapter).is_empty());
+
     fake.lock().unwrap().sim_lobby_leave(id, owner);
     let bodies = convert(&mut lobbies, &mut adapter);
     assert!(bodies.iter().any(|b| matches!(

@@ -13,11 +13,11 @@ use steamworks::{
 };
 
 use crate::error::{SteamError, SteamResult};
-use crate::lobby::{EnterError, LobbyBackend, LobbyRaw, MAX_LOBBY_MEMBERS};
+use crate::lobby::{EnterError, LobbyBackend, LobbyRaw, MAX_LOBBY_MEMBERS, RawQueue};
 use crate::real::RealBackend;
 use crate::types::{LobbyFilter, LobbyId, LobbyInfo, LobbyVisibility, SteamId};
 
-pub(crate) type LobbyEvents = Arc<Mutex<Vec<LobbyRaw>>>;
+pub(crate) type LobbyEvents = Arc<Mutex<RawQueue>>;
 
 fn push(queue: &LobbyEvents, raw: LobbyRaw) {
     queue
@@ -172,11 +172,9 @@ impl LobbyBackend for RealBackend {
     }
 
     fn lobby_poll(&mut self) -> Vec<LobbyRaw> {
-        std::mem::take(
-            &mut *self
-                .lobby_events
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
+        self.lobby_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain()
     }
 }

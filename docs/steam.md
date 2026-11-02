@@ -189,7 +189,10 @@ not unlocks) and `steam.stats_stored`.
 Before delivery. Steam delivers the user stats some time after the request. Unlocks and
 stat sets made until then are queued (the latest value per stat wins, duplicate unlocks
 are ignored), `unlock` and `set_*` report success, and the queue is applied on the next
-tick or the next successful read, after which the normal throttled store runs. Reads
+tick or the next successful read, after which the normal throttled store runs. The queue holds at most `MAX_PENDING_CHANGES` (256) distinct changes; beyond that the
+call fails with `Rejected`. `unlock` returns `Ok(true)` while the stats are not ready
+even if the achievement was already unlocked (applying the queue then changes nothing).
+Reads
 before delivery return `SteamError::StatsNotReady`; `add_progress` needs the current value
 and so returns that error too. Unknown names in the queue are dropped when applied.
 
@@ -258,7 +261,11 @@ Threats and answers (the TLS certificate-binding token flow of `engine-network` 
   authority, and cannot be chosen by the peer. The server records that identity as the
   peer's SteamID. A connection by IP address from a signed-in Steam client also reports the client's
   Steam identity on App 480 (observed live), but a peer without Steam credentials shows only
-  its address (matched by `ip:<addr>`, so concurrent IP clients stay distinct); the
+  its address (matched by `ip:<addr>`, so concurrent IP clients stay distinct; the text form is
+  parsed by `parse_ip_identity`, unit-tested against the `ip:a.b.c.d:port`, `ip:[::1]:port`
+  and `ip:[::ffff:a.b.c.d]:port` forms Valve documents, but the fallback was never observed
+  live because a signed-in client always carries a Steam identity - if the text form
+  differs the remote is `Unknown` and concurrent address-only clients could be confused); the
   server therefore never trusts an IP connection's identity without a ticket.
 - Replayed or stolen identity claims. The client sends its SteamID and an auth session
   ticket (`ISteamUser::GetAuthSessionTicket`) in a `Hello` frame as the first message.
@@ -272,10 +279,13 @@ Threats and answers (the TLS certificate-binding token flow of `engine-network` 
   Steam allows one auth session per SteamID in a process). An IP listener refuses
   `IdentityOnly` at construction.
 - Duplicate logins. A SteamID that is already admitted cannot log in again. A claim for a
-  SteamID whose ticket is still being validated supersedes the older pending claim, so an
-  unauthenticated peer cannot hold a SteamID hostage until its handshake times out. The
-  cost: a forged claim can briefly cancel a real user's in-flight login, which the real
-  client retries; ticket validation always decides admission.
+  SteamID whose ticket is still being validated replaces the older pending claim only when
+  Steam itself authenticated the new connection as that SteamID (a P2P or signed-in
+  connection): that is the real account, so it wins. A peer without a Steam-authenticated
+  identity (a bare IP connection) can claim any SteamID, so it never evicts a pending
+  validation: at most one validation per SteamID is allowed for such peers and the newcomer
+  is refused. Verdicts already queued for a replaced ticket are discarded so they cannot
+  admit the new peer. Ticket validation always decides admission.
 - Server identity. P2P: the client dials a SteamID, so Steam authenticates the server.
   IP: the server is unauthenticated, which makes IP mode suitable for LAN, development
   and dedicated servers at a known address only. The server's `Accept` frame repeats
@@ -362,7 +372,11 @@ snapshot without the local user, becomes `Left`. Events: `Created`, `CreateFaile
 `Joined`, `JoinFailed` (`Full`, `NotFound`, `NotAllowed`, `Other`), `ListReceived`,
 `ListFailed`, `MemberJoined`, `MemberLeft`, `OwnerChanged`, `DataChanged` (per key,
 `None` when removed) and `Left`. Steam does not say why a member left, so `MemberLeft` has
-no reason. Lobbies hold at most 250 members; keys are at most 255 bytes and values 8192.
+no reason. A single empty snapshot (or one that lacks the local user) is not enough to
+report `Left`: a second consecutive look on the next `poll` must agree, so a transient
+read cannot end a membership. Leaving while a join is in flight reports `Left` at once and
+undoes the join when Steam completes it. The real backend coalesces change callbacks per
+lobby and caps the queue (256) in case nobody polls `SteamLobbies`. Lobbies hold at most 250 members; keys are at most 255 bytes and values 8192.
 Only the owner may set lobby data (checked locally before Steam). Filters support
 string equality, free slots and a result count; the real backend searches worldwide.
 
@@ -376,9 +390,13 @@ host, but the client dials that SteamID through Steam's authenticated P2P path a
 server still validates the client with an auth ticket, so a lying lobby cannot make the
 client trust the wrong peer; at worst it makes the client dial one that refuses.
 
+`listed_identity` (for showing a listing) is a hint only and is not checked against the
+owner: never dial it, join first and use `connect_identity`/`connect_client`.
+
 `engine-online` adapter. With the `online` Cargo feature, `OnlineAdapter::convert` maps
 member, host, attribute and leave events to `engine_online::ServerBody` notifications
-(`MemberJoined`, `MemberLeft`, `HostChanged` with a counted epoch, `AttributesChanged`,
+(`MemberJoined`, `MemberLeft`, `HostChanged` with a counted epoch (local to this adapter, restarting at 1 per client, not
+shared between players), `AttributesChanged`,
 `Left`) so code written for a self-hosted session can follow a Steam lobby. Session ids are
 the low 53 bits of the lobby id (the protocol keeps ids exactly representable as JSON
 numbers); a player is its decimal SteamID; engine-internal keys are not exposed as
