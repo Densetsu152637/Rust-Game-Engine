@@ -790,3 +790,57 @@ fn check_lightmap<'a>(
     }
     Ok(binding)
 }
+
+impl Runtime {
+    /// The particle input of the last completed scene tick: enabled
+    /// `ParticleEmitter` components in stable ID order with their world
+    /// transforms. Cheap and independent of [`Self::extract_scene_frame`] so a
+    /// host can feed the renderer once per tick (docs/rendering-particles.md).
+    /// `tick` is zero and `dt` zero before the first tick.
+    pub fn extract_particles(&self) -> Result<crate::particles::ParticleFrame> {
+        use crate::particles::{
+            MAX_PARTICLE_EMITTERS, MAX_TOTAL_EMITTER_CAPACITY, ParticleEmitter,
+            ParticleEmitterInstance, ParticleFrame,
+        };
+        let world = self.app.world();
+        let mut emitters = Vec::new();
+        for entity in world.iter_entities() {
+            let Some(emitter) = entity.get::<ParticleEmitter>().filter(|e| e.enabled) else {
+                continue;
+            };
+            emitter.validate()?;
+            let id = entity
+                .get::<AuthoredId>()
+                .map(|id| id.id.clone())
+                .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
+            if entity.get::<Transform>().is_none() {
+                return Err(Error::new(
+                    "render.particles.transform",
+                    format!("{id}: ParticleEmitter requires Transform"),
+                ));
+            }
+            emitters.push(ParticleEmitterInstance {
+                world: crate::world_transform(world, entity.id())?.matrix,
+                emitter: emitter.clone(),
+                id,
+            });
+        }
+        emitters.sort_by(|a, b| a.id.cmp(&b.id));
+        let total: u64 = emitters.iter().map(|e| u64::from(e.emitter.capacity)).sum();
+        if emitters.len() > MAX_PARTICLE_EMITTERS || total > u64::from(MAX_TOTAL_EMITTER_CAPACITY) {
+            return Err(Error::new(
+                "render.particles.limit",
+                format!(
+                    "at most {MAX_PARTICLE_EMITTERS} enabled ParticleEmitters totalling \
+                     {MAX_TOTAL_EMITTER_CAPACITY} particles; found {} totalling {total}",
+                    emitters.len()
+                ),
+            ));
+        }
+        Ok(ParticleFrame {
+            tick: self.ticks,
+            dt: self.last_dt,
+            emitters,
+        })
+    }
+}

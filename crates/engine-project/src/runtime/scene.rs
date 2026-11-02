@@ -357,6 +357,11 @@ pub(super) fn apply_components(world: &mut World, entity: Entity, authored: &Sce
     } else {
         e.remove::<crate::raytracing::RayTracing>();
     }
+    if let Some(value) = &c.particle_emitter {
+        e.insert(value.clone());
+    } else {
+        e.remove::<crate::particles::ParticleEmitter>();
+    }
     if let Some(parent) = &authored.parent {
         e.insert(crate::Parent(parent.clone()));
     } else {
