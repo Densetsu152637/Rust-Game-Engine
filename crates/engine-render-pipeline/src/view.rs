@@ -94,6 +94,9 @@ pub struct ViewData {
     /// HDR post-processing and tonemapping for this view (`None`: the
     /// default clamp output). See [`crate::PostSettings`].
     pub post: Option<crate::post::PostSettings>,
+    /// Projected decals of this view (`engine.decals`). A non-empty list turns
+    /// the feature on unless the view disables it; see [`crate::Decal`].
+    pub decals: Vec<crate::decals::Decal>,
     pub presentation: Presentation,
 }
 
@@ -122,6 +125,7 @@ impl ViewData {
             host_needs: FeatureNeeds::default(),
             reset_history: false,
             post: None,
+            decals: Vec::new(),
             presentation: Presentation::Enabled,
         };
         view.validate()?;

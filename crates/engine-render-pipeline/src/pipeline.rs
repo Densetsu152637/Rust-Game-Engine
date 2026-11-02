@@ -57,6 +57,10 @@ pub mod names {
     /// superseding `engine.output`. Runs for views with
     /// [`crate::ViewData::post`] set.
     pub const TONEMAP: &str = "engine.tonemap";
+    /// OpaqueEffects stage: projected decals onto scene depth, applied to
+    /// the lit scene colour (docs/rendering-decals.md). Off by default; a
+    /// non-empty [`crate::ViewData::decals`] turns it on.
+    pub const DECALS: &str = "engine.decals";
     /// Overlay stage: the host's 2D sprites/UI (a host-executed node).
     pub const SPRITES: &str = "engine.sprites";
 }
@@ -325,6 +329,7 @@ pub fn builtin_registry() -> Result<FeatureRegistry> {
         FeatureDescriptor::new(names::HIZ_VISIBILITY, Stage::Visibility).disabled_by_default(),
         FeatureDescriptor::new(names::OPAQUE, Stage::Opaque),
         FeatureDescriptor::new(names::TRANSPARENT, Stage::Transparent),
+        crate::decals::descriptor(),
         FeatureDescriptor::new(names::UPSCALE, Stage::Upscale),
         FeatureDescriptor::new(names::POST, Stage::PostProcess).disabled_by_default(),
         FeatureDescriptor::new(names::OUTPUT, Stage::Tonemap).required(),
@@ -352,6 +357,7 @@ pub struct ScenePipeline {
     composer: ShaderComposer,
     registry: FeatureRegistry,
     post: std::sync::Arc<crate::post::PostShared>,
+    decals: std::sync::Arc<crate::decals::DecalShared>,
     mesh: MeshRenderer,
     hiz: Option<(HiZKernel, HiZIndirect)>,
     output: OutputPass,
@@ -394,6 +400,17 @@ impl ScenePipeline {
             post.clone(),
         )
         .context("creating the post-processing stack")?;
+        let decals = std::sync::Arc::new(crate::decals::DecalShared::default());
+        crate::decals::install(
+            &mut registry,
+            &FeatureSetup {
+                gpu: &gpu,
+                layouts: &layouts,
+                composer: &composer,
+            },
+            decals.clone(),
+        )
+        .context("creating the decal pass")?;
         let lighting = LightingRenderer::new(&gpu).context("creating the lighting passes")?;
         let shadow_alignment = device.limits().min_uniform_buffer_offset_alignment.max(16);
         Ok(Self {
@@ -402,6 +419,7 @@ impl ScenePipeline {
             composer,
             registry,
             post,
+            decals,
             mesh,
             hiz,
             output,
@@ -485,6 +503,12 @@ impl ScenePipeline {
             }
         }
         self.registry.absorb(features)
+    }
+
+    /// What the decal pass did for `view` in its last encoded frame: absent
+    /// until `engine.decals` has run for the view, and after the view closes.
+    pub fn decal_report(&self, view: ViewId) -> Option<crate::DecalReport> {
+        self.decals.reports.lock().ok()?.get(&view).copied()
     }
 
     /// The report of the last frame of `view`.
@@ -691,7 +715,16 @@ impl ScenePipeline {
                 overrides.0.entry(name.to_owned()).or_insert(true);
             }
         }
+        // Decals turn their pass on unless the view says otherwise.
+        if !view.decals.is_empty() {
+            overrides.0.entry(names::DECALS.to_owned()).or_insert(true);
+        }
         let mut resolved = self.registry.resolve(&overrides);
+        if !resolved.is_enabled(names::DECALS)
+            && let Ok(mut reports) = self.decals.reports.lock()
+        {
+            reports.remove(&view.id);
+        }
         let needs = self.registry.needs(&resolved).union(view.host_needs);
         let device = self.gpu.device.clone();
         let queue = self.gpu.queue.clone();

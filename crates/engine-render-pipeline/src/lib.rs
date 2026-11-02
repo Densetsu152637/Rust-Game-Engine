@@ -28,6 +28,7 @@
 
 mod builtin;
 mod context;
+pub mod decals;
 mod feature;
 pub mod indirect;
 mod instancing;
@@ -52,6 +53,10 @@ pub use builtin::mesh::{
 pub use builtin::passes::DepthExport;
 pub use context::{
     CompositeIo, FeatureContext, FeatureSetup, OutputTarget, PipelineLayouts, PresentationInput,
+};
+pub use decals::{
+    DECAL_UNIFORM_BYTES, Decal, DecalBlend, DecalReport, DecalTexture, DecalUniform,
+    MAX_DECAL_EMISSIVE, MAX_DECAL_EXTENT, MAX_DECALS, MAX_SUBMITTED_DECALS, PixelRect, screen_rect,
 };
 pub use engine_render_wgpu::{
     ComposedDevice, DeviceFeatureReport, DeviceFeatureRequest, GpuContext, GpuRequirements,
