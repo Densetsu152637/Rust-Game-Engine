@@ -1582,11 +1582,9 @@ impl GpuRenderer {
                 }
             } else if upscale.mode == UpscalerMode::AutoTemporal {
                 // Keep the specific reason Super Resolution could not run.
-                let note = "the native temporal resolve does not run under DLSS Frame                             Generation, so the scene rendered natively";
-                let reason = match self.upscaler.status().fallback_reason.clone() {
-                    Some(prior) => format!("{prior}; {note}"),
-                    None => format!("Super Resolution was unavailable and {note}"),
-                };
+                let reason = auto_temporal_framegen_reason(
+                    self.upscaler.status().fallback_reason.as_deref(),
+                );
                 self.upscaler.fallback(upscale, &reason);
             }
             let mut view = scene3d::camera_view(camera, ViewId::MAIN, output, output)?;
@@ -2001,9 +1999,39 @@ fn submit_to(
     result.map(drop)
 }
 
+/// Why `AutoTemporal` rendered natively under DLSS Frame Generation, keeping
+/// the specific reason Super Resolution could not run when there is one.
+#[cfg(any(feature = "dlss", test))]
+fn auto_temporal_framegen_reason(prior: Option<&str>) -> String {
+    const NOTE: &str = concat!(
+        "the native temporal resolve does not run under DLSS Frame ",
+        "Generation, so the scene rendered natively"
+    );
+    match prior {
+        Some(prior) => format!("{prior}; {NOTE}"),
+        None => format!("Super Resolution was unavailable and {NOTE}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_temporal_framegen_reason_is_one_line_with_single_spaces() {
+        let bare = auto_temporal_framegen_reason(None);
+        assert_eq!(
+            bare,
+            concat!(
+                "Super Resolution was unavailable and the native temporal resolve ",
+                "does not run under DLSS Frame Generation, so the scene rendered natively"
+            )
+        );
+        assert!(!bare.contains("  "));
+        let kept = auto_temporal_framegen_reason(Some("no driver"));
+        assert!(kept.starts_with("no driver; the native temporal resolve"));
+        assert!(!kept.contains("  "));
+    }
 
     #[test]
     fn render_limits_default_to_documented_bounds() {
