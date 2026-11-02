@@ -31,8 +31,20 @@ pub fn run(configure: fn(&mut EngineApp) -> Result<()>) -> i32 {
         ),
         Ok(Err(error)) => {
             eprintln!("{error:#}");
+            if let Some(exit) = error.downcast_ref::<engine_project::HostServiceExit>()
+                && exit.code == 0
+            {
+                // The host service asked to end the process quietly (Steam relaunch).
+                println!(
+                    "{}",
+                    json!({"schema":1,"ok":true,"command":"run","result":{"steam":"relaunching"}})
+                );
+                return 0;
+            }
             let project = error.downcast_ref::<engine_project::Error>();
-            let code = if project
+            let code = if let Some(exit) = error.downcast_ref::<engine_project::HostServiceExit>() {
+                exit.code
+            } else if project
                 .is_some_and(|e| e.diagnostics.iter().any(|d| d.code.starts_with("command.")))
             {
                 2
@@ -75,13 +87,24 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Va
     if let Some(file) = &arguments.scene_override {
         apply_scene_override(&mut project, file)?;
     }
+    let steam = steam_settings(project.steam.clone(), editor_generation());
     let mut runtime = Runtime::new(project)?;
     configure(runtime.app_mut())?;
     let monitor = StopMonitor::new();
     if let Some(path) = arguments.screenshot.clone() {
         return screenshot(runtime, &arguments, &path, &monitor.shutdown);
     }
-    let report = engine_desktop::run_with_wgpu_backends(
+    let session = steam
+        .as_ref()
+        .map(|_| engine_steam::SteamSession::new(engine_steam::default_backend()));
+    let services: Vec<Box<dyn engine_project::HostService>> = match (&session, steam) {
+        (Some(session), Some(manifest)) => vec![Box::new(engine_steam::SteamPlugin::new(
+            session.clone(),
+            manifest,
+        ))],
+        _ => Vec::new(),
+    };
+    let report = engine_desktop::run_with_services(
         runtime,
         RunOptions {
             headless: arguments.headless,
@@ -93,8 +116,49 @@ fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Va
             shutdown: Some(monitor.shutdown.clone()),
         },
         arguments.render_backend,
+        services,
     )?;
-    Ok(serde_json::to_value(report)?)
+    let mut value = serde_json::to_value(report)?;
+    if let (Some(session), Some(object)) = (&session, value.as_object_mut()) {
+        object.insert("steam".into(), engine_steam::status_json(&session.status()));
+    }
+    Ok(value)
+}
+
+/// True in a generation started by the editor for play: those never touch Steam.
+fn editor_generation() -> bool {
+    std::env::var_os("ENGINE_GENERATION_READY_FILE").is_some()
+}
+
+/// The Steam settings a run acts on: none for editor play generations or for
+/// projects without a `steam` block.
+fn steam_settings(
+    manifest: Option<engine_project::SteamManifest>,
+    editor_generation: bool,
+) -> Option<engine_project::SteamManifest> {
+    manifest.filter(|_| !editor_generation)
+}
+
+#[cfg(test)]
+mod steam_tests {
+    use super::steam_settings;
+    use engine_project::SteamManifest;
+
+    fn manifest() -> SteamManifest {
+        SteamManifest {
+            app_id: 480,
+            cloud: false,
+            required: false,
+            rich_presence: Default::default(),
+        }
+    }
+
+    #[test]
+    fn editor_play_generations_never_get_steam() {
+        assert!(steam_settings(Some(manifest()), true).is_none());
+        assert!(steam_settings(Some(manifest()), false).is_some());
+        assert!(steam_settings(None, false).is_none());
+    }
 }
 
 /// Runs the fixed-tick headless simulation (including scripted input, offline

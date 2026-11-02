@@ -41,6 +41,25 @@ pub struct Project {
     pub input_actions: BTreeMap<String, String>,
     pub input_bindings: BindingMap,
     pub scene: Scene,
+    /// Optional Steam settings; plain data, parsed whether or not Steam is compiled in.
+    pub steam: Option<SteamManifest>,
+}
+/// The `steam` manifest block. Unknown keys are rejected.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SteamManifest {
+    /// Steam App ID, non-zero.
+    pub app_id: u32,
+    /// Whether Steam Cloud save sync is wanted (used by a later stage).
+    #[serde(default)]
+    pub cloud: bool,
+    /// When true, the game exits with code 4 if Steam is not available.
+    #[serde(default)]
+    pub required: bool,
+    /// Rich presence defaults set once Steam is ready (at most 20 keys; keys up to
+    /// 64 bytes, values up to 256 bytes, no NUL).
+    #[serde(default)]
+    pub rich_presence: BTreeMap<String, String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +78,8 @@ pub(super) struct Manifest {
     pub(super) input_actions: BTreeMap<String, String>,
     #[serde(default, rename = "inputBindings")]
     pub(super) input_bindings: BindingMap,
+    #[serde(default)]
+    pub(super) steam: Option<SteamManifest>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

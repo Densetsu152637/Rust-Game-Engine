@@ -608,3 +608,43 @@ fn diagnostics_with_location_serialize_to_json() {
     assert_eq!(value["diagnostics"][0]["code"], "project.path.outside_root");
     assert_eq!(value["diagnostics"][0]["file"], "../x");
 }
+
+#[test]
+fn project_without_steam_block_has_no_steam_settings() {
+    let p = Proj::new();
+    assert_eq!(p.project().steam, None);
+}
+
+#[test]
+fn steam_block_parses_with_defaults_and_values() {
+    let mut p = Proj::new();
+    p.manifest["steam"] = json!({"app_id": 480});
+    fs::write(p.manifest_path(), p.manifest.to_string()).unwrap();
+    let steam = Project::load(p.manifest_path()).unwrap().steam.unwrap();
+    assert_eq!(steam.app_id, 480);
+    assert!(!steam.cloud && !steam.required && steam.rich_presence.is_empty());
+    p.manifest["steam"] = json!({
+        "app_id": 7, "cloud": true, "required": true,
+        "rich_presence": {"status": "Menu"}
+    });
+    fs::write(p.manifest_path(), p.manifest.to_string()).unwrap();
+    let steam = Project::load(p.manifest_path()).unwrap().steam.unwrap();
+    assert!(steam.cloud && steam.required);
+    assert_eq!(steam.rich_presence["status"], "Menu");
+}
+
+#[test]
+fn steam_block_rejects_unknown_keys_and_bad_values() {
+    for steam in [
+        json!({"app_id": 480, "lobbies": true}),
+        json!({"cloud": true}),
+        json!({"app_id": 0}),
+        json!({"app_id": 1, "rich_presence": {"": "x"}}),
+        json!({"app_id": 1, "rich_presence": {"k": "a\u{0}b"}}),
+    ] {
+        let mut p = Proj::new();
+        p.manifest["steam"] = steam;
+        fs::write(p.manifest_path(), p.manifest.to_string()).unwrap();
+        assert!(Project::load(p.manifest_path()).is_err());
+    }
+}

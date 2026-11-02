@@ -114,6 +114,9 @@ impl Project {
                 validation.errors.join("; "),
             ));
         }
+        if let Some(steam) = &raw.steam {
+            validate_steam(steam)?;
+        }
         let rust_manifest = raw
             .rust
             .as_ref()
@@ -149,6 +152,7 @@ impl Project {
             input_actions: raw.input_actions,
             input_bindings: bindings,
             scene,
+            steam: raw.steam,
         };
         Ok(project)
     }
@@ -372,4 +376,27 @@ impl Project {
         }
         crate::localization::validate_project(self)
     }
+}
+
+fn validate_steam(steam: &SteamManifest) -> Result<()> {
+    let invalid = |message: String| Error::new("project.steam.invalid", message);
+    if steam.app_id == 0 {
+        return Err(invalid("steam.app_id must be non-zero".into()));
+    }
+    if steam.rich_presence.len() > 20 {
+        return Err(invalid("steam.rich_presence allows at most 20 keys".into()));
+    }
+    for (key, value) in &steam.rich_presence {
+        if key.is_empty() || key.len() > 64 || value.len() > 256 {
+            return Err(invalid(format!(
+                "steam.rich_presence key {key:?} must be 1-64 bytes with a value of at most 256 bytes"
+            )));
+        }
+        if key.contains(' ') || value.contains(' ') {
+            return Err(invalid(format!(
+                "steam.rich_presence entry {key:?} contains a NUL byte"
+            )));
+        }
+    }
+    Ok(())
 }

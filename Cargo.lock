@@ -2091,6 +2091,11 @@ dependencies = [
 name = "engine-steam"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "bevy_ecs",
+ "engine-desktop",
+ "engine-project",
+ "serde_json",
  "steamworks",
 ]
 
@@ -2149,6 +2154,7 @@ dependencies = [
  "engine-mcp",
  "engine-platform",
  "engine-project",
+ "engine-steam",
  "image",
  "pollster 0.4.0",
  "process-wrap",
