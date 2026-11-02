@@ -117,6 +117,13 @@ impl SteamSession {
         self.lock().net.owners.insert(key, owner);
     }
 
+    /// Number of routed ownership entries (listen sockets, connections, auth sessions);
+    /// exposed so tests can prove refused connections do not leak router state.
+    #[doc(hidden)]
+    pub fn net_route_count(&self) -> usize {
+        self.lock().net.owners.len()
+    }
+
     pub(crate) fn net_release(&self, key: NetKey) {
         self.lock().net.owners.remove(&key);
     }

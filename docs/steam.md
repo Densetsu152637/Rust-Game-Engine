@@ -244,7 +244,10 @@ Threats and answers (the TLS certificate-binding token flow of `engine-network` 
 - Spoofed identity. A P2P (`ConnectP2P`) connection is authenticated by Steam: the
   remote `SteamId` comes from the connection's identity, signed by Steam's certificate
   authority, and cannot be chosen by the peer. The server records that identity as the
-  peer's SteamID. A connection by IP address carries only an unauthenticated address.
+  peer's SteamID. A connection by IP address from a signed-in Steam client also reports the client's
+  Steam identity on App 480 (observed live), but a peer without Steam credentials shows only
+  its address (matched by `ip:<addr>`, so concurrent IP clients stay distinct); the
+  server therefore never trusts an IP connection's identity without a ticket.
 - Replayed or stolen identity claims. The client sends its SteamID and an auth session
   ticket (`ISteamUser::GetAuthSessionTicket`) in a `Hello` frame as the first message.
   The server calls `BeginAuthSession` for that SteamID and ticket and admits the peer
@@ -256,6 +259,11 @@ Threats and answers (the TLS certificate-binding token flow of `engine-network` 
   already authenticated the identity (it exists for single-account loopback tests, where
   Steam allows one auth session per SteamID in a process). An IP listener refuses
   `IdentityOnly` at construction.
+- Duplicate logins. A SteamID that is already admitted cannot log in again. A claim for a
+  SteamID whose ticket is still being validated supersedes the older pending claim, so an
+  unauthenticated peer cannot hold a SteamID hostage until its handshake times out. The
+  cost: a forged claim can briefly cancel a real user's in-flight login, which the real
+  client retries; ticket validation always decides admission.
 - Server identity. P2P: the client dials a SteamID, so Steam authenticates the server.
   IP: the server is unauthenticated, which makes IP mode suitable for LAN, development
   and dedicated servers at a known address only. The server's `Accept` frame repeats
@@ -269,7 +277,7 @@ Threats and answers (the TLS certificate-binding token flow of `engine-network` 
   `max_peers`, must finish the handshake within `handshake_timeout`, and a bounded
   backlog of connection requests is processed `max_accepts` per poll; further requests are
   rejected. Every received frame is untrusted: an empty frame, reserved header bits, a
-  lane above `Lane::MAX`, a truncated sequence number, an oversize message or any data
+  truncated sequence number, an oversize message or any data
   before admission closes that peer. `poll` is bounded by `PollBudget` for dequeued
   messages and bytes, and tickets are capped at 1024 bytes.
 - Revocation. A later failed `ValidateAuthTicketResponse` for an admitted peer
@@ -297,7 +305,7 @@ connection lanes are not used.
 ### Limits and backpressure
 
 `max_payload` is Steam's per-message send limit (512 KiB) minus the header and, for
-sequenced delivery, the sequence number. Oversize payloads, lanes above `Lane::MAX` and
+sequenced delivery, the sequence number. Oversize payloads, lanes out of range and
 unknown or unadmitted peers return `Error::Invalid`. When Steam reports its send buffer
 full a reliable send returns `Error::QueueFull` and queues nothing; an unreliable send is
 dropped and counted in `dropped_unreliable`.

@@ -468,9 +468,7 @@ impl Core {
             if let NetEvent::ConnectionRequest { conn, .. } = &event {
                 if pending >= self.limits.max_pending_requests {
                     let conn = *conn;
-                    self.session.with_backend(|b| {
-                        let _ = b.net_close(conn, "too many pending connections", false);
-                    });
+                    self.refuse(conn, "too many pending connections");
                     continue;
                 }
                 pending += 1;
@@ -480,13 +478,13 @@ impl Core {
     }
 
     fn process_events(&mut self, mut accepts: usize) {
-        while let Some(event) = self.backlog.front() {
+        // Requests beyond the accept budget wait (in order); everything else proceeds.
+        let mut deferred = VecDeque::new();
+        while let Some(event) = self.backlog.pop_front() {
             if matches!(event, NetEvent::ConnectionRequest { .. }) && accepts == 0 {
-                break;
+                deferred.push_back(event);
+                continue;
             }
-            let Some(event) = self.backlog.pop_front() else {
-                break;
-            };
             match event {
                 NetEvent::ConnectionRequest { conn, remote, .. } => {
                     accepts -= 1;
@@ -509,6 +507,15 @@ impl Core {
                 } => self.on_auth_result(user, accepted, &reason),
             }
         }
+        self.backlog = deferred;
+    }
+
+    /// Rejects a connection request and drops its router ownership.
+    fn refuse(&mut self, conn: NetConnId, reason: &str) {
+        self.session.net_release(NetKey::Conn(conn));
+        self.session.with_backend(|b| {
+            let _ = b.net_close(conn, reason, false);
+        });
     }
 
     fn on_request(&mut self, conn: NetConnId, remote: NetRemote) {
@@ -522,12 +529,11 @@ impl Core {
             } else {
                 "no authenticated identity"
             };
-            self.session.with_backend(|b| {
-                let _ = b.net_close(conn, reason, false);
-            });
+            self.refuse(conn, reason);
             return;
         }
         if self.session.with_backend(|b| b.net_accept(conn)).is_err() {
+            self.session.net_release(NetKey::Conn(conn));
             return;
         }
         let id = self.next_peer;
@@ -596,6 +602,10 @@ impl Core {
             return; // Steam issues tickets asynchronously; retry next poll until the deadline.
         };
         if ticket.data.len() > wire::MAX_TICKET {
+            let handle = ticket.handle;
+            self.session.with_backend(|b| {
+                let _ = b.cancel_auth_ticket(handle);
+            });
             self.reject_peer(SERVER_PEER, "auth ticket too large");
             return;
         }
@@ -757,13 +767,24 @@ impl Core {
             );
             return false;
         }
-        if self
-            .peers
-            .iter()
-            .any(|(other, p)| *other != id && p.steam_id == Some(user))
-        {
+        if self.peers.iter().any(|(other, p)| {
+            *other != id && p.state == State::Admitted && p.steam_id == Some(user)
+        }) {
             self.reject_peer(id, "this SteamID is already connected");
             return false;
+        }
+        // A newer claim for a SteamID still being validated supersedes the older pending
+        // one (an unauthenticated peer must not be able to hold a SteamID hostage).
+        let superseded: Vec<PeerId> = self
+            .peers
+            .iter()
+            .filter(|(other, p)| {
+                **other != id && matches!(p.state, State::Authenticating(u) if u == user)
+            })
+            .map(|(other, _)| *other)
+            .collect();
+        for old in superseded {
+            self.reject_peer(old, "superseded by a newer login for this SteamID");
         }
         match auth {
             AuthPolicy::IdentityOnly => {

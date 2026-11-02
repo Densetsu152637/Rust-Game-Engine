@@ -283,6 +283,37 @@ fn readiness_gate_precedes_gameplay_and_stop_allows_native_cleanup() {
 }
 
 #[test]
+fn a_game_that_ignores_the_stop_request_is_force_killed() {
+    let fixture = Fixture::new();
+    let marker = fixture.root.join("hung.txt");
+    let mut request = fixture.request.clone();
+    request.main_source = r#"fn main() {
+        let marker=std::env::args_os().nth(1).unwrap();
+        std::fs::write(&marker,b"started").unwrap();
+        loop { std::thread::sleep(std::time::Duration::from_millis(5)); }
+    }"#
+    .into();
+    let artifact = compiler().compile(&request, &uncancelled()).unwrap();
+    let mut child = engine_tooling::compiler::RunningGeneration::prepare(
+        artifact,
+        &[marker.clone().into_os_string()],
+        &uncancelled(),
+    )
+    .unwrap();
+    child.start().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !marker.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(marker.exists());
+    let began = Instant::now();
+    let exit = child.stop_with_timeout(Duration::from_millis(200)).unwrap();
+    assert!(exit.forced && !exit.success && exit.cancelled, "{exit:?}");
+    assert!(began.elapsed() < Duration::from_secs(20));
+    assert!(child.try_wait().unwrap().is_some(), "the process is gone");
+}
+
+#[test]
 fn slow_but_cooperative_shutdown_is_not_forced() {
     let fixture = Fixture::new();
     let marker = fixture.root.join("slow-shutdown.txt");
