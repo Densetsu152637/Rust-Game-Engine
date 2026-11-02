@@ -170,8 +170,8 @@ S6/S7 implementation-gate critic converged (rounds 1-3; fixes `f2a6a55`, `c2711b
 - Depends on: S3.
 - Owned paths: `crates/engine-steam/src/input.rs`, `docs/steam.md`; read-only use of `crates/engine-project/src/input/`.
 - Acceptance checks: first verify the steamworks 0.13.1 Input API surface (record it); fake-controller path through `ActionMapper` passes `cargo test -p engine-steam`; live `#[ignore]` controller enumeration skips cleanly with no controller.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `cb19b53` merged. steamworks 0.13.1 Input API verified usable (init/run_frame, connected controllers via the slice variant, action-set/digital/analog handles and data, origins, origin strings, legacy glyph path; no connect callbacks, haptics or PNG/SVG glyphs). `SteamInputSource` implements `InputSource` as device `steam_input`: digital actions as buttons, analog as `name.x`/`name.y` axes (dead zone 0.05), multiple controllers merged, connect/disconnect diffed into session events, action sets (`set_action_set`, remembered before start), glyph lookup. Fake controller model; `RealBackend` Drop shuts Input down first. 10 input tests incl. press/hold/release through `ActionMapper`; clippy both ways; live `input` test ran with Steam (no controller attached: skipped cleanly). Sample `game_actions_480.vdf` in `docs/steam.md`.
 - Handoff notes: if the 0.13.1 Input API is unusable, stop and report before building on it.
 
 ## Stage S9: Workshop service
