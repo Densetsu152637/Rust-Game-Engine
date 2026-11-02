@@ -283,6 +283,39 @@ fn readiness_gate_precedes_gameplay_and_stop_allows_native_cleanup() {
 }
 
 #[test]
+fn slow_but_cooperative_shutdown_is_not_forced() {
+    let fixture = Fixture::new();
+    let marker = fixture.root.join("slow-shutdown.txt");
+    let mut request = fixture.request.clone();
+    // A loaded machine can take well over the old 2 second budget to finish a
+    // game's own cleanup; that is a clean exit, not a hang to kill.
+    request.main_source = r#"fn main() {
+        let marker=std::env::args_os().nth(1).unwrap();
+        std::fs::write(&marker,b"started").unwrap();
+        let stop=std::env::var_os("ENGINE_GENERATION_STOP_FILE").unwrap();
+        while !std::path::Path::new(&stop).exists() { std::thread::sleep(std::time::Duration::from_millis(5)); }
+        std::thread::sleep(std::time::Duration::from_millis(3500));
+        std::fs::write(&marker,b"clean shutdown").unwrap();
+    }"#.into();
+    let artifact = compiler().compile(&request, &uncancelled()).unwrap();
+    let mut child = engine_tooling::compiler::RunningGeneration::prepare(
+        artifact,
+        &[marker.clone().into_os_string()],
+        &uncancelled(),
+    )
+    .unwrap();
+    child.start().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !marker.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(marker.exists());
+    let exit = child.stop().unwrap();
+    assert!(exit.success && !exit.forced, "{exit:?}");
+    assert_eq!(fs::read_to_string(marker).unwrap(), "clean shutdown");
+}
+
+#[test]
 fn in_flight_cargo_cancellation_terminates_build_script_tree_and_retains_last_good() {
     let fixture = Fixture::new();
     let mut compiler = compiler();

@@ -16,6 +16,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+/// How long a running generation gets to finish its own cooperative shutdown
+/// (game `on_destroy` hooks, saves, device teardown) after the stop request before
+/// it is force-killed. Forcing a live game loses state and fails an editor reload,
+/// so the deadline must tolerate a loaded machine (a debug build under concurrent
+/// compilation measurably needs more than 2 seconds); an exiting game returns at
+/// once, so only a hung one waits it out.
+pub const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Owns and reaps a child process. Dropping it cancels a still-running child.
 pub struct RunningGeneration {
     pub artifact: BuildArtifact,
@@ -149,7 +157,7 @@ impl RunningGeneration {
         })
     }
     pub fn stop(&mut self) -> Result<GenerationExit, BuildFailure> {
-        self.stop_with_timeout(Duration::from_secs(2))
+        self.stop_with_timeout(GRACEFUL_STOP_TIMEOUT)
     }
     pub fn stop_with_timeout(&mut self, timeout: Duration) -> Result<GenerationExit, BuildFailure> {
         if let Some(exit) = self.try_wait()? {
