@@ -12,6 +12,7 @@
 //! * `vertex.rs`: the 48-byte vertex record and its neutral layout.
 
 mod cache;
+mod decals;
 mod framegen;
 mod material2d;
 mod post;
@@ -797,6 +798,7 @@ impl GpuRenderer {
         let mut view = view;
         let post_status = self.post_host.prepare(frame, &mut view)?;
         post_effects::prepare(&self.post_effects, frame, &mut view, upscale.is_some())?;
+        decals::prepare(frame, &mut view)?;
         self.rt.prepare(
             &self.gpu,
             self.scene.as_mut().expect("created above"),
