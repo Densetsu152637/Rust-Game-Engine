@@ -49,8 +49,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: F0.
 - Owned paths: `crates/engine-tooling/src/compiler/**`, `crates/engine-tooling/tests/`, `docs/using-the-engine.md`, `templates/game/`.
 - Acceptance checks: a test builds a temp game crate that depends on `engine` (path or git-style dependency) through the native compiler and `cargo tree` of the generated workspace shows exactly one `engine-project`; `engine run` on that game runs `--headless --ticks 3`; existing `engine-tooling` compiler and `mcp_exec` tests pass; the docs' "use plain cargo run" caveat is removed or narrowed to what remains true. CI compiles the whole template (`cargo check --manifest-path templates/game/Cargo.toml` with a `[patch]` to the local checkout), so `src/main.rs` drift is caught.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `e88e37c`. The generated root workspace emits `[patch."<game git url>"]` for each engine crate the game pulls from git (new `compiler/engine_source.rs` scans the game manifest incl. path deps, dev/build/target tables, workspace deps and renames); foreign engine URLs fail with `compiler.engine_source`. `tests/git_engine.rs` (4 tests, local `file://` git repo) proves one `engine-project` for git-facade, git-crates and path cases; `engine run --headless --ticks 3` on a git-tag template copy exited 0 (recorded command). `cargo test -p engine-tooling` 116 passed; clippy, fmt, `cargo check --workspace --locked` clean. CI `lint` job gains `scripts/ci/check-template.sh` (temp copy with a path dependency, because `--config patch` still fetches the missing tag); run locally only so far.
 - Handoff notes: reported by the F0 implementer; until fixed, games using a git-tag dependency should run with plain `cargo run`/`cargo test` or `[patch]` the engine to the same checkout.
 
 ## Stage P1: CI environment repair
@@ -242,4 +242,4 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Outcome:
 - Handoff notes:
 
-Execution order (one implementer at a time): F0 (done) → F1 → P1 → P2 → P3 → P4 → P5 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → P6 → P7 → P8 → P9 → S11 → P10.
+Execution order (one implementer at a time): F0 (done) → F1 (done) → P1 → P2 → P3 → P4 → P5 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → P6 → P7 → P8 → P9 → S11 → P10.
