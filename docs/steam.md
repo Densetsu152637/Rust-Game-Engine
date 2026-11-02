@@ -601,7 +601,7 @@ reaches `unreachable!()` for a visibility or file type it does not know. The rea
 builds update handles under `catch_unwind` (returning `Rejected`, on the calling thread) and
 converts query results under `catch_unwind` inside the Steam callback (answering with an error
 reply), so a panic never unwinds across Steam's C callback boundary. On Windows the binding
-canonicalises the content and preview paths and so hands Steam a `\?\`-prefixed path; the
+canonicalises the content and preview paths and so hands Steam a `\\?\`-prefixed path; the
 binding gives no way to change that, and an upload was not run to confirm Steam accepts it
 (see the manual procedure below). Two conversions remain in the binding: visibility maps to
 `ItemVisibility` and the file type is read but not exposed.
