@@ -230,6 +230,70 @@ impl Default for ScreenSpaceReflections3D {
     }
 }
 
+/// The built-in projected-decal feature of the render pipeline.
+pub const DECALS_FEATURE: &str = "engine.decals";
+
+/// Most authored decals per camera (the renderer draws at most this many).
+pub const MAX_DECALS_3D: usize = 64;
+
+/// How an authored decal's albedo combines with the lit scene colour.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecalBlend3D {
+    /// `lit * lerp(1, albedo, opacity)`: stains, grime, tint.
+    #[default]
+    Multiply,
+    /// `lerp(lit, albedo * luma(lit), opacity)`: paint that keeps the lit
+    /// brightness and replaces the hue.
+    Paint,
+}
+
+/// One oriented-box decal in world space, listed on [`Camera3D::decals`].
+/// The decal faces its local +Z axis and projects toward -Z onto the scene
+/// depth inside the box `position +- rotation * half_extents`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Decal3D {
+    /// World position of the box centre.
+    pub position: [f32; 3],
+    /// Orientation quaternion `[x, y, z, w]`, finite and nonzero.
+    pub rotation: [f32; 4],
+    /// Half size along local X, Y and Z, each in `(0, 100000]`.
+    pub half_extents: [f32; 3],
+    /// Linear albedo, each channel `0..=1`.
+    pub albedo: [f32; 3],
+    /// Opacity, `0..=1`.
+    pub opacity: f32,
+    pub blend: DecalBlend3D,
+    /// Added radiance (HDR scene units), each channel `0..=1000`; not scaled
+    /// by `opacity`, so an `opacity` of zero is an emissive-only decal.
+    pub emissive: [f32; 3],
+    /// Largest angle in radians between the surface normal and the decal
+    /// axis that still receives the decal, `(0, pi/2]`.
+    pub max_angle: f32,
+    /// Fade width in radians below `max_angle`, `0..=max_angle`.
+    pub angle_fade: f32,
+    /// Fade width as a fraction of the half extent at each box face, `0..=1`.
+    pub edge_fade: f32,
+}
+
+impl Default for Decal3D {
+    fn default() -> Self {
+        Self {
+            position: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            half_extents: [0.5; 3],
+            albedo: [1.0; 3],
+            opacity: 1.0,
+            blend: DecalBlend3D::Multiply,
+            emissive: [0.0; 3],
+            max_angle: 70f32.to_radians(),
+            angle_fade: 15f32.to_radians(),
+            edge_fade: 0.1,
+        }
+    }
+}
+
 /// Sky, planet and sun disk of the authored atmosphere (Sky stage).
 pub const ATMOSPHERE_FEATURE: &str = "engine.atmosphere";
 /// Aerial perspective of the authored atmosphere (OpaqueEffects stage).
@@ -347,6 +411,39 @@ impl Atmosphere3D {
             return Err(Error::new(
                 "camera3d.atmosphere.invalid",
                 "Atmosphere needs planet radius 1e3..1e8 m, atmosphere radius 100 m..1e7 m above it, coefficients 0..0.01 per metre, scale heights 1..1e6 m, Mie anisotropy within +-0.99, ozone centre 0..1e7 m and width 1..1e7 m, ground albedo 0..1, sun diameter 0..0.5 rad, intensity 0..1000 and aerial perspective scale 0..1000",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Decal3D {
+    pub fn validate(&self) -> Result<()> {
+        let finite = |values: &[f32]| values.iter().all(|v| v.is_finite());
+        let in_range = |v: f32, low: f32, high: f32| v.is_finite() && (low..=high).contains(&v);
+        let rotation_length_squared: f32 = self.rotation.iter().map(|v| v * v).sum();
+        if !finite(&self.position)
+            || self.position.iter().any(|v| v.abs() > 100_000.0)
+            || !finite(&self.rotation)
+            || !rotation_length_squared.is_finite()
+            || rotation_length_squared <= 1e-12
+            || !finite(&self.half_extents)
+            || self
+                .half_extents
+                .iter()
+                .any(|v| *v <= 0.0 || *v > 100_000.0)
+            || self.albedo.iter().any(|v| !in_range(*v, 0.0, 1.0))
+            || !in_range(self.opacity, 0.0, 1.0)
+            || self.emissive.iter().any(|v| !in_range(*v, 0.0, 1000.0))
+            || !self.max_angle.is_finite()
+            || self.max_angle <= 0.0
+            || self.max_angle > std::f32::consts::FRAC_PI_2
+            || !in_range(self.angle_fade, 0.0, self.max_angle)
+            || !in_range(self.edge_fade, 0.0, 1.0)
+        {
+            return Err(Error::new(
+                "camera3d.decals.invalid",
+                "A decal needs a finite position within 100000 of the origin, a finite nonzero rotation quaternion, half_extents in (0, 100000], albedo and opacity in 0..=1, emissive in 0..=1000, max_angle in (0, pi/2], angle_fade in 0..=max_angle and edge_fade in 0..=1",
             ));
         }
         Ok(())
@@ -494,6 +591,11 @@ pub struct Camera3D {
     /// `engine.atmosphere.aerial` unless `render_features` says otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub atmosphere: Option<Atmosphere3D>,
+    /// Projected decals in world space, at most 64, drawn in list order (later
+    /// on top). Empty means off. `render_features["engine.decals"] = false`
+    /// wins. See docs/rendering-decals.md.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decals: Vec<Decal3D>,
     /// Per-camera render feature overrides by stable feature name
     /// (`engine.opaque`, `world.terrain`, ...): `false` disables a feature in
     /// this camera's view, `true` enables one that is off by default. Names of
@@ -518,6 +620,7 @@ impl Default for Camera3D {
             spatial_aa: None,
             screen_space_reflections: None,
             atmosphere: None,
+            decals: Vec::new(),
             render_features: BTreeMap::new(),
         }
     }
@@ -1011,6 +1114,9 @@ impl Camera3D {
                 .entry(ATMOSPHERE_AERIAL_FEATURE.into())
                 .or_insert(true);
         }
+        if !self.decals.is_empty() {
+            features.entry(DECALS_FEATURE.into()).or_insert(true);
+        }
         features
     }
 
@@ -1029,6 +1135,15 @@ impl Camera3D {
         }
         if let Some(settings) = self.atmosphere {
             settings.validate()?;
+        }
+        if self.decals.len() > MAX_DECALS_3D {
+            return Err(Error::new(
+                "camera3d.decals.too_many",
+                "A camera accepts at most 64 decals",
+            ));
+        }
+        for decal in &self.decals {
+            decal.validate()?;
         }
         self.lighting.validate()?;
         self.frame_generation.validate()?;

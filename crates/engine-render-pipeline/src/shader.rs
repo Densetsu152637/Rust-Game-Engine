@@ -37,6 +37,7 @@ pub(crate) const POST_BLOOM_WGSL: &str = include_str!("wgsl/post_bloom.wgsl");
 pub(crate) const POST_EXPOSURE_WGSL: &str = include_str!("wgsl/post_exposure.wgsl");
 pub(crate) const POST_OUTPUT_WGSL: &str = include_str!("wgsl/post_output.wgsl");
 pub(crate) const SSR_WGSL: &str = include_str!("wgsl/ssr.wgsl");
+pub(crate) const DECALS_WGSL: &str = include_str!("wgsl/decals.wgsl");
 
 /// Longest composed shader accepted, in bytes.
 pub const MAX_COMPOSED_BYTES: usize = 4 * 1024 * 1024;
@@ -571,6 +572,7 @@ mod tests {
             POST_EXPOSURE_WGSL,
             POST_OUTPUT_WGSL,
             SSR_WGSL,
+            DECALS_WGSL,
         ] {
             validate_wgsl(&composer.compose(source).unwrap()).unwrap();
         }

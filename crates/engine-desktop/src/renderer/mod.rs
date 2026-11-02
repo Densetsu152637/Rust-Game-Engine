@@ -13,6 +13,7 @@
 
 mod atmosphere;
 mod cache;
+mod decals;
 mod framegen;
 mod material2d;
 mod post;
@@ -837,6 +838,7 @@ impl GpuRenderer {
         )?;
         ssr::prepare(frame, &mut view)?;
         atmosphere::prepare(&self.atmosphere, frame, &view)?;
+        decals::prepare(frame, &mut view)?;
         // The upscaler mode alone drives the resolve: an authored
         // `render_features` entry for it is ignored.
         view.features

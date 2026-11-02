@@ -100,6 +100,9 @@ pub struct ViewData {
     /// An enabled `engine.rt.reflections` always takes precedence; hosts without
     /// ray tracing leave that feature off.
     pub ssr: Option<crate::ssr::SsrSettings>,
+    /// Projected decals of this view (`engine.decals`). A non-empty list turns
+    /// the feature on unless the view disables it; see [`crate::Decal`].
+    pub decals: Vec<crate::decals::Decal>,
     pub presentation: Presentation,
 }
 
@@ -129,6 +132,7 @@ impl ViewData {
             reset_history: false,
             post: None,
             ssr: None,
+            decals: Vec::new(),
             presentation: Presentation::Enabled,
         };
         view.validate()?;
