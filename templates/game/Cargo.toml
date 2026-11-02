@@ -1,0 +1,17 @@
+[package]
+name = "my-game"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+
+# Standalone workspace root so Cargo never mistakes this crate for part of an
+# enclosing workspace when the template is copied into one.
+[workspace]
+
+[dependencies]
+# Pin the engine by release tag. The tag must match the engine's workspace version.
+engine = { git = "https://github.com/Densetsu152637/Rust-Game-Engine.git", tag = "v0.1.0" }
+
+# Engine co-development: uncomment to build against a local engine checkout instead.
+# [patch."https://github.com/Densetsu152637/Rust-Game-Engine.git"]
+# engine = { path = "../Rust-Game-Engine/crates/engine" }

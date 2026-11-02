@@ -69,7 +69,7 @@ fn missing_injected_ui_action_fails_instead_of_reaching_tick_limit() {
 
 #[test]
 fn newly_opened_modal_masks_later_actions_in_same_callback() {
-    use engine_project::{ActionFrame, Project, Runtime, runtime::GameState};
+    use engine::project::{ActionFrame, Project, Runtime, runtime::GameState};
     let user_data = user_data();
     let mut runtime =
         Runtime::new(Project::load(concat!(env!("CARGO_MANIFEST_DIR"), "/project.json")).unwrap())
@@ -97,8 +97,8 @@ fn newly_opened_modal_masks_later_actions_in_same_callback() {
 
 #[test]
 fn failed_durable_save_shows_failure_and_does_not_play_success_cue() {
-    use engine_audio::{AudioConfig, AudioEngine};
-    use engine_project::{
+    use engine::audio::{AudioConfig, AudioEngine};
+    use engine::project::{
         ActionFrame, Project, Runtime, Transform,
         persistence::{PersistenceStage, PersistenceStore},
         runtime::Persistence,

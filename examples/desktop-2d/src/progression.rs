@@ -1,5 +1,5 @@
 //! Fixture-owned pure progression. No presentation operation awards progress.
-use engine_project::{Error, Result};
+use engine::project::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
