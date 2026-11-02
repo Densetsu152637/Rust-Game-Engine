@@ -1,6 +1,6 @@
 # Plan: Linux/macOS support, release packaging and Steam integration
 
-Revision: 2026-11-02, plan-gate rounds 1-2 applied (converged) (base `main` 27bf7e7; owner: Claude root, single writer)
+Revision: 2026-11-03, plan-gate rounds 1-2 applied (converged); order revised by the user (base `main` 27bf7e7; owner: Claude root, single writer)
 
 Goals (each must be true at close):
 1. CI green on all platforms: one `main` run has "Workspace tests (Windows)", "(Linux)", "(macOS)", "Format and Clippy (Windows)", every example job and "Test count gate" succeeding, with Linux and macOS included in the count gate. Check: `gh run view <id> --json jobs`.
@@ -33,7 +33,7 @@ Relevant paths: `.github/workflows/ci.yml`, `scripts/ci/`, `crates/engine-toolin
 
 Related docs: `docs/platforms.md`, `docs/desktop-packaging.md`, `docs/building.md`, `docs/testing.md`, `docs/video.md`, `docs/project-format.md`, `docs/using-the-engine.md` (facade). Feature docs win on behaviour; this plan wins on sequencing and open decisions.
 
-Execution rules: one implementer at a time (user rule); each stage commits on its own branch and is merged into `main` by root after acceptance; builds use each worktree's own gitignored `target/` (no `--target-dir`/`CARGO_TARGET_DIR` redirection, user rule 2026-11-02); worktrees at `D:/Git-Worktrees/Rust-Game-Engine/<task-id>`. `ci.yml` runs on `push: main` and `pull_request` only, so a CI-dependent stage (P1–P4, P7–P9, S11) is accepted on its pull request's checks (`gh pr checks <n>` all passing, run id recorded); opening those PRs needs the user's go-ahead at P1. After P4, every stage that changes Rust code (P5, S1–S10, P6–P8, S11) is also accepted on its pull request's checks with all required jobs green on all three OSes, so platform-specific regressions (for example S10's symlink/junction handling) surface at that stage. F0 runs before P1 starts; it merges first, and every later stage branch starts from the `main` that contains it. A `main` run (`gh run view <id> --json jobs`) is the final evidence for P4 and P10. Any stage that edits `Cargo.toml`/`Cargo.lock` re-runs `cargo check --workspace --locked` and the standalone example tests before acceptance.
+Execution rules: one implementer at a time (user rule); each stage commits on its own branch and is merged into `main` by root after acceptance; builds use each worktree's own gitignored `target/` (no `--target-dir`/`CARGO_TARGET_DIR` redirection, user rule 2026-11-02); worktrees at `D:/Git-Worktrees/Rust-Game-Engine/<task-id>`. `ci.yml` runs on `push: main` and `pull_request` only, so a CI-dependent stage (P1–P4, P7–P9, S11) is accepted on its pull request's checks (`gh pr checks <n>` all passing, run id recorded); opening those PRs needs the user's go-ahead at P1. Until the platform stages run (user decision 2026-11-03), Steam stages are accepted on local Windows checks plus the Windows and Linux PR jobs; macOS jobs are informative, not gating. After P4, every stage that changes Rust code is accepted on its pull request's checks with all required jobs green on all three OSes, so platform-specific regressions (for example S10's symlink/junction handling) surface at that stage. F0 runs before P1 starts; it merges first, and every later stage branch starts from the `main` that contains it. A `main` run (`gh run view <id> --json jobs`) is the final evidence for P4 and P10. Any stage that edits `Cargo.toml`/`Cargo.lock` re-runs `cargo check --workspace --locked` and the standalone example tests before acceptance.
 
 ## Stage F0: Facade crate on main
 - Objective: the `engine` facade crate (`crates/engine`, re-exports, features, prelude), examples switched to it, `docs/using-the-engine.md`, and a versioned game template exist on `main`.
@@ -242,4 +242,4 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Outcome:
 - Handoff notes:
 
-Execution order (one implementer at a time): F0 (done) → F1 (done; critic fixes pending) → P1 (done) → P2 → P3 → P4 → P5 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → P6 → P7 → P8 → P9 → S11 → P10.
+Execution order (one implementer at a time; revised by the user 2026-11-03: platform work goes last): F0 (done) → F1 (done) → P1 (done) → P3 Windows part (in progress) → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → S11 (facade `steam` feature, `steam_status`, Windows Steam-variant run and depot layout; the Linux/macOS rows and release smoke join after P9) → P2/P3 macOS part → P4 → P5 → P6 → P7 → P8 → P9 → P10.
