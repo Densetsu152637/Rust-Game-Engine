@@ -801,6 +801,31 @@ convention (irradiance/pi, exposure applied) cannot be verified from data; the
 lightmapped variant is derived from `LIT_WGSL` by anchor replacement guarded by a
 test, so edits to the lit shader must keep those anchors; no performance numbers.
 
+### Decal status (`feat/render-r9-decals`)
+
+Stage 9 dependency item 5 (decals) is implemented to ready-to-test on
+`feat/render-r9-decals`; see [rendering-decals.md](rendering-decals.md). Atmosphere,
+fog and clouds are separate slices and are not covered here.
+
+- `engine.decals` (`OpaqueEffects`, disabled by default, needs the normals
+  prepass): oriented-box volumes projected onto scene depth, world position
+  reconstructed from depth, rejection outside the unit box, edge fade and angle
+  fade. One scissored draw per decal; the previous result is kept current by a
+  rectangle copy. A non-empty `ViewData::decals` enables it.
+- Material response is a lit-colour modulation, not a G-buffer write: albedo
+  multiply or luma-preserving paint with opacity, plus emissive. Normal and
+  roughness response are **not implemented** (the pipeline is forward-lit and
+  has no material target). Decals tint the already-lit colour, including the
+  specular of the base surface.
+- Limits: 64 drawn decals per view (the rest are dropped and counted in
+  `DecalReport::dropped_overflow`), 1024 submitted (more is invalid input).
+  `Camera3D.decals` accepts at most 64 and rejects more. `DecalTexture::Missing`
+  renders flat and is reported. Authored decals are flat and camera-attached.
+- Evidence: CPU tests only so far (validation, overflow, culling, ordering,
+  uniform layout, authoring, desktop mapping). The GPU readback tests in
+  `gpu_decals` and `gpu_authored_decals` are written but have not been run; no
+  GPU result or performance number is recorded yet.
+
 ### Spatial AA completion status (`feat/render-r9-spatial-aa`)
 
 - `effects.spatial_aa` already existed from `ec013a6` (native feature, authored

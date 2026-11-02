@@ -64,6 +64,9 @@
   volume blending and post status.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
+- [Projected decals](rendering-decals.md): `engine.decals` depth-projected box
+  decals with edge and angle fades, albedo/emissive response on the lit colour,
+  the 64-decal budget and the authored `Camera3D.decals` list.
 - [Hardware ray tracing core](rendering-raytracing.md): `engine-render-rt` tiers and
   status, the audited experimental token, BLAS/TLAS scenes, the WGSL ray-query library,
   RT shadow (hard/soft), ambient occlusion, reflection and diffuse-GI kernels, the

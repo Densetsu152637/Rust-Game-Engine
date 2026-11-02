@@ -63,7 +63,7 @@ Per view, in order (render size until Upscale, output size after):
 | `Visibility` | `engine.hiz.visibility` (disabled by default) | Hi-Z pyramid of that depth, conservative queries and GPU compaction into indirect opaque draws |
 | `Opaque` | `engine.opaque` | instanced opaque engine meshes, or the compacted indirect draws when `Visibility` ran |
 | `Sky` | — | background after opaque geometry |
-| `OpaqueEffects` | — | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination |
+| `OpaqueEffects` | `engine.decals` (disabled by default; on when `ViewData::decals` is non-empty) | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination. `engine.decals` projects oriented-box decals onto scene depth and modulates the lit colour ([rendering-decals.md](rendering-decals.md)) |
 | `Transparent` | `engine.transparent` | blended engine meshes, back to front |
 | `Upscale` | `engine.upscale` | bilinear when sizes differ; a host (DLSS) may replace the stage |
 | `PostProcess` | `engine.post`; optional `effects.dof`, `effects.motion_blur`, `effects.spatial_aa` | HDR ping-pong at output size; spatial AA is the last HDR filter, before Tonemap and without touching Overlay/Composite ([placement and DLSS rules](rendering-post.md#camera-spatial-antialiasing)) |
@@ -242,7 +242,8 @@ node enabled and set the relevant meshes' `cast_shadows` to false.
 `ViewData` (CPU): `id: ViewId`, `kind` (`Camera`, `EditorViewport`, `XrEye`,
 `Probe`), `world_from_view`, unjittered `clip_from_view`, `jitter` (render
 pixels, x right, y down), `render_size`, `output_size`, `time`, `delta_time`,
-`ambient`, `features`, `host_needs`, `reset_history`. Several views per frame
+`ambient`, `features`, `host_needs`, `reset_history`, `post` (HDR post stack) and
+`decals` (`Vec<Decal>` for `engine.decals`, validated by the pass). Several views per frame
 are supported; each `ViewId` keeps its own targets and `ViewHistory` (previous
 unjittered view-projection, frame index). The active camera is `ViewId::MAIN`;
 XR eyes use `LEFT_EYE`/`RIGHT_EYE`.
