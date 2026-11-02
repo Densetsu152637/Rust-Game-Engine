@@ -822,7 +822,10 @@ motion blur were already on existing post I/O; this entry covers SSR only.
   settings; `Camera3D.screen_space_reflections` authors them.
 - RT versus SSR: an enabled `engine.rt.reflections` supersedes `engine.ssr` for
   that view (`Activity::Superseded`, reported as `superseded`), resolved in the
-  feature registry; the choice does not depend on RT hardware actually running.
+  feature registry. The desktop host only enables `engine.rt.reflections` when
+  its RT device exists (without one the request is withdrawn for views that have
+  SSR settings and the RT report shows `fallback: "ssr"`), so hardware without
+  ray tracing still gets screen-space reflections.
 - Evidence (RTX 5080, Vulkan, ignored tests): `gpu_ssr` and `gpu_authored_ssr`
   (see the document's validation section); CPU tests cover settings bounds,
   registration order, the exclusion and authored JSON.
@@ -830,7 +833,7 @@ motion blur were already on existing post I/O; this entry covers SSR only.
 Residual risks: screen space only, no history, temporal filtering or denoise;
 rough reflections use a five-tap cone approximation; the surface pass doubles
 built-in lit vertex/fragment work; Hi-Z does not accelerate the march; an RT
-reflection request that falls back still turns SSR off; no performance numbers;
+reflection request that falls back on a device that exists still turns SSR off; no performance numbers;
 the surface pass relies on the same vertex code producing the same depth as the
 opaque pass (as the existing normal prepass does).
 

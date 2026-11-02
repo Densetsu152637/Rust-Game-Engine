@@ -533,7 +533,11 @@ ran (below).
 > **Screen-space reflections.** `engine.rt.reflections` and the raster
 > `engine.ssr` ([rendering-ssr.md](rendering-ssr.md)) are mutually exclusive per
 > view: an enabled RT reflection effect makes `engine.ssr` report `superseded`
-> for that view, even when the effect itself falls back to its raster path.
+> for that view. The desktop host does not enable `engine.rt.reflections` when
+> it has no RT device (adapter without ray query, or the request failed) and the
+> camera has screen-space reflections: the effect reports `fallback` with
+> `fallback: "ssr"` and screen-space reflections run. With a device the RT
+> effect keeps the view even if one frame falls back to its raster path.
 
 The desktop renderer (`engine-desktop`, `src/renderer/rt.rs`) owns the integration;
 `engine-render-pipeline` stays RT-free and only gained the generic screen-lighting inputs

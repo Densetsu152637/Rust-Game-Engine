@@ -96,7 +96,18 @@ fn march(start: vec3<f32>, dir: vec3<f32>, ray_length: f32) -> Hit {
     let q0 = start * k0;
     let q1 = end * k1;
     let delta = p1 - p0;
-    let covered = max(abs(delta.x), abs(delta.y));
+    let full = max(abs(delta.x), abs(delta.y));
+    if full < 1.0 { return miss(); }
+    // Clip the segment to the screen rectangle: the largest fraction of it
+    // whose pixels are inside the targets. Steps are spent only on that part,
+    // so a ray leaving the viewport does not waste its budget off-screen.
+    var inside = 1.0;
+    if delta.x > 0.0 { inside = min(inside, (params.size.x - p0.x) / delta.x); }
+    if delta.x < 0.0 { inside = min(inside, -p0.x / delta.x); }
+    if delta.y > 0.0 { inside = min(inside, (params.size.y - p0.y) / delta.y); }
+    if delta.y < 0.0 { inside = min(inside, -p0.y / delta.y); }
+    inside = max(inside, 0.0);
+    let covered = full * inside;
     if covered < 1.0 { return miss(); }
     let steps = min(params.trace.x, ceil(covered));
     let count = i32(steps);
@@ -104,7 +115,7 @@ fn march(start: vec3<f32>, dir: vec3<f32>, ray_length: f32) -> Hit {
     var previous_t = 0.0;
     var previous_distance = -start.z;
     for (var i = 1; i <= count; i++) {
-        let t = f32(i) / steps;
+        let t = inside * f32(i) / steps;
         let position = p0 + delta * t;
         if position.x < 0.0 || position.y < 0.0 || position.x >= params.size.x || position.y >= params.size.y {
             break;
@@ -138,7 +149,7 @@ fn march(start: vec3<f32>, dir: vec3<f32>, ray_length: f32) -> Hit {
                 var hit: Hit;
                 hit.found = true;
                 hit.pixel = floor(at);
-                hit.pixels = covered * high;
+                hit.pixels = full * high;
                 let point = mix(q0, q1, high) / kh;
                 hit.travelled = distance(point, start);
                 return hit;

@@ -248,8 +248,9 @@ impl<'a> FeatureContext<'a> {
 
     /// The shaded surface description of the built-in lit materials
     /// ([`crate::SurfaceMaterial`]); `None` unless `engine.ssr` runs in this
-    /// view. Written by `engine.surface_material` in the OpaqueEffects stage,
-    /// so it is readable by later features of that stage and afterwards.
+    /// view. Written by `engine.surface_material` in the OpaqueEffects stage
+    /// (after Opaque and Sky, before `engine.ssr`), so it is valid for
+    /// `engine.ssr` and later features of that stage and for later stages.
     pub fn surface_material(&self) -> Option<&crate::SurfaceMaterial> {
         self.io.targets.as_ref()?.surface_material.as_ref()
     }

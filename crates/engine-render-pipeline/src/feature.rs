@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// `(winner, loser)` pairs of features that cannot both run in one view: when
 /// both are enabled the loser is reported as [`Activity::Superseded`] by the
 /// winner and neither runs nor requests inputs. Names that are not registered
-/// are ignored. Hardware ray-traced reflections replace screen-space ones.
+/// are ignored. Hardware ray-traced reflections replace screen-space ones; a
+/// host that cannot run ray tracing must not enable its reflection feature (the
+/// desktop host withdraws the request when it has no RT device).
 const EXCLUSIVE_FEATURES: [(&str, &str); 1] = [(
     crate::pipeline::names::RT_REFLECTIONS,
     crate::pipeline::names::SSR,

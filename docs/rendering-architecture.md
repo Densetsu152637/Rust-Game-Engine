@@ -63,7 +63,7 @@ Per view, in order (render size until Upscale, output size after):
 | `Visibility` | `engine.hiz.visibility` (disabled by default) | Hi-Z pyramid of that depth, conservative queries and GPU compaction into indirect opaque draws |
 | `Opaque` | `engine.opaque` | instanced opaque engine meshes, or the compacted indirect draws when `Visibility` ran |
 | `Sky` | — | background after opaque geometry |
-| `OpaqueEffects` | `engine.surface_material`, `engine.ssr` (disabled by default) | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination. `engine.surface_material` describes the visible built-in lit surfaces and `engine.ssr` traces screen-space reflections over them ([rendering-ssr.md](rendering-ssr.md)); `engine.ssr` yields to an enabled `engine.rt.reflections` |
+| `OpaqueEffects` | `engine.surface_material`, `engine.ssr` (disabled by default) | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination. `engine.surface_material` describes the visible built-in lit surfaces and `engine.ssr` traces screen-space reflections over them ([rendering-ssr.md](rendering-ssr.md)); `engine.ssr` yields to an enabled `engine.rt.reflections` (the desktop host leaves RT reflections off when it has no RT device) |
 | `Transparent` | `engine.transparent` | blended engine meshes, back to front |
 | `Upscale` | `engine.upscale` | bilinear when sizes differ; a host (DLSS) may replace the stage |
 | `PostProcess` | `engine.post`; optional `effects.dof`, `effects.motion_blur`, `effects.spatial_aa` | HDR ping-pong at output size; spatial AA is the last HDR filter, before Tonemap and without touching Overlay/Composite ([placement and DLSS rules](rendering-post.md#camera-spatial-antialiasing)) |
@@ -87,7 +87,11 @@ registered after the built-ins therefore replaces `engine.output`, and
 disabling it per camera falls back to the linear clamp. A few features are also
 mutually exclusive across stages; the registry resolves them with the same
 `superseded` report. Today the only pair is `engine.rt.reflections`
-(winner) over `engine.ssr`: the loser runs nothing and requests no inputs.
+(winner) over `engine.ssr`: the loser runs nothing and requests no inputs. The
+registry keys on the enabled winner; the desktop host only enables
+`engine.rt.reflections` when its ray-tracing device exists, so a camera that
+authors both still gets screen-space reflections on hardware without ray
+tracing ([rendering-ssr.md](rendering-ssr.md#rt-reflections-versus-ssr)).
 
 ### Default output (appearance preserved)
 
@@ -288,7 +292,7 @@ clip space, depth 0 near .. 1 far, not reversed. Helpers:
 | Normals | `Rgba16Float` (world unit normal, w coverage) | render | after Prepass when a running feature needs normals |
 | Motion | `Rg16Float` (current→previous, render px, y down) | render | after Prepass when a feature or the host needs motion |
 | Screen-lighting inputs (4) | `Rgba16Float` | render | when a running feature needs `screen_lighting`; 1x1 neutral placeholders otherwise |
-| Surface material (3) | `Rgba16Float` (shaded normal + roughness, F0 + coverage, fallback specular) | render | after the Opaque stage while `engine.ssr` runs in the view; freed when it stops ([rendering-ssr.md](rendering-ssr.md#surface-material-the-producer)) |
+| Surface material (3) | `Rgba16Float` (shaded normal + roughness, F0 + coverage, fallback specular) | render | written in the OpaqueEffects stage (after Opaque and Sky, before `engine.ssr`) while `engine.ssr` runs in the view, so valid from `engine.ssr` onward; freed when it stops ([rendering-ssr.md](rendering-ssr.md#surface-material-the-producer)) |
 | Post targets / upscaled | `Rgba16Float` | output | PostProcess / Upscale |
 
 Built-in prepasses use engine transforms: custom vertex displacement is not
@@ -579,7 +583,7 @@ integration and requests fall back with the build reason.
   ([rendering-post.md](rendering-post.md)).
 - Screen-space reflections cover built-in lit materials only, trace the opaque
   scene once per frame without history, and yield to `engine.rt.reflections`
-  ([rendering-ssr.md](rendering-ssr.md#limits)).
+  when ray tracing can actually run ([rendering-ssr.md](rendering-ssr.md#limits)).
 - Presentation extensions must declare replay support to accompany DLSS frame
   generation; hardware validation of the revised late-UI integration is pending.
 - No automatic multi-camera rendering: hosts render additional views

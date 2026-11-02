@@ -197,7 +197,8 @@ pub const SSR_FEATURE: &str = "engine.ssr";
 pub const MAX_SSR_STEPS: u32 = 256;
 
 /// Optional screen-space reflections for one camera. Absent means disabled.
-/// An enabled `engine.rt.reflections` for the same camera replaces them.
+/// An enabled `engine.rt.reflections` for the same camera replaces them, unless
+/// the host has no ray-tracing device (then these run).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ScreenSpaceReflections3D {
@@ -388,7 +389,8 @@ pub struct Camera3D {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spatial_aa: Option<SpatialAa3D>,
     /// Absent means off. `render_features["engine.ssr"] = false` wins, and an
-    /// enabled `engine.rt.reflections` replaces it for this camera.
+    /// enabled `engine.rt.reflections` replaces it for this camera when the host
+    /// can ray trace.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen_space_reflections: Option<ScreenSpaceReflections3D>,
     /// Per-camera render feature overrides by stable feature name

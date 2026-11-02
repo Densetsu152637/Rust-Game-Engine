@@ -97,7 +97,8 @@ pub struct ViewData {
     /// Screen-space reflection controls (`engine.ssr`). `Some` turns the
     /// feature on unless the view overrides it; `None` leaves it off unless
     /// the view enables it, which then uses [`crate::SsrSettings::default`].
-    /// An enabled `engine.rt.reflections` always takes precedence.
+    /// An enabled `engine.rt.reflections` always takes precedence; hosts without
+    /// ray tracing leave that feature off.
     pub ssr: Option<crate::ssr::SsrSettings>,
     pub presentation: Presentation,
 }

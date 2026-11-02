@@ -54,7 +54,8 @@ pub mod names {
     /// colour. Disabled by default; superseded by [`RT_REFLECTIONS`].
     pub const SSR: &str = "engine.ssr";
     /// The hardware ray-traced reflection feature registered by the desktop
-    /// host. Enabled in a view, it replaces `engine.ssr` there.
+    /// host. Enabled in a view, it replaces `engine.ssr` there; the host enables it
+    /// only when it can ray trace.
     pub const RT_REFLECTIONS: &str = "engine.rt.reflections";
     /// Transparent stage: blended engine meshes, back to front.
     pub const TRANSPARENT: &str = "engine.transparent";

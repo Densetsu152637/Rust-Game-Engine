@@ -62,8 +62,9 @@ Per pixel with coverage and `roughness < roughness_cutoff`:
    the surface by `0.01 + 0.0005 z` and the ray is clipped to the camera's
    front half space and `max_distance`.
 3. Project the ray to the screen and march it with perspective-correct depth.
-   The number of samples is `min(max_steps, ceil(pixels covered))`; beyond that
-   the stride grows (thin occluders can then be missed). A sample hits when the
+   The segment is first clipped to the render-size rectangle, so rays that leave
+   the viewport spend no samples off-screen. The number of samples is
+   `min(max_steps, ceil(on-screen pixels covered))`; beyond that the stride grows (thin occluders can then be missed). A sample hits when the
    surface depth at its pixel lies within `[near - thickness, far]` of the ray
    depth interval of the step. A hit is refined by five bisections and
    re-checked against the thickness.
@@ -121,10 +122,15 @@ and `engine.ssr` are mutually exclusive per view, resolved in
 `engine.ssr` is reported `enabled: true`, `activity: superseded` (in the
 pipeline `Activity::Superseded("engine.rt.reflections")`). A superseded SSR
 requests no surface material, allocates nothing and leaves the frame untouched.
-Other views are unaffected. The rule keys on the *enabled* RT feature, not on
-whether the hardware tier ran: an RT request that falls back to its raster path
-("reflections add nothing") does not hand the view back to SSR, so author one
-or the other for a camera.
+Other views are unaffected. The registry keys on the *enabled* RT feature, so
+the desktop host (`RtHost::prepare`) only leaves it enabled when RT can run:
+when the RT device is unavailable (the adapter lacks ray query, the device
+request failed or `note_ray_tracing_request` reported an error) and the view has
+SSR settings, the host withdraws the `engine.rt.reflections` request for that
+view. SSR then runs, and the ray-tracing report shows reflections as `fallback`
+with `fallback: "ssr"` and the unavailability reason. With an RT device, an RT
+request that falls back for a frame (for example an empty scene) still keeps
+the view, so SSR stays `superseded` there.
 
 ## Interaction with other features
 
@@ -146,9 +152,18 @@ or the other for a camera.
 
 * Screen space only: off-screen, occluded and back-facing geometry cannot be
   reflected, and transparent meshes are neither reflective nor reflected.
-* No temporal accumulation, jitter or denoise: rough reflections use the five-tap
-  cone approximation and are not physically filtered; thin occluders can be
-  missed when the stride exceeds one pixel.
+* The surface-material pass relies on the vertex stage producing exactly the same
+  clip depth as the opaque pass: both use the same vertex code and instance data
+  and the depth test is `LessEqual` against the final scene depth, but the shader
+  declares no `@invariant` position. Identical results are expected, not
+  guaranteed by the API; only the NVIDIA adapter used for validation has been
+  tested. A vendor that computed the two passes differently would lose coverage
+  (pixels fall back to non-reflective) or flicker at depth ties.
+* No temporal accumulation or denoise: the march follows the jittered projection
+  that rasterized the depth, so a jittering view reflects correctly, but there is
+  no history. Rough reflections use the five-tap cone approximation and are not
+  physically filtered; thin occluders can be missed when the stride exceeds one
+  pixel.
 * The hit radiance is the opaque colour of the hit pixel (its direct lighting and
   image-based specular, but no reflection of its own: one bounce); rays that
   leave through the sky or the far plane are misses.
@@ -158,7 +173,8 @@ or the other for a camera.
 * Hi-Z pyramid acceleration of the march is not used.
 * Vertex displacement of custom shaders is not replayed (they are not drawn
   by the pass); the built-in path uses the engine transforms.
-* `engine.rt.reflections` requests that fall back still disable SSR.
+* With an RT device, `engine.rt.reflections` keeps the view even for frames where
+  it falls back; only a missing device hands the view to SSR.
 * Quality and cost at high resolution have not been profiled.
 
 ## Validation
@@ -174,6 +190,11 @@ or the other for a camera.
   roughness cutoff and partial fade, the surface-material targets (shaded normal
   with a normal map, F0, coverage, custom shader and unlit exclusion), feature-off
   identity, zero intensity, an RT-reflection exclusion, an orthographic view,
-  resize, two independent views, forget and the Hi-Z compacted path.
+  resize, two independent views, forget and the Hi-Z compacted path, a view with
+  non-zero projection jitter (reflection within one texel of the unjittered
+  one) and a ray that leaves the screen sideways with a small step budget.
   `engine-desktop/tests/gpu_authored_ssr.rs` does the same from project JSON
-  through the desktop renderer.
+  through the desktop renderer, including an RT request on a device without ray
+  tracing (SSR runs, the RT report shows `fallback: "ssr"`).
+  `engine-desktop/tests/ray_tracing.rs` (needs ray query) checks both sides of the
+  exclusion: with an RT device `engine.ssr` is `superseded`, without one it runs.

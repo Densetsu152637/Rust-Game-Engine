@@ -60,7 +60,8 @@ impl ScreenLighting {
 pub const SURFACE_MATERIAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Shaded surface description of the built-in lit materials, one texel per
-/// render pixel, written after the Opaque stage by `engine.surface_material`
+/// render pixel, written by `engine.surface_material` in the OpaqueEffects stage
+/// (after Opaque and Sky, before `engine.ssr`)
 /// (depth-tested against the final scene depth, so only the visible surface
 /// of each pixel is described). Custom-shader materials and unlit materials
 /// write nothing: their texels keep coverage 0 and are non-reflective.
@@ -145,7 +146,7 @@ const COLOR_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
 /// | `normals` | `Rgba16Float` | attachment, sampled, copy src | after the Prepass stage when a running feature needs normals |
 /// | `motion` | `Rg16Float` | attachment, sampled, copy src | after the Prepass stage when a feature or the host needs motion |
 /// | `screen_lighting` | `Rgba16Float` x 4 | attachment, sampled, storage, copy | when a running feature needs screen lighting ([`ScreenLighting`]) |
-/// | `surface_material` | `Rgba16Float` x 3 | attachment, sampled, copy src | after the OpaqueEffects stage while `engine.ssr` runs ([`SurfaceMaterial`]) |
+/// | `surface_material` | `Rgba16Float` x 3 | attachment, sampled, copy src | written in the OpaqueEffects stage (after Opaque and Sky, before `engine.ssr`) while `engine.ssr` runs ([`SurfaceMaterial`]) |
 pub struct FrameTargets {
     pub render_size: [u32; 2],
     pub output_size: [u32; 2],

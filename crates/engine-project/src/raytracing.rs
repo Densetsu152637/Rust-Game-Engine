@@ -224,8 +224,9 @@ pub struct RtEffectReport {
     /// `ray_traced`, `fallback` or `disabled`.
     pub mode: String,
     pub denoised: bool,
-    /// What runs instead (`shadow_maps`, `ssao`, `none`, `constant_ambient`)
-    /// when the mode is `fallback`.
+    /// What runs instead when the mode is `fallback`: `shadow_maps`, `ssao`,
+    /// `none`, `constant_ambient`, or `ssr` (reflections when the camera also
+    /// has screen-space reflections and no RT device exists).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
     /// Why the effect is not ray traced, or a note.

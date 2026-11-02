@@ -835,3 +835,144 @@ fn ssr_works_over_the_hiz_compacted_opaque_path() -> Result<()> {
     assert_eq!(hiz, direct, "compaction changes no pixel");
     Ok(())
 }
+
+/// Float pixel position of a world point under the view's jittered projection.
+fn jittered_pixel_of(view: &ViewData, point: Vec3) -> [f32; 2] {
+    let clip = view.jittered_clip_from_world() * point.extend(1.0);
+    let ndc = clip.truncate() / clip.w;
+    [
+        (ndc.x * 0.5 + 0.5) * view.render_size[0] as f32,
+        (0.5 - ndc.y * 0.5) * view.render_size[1] as f32,
+    ]
+}
+
+/// Rows of column `x` that SSR changed, as `(first, last)`.
+fn changed_rows(off: &HdrImage, on: &HdrImage, x: u32) -> Option<(u32, u32)> {
+    let rows: Vec<u32> = (0..SIZE[1])
+        .filter(|&y| off.pixel(x, y) != on.pixel(x, y))
+        .collect();
+    Some((*rows.first()?, *rows.last()?))
+}
+
+#[test]
+#[ignore = "requires a real GPU; the temporal resolve jitters the projection that rasterized the depth"]
+fn a_jittered_projection_still_lands_the_reflection_within_a_texel() -> Result<()> {
+    let mut h = Harness::new()?;
+    let meshes = h.scene(0.0);
+    let mut view = h.view(ViewId::MAIN, SIZE);
+    let off0 = h.draw(&meshes, |_| {})?;
+    let on0 = h.draw(&meshes, ssr())?;
+    let reflected0 = pixel_of(&view, mirror_point(wall_centre(0.0)));
+    let rows0 = changed_rows(&off0, &on0, reflected0.0).expect("the unjittered reflection");
+    let changed0 = off0
+        .pixels
+        .iter()
+        .zip(&on0.pixels)
+        .filter(|(a, b)| a != b)
+        .count();
+
+    for jitter in [[0.5, -0.5], [-0.375, 0.25], [0.75, 0.75]] {
+        view.jitter = jitter;
+        view.ssr = None;
+        h.render(&view, &meshes, None)?;
+        let off = h.pipeline.read_scene_hdr(ViewId::MAIN)?;
+        view.ssr = Some(SsrSettings::default());
+        h.render(&view, &meshes, None)?;
+        let on = h.pipeline.read_scene_hdr(ViewId::MAIN)?;
+        assert_eq!(state(&h.pipeline, ViewId::MAIN, names::SSR), Activity::Ran);
+
+        // The wall's mirror image lands where the jittered projection puts it.
+        let [fx, fy] = jittered_pixel_of(&view, mirror_point(wall_centre(0.0)));
+        let reflected = (fx as u32, fy as u32);
+        close(
+            at(&on, reflected),
+            RED,
+            0.04,
+            &format!("jitter {jitter:?}: the wall in the mirror"),
+        );
+        // Same extent as without jitter, to within one texel.
+        let rows = changed_rows(&off, &on, reflected.0)
+            .unwrap_or_else(|| panic!("jitter {jitter:?}: no reflection in column"));
+        assert!(
+            rows.0.abs_diff(rows0.0) <= 1 && rows.1.abs_diff(rows0.1) <= 1,
+            "jitter {jitter:?}: rows {rows:?} vs {rows0:?}"
+        );
+        // Only the wall's hue appears (no stray or smeared hits) and the area
+        // matches the unjittered reflection within a few percent.
+        let mut changed = 0usize;
+        for (a, b) in off.pixels.iter().zip(&on.pixels) {
+            assert!(b.iter().all(|v| v.is_finite()));
+            if a != b {
+                changed += 1;
+                assert!(
+                    (b[1] - RED[1] * b[0]).abs() < 0.03 && (b[2] - RED[2] * b[0]).abs() < 0.03,
+                    "jitter {jitter:?}: not the wall colour {b:?}"
+                );
+            }
+        }
+        assert!(
+            changed.abs_diff(changed0) * 10 <= changed0,
+            "jitter {jitter:?}: {changed} changed pixels vs {changed0}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a real GPU; rays leaving the viewport sideways spend their steps on screen"]
+fn a_ray_that_exits_the_screen_sideways_keeps_its_step_budget_on_screen() -> Result<()> {
+    let mut h = Harness::new()?;
+    // A wall near the right edge: the floor pixels that reflect it send their
+    // rays towards the right border, so most of the projected segment up to
+    // `max_distance` lies outside the render targets.
+    let x = 3.9;
+    let meshes = vec![h.floor_mesh("floor", 1.0, 0.0), h.wall_mesh("wall", x)];
+    let view = h.view(ViewId::MAIN, SIZE);
+    let reflected = pixel_of(&view, mirror_point(wall_centre(x)));
+    assert!(
+        reflected.0 + 4 < SIZE[0],
+        "the reflection is on screen: {reflected:?}"
+    );
+    let off = h.draw(&meshes, |_| {})?;
+    let settings = |max_steps| {
+        move |view: &mut ViewData| {
+            view.ssr = Some(SsrSettings {
+                max_steps,
+                edge_fade: 0.0,
+                ..Default::default()
+            })
+        }
+    };
+    let many = h.draw(&meshes, settings(128))?;
+    close(at(&many, reflected), RED, 0.05, "reference with many steps");
+    // The off-screen part of the ray is not sampled, so a small budget traces
+    // the visible part with the same density and still finds the wall.
+    let few = h.draw(&meshes, settings(12))?;
+    close(
+        at(&few, reflected),
+        RED,
+        0.05,
+        "12 steps, ray exits sideways",
+    );
+    assert_ne!(at(&few, reflected), at(&off, reflected));
+    let changed = |image: &HdrImage| {
+        image
+            .pixels
+            .iter()
+            .zip(&off.pixels)
+            .filter(|(a, b)| a != b)
+            .count()
+    };
+    let (few_changed, many_changed) = (changed(&few), changed(&many));
+    // Spending the steps on the visible segment finds nearly every pixel the
+    // dense trace finds; sampling the whole unclipped segment finds about 70%.
+    assert!(
+        many_changed > 100,
+        "the reference reflection: {many_changed}"
+    );
+    assert!(
+        few_changed * 100 >= many_changed * 85,
+        "12 steps found {few_changed} of {many_changed} reflected pixels"
+    );
+    Ok(())
+}

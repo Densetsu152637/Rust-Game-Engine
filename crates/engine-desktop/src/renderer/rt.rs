@@ -1001,6 +1001,10 @@ pub(crate) struct RtHost {
     serial: u64,
     /// Authored settings of the frame being rendered.
     authored: Option<RtEffectsSettings>,
+    /// The frame's reflections request was withdrawn because the RT device is
+    /// unavailable and the view has `engine.ssr` settings, so screen-space
+    /// reflections run instead of an RT feature that could only fall back.
+    ssr_instead: bool,
     report: Option<RayTracingReport>,
 }
 
@@ -1012,6 +1016,7 @@ impl Default for RtHost {
             attempted: false,
             serial: 0,
             authored: None,
+            ssr_instead: false,
             report: None,
         }
     }
@@ -1052,11 +1057,12 @@ impl RtHost {
                 }
             }
         }
-        let wanted: Vec<Effect> = Effect::ALL
+        let mut wanted: Vec<Effect> = Effect::ALL
             .into_iter()
             .filter(|e| view.features.get(e.feature()) == Some(true))
             .collect();
         self.authored = authored;
+        self.ssr_instead = false;
         if wanted.is_empty() && !self.registered {
             return Ok(());
         }
@@ -1086,6 +1092,18 @@ impl RtHost {
                 }
                 Err(status) => shared.status = status,
             }
+        }
+        // An RT reflection request supersedes `engine.ssr` in the registry, but
+        // without a device the effect can only fall back to nothing. Hand the
+        // view to screen-space reflections instead of losing both.
+        if view.ssr.is_some()
+            && wanted.contains(&Effect::Reflections)
+            && self.attempted
+            && shared.rt.is_none()
+        {
+            wanted.retain(|e| *e != Effect::Reflections);
+            view.features.set(Effect::Reflections.feature(), false);
+            self.ssr_instead = true;
         }
         if !wanted.is_empty() {
             shared.sync_scene(frame);
@@ -1124,6 +1142,7 @@ impl RtHost {
         }
         let shared = lock(&self.shared);
         let authored = self.authored.unwrap_or_default();
+        let ssr_instead = self.ssr_instead;
         let base = authored.status(&shared.status);
         let effect_status = |effect: Effect| -> RtEffectStatus {
             let outcome = &shared.outcomes[effect as usize];
@@ -1137,7 +1156,19 @@ impl RtHost {
                 .features
                 .get(effect.feature())
                 .is_some_and(|state| state.runs());
-            let (mode, denoised, reason) = if outcome.traced {
+            let (mode, denoised, reason) = if effect == Effect::Reflections && ssr_instead {
+                let why = base
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "ray tracing is unavailable".into());
+                (
+                    RtEffectMode::Fallback,
+                    false,
+                    Some(format!(
+                        "{why}; screen-space reflections are used instead (engine.ssr)"
+                    )),
+                )
+            } else if outcome.traced {
                 (
                     RtEffectMode::RayTraced,
                     outcome.denoised,
@@ -1200,7 +1231,13 @@ impl RtHost {
             }
             .into(),
             denoised: s.denoised,
-            fallback: (s.mode == RtEffectMode::Fallback).then(|| effect.fallback().into()),
+            fallback: (s.mode == RtEffectMode::Fallback).then(|| {
+                if effect == Effect::Reflections && ssr_instead {
+                    "ssr".into()
+                } else {
+                    effect.fallback().into()
+                }
+            }),
             reason: s.reason.clone(),
         })
         .collect();

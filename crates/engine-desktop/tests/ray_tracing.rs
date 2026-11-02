@@ -537,3 +537,64 @@ fn diffuse_gi_bleeds_the_red_wall_onto_the_white_floor() {
     assert_eq!(gi.fallback.as_deref(), Some("constant_ambient"));
     assert!(ratio(constant) < 1.03);
 }
+
+/// The `engine.ssr` activity of the last frame.
+fn ssr_activity(renderer: &mut OffscreenSprites) -> String {
+    renderer
+        .gpu_renderer()
+        .unwrap()
+        .pipeline_status()
+        .features
+        .iter()
+        .find(|f| f.name == "engine.ssr")
+        .expect("engine.ssr is reported")
+        .activity
+        .clone()
+}
+
+#[test]
+#[ignore = "requires a Vulkan adapter with ray query"]
+fn rt_reflections_keep_the_view_with_a_device_and_hand_it_to_ssr_without_one() {
+    let (mut scene, reflecting, _) = mirror_scene(true);
+    scene
+        .camera3d
+        .as_mut()
+        .unwrap()
+        .camera
+        .screen_space_reflections = Some(ScreenSpaceReflections3D::default());
+
+    // With an RT device the ray-traced effect owns the view.
+    let mut renderer = rt_renderer();
+    let pixels = render(&mut renderer, &scene, 4);
+    let traced = rgb(&pixels, reflecting);
+    let status = report(&mut renderer);
+    assert_eq!(effect(&status, "reflections").mode, "ray_traced");
+    assert_eq!(ssr_activity(&mut renderer), "superseded");
+    assert!(
+        traced[0] > 200.0 && traced[0] > 3.0 * traced[1],
+        "{traced:?}"
+    );
+
+    // Without one the same authored camera reflects through SSR instead of
+    // losing both: the RT effect reports its fallback as `ssr`.
+    let mut plain = plain_renderer();
+    let pixels = render(&mut plain, &scene, 1);
+    let screen_space = rgb(&pixels, reflecting);
+    let status = report(&mut plain);
+    let reflections = effect(&status, "reflections");
+    eprintln!("no device: {screen_space:?}, {reflections:?}");
+    assert_eq!(reflections.mode, "fallback", "{reflections:?}");
+    assert_eq!(reflections.fallback.as_deref(), Some("ssr"));
+    assert!(
+        reflections
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("screen-space reflections")),
+        "{reflections:?}"
+    );
+    assert_eq!(ssr_activity(&mut plain), "ran");
+    assert!(
+        screen_space[0] > 120.0 && screen_space[0] > 3.0 * screen_space[1],
+        "SSR shows the box in the mirror: {screen_space:?}"
+    );
+}

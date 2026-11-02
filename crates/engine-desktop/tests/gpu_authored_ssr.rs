@@ -1,7 +1,7 @@
 //! End-to-end authored screen-space reflections: project JSON (a metallic
 //! mirror floor, an unlit red wall, `Camera3D.screen_space_reflections`) ->
 //! runtime extraction -> desktop GPU HDR readback, including removal, the
-//! explicit feature switch, an RT-reflection request, resize and a
+//! explicit feature switch, an RT-reflection request without an RT device, resize and a
 //! rejected invalid setting.
 //! Run explicitly on a real adapter with --ignored --test-threads=1.
 use anyhow::Result;
@@ -224,18 +224,38 @@ fn authored_screen_space_reflections_reach_pixels_end_to_end() -> Result<()> {
         "default settings",
     );
 
-    // An RT reflection request takes the view: SSR reports why it is off.
+    // This device was created without a ray-tracing request, so an RT
+    // reflection request cannot run: it is withdrawn and SSR keeps the view
+    // (with an RT device it would be superseded, see tests/ray_tracing.rs).
     let (_rt_dir, rt) = extract(json!({
         "screen_space_reflections":{},"render_features":{"engine.rt.reflections":true}}))?;
     let with_rt = hdr(&mut renderer, &target, &rt)?;
+    assert_eq!(feature(&renderer, "engine.ssr"), (true, "ran".into()));
     assert_eq!(
-        feature(&renderer, "engine.ssr"),
-        (true, "superseded".into())
+        feature(&renderer, "engine.rt.reflections"),
+        (false, "disabled".into()),
+        "the unusable RT request is withdrawn"
+    );
+    close(
+        with_rt.pixel(spot.0, spot.1),
+        RED,
+        0.05,
+        "SSR without an RT device",
     );
     assert_eq!(
-        with_rt.pixels, baseline.pixels,
-        "RT reflections own the view"
+        with_rt.pixels,
+        hdr(&mut renderer, &target, &defaults)?.pixels
     );
+    let status = renderer
+        .ray_tracing_status()
+        .expect("the RT request is reported");
+    let reflections = status
+        .effects
+        .iter()
+        .find(|e| e.effect == "reflections")
+        .unwrap();
+    assert_eq!(reflections.mode, "fallback", "{reflections:?}");
+    assert_eq!(reflections.fallback.as_deref(), Some("ssr"));
 
     // Resize keeps the reflection on the new pixel grid.
     renderer.resize(128, 96)?;
