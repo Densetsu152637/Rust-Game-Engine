@@ -103,8 +103,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: F0.
 - Owned paths: `crates/engine-steam/**`, workspace `Cargo.toml`/`Cargo.lock`, `docs/steam.md`.
 - Acceptance checks: S1 adds `steamworks = "=0.13.1"` as an optional dependency (so the lockfile changes once, here); `cargo test -p engine-steam` passes and `cargo tree -p engine-steam -e normal | grep -c steamworks` = 0; feature-off calls return `Unavailable(NotCompiled)` (test); `cargo clippy -p engine-steam --all-targets -- -D warnings`; `cargo check --workspace --locked`; standalone example tests pass; `docs/steam.md` records Valve's redistribution terms for the libraries bundled in `steamworks-sys`.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `3502177` merged into main. `engine-steam` with `SteamBackend` (only `status()` required; all other methods default to `Unavailable`), `NullBackend`, deterministic scriptable `FakeBackend` (call log, achievements/stats, cloud with name/quota/disabled rules, lobbies, Workshop, input), `SteamStatus`/`SteamError`/`SteamEvent` (`#[non_exhaustive]`), `default_backend()`, and a stub `RealBackend` behind `steam` (`steamworks =0.13.1`). 9 tests with and without the feature; no `steamworks` in the default graph; clippy both ways, fmt, `cargo check --workspace --locked`, examples script pass; `docs/steam.md` with Valve redistribution terms.
 - Handoff notes: commit the lockfile change. Gate the real backend on `cfg(any(windows, target_os = "linux", target_os = "macos"))`.
 
 ## Stage S2: Real backend core
