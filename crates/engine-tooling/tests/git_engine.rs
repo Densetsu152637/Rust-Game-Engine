@@ -178,7 +178,15 @@ fn assert_single_engine_copy(fixture: &Fixture, directory: &Path, names: &[&str]
     }
     // The same property through Cargo's own graph view of the generated workspace.
     let tree = Command::new(env!("CARGO"))
-        .args(["tree", "--offline", "--prefix", "none", "--manifest-path"])
+        .args([
+            "tree",
+            "--offline",
+            "--color",
+            "never",
+            "--prefix",
+            "none",
+            "--manifest-path",
+        ])
         .arg(directory.join("Cargo.toml"))
         .current_dir(&fixture.root)
         .output()
