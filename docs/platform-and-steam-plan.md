@@ -67,8 +67,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: P1.
 - Owned paths: failing crates, `ci.yml` apt list.
 - Acceptance checks: "Workspace tests (Linux)" green; in WSL (repo and target inside the WSL filesystem) `cargo test --workspace --locked --no-fail-fast` and `bash scripts/ci/check-desktop-examples.sh` pass.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: Linux workspace tests green on PR #2 from run 41437886696 on (after P1 disk fixes and the F1 `--color never` test fix); confirmed again in run 41461667832 on 9c6d1e1. WSL local run not done (deferred with the platform stages).
 - Handoff notes: WSL needs `build-essential pkg-config cmake curl libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev libvulkan1 mesa-vulkan-drivers vulkan-tools` plus rustup (toolchain from `rust-toolchain.toml`). Likely areas: unix permission checks (`engine-online`, `engine-mcp`), process groups (`engine-tooling`), paths.
 
 ## Stage P3: macOS green
@@ -76,8 +76,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: P1.
 - Owned paths: `crates/engine-audio` (failure-race test and stream code), other macOS failures, `ci.yml`.
 - Acceptance checks: a written root cause (with the evidence that established it) in Outcome; "Workspace tests (macOS)" green; in one macOS job, `for i in $(seq 200); do cargo test -p engine-audio refresh_retains_decoder_and_dsp_errors_published_before_worker_status -- --test-threads=1 || exit 1; done` passes (temporary PR-only job, removed after; root cause and loop log copied into the PR description); audio tests still pass on Windows.
-- Status: pending
-- Outcome:
+- Status: done (200-loop outstanding)
+- Outcome: `091dcef`/`9c6d1e1`, merged as a8fe771; run 41461667832 green on Linux, Windows and macOS. Root causes: engine-audio failure_race — decoded half paced by a 4-frame queue drained by the mix loop (~4.4 s vs 5 s deadline; reproduced pinned to one core), fixed with a 16384-frame queue (0.03 s); procedural parameter update — bounded by mix-call count, producer lag on coarse timers (inferred; not reproduced), now a 20 s hang-guard deadline; stalled writer — 5 ms wall bound measured preemption, now a 250 ms hang guard (non-blocking proven by try_lock misses); debris sleep — chaotic settling, test now waits until all 10 sleep (<=290 ticks); mcp_exec — macOS ld `__eh_frame` linker warning counted as a source warning, assertions now use `source_warnings()`. Entry-point steps run with `if: !cancelled()`; `checkout_remotes` uses `git remote get-url --all` (insteadOf). Outstanding: the 200-iteration macOS loop was not run.
 - Handoff notes: failure is "producer never reached failure publication barrier" (`sources.rs:541`, 5 s deadline). Suspect: the pause is a thread-local consumed at stream shared-state creation (`stream.rs:244`); check where macOS creates/starts the stream. Root-cause before any ignore.
 
 ## Stage P4: All platforms in the gate
