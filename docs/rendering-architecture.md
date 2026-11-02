@@ -572,6 +572,10 @@ integration and requests fall back with the build reason.
 - The default output is a linear clamp. Tonemapping, exposure and the other
   HDR effects are opt-in per view through `ViewData::post`
   ([rendering-post.md](rendering-post.md)).
+- `ViewData::linear_output` makes the output and tonemap stages write unclamped
+  display-linear colour for `HdrOutputPass`, the HDR display output transform
+  (scRGB or PQ, paper white, peak roll-off); off by default
+  ([rendering-hdr-output.md](rendering-hdr-output.md)).
 - Presentation extensions must declare replay support to accompany DLSS frame
   generation; hardware validation of the revised late-UI integration is pending.
 - No automatic multi-camera rendering: hosts render additional views

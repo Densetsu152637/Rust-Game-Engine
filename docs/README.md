@@ -62,6 +62,10 @@
   manual and histogram auto-exposure, bloom, HDR colour grading with a `.cube` 3D LUT,
   vignette and film grain; the `PostProcess` and `PostProcessVolume` components,
   volume blending and post status.
+- [HDR display output](rendering-hdr-output.md): scRGB and PQ (HDR10) surfaces
+  through wgpu 30 surface colour spaces, capability detection and fallback,
+  paper-white UI, peak roll-off, Frame Generation gating and the manual monitor
+  check.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Hardware ray tracing core](rendering-raytracing.md): `engine-render-rt` tiers and

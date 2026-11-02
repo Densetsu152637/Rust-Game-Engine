@@ -420,7 +420,9 @@ reset and pacing evidence above remains evidence for the earlier integration.
 - a context that does not require the SR runtime for FG-only use;
 - hardware validation of the revised replayable overlay/final-composite integration;
 - `OutputReal`, UI-alpha recomposition, `NotRenderingGameFrames`, HDR and
-  dynamic-resolution parameters;
+  dynamic-resolution parameters (the desktop path stays `Rgba8Unorm` with
+  `hdr = false`, so HDR display output gates Frame Generation off, see
+  [rendering-hdr-output.md](rendering-hdr-output.md#frame-generation));
 - Linux runtime packaging (`libnvidia-ngx-dlssg.so.<ver>`, unvalidated);
 - image-quality validation (disocclusion, transparency, UI, camera motion).
 

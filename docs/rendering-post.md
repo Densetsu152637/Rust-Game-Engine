@@ -33,6 +33,12 @@ release: SSAO, SSR and temporal anti-aliasing (TAA).
 6. sRGB encode when the target format is not an sRGB view (sRGB targets
    encode on write, as before).
 
+With HDR display output ([rendering-hdr-output.md](rendering-hdr-output.md))
+`ViewData::linear_output` is set: steps 4 and 6 and the final 0..1 clamp are
+skipped (exposure, bloom, grading, vignette and grain still run), the colour is
+written unclamped into a display-linear `Rgba16Float` image where `1.0` is paper
+white, and the HDR output transform encodes it for the scRGB or PQ surface.
+
 `ScenePipeline::read_hdr` returns the HDR colour after steps 1-3.
 
 ## Tonemap operators
