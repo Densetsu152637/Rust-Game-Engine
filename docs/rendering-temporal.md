@@ -182,7 +182,11 @@ coverage-integrated truth:
 * Sub-render-pixel features are kept at reduced scale only because the colour
   clip is relaxed there for texels with a surface; the price is no colour
   anti-ghosting for fast lighting changes on surfaces at reduced scale (the 1:1
-  clip is unchanged). There is no sharpening
+  clip is unchanged). The exemption is decided by depth: a sub-pixel feature seen
+  only against sky (a wire or branch whose whole 3x3 neighbourhood is at far depth
+  when a jitter phase misses it) gets the full clip and can still be erased at
+  reduced scale, and geometry at depth >= 0.99999 (about 10^4 times the near plane
+  distance) is treated as sky. There is no sharpening
   and no history-length adaptation to luminance change.
 * Camera motion over a striped grazing ground plane and a wall is covered by
   `camera_motion_keeps_history_on_a_grazing_ground_plane_and_leaves_no_ghost` in

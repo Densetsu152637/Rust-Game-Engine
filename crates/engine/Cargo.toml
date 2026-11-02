@@ -13,8 +13,8 @@ default = ["desktop", "text-scripting"]
 desktop = ["dep:engine-desktop"]
 # Rhai text scripts (`engine.TextScript`). Forwards `engine-project/text-scripting`.
 text-scripting = ["engine-project/text-scripting"]
-# DLSS Super Resolution through NGX on Vulkan. Needs NGX_SDK_DIR and VULKAN_HEADERS_DIR at
-# build time; see docs/dlss.md.
+# DLSS Super Resolution through NGX on Vulkan. Without NGX_SDK_DIR and VULKAN_HEADERS_DIR at
+# build time it still builds and DLSS reports the SDK as missing; see docs/dlss.md.
 dlss = ["desktop", "engine-desktop/dlss"]
 # Operating-system clipboard for game text inputs instead of the in-process clipboard.
 system-clipboard = ["desktop", "engine-desktop/system-clipboard"]

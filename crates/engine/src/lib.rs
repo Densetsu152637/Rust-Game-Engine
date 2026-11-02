@@ -66,7 +66,7 @@
 //! | --- | --- | --- |
 //! | `desktop` | yes | Builds [`desktop`] (window, input, GPU rendering, audio output) |
 //! | `text-scripting` | yes | Rhai text scripts (`engine.TextScript`) |
-//! | `dlss` | no | NVIDIA DLSS Super Resolution; implies `desktop`, needs the NGX SDK at build time |
+//! | `dlss` | no | NVIDIA DLSS Super Resolution; implies `desktop`, builds without the NGX SDK, which DLSS then reports as missing |
 //! | `system-clipboard` | no | OS clipboard for game text inputs; implies `desktop` |
 //! | `deterministic-physics` | no | Bit-identical cross-platform physics maths |
 //!

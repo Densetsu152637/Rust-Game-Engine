@@ -12,7 +12,9 @@ behaviour. No git submodule is needed.
 engine = { git = "https://github.com/Densetsu152637/Rust-Game-Engine.git", tag = "v0.1.0" }
 ```
 
-Nothing is published on crates.io yet. Releases are git tags `vX.Y.Z` that match the
+No release tag has been published yet: until `v0.1.0` exists on the remote, use
+`rev = "<commit sha>"` or `branch = "main"` instead of `tag`, or a `path`
+dependency on a local checkout. Nothing is published on crates.io yet. Releases are git tags `vX.Y.Z` that match the
 workspace `version` in the engine's root `Cargo.toml`; pin the tag you tested with and
 bump it deliberately. Most of the engine's third-party dependencies are `=` pinned and
 your game's own `Cargo.lock` records the exact engine commit, so a tag is a reproducible
@@ -40,7 +42,7 @@ pub fn configure(app: &mut EngineApp) -> Result<()> {
 | --- | --- | --- |
 | `desktop` | yes | `engine::desktop`: winit window, input, wgpu renderer, audio output, headless runner |
 | `text-scripting` | yes | Rhai text scripts (`engine.TextScript`). Always on while `desktop` is, because the desktop host depends on `engine-project` with default features |
-| `dlss` | no | NVIDIA DLSS Super Resolution through NGX on Vulkan; implies `desktop`. Needs the NGX SDK at build time, see [DLSS](dlss.md) |
+| `dlss` | no | NVIDIA DLSS Super Resolution through NGX on Vulkan; implies `desktop`. Without `NGX_SDK_DIR`/`VULKAN_HEADERS_DIR` at build time it still builds and DLSS reports the SDK as missing, see [DLSS](dlss.md) |
 | `system-clipboard` | no | OS clipboard for game text inputs; implies `desktop` |
 | `deterministic-physics` | no | Bit-identical cross-platform physics maths, slower; see [physics queries](physics-queries.md#determinism) |
 
@@ -109,7 +111,9 @@ Limitation: the `engine run` / editor play compiler builds a generation by linki
 `engine-core` and `engine-project` from the engine checkout **by path** together with
 your crate. A game that depends on `engine` by git tag resolves a second copy of those
 crates, so use plain `cargo run` and `cargo test` with the game's own `main` for such
-projects, or point the game at the same checkout with the `[patch]` above.
+projects, or depend on `engine` by `path` to the same checkout `engine run` uses. A
+`[patch]` in the game's manifest does not help here, because the generated workspace is
+the root and ignores it.
 
 ## Versioning
 
