@@ -150,8 +150,8 @@ Steam S1–S5 implementation-gate critic converged (round 2). Adopted improvemen
 - Depends on: S3.
 - Owned paths: `crates/engine-steam/src/transport.rs`; additive edits in `crates/engine-network/src/{channel,lib}.rs` and any exhaustive matches in dependents.
 - Acceptance checks: a fake in-process socket pair passes the shared `MessageEndpoint` contract tests (per-lane ordering, sequenced stale drop, budget bounds, `QueueFull`, oversize rejection) — add a shared contract-test helper if none exists; `cargo test --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings` pass (they catch exhaustive matches on the changed enums in dependents such as `engine-net-quic` and `engine-project` networking tests); standalone example tests pass; live `#[ignore]` loopback on 480.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `febd5e9` merged. `SteamServerEndpoint`/`SteamClientEndpoint` implement `MessageEndpoint`: 1-byte header (lane bits 0-3, delivery bits 4-5), sequenced delivery with a 4-byte per-lane sequence and stale drop, Hello/Accept handshake (SteamID + auth ticket; `BeginAuthSession` → admitted only on positive `ValidateAuthTicketResponse`; `IdentityOnly` P2P-only), 512 KiB limit, `QueueFull`/counted drops, bounded `poll`, `max_peers`/handshake timeout, relay readiness with timeout. `engine-network`: `TransportKind::Steam`, `TransportSecurity::PlatformEncrypted` (`#[non_exhaustive]`), shared `contract` suite behind `test-support`. `SteamSession` routes net events per endpoint. 24 net tests + contract suite (P2P ticket, P2P identity-only, IP ticket); workspace clippy clean; examples pass; live `net_ip` and `net_p2p` passed with Steam running. `LinkEvent::Authenticated` still carries only `PeerId` (SteamID via `peer_steam_id`). editor_hot_reload failure observed here is pre-existing on main (200861a), tracked separately.
 - Handoff notes: highest-risk stage. Write the identity/auth design into `docs/steam.md` before code. Relay access (`init_relay_network_access`) is asynchronous.
 
 ## Stage S7: Lobbies and matchmaking
