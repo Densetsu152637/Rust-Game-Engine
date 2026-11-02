@@ -282,28 +282,6 @@ jobs:
             echo "Passed: $(bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log")"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # TEMPORARY (p3-timing): 200-iteration stability loop for failure 1; removed before merge.
-  p3-timing-loop:
-    name: P3 temporary loop (macOS)
-    if: ${{ github.event_name == 'pull_request' }}
-    runs-on: macos-26
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          persist-credentials: false
-      - name: Install pinned Rust toolchain
-        run: bash scripts/ci/install-toolchain.sh
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: 200 iterations
-        run: |
-          cargo test -p engine-audio --lib --no-run
-          for i in $(seq 200); do
-            cargo test -p engine-audio refresh_retains_decoder_and_dsp_errors_published_before_worker_status -- --test-threads=1 || exit 1
-          done
-
   macos-tests:
     name: Workspace tests (macOS)
     runs-on: macos-26
