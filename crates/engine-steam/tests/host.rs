@@ -365,3 +365,35 @@ fn a_failed_cloud_push_is_an_event_and_never_a_failed_save() {
     plugin.before_tick(&mut rt, 0);
     assert!(h.fake.lock().unwrap().cloud_file("saves/b.json").is_none());
 }
+
+#[test]
+fn the_save_listener_does_not_keep_the_store_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = harness(FakeBackend::ready(AppId(480), "tester"));
+    let mut rt = runtime();
+    rt.set_user_data_root(dir.path().to_owned()).unwrap();
+    let mut plugin = SteamPlugin::new(h.session.clone(), cloud_manifest(true));
+    plugin.before_graphics(&mut rt).unwrap();
+    let store = rt
+        .app()
+        .world()
+        .resource::<engine_project::runtime::Persistence>()
+        .0
+        .clone();
+    let weak = std::sync::Arc::downgrade(&store);
+    // Session gone: the next save clears the listener and still succeeds.
+    let Harness {
+        session, dropped, ..
+    } = h;
+    drop(plugin);
+    drop(session);
+    drop(rt);
+    assert!(dropped.load(Ordering::SeqCst), "backend released");
+    store.save("c", save_data(3), None).unwrap();
+    // With every owner gone the store is freed (no listener -> store cycle).
+    drop(store);
+    assert!(
+        weak.upgrade().is_none(),
+        "the store leaked through its listener"
+    );
+}

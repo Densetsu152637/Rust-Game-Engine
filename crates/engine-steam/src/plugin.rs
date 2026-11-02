@@ -98,10 +98,18 @@ impl HostService for SteamPlugin {
                 let report = cloud.sync_all(state.backend.as_mut());
                 state.pending.extend(report.events.iter().cloned());
                 state.cloud_report = Some(report);
+                // The store owns the listener, so the listener must not own the store
+                // (that would be a reference cycle): it holds a weak store, builds the
+                // mirror per save, and removes itself once the session is gone.
                 let weak = session.downgrade();
+                let weak_store = Arc::downgrade(&store);
                 store.set_save_listener(Some(Arc::new(move |slot: &str| {
-                    if let Some(session) = weak.upgrade() {
-                        session.push_cloud(&cloud, slot);
+                    let Some(store) = weak_store.upgrade() else {
+                        return;
+                    };
+                    match weak.upgrade() {
+                        Some(session) => session.push_cloud(&CloudSync::new(store), slot),
+                        None => store.set_save_listener(None),
                     }
                 })));
             }
