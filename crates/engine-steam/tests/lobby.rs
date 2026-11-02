@@ -24,6 +24,7 @@ impl SteamBackend for Shared {
         self.fake.lock().unwrap().cancel_auth_ticket(handle)
     }
     common::forward_net!();
+    common::forward_input!();
 }
 common::forward_lobby!(Shared);
 

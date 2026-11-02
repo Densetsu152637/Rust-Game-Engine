@@ -114,6 +114,43 @@ pub struct InstalledItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ControllerId(pub u64);
 
+/// A physical control Steam Input maps an action to (a Steam `EInputActionOrigin` value).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ActionOrigin(pub u32);
+
+/// Whether an action is a button-like (digital) or stick/trigger-like (analog) action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputActionKind {
+    Digital,
+    Analog,
+}
+
+/// State of a digital action on one controller.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DigitalActionState {
+    pub down: bool,
+    /// False when the action is not part of the controller's active action set.
+    pub active: bool,
+}
+
+/// State of an analog action on one controller. Steam reports `y` positive up/forward.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AnalogActionState {
+    pub x: f32,
+    pub y: f32,
+    pub active: bool,
+}
+
+/// Display data for an action origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionGlyph {
+    pub origin: ActionOrigin,
+    /// Localised origin name such as "Button A".
+    pub name: String,
+    /// Path to a glyph image supplied by Steam (empty when Steam has none).
+    pub glyph_path: String,
+}
+
 /// Events drained from Steam once per tick.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]

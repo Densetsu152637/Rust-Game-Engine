@@ -74,6 +74,7 @@ impl SteamBackend for Spy {
         self.fake.lock().unwrap().set_rich_presence(key, value)
     }
     common::forward_net!();
+    common::forward_input!();
 }
 
 struct Harness {

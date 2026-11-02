@@ -41,6 +41,11 @@ pub struct FakeBackend {
     installed: BTreeMap<WorkshopItemId, InstalledItem>,
     controllers: Vec<ControllerId>,
     action_sets: BTreeMap<ControllerId, String>,
+    input_ready: bool,
+    digital: BTreeMap<(ControllerId, String), bool>,
+    analog: BTreeMap<(ControllerId, String), (f32, f32)>,
+    set_defs: BTreeMap<String, BTreeSet<String>>,
+    glyphs: BTreeMap<(String, String), Vec<ActionGlyph>>,
     canceled_tickets: BTreeSet<u32>,
     net: FakeNet,
     lobby_world: FakeLobbies,
@@ -85,6 +90,11 @@ impl FakeBackend {
             installed: BTreeMap::new(),
             controllers: Vec::new(),
             action_sets: BTreeMap::new(),
+            input_ready: false,
+            digital: BTreeMap::new(),
+            analog: BTreeMap::new(),
+            set_defs: BTreeMap::new(),
+            glyphs: BTreeMap::new(),
             canceled_tickets: BTreeSet::new(),
             net: FakeNet::default(),
             lobby_world: FakeLobbies::default(),
@@ -291,6 +301,61 @@ impl FakeBackend {
     pub fn with_controller(mut self, controller: ControllerId) -> Self {
         self.controllers.push(controller);
         self
+    }
+
+    /// Plugs a controller in while running (idempotent).
+    pub fn plug_controller(&mut self, controller: ControllerId) {
+        if !self.controllers.contains(&controller) {
+            self.controllers.push(controller);
+        }
+    }
+
+    /// Unplugs a controller and forgets its action set and scripted state.
+    pub fn unplug_controller(&mut self, controller: ControllerId) {
+        self.controllers.retain(|c| *c != controller);
+        self.action_sets.remove(&controller);
+        self.digital.retain(|(c, _), _| *c != controller);
+        self.analog.retain(|(c, _), _| *c != controller);
+    }
+
+    /// Scripts a digital action press (`true`) or release.
+    pub fn set_digital(&mut self, controller: ControllerId, action: &str, down: bool) {
+        self.digital.insert((controller, action.to_owned()), down);
+    }
+
+    /// Scripts an analog action value.
+    pub fn set_analog(&mut self, controller: ControllerId, action: &str, x: f32, y: f32) {
+        self.analog.insert((controller, action.to_owned()), (x, y));
+    }
+
+    /// Declares which actions an action set contains. Once any set is declared, an
+    /// action reads as inactive unless the controller's active set contains it.
+    pub fn with_action_set(mut self, set: &str, actions: &[&str]) -> Self {
+        self.set_defs.insert(
+            set.to_owned(),
+            actions.iter().map(|a| (*a).to_owned()).collect(),
+        );
+        self
+    }
+
+    /// Scripts the origins `input_glyphs` reports for an action within a set.
+    pub fn with_action_glyphs(mut self, set: &str, action: &str, glyphs: Vec<ActionGlyph>) -> Self {
+        self.glyphs
+            .insert((set.to_owned(), action.to_owned()), glyphs);
+        self
+    }
+
+    fn action_active(&self, controller: ControllerId, action: &str) -> bool {
+        if !self.controllers.contains(&controller) {
+            return false;
+        }
+        if self.set_defs.is_empty() {
+            return true;
+        }
+        self.action_sets
+            .get(&controller)
+            .and_then(|set| self.set_defs.get(set))
+            .is_some_and(|actions| actions.contains(action))
     }
 
     /// Queues an event for the next `run_callbacks`.
@@ -758,8 +823,82 @@ impl SteamBackend for FakeBackend {
         if !self.controllers.contains(&controller) {
             return Err(SteamError::NotFound(format!("controller {}", controller.0)));
         }
+        if !self.set_defs.is_empty() && !self.set_defs.contains_key(set) {
+            return Err(SteamError::NotFound(format!("action set {set:?}")));
+        }
         self.action_sets.insert(controller, set.to_owned());
         Ok(())
+    }
+
+    fn input_init(&mut self, _manifest: Option<&std::path::Path>) -> SteamResult<()> {
+        self.record("input_init");
+        self.require_ready()?;
+        self.input_ready = true;
+        Ok(())
+    }
+
+    fn input_run_frame(&mut self) -> SteamResult<()> {
+        self.record("input_run_frame");
+        self.require_ready()?;
+        if self.input_ready {
+            Ok(())
+        } else {
+            Err(SteamError::Rejected(
+                "Steam Input is not initialised".into(),
+            ))
+        }
+    }
+
+    fn input_digital(
+        &self,
+        controller: ControllerId,
+        action: &str,
+    ) -> SteamResult<DigitalActionState> {
+        self.require_ready()?;
+        let active = self.action_active(controller, action);
+        let down = active
+            && self
+                .digital
+                .get(&(controller, action.to_owned()))
+                .copied()
+                .unwrap_or(false);
+        Ok(DigitalActionState { down, active })
+    }
+
+    fn input_analog(
+        &self,
+        controller: ControllerId,
+        action: &str,
+    ) -> SteamResult<AnalogActionState> {
+        self.require_ready()?;
+        let active = self.action_active(controller, action);
+        let (x, y) = if active {
+            self.analog
+                .get(&(controller, action.to_owned()))
+                .copied()
+                .unwrap_or((0.0, 0.0))
+        } else {
+            (0.0, 0.0)
+        };
+        Ok(AnalogActionState { x, y, active })
+    }
+
+    fn input_glyphs(
+        &self,
+        controller: ControllerId,
+        set: &str,
+        action: &str,
+        _kind: InputActionKind,
+    ) -> SteamResult<Vec<ActionGlyph>> {
+        self.require_ready()?;
+        if !self.controllers.contains(&controller) {
+            return Err(SteamError::NotFound(format!("controller {}", controller.0)));
+        }
+        Ok(self
+            .glyphs
+            .get(&(set.to_owned(), action.to_owned()))
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn net_init_relay(&mut self) -> SteamResult<()> {
