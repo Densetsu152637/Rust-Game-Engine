@@ -159,8 +159,8 @@ Steam S1–S5 implementation-gate critic converged (round 2). Adopted improvemen
 - Depends on: S6.
 - Owned paths: `crates/engine-steam/src/lobby.rs`.
 - Acceptance checks: fake state-machine tests (create, join, host change, leave, filter, member limit, out-of-order callbacks); live `#[ignore]` create/leave on 480; `engine-online` tests unchanged.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `6d8f614` merged (2a09345) with S6 critic fixes `f2a6a55` and S1-S5 improvements `1738deb`, `47ca68a`, `577f025`. `SteamLobbies` Resource over a `LobbyBackend` (async requests, snapshot reads, raw-callback poll; `real_lobby.rs`): callbacks trigger snapshot diffs so duplicate/late/reordered callbacks give no duplicate or missing events (unknown-lobby changes held, bounded); host publishes `engine.p2p_host`/`engine.p2p_port`, honoured only while the host key names the current owner; `connect_client` builds a `SteamClientEndpoint`; member-limit and owner-only checks local; optional `online` feature `OnlineAdapter` maps to `engine_online::ServerBody` (engine-online unchanged). 14 lobby tests + adapter test; engine-steam/online/network tests and clippy clean. Live on 480 with Steam running: `lobby_create_and_leave`, `net_ip`, `net_p2p` passed. Two-account join/list not live-tested.
 - Handoff notes: normalise asynchronous, out-of-order callbacks.
 
 ## Stage S8: Steam Input
