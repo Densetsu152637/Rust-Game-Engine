@@ -9,7 +9,8 @@
 //      silhouette pixel follows the foreground), reproject into the history
 //      (current-to-previous motion in render pixels; previous = current + m).
 //   3. Reject the history outside the image or when its stored view distance
-//      differs from the distance this surface had under pure camera motion
+//      differs from the distance this surface had under pure camera motion by
+//      more than a relative tolerance plus three pixels of the surface's slope
 //      (disocclusion); otherwise sample it with a Catmull-Rom filter.
 //   4. Clip the history towards the box of the 3x3 neighbourhood in YCoCg
 //      (variance box intersected with min/max).
@@ -49,9 +50,30 @@ fn luma(c: vec3<f32>) -> f32 {
     return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-// Finite, non-negative, bounded: keeps one bad texel from poisoning the history.
+// Non-negative and bounded: keeps one bad texel from poisoning the history.
+// NaN is zeroed where the implementation preserves NaNs (WGSL does not require
+// it to), so this is best effort for NaN and exact for infinities and negatives.
 fn sanitize(c: vec4<f32>) -> vec4<f32> {
-    return clamp(c, vec4<f32>(0.0), vec4<f32>(60000.0));
+    let bounded = clamp(c, vec4<f32>(0.0), vec4<f32>(60000.0));
+    return select(bounded, vec4<f32>(0.0), c != c);
+}
+
+// View distance of a depth sample; for a symmetric or orthographic projection
+// it depends on the depth value alone.
+fn depth_distance(depth: f32) -> f32 {
+    let h = p.inverse_projection * vec4<f32>(0.0, 0.0, depth, 1.0);
+    return abs(h.z / h.w);
+}
+
+// Depth slope of the surface at `texel` in view distance per render pixel:
+// the smaller one-sided difference per axis, so a silhouette (one side is a
+// different surface) does not widen the tolerance across the edge.
+fn distance_slope(texel: vec2<i32>, centre: f32, last: vec2<i32>) -> f32 {
+    let left = depth_distance(textureLoad(scene_depth, clamp(texel + vec2<i32>(-1, 0), vec2<i32>(0), last), 0));
+    let right = depth_distance(textureLoad(scene_depth, clamp(texel + vec2<i32>(1, 0), vec2<i32>(0), last), 0));
+    let up = depth_distance(textureLoad(scene_depth, clamp(texel + vec2<i32>(0, -1), vec2<i32>(0), last), 0));
+    let down = depth_distance(textureLoad(scene_depth, clamp(texel + vec2<i32>(0, 1), vec2<i32>(0), last), 0));
+    return min(abs(right - centre), abs(left - centre)) + min(abs(down - centre), abs(up - centre));
 }
 
 fn compress(c: vec4<f32>) -> vec4<f32> {
@@ -181,7 +203,13 @@ struct Resolved {
             let aux = textureLoad(history_aux, aux_pixel, 0);
             let previous_view = p.previous_view_from_view * vec4<f32>(view_position, 1.0);
             let expected = abs(previous_view.z);
-            if aux.y < 0.5 || abs(aux.x - expected) > p.tuning.y * max(expected, aux.x) + 1e-4 {
+            // Relative tolerance plus slack for the local slope: the history is
+            // read from the nearest texel and both distances come from the
+            // closest texel of a 3x3, so a surface receding at a grazing angle
+            // legitimately differs by up to a few pixels of its own slope.
+            let slope = distance_slope(closest, distance, render_last);
+            let tolerance = p.tuning.y * max(expected, aux.x) + 3.0 * slope + 1e-4;
+            if aux.y < 0.5 || abs(aux.x - expected) > tolerance {
                 valid = false;
             }
             count = aux.y;

@@ -1029,6 +1029,9 @@ impl GpuRenderer {
                 request,
                 "the native temporal resolve did not run for this frame",
             );
+            // The draw still switched spatial AA off for the resolve.
+            self.upscaler
+                .set_spatial_aa_skipped(post_effects::spatial_aa_requested(&camera.camera));
             return Ok(stats);
         }
         self.finish_temporal(camera, sizes, reset);
@@ -1175,6 +1178,7 @@ impl GpuRenderer {
         if new_session {
             self.upscaler.history.request_reset();
         }
+        self.upscaler.begin_dlss_frame();
         let (key, mut session) = stage.session.take().expect("session ensured above");
         let render = session.status().render_size;
         let reset = self.upscaler.history.needs_reset(camera);
@@ -1467,6 +1471,7 @@ impl GpuRenderer {
                         if new {
                             self.upscaler.history.request_reset();
                         }
+                        self.upscaler.begin_dlss_frame();
                         true
                     }
                     Err(reason) => {
@@ -1576,11 +1581,13 @@ impl GpuRenderer {
                     self.upscaler.native(upscale);
                 }
             } else if upscale.mode == UpscalerMode::AutoTemporal {
-                self.upscaler.fallback(
-                    upscale,
-                    "Super Resolution was unavailable and the native temporal resolve does not \
-                     run under DLSS Frame Generation; the scene rendered natively",
-                );
+                // Keep the specific reason Super Resolution could not run.
+                let note = "the native temporal resolve does not run under DLSS Frame                             Generation, so the scene rendered natively";
+                let reason = match self.upscaler.status().fallback_reason.clone() {
+                    Some(prior) => format!("{prior}; {note}"),
+                    None => format!("Super Resolution was unavailable and {note}"),
+                };
+                self.upscaler.fallback(upscale, &reason);
             }
             let mut view = scene3d::camera_view(camera, ViewId::MAIN, output, output)?;
             view.reset_history = reset;
