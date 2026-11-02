@@ -32,6 +32,24 @@ impl SteamBackend for Spy {
     fn restart_app_if_necessary(&mut self, app_id: AppId) -> SteamResult<bool> {
         self.fake.lock().unwrap().restart_app_if_necessary(app_id)
     }
+    fn request_current_stats(&mut self) -> SteamResult<()> {
+        self.fake.lock().unwrap().request_current_stats()
+    }
+    fn achievement(&self, name: &str) -> SteamResult<bool> {
+        self.fake.lock().unwrap().achievement(name)
+    }
+    fn set_achievement(&mut self, name: &str, unlocked: bool) -> SteamResult<()> {
+        self.fake.lock().unwrap().set_achievement(name, unlocked)
+    }
+    fn stat(&self, name: &str) -> SteamResult<StatValue> {
+        self.fake.lock().unwrap().stat(name)
+    }
+    fn set_stat(&mut self, name: &str, value: StatValue) -> SteamResult<()> {
+        self.fake.lock().unwrap().set_stat(name, value)
+    }
+    fn store_stats(&mut self) -> SteamResult<()> {
+        self.fake.lock().unwrap().store_stats()
+    }
     fn set_rich_presence(&mut self, key: &str, value: Option<&str>) -> SteamResult<()> {
         self.fake.lock().unwrap().set_rich_presence(key, value)
     }
@@ -209,4 +227,35 @@ fn optional_steam_never_asks_for_a_relaunch() {
     let fake = h.fake.lock().unwrap();
     assert_eq!(fake.call_count("restart_app_if_necessary"), 0);
     assert_eq!(fake.call_count("init"), 1);
+}
+
+#[test]
+fn the_game_world_gets_the_steam_handle_and_status() {
+    let h = harness(FakeBackend::ready(AppId(480), "tester").with_achievement("WIN"));
+    let mut plugin = SteamPlugin::new(h.session.clone(), manifest(false));
+    let mut rt = runtime();
+    plugin.before_graphics(&mut rt).unwrap();
+    let world = rt.app().world();
+    assert!(world.resource::<SteamRuntimeStatus>().0.is_ready());
+    let handle = world.resource::<SteamSession>();
+    assert_eq!(handle.unlock_achievement("WIN"), Ok(true));
+    assert_eq!(h.calls()[..2], ["init", "request_current_stats"]);
+}
+
+#[test]
+fn batched_stats_are_stored_when_the_run_ends() {
+    let h = harness(
+        FakeBackend::ready(AppId(480), "tester")
+            .with_stat("games", StatValue::Int(0))
+            .with_achievement("WIN"),
+    );
+    let mut plugin = SteamPlugin::new(h.session.clone(), manifest(false));
+    let mut rt = runtime();
+    plugin.before_graphics(&mut rt).unwrap();
+    h.session.set_progress("games", 4, 10).unwrap();
+    plugin.after_gpu_idle();
+    assert_eq!(
+        h.fake.lock().unwrap().stored_stats()["games"],
+        StatValue::Int(4)
+    );
 }

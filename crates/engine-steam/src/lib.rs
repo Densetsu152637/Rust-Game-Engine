@@ -16,20 +16,22 @@ mod plugin;
     any(windows, target_os = "linux", target_os = "macos")
 ))]
 mod real;
+mod session;
+mod stats;
 mod types;
 
 pub use backend::SteamBackend;
 pub use error::{SteamError, SteamResult, UnavailableReason};
 pub use fake::FakeBackend;
 pub use null::NullBackend;
-pub use plugin::{
-    REQUIRED_EXIT_CODE, SteamPlugin, SteamRuntimeStatus, SteamSession, event_json, status_json,
-};
+pub use plugin::{REQUIRED_EXIT_CODE, SteamPlugin, SteamRuntimeStatus, event_json, status_json};
 #[cfg(all(
     feature = "steam",
     any(windows, target_os = "linux", target_os = "macos")
 ))]
 pub use real::RealBackend;
+pub use session::SteamSession;
+pub use stats::{DEFAULT_STORE_INTERVAL_TICKS, StatsService};
 pub use types::*;
 
 /// True when this build contains the real Steam backend.

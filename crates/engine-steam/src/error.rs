@@ -38,6 +38,8 @@ pub enum SteamError {
     CloudDisabled,
     /// A lobby is at its member limit.
     LobbyFull,
+    /// Stats or achievements were used before the stats request was made.
+    StatsNotRequested,
     /// Steam reported a failure.
     Rejected(String),
 }
@@ -51,6 +53,7 @@ impl fmt::Display for SteamError {
             Self::QuotaExceeded => f.write_str("Steam Cloud quota exceeded"),
             Self::CloudDisabled => f.write_str("Steam Cloud is disabled"),
             Self::LobbyFull => f.write_str("lobby is full"),
+            Self::StatsNotRequested => f.write_str("stats were not requested yet"),
             Self::Rejected(why) => write!(f, "Steam rejected the request: {why}"),
         }
     }

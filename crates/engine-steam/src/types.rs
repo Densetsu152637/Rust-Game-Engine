@@ -126,6 +126,8 @@ pub enum SteamEvent {
         connected: bool,
     },
     AchievementUnlocked(String),
+    /// The signed-in user stats and achievements arrived from Steam.
+    StatsReceived,
     StatsStored,
     CloudConflict {
         name: String,

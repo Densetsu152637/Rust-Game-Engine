@@ -22,6 +22,7 @@ pub struct FakeBackend {
     stats: BTreeMap<String, StatValue>,
     stored_stats: BTreeMap<String, StatValue>,
     stored_achievements: BTreeMap<String, bool>,
+    stats_requested: bool,
     cloud_enabled: bool,
     cloud_quota: usize,
     cloud: BTreeMap<String, Vec<u8>>,
@@ -58,6 +59,7 @@ impl FakeBackend {
             stats: BTreeMap::new(),
             stored_stats: BTreeMap::new(),
             stored_achievements: BTreeMap::new(),
+            stats_requested: false,
             cloud_enabled: true,
             cloud_quota: usize::MAX,
             cloud: BTreeMap::new(),
@@ -172,6 +174,14 @@ impl FakeBackend {
         }
     }
 
+    fn require_stats(&self) -> SteamResult<()> {
+        if self.stats_requested {
+            Ok(())
+        } else {
+            Err(SteamError::StatsNotRequested)
+        }
+    }
+
     fn cloud_bytes(&self) -> usize {
         self.cloud.values().map(Vec::len).sum()
     }
@@ -247,11 +257,14 @@ impl SteamBackend for FakeBackend {
 
     fn request_current_stats(&mut self) -> SteamResult<()> {
         self.record("request_current_stats");
-        self.require_ready()
+        self.require_ready()?;
+        self.stats_requested = true;
+        Ok(())
     }
 
     fn achievement(&self, name: &str) -> SteamResult<bool> {
         self.require_ready()?;
+        self.require_stats()?;
         self.achievements
             .get(name)
             .copied()
@@ -261,6 +274,7 @@ impl SteamBackend for FakeBackend {
     fn set_achievement(&mut self, name: &str, unlocked: bool) -> SteamResult<()> {
         self.record("set_achievement");
         self.require_ready()?;
+        self.require_stats()?;
         let slot = self
             .achievements
             .get_mut(name)
@@ -276,6 +290,7 @@ impl SteamBackend for FakeBackend {
 
     fn stat(&self, name: &str) -> SteamResult<StatValue> {
         self.require_ready()?;
+        self.require_stats()?;
         self.stats
             .get(name)
             .copied()
@@ -285,6 +300,7 @@ impl SteamBackend for FakeBackend {
     fn set_stat(&mut self, name: &str, value: StatValue) -> SteamResult<()> {
         self.record("set_stat");
         self.require_ready()?;
+        self.require_stats()?;
         let slot = self
             .stats
             .get_mut(name)

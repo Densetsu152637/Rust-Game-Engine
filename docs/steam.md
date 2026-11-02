@@ -151,6 +151,39 @@ directory or the `SteamAppId` environment variable is set; set `SteamAppId=<app_
 for development runs of required games. Optional games never make this check. `ShutdownRequested` is part of the event type, but `steamworks` 0.13.1 does not
 expose Steam's shutdown notification, so the real backend never produces it yet.
 
+## Game-facing handle, achievements and stats
+
+At `before_graphics` the plugin inserts two resources into the game world:
+`SteamRuntimeStatus` and `SteamSession`, the cloneable handle every Steam feature is
+reached through. Game systems and native scripts read it with
+`world.resource::<SteamSession>()` (only present for projects with a `steam` block).
+Its methods are safe without Steam: with no client or no Steam build they return
+`SteamError::Unavailable(..)`. Use them from the tick thread.
+
+- `unlock_achievement(name)` is idempotent: `Ok(true)` only for the call that unlocked
+  it, `Ok(false)` if it was already unlocked (no second Steam call, no second event).
+  `is_achievement_unlocked(name)` reads it.
+- `stat(name)` / `set_stat(name, StatValue)` read and write integer or float stats; a
+  write that does not change the value does nothing.
+- `set_progress(stat, value, max)` and `add_progress(stat, delta, max)` clamp an
+  integer progress stat to `0..=max` (addition saturates) and return the stored value.
+- Writes only change Steam's in-memory state. Changes are stored to Steam in batches:
+  the plugin calls `store_stats` at most once every 600 fixed ticks (10 s at 60 Hz;
+  `StatsService::new(n)` changes the interval, the first store is immediate), retries
+  after one interval if a store fails, and stores any pending change when the run ends.
+  `store_stats_now()` forces it. Steam shows the unlock overlay when the store happens.
+- Ordering: the user stats are requested before the first read or write (the plugin
+  requests them right after `init`; the service requests them lazily otherwise). The
+  fake backend refuses reads made before the request with `StatsNotRequested`.
+
+The `steamworks` 0.13.1 binding has no `RequestCurrentStats` call; with the bundled SDK
+(1.61 or newer) Steam delivers the stats automatically, so the real backend only marks
+the request as made. The `steam.stats_received` event (from Steam `UserStatsReceived`)
+reports delivery but did not fire in the live run on App 480 (the stats were already
+readable), so do not wait for it: reads fail softly with `NotFound` until stats exist.
+Other events: `steam.achievement_unlocked` (`{"name"}`; progress-only notifications are
+not unlocks) and `steam.stats_stored`.
+
 ## Live tests
 
 Live tests are `#[ignore]` and use App ID 480 (Spacewar). With the Steam client open:
@@ -160,6 +193,9 @@ cargo test -p engine-steam --features steam -- --ignored core --nocapture
 ```
 
 With Steam closed the same command passes and prints `skipped: Steam not running`.
+`-- --ignored stats` (read-only; never writes to the account) lists Spacewar stats such as
+`NumGames` and achievements such as `ACH_WIN_ONE_GAME`. Live tests share one Steam
+client per process and take turns.
 
 A Steam-feature test or example executable needs the `steam_api` library at start-up,
 and Cargo only leaves it in a build-script output directory. `crates/engine-steam/build.rs`
@@ -198,7 +234,6 @@ advice.
 Everything below is planned in `docs/platform-and-steam-plan.md` and is not implemented
 at this stage.
 
-- S4: achievements and stats service with batched stat storing.
 - S5: Steam Cloud save sync beside the persistence store.
 - S6: Steam Networking Sockets transport for `MessageEndpoint`.
 - S7: lobbies and matchmaking.

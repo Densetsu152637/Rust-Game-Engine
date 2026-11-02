@@ -7,11 +7,16 @@
 
 use engine_steam::*;
 
-/// Initialises App 480, or prints a skip message and returns `None`.
-fn steam_live() -> Option<RealBackend> {
+/// Only one initialised Steam client may exist per process, so live tests take turns.
+static LIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Initialises App 480, or prints a skip message and returns `None`. The guard
+/// serialises tests; it must outlive the backend, so it is declared first.
+fn steam_live() -> Option<(std::sync::MutexGuard<'static, ()>, RealBackend)> {
+    let guard = LIVE.lock().unwrap_or_else(|p| p.into_inner());
     let mut backend = RealBackend::new();
     match backend.init(Some(AppId(480))) {
-        SteamStatus::Ready { .. } => Some(backend),
+        SteamStatus::Ready { .. } => Some((guard, backend)),
         other => {
             println!("skipped: Steam not running ({other:?})");
             None
@@ -22,7 +27,7 @@ fn steam_live() -> Option<RealBackend> {
 #[test]
 #[ignore = "needs a running Steam client"]
 fn core() {
-    let Some(mut steam) = steam_live() else {
+    let Some((_guard, mut steam)) = steam_live() else {
         // Uninitialised calls must fail softly, never panic.
         let mut backend = RealBackend::new();
         assert!(backend.auth_session_ticket().is_err());
@@ -72,4 +77,33 @@ fn core() {
         Err(SteamError::InvalidName(_))
     ));
     let _ = steam.run_callbacks();
+}
+
+/// Read-only: lists what Spacewar exposes to this account and reads one stat. It
+/// never writes, so the account is untouched.
+#[test]
+#[ignore = "needs a running Steam client"]
+fn stats() {
+    let Some((_guard, mut steam)) = steam_live() else {
+        return;
+    };
+    steam.request_current_stats().expect("request");
+    let mut received = false;
+    for _ in 0..50 {
+        if steam.run_callbacks().contains(&SteamEvent::StatsReceived) {
+            received = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    println!("stats received callback: {received}");
+    for name in ["NumGames", "NumWins", "NumLosses", "FeetTraveled"] {
+        println!("stat {name}: {:?}", steam.stat(name));
+    }
+    for name in ["ACH_WIN_ONE_GAME", "ACH_WIN_100_GAMES"] {
+        println!("achievement {name}: {:?}", steam.achievement(name));
+    }
+    // An unknown name is a soft error, never a panic.
+    assert!(steam.stat("definitely_not_a_stat").is_err());
+    assert!(steam.achievement("definitely_not_an_achievement").is_err());
 }
