@@ -537,7 +537,7 @@ fn static_edge_converges_to_an_antialiased_edge_and_stays_stable() -> Result<()>
         reference = Some(image);
     }
     eprintln!("steady-state maximum frame-to-frame change: {maximum:.4}");
-    assert!(maximum < 0.2, "steady-state flicker {maximum}");
+    assert!(maximum < 0.1, "steady-state flicker {maximum}");
     let status = rig.controls.status(ViewId(2))?;
     assert!(status.history_valid);
     assert_eq!(status.resolved_frames, 48);
@@ -790,8 +790,8 @@ fn resize_mode_switching_and_forget_release_and_restart_history() -> Result<()> 
     let scaled = rig.frame(Frame::new(1, half, small, 11))?;
     let scaled_fresh = rig.frame(Frame::new(9, half, small, 11))?;
     assert!(
-        max_difference(&scaled, &scaled_fresh) < 1e-5
-            || rig.controls.status(ViewId(1))?.history_valid
+        max_difference(&scaled, &scaled_fresh) < 1e-5,
+        "a render-scale change at constant output must resolve like a fresh frame"
     );
 
     // Off -> on: leaving the mode releases the history, re-enabling starts fresh.
