@@ -214,18 +214,31 @@ fn checkout_remotes(engine_root: &Path) -> BTreeSet<String> {
     if !engine_root.join(".git").exists() {
         return BTreeSet::new();
     }
-    let Ok(output) = Command::new("git")
-        .arg("-C")
-        .arg(engine_root)
-        .args(["config", "--get-regexp", r"^remote\..*\.url$"])
-        .output()
-    else {
+    // `git remote get-url` applies `url.<base>.insteadOf` rewriting, which is what git would
+    // fetch from; reading `remote.<name>.url` through `git config` would see the unrewritten text.
+    let git = |arguments: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(engine_root)
+            .args(arguments)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let Some(names) = git(&["remote"]) else {
         return BTreeSet::new();
     };
-    String::from_utf8_lossy(&output.stdout)
+    names
         .lines()
-        .filter_map(|line| line.split_once(' '))
-        .map(|(_, url)| normalize_git_url(url.trim()))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .filter_map(|name| git(&["remote", "get-url", "--all", name]))
+        .flat_map(|urls| {
+            urls.lines()
+                .map(|url| normalize_git_url(url.trim()))
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
@@ -495,6 +508,36 @@ mod tests {
         let patches = engine_patches(&manifest, &engine).unwrap();
         assert_eq!(patches.patches.len(), 1);
         assert!(patches.warnings.is_empty());
+    }
+
+    #[test]
+    fn remote_urls_are_read_after_instead_of_rewriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = checkout(dir.path());
+        git(&engine, &["init", "-q"]);
+        git(
+            &engine,
+            &["config", "url.https://example.com/o/.insteadOf", "mirror:"],
+        );
+        git(&engine, &["remote", "add", "origin", "mirror:engine.git"]);
+        assert_eq!(
+            checkout_remotes(&engine),
+            BTreeSet::from([normalize_git_url(URL)])
+        );
+        let manifest = game(
+            dir.path(),
+            "g",
+            &format!(
+                "[package]
+name='g'
+[dependencies]
+engine={{git='{URL}'}}
+"
+            ),
+        );
+        let patches = engine_patches(&manifest, &engine).unwrap();
+        assert_eq!(patches.patches.len(), 1);
+        assert!(patches.warnings.is_empty(), "{:?}", patches.warnings);
     }
 
     #[test]

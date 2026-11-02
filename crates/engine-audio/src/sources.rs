@@ -516,7 +516,11 @@ mod failure_race_tests {
                         &fixture.0,
                         PlayOptions::default(),
                         SourceStreamConfig {
-                            queue_frames: 4,
+                            // Larger than the whole fixture (< 9k frames), so the decoder
+                            // reaches the truncation error without any mixer drain; a tiny
+                            // queue made the barrier depend on mixer-loop pacing and
+                            // exceeded the deadline on single-core or coarse-timer hosts.
+                            queue_frames: 16_384,
                             ..Default::default()
                         },
                     )

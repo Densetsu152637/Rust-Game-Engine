@@ -112,7 +112,11 @@ fn stalled_writer_never_blocks_the_mix() {
         .unwrap();
     let misses = publisher.stats().audio_try_lock_misses;
     println!("slowest stalled mix {slowest:?}, try-lock misses {misses}");
-    assert!(slowest < Duration::from_millis(5), "{slowest:?}");
+    // "Never blocks" is proven structurally: the writer's lock is held by this very thread, so a
+    // blocking acquire in `mix` would deadlock, and every mix must record a try-lock miss. The
+    // wall-clock bound below is only a generous hang guard; a tight bound measured scheduler
+    // preemption on shared single-core runners (6.5 ms on macOS CI), not the mixer.
+    assert!(slowest < Duration::from_millis(250), "{slowest:?}");
     assert!(misses >= 200);
     assert_eq!(
         control.acoustic_stats().unwrap().frames_adopted,
