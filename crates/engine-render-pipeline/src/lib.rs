@@ -16,6 +16,7 @@
 //!   (`engine.atmosphere`, `engine.atmosphere.aerial`, docs/rendering-atmosphere.md).
 //! * [`fog`]: height fog with wind-advected noise (`engine.fog`,
 //!   docs/rendering-fog.md).
+//! * [`clouds`]: volumetric clouds (`engine.clouds`, docs/rendering-clouds.md).
 //! * [`FrameTargets`]: HDR scene colour (`Rgba16Float`), depth, optional
 //!   normals and motion vectors.
 //! * [`InstanceBatcher`] and the built-in mesh path: identical mesh +
@@ -32,6 +33,7 @@
 
 pub mod atmosphere;
 mod builtin;
+pub mod clouds;
 mod context;
 pub mod decals;
 mod feature;

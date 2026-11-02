@@ -429,6 +429,8 @@ impl PipelineFeature for FogFeature {
             // the camera.
             .after(crate::pipeline::names::SSR)
             .after(crate::atmosphere::ATMOSPHERE_AERIAL_FEATURE)
+            // Clouds are composited first; the fog then covers them too.
+            .after(crate::clouds::CLOUDS_FEATURE)
             .disabled_by_default()
     }
 
