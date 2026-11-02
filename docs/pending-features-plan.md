@@ -811,11 +811,16 @@ test, so edits to the lit shader must keep those anchors; no performance numbers
   and the scene outside them are bit-exact against the AA-off and HUD-free frames),
   and a CPU test of the camera-to-view mapping.
 - Placement stays in HDR `PostProcess` before `Tonemap`/`Overlay` (documented in
-  `rendering-post.md`). Colour above 1.0 is now mixed in a reversible compressed
-  domain (identity up to 1.0). Measured on an 8.0 edge: display-space error 4.73 with
-  linear HDR blending, about 3.4 with the compressed mix, 2.1 unfiltered; so bright
-  edges remain only partly anti-aliased. A display-referred pass would need a new
-  stage between `Tonemap` and `Overlay`.
+  `rendering-post.md`). Colour above 1.0 is mixed in a reversible compressed domain
+  with one peak-channel weight per colour (identity up to 1.0; hue preserved),
+  applied to texels before the bilinear fetch, plus a strength guard that fades the
+  blend out for source peaks of 1e3 to 1e4. Measured display-space error (Reinhard,
+  RTX 5080) on the 8.0 edge: 4.73 with linear HDR blending, about 3.4 with the
+  earlier per-channel mix applied after the fetch, 0.55 now, 2.14 unfiltered. A
+  saturated (8, 1, 0.5) edge: 2.26 filtered against 3.12 unfiltered, with channel
+  ratios held to within 0.01. Tests assert `aa_error <= plain_error` for both. The
+  along-edge kernel still does not estimate coverage across the edge. A display-referred pass
+  would need a new stage between `Tonemap` and `Overlay`.
 - DLSS Super Resolution takes precedence: the desktop renderer disables the filter for
   a draw whose Upscale stage the host owns (unit-tested; no NGX SDK, so no live DLSS
   run). Frame generation keeps the filter in the scene segment before late UI.

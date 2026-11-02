@@ -195,9 +195,17 @@ afterwards and keep their exact pixels (checked by a desktop readback). It
 estimates local luma contrast (tone-bounded `x/(1+x)` luma, 3x3 Sobel) and an edge
 tangent, then blends a bounded set of samples along that tangent. Pixels below the
 relative threshold return the original colour; alpha is kept. Colour is mixed in a
-reversible compressed domain that is the identity up to 1.0 and maps larger
-values through `2 - 1/x`, so display-range images blend linearly and very bright
-HDR sides do not dominate every mixed pixel. It handles a render-size HDR source
+reversible compressed domain. One scalar weight per colour, taken from its
+brightest channel, is the identity up to a peak of 1.0 and maps a larger peak `m`
+to `2 - 1/m`; the whole colour is scaled by it, so hue and channel ratios are
+preserved exactly (luminance was rejected: it barely compresses a saturated
+colour, and the display operator acts per channel). Source texels are
+compressed before the bilinear fetch, so every sample lives in that domain, and
+the result is expanded afterwards. Display-range images therefore blend linearly
+and very bright HDR sides do not dominate every mixed pixel. Strength guard:
+the blend fades to zero between compressed peaks 1.999 and 1.9999 (source peaks
+1e3 to 1e4) where the map can no longer represent the mix, so a pixel is never
+made worse than the unfiltered colour by a saturated mapping. It handles a render-size HDR source
 when built-in upscale is disabled by sampling from the source's actual size.
 
 Upscalers and frame generation:
