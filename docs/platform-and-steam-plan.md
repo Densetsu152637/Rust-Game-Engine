@@ -130,8 +130,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: S3.
 - Owned paths: `crates/engine-steam/src/stats.rs`, `docs/steam.md`.
 - Acceptance checks: fake tests (unlock idempotence, batching throttle, progress clamp, request-before-read ordering); live `#[ignore]` read of a Spacewar stat; feature clippy clean.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `671f286` merged. `SteamSession` is a world `Resource` (game-facing: `unlock_achievement`, `is_achievement_unlocked`, `stat`, `set_stat`, `set_progress`, `add_progress`, `store_stats_now`; Unavailable without Steam). `StatsService`: idempotent unlock, clamped progress, lazy request before read/write, `store_stats` throttled to once per 600 ticks (first immediate, retry after failure, flush at run end). steamworks 0.13.1 has no `RequestCurrentStats` (stats arrive automatically), documented. 7 fake + 2 host tests; live read of Spacewar stats/achievements passed (read-only). `StatsReceived` callback not observed live (documented).
 - Handoff notes: App 480 has few stats; live coverage is thin by nature.
 
 ## Stage S5: Steam Cloud saves
@@ -139,8 +139,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: S3.
 - Owned paths: `crates/engine-steam/src/cloud.rs`; an additive post-save hook in `engine_project::persistence` only if needed.
 - Acceptance checks: fake tests for pull, push, newest-wins, conflict event, unsafe-name rejection (`../x`), quota exceeded, cloud disabled for app/user; live `#[ignore]` round trip on 480.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `f9d4843` merged. Additive persistence API (`SaveListener`, `slots`, `slot_header`, `install_slot_bytes` keeping `.bak`; 4 tests). `CloudSync` mirrors `saves/<slot>.json`: pull before first load, push after each save via a weak listener, conflict policy content_version > mtime (s) > keep local + `steam.cloud_conflict`, unsafe names rejected, corrupt/newer copies never installed, quota/failure → `steam.cloud_sync_failed`, honours `SteamManifest.cloud` and app/account enablement (`local_only` report). 10 fake + 3 host tests; live round trip on 480 passed (write/list/timestamp/read/delete). Real write failure reported as `QuotaExceeded` (no quota query in the binding). Critic S1–S3 fixes in `ac0fd08`: project.rs back to LF with `' '`, restart check only when `required`, `ServiceSet` runs `after_gpu_idle` once on every exit path. `cargo test -p engine-project` 2290 passed; engine-steam 40 + live core/stats/cloud.
 - Handoff notes: detect `is_cloud_enabled_for_app/account` and degrade to local-only.
 
 ## Stage S6: Networking Sockets transport
