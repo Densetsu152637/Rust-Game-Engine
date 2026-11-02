@@ -179,8 +179,8 @@ S6/S7 implementation-gate critic converged (rounds 1-3; fixes `f2a6a55`, `c2711b
 - Depends on: S3.
 - Owned paths: `crates/engine-steam/src/workshop.rs`.
 - Acceptance checks: fake tests; live `#[ignore]` query of Spacewar's Workshop; no automated test uploads (uploads are manual only and documented).
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `795afda` merged. `UgcService` Resource (create, submit with ordered progress, subscribe/unsubscribe, subscribed/by-id/public queries, installed info, download with progress; `ItemUpdate` validated before Steam; at most 64 tracked operations; `WorkshopItemInstalled` event on download). `InstalledItem` gained `timestamp`/`needs_update`. Fake Workshop world; real backend over steamworks 0.13.1 UGC (results copied out of the fetch callback; empty by-id queries answered locally). 8 workshop tests; clippy both ways. Live read-only query on 480: 7,414,145 public items, page of 50; the account has no subscriptions, so installed-item info was not read live. Uploads are manual only (documented).
 - Handoff notes: uploads publish publicly — never in automated tests.
 
 ## Stage S10: Workshop content loading
