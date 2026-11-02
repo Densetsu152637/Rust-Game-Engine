@@ -146,6 +146,11 @@ pub trait SteamBackend {
         Err(self.unavailable())
     }
 
+    /// The lobby surface of this backend, if it has one (see [`crate::SteamLobbies`]).
+    fn lobby_backend(&mut self) -> Option<&mut dyn crate::LobbyBackend> {
+        None
+    }
+
     // Networking Sockets. Connections and listen sockets are identified by backend-owned
     // ids; `net_poll_events` reports what happened since the last call.
 

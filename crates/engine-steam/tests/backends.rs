@@ -114,11 +114,13 @@ fn fake_lobbies_filter_and_limit() {
     let filter = LobbyFilter {
         string_equals: vec![("mode".into(), "ctf".into())],
         max_results: 0,
+        open_slots: 0,
     };
     assert_eq!(fake.list_lobbies(&filter).unwrap().len(), 1);
     let other = LobbyFilter {
         string_equals: vec![("mode".into(), "dm".into())],
         max_results: 0,
+        open_slots: 0,
     };
     assert!(fake.list_lobbies(&other).unwrap().is_empty());
     fake.leave_lobby(id).unwrap();

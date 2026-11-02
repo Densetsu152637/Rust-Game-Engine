@@ -65,6 +65,7 @@ pub struct RealBackend {
     stats_requested: bool,
     stats_received: Arc<AtomicBool>,
     net: RealNet,
+    pub(crate) lobby_events: crate::real_lobby::LobbyEvents,
 }
 
 impl RealBackend {
@@ -79,10 +80,11 @@ impl RealBackend {
             stats_requested: false,
             stats_received: Arc::new(AtomicBool::new(false)),
             net: RealNet::default(),
+            lobby_events: Arc::default(),
         }
     }
 
-    fn client(&self) -> SteamResult<&Client> {
+    pub(crate) fn client(&self) -> SteamResult<&Client> {
         match (&self.live, self.status.is_ready()) {
             (Some(live), true) => Ok(&live.client),
             _ => Err(self.unavailable()),
@@ -200,6 +202,10 @@ fn reject_nul(text: &str) -> SteamResult<()> {
 }
 
 impl SteamBackend for RealBackend {
+    fn lobby_backend(&mut self) -> Option<&mut dyn crate::LobbyBackend> {
+        Some(self)
+    }
+
     fn status(&self) -> SteamStatus {
         self.status.clone()
     }
@@ -226,13 +232,14 @@ impl SteamBackend for RealBackend {
                     name: client.friends().name(),
                 };
                 let app_id = AppId(client.utils().app_id().0);
-                let handles = Self::register_callbacks(
+                let mut handles = Self::register_callbacks(
                     &client,
                     me,
                     &self.events,
                     &self.net.auth_events,
                     &self.stats_received,
                 );
+                handles.extend(crate::real_lobby::register(&client, &self.lobby_events));
                 self.live = Some(Live {
                     _handles: handles,
                     client,

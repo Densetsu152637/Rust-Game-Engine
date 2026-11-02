@@ -10,15 +10,24 @@ mod backend;
 mod cloud;
 mod error;
 mod fake;
+mod fake_lobby;
 mod fake_net;
+mod lobby;
 mod net;
 mod null;
+#[cfg(feature = "online")]
+mod online;
 mod plugin;
 #[cfg(all(
     feature = "steam",
     any(windows, target_os = "linux", target_os = "macos")
 ))]
 mod real;
+#[cfg(all(
+    feature = "steam",
+    any(windows, target_os = "linux", target_os = "macos")
+))]
+mod real_lobby;
 #[cfg(all(
     feature = "steam",
     any(windows, target_os = "linux", target_os = "macos")
@@ -34,8 +43,14 @@ pub use backend::SteamBackend;
 pub use cloud::{CloudReport, CloudSync, SyncAction};
 pub use error::{SteamError, SteamResult, UnavailableReason};
 pub use fake::FakeBackend;
+pub use lobby::{
+    ConnectIdentity, EnterError, HOST_KEY, LobbyBackend, LobbyEvent, LobbyRaw, LobbyView,
+    MAX_LOBBY_MEMBERS, PORT_KEY, SteamLobbies, listed_identity,
+};
 pub use net::*;
 pub use null::NullBackend;
+#[cfg(feature = "online")]
+pub use online::OnlineAdapter;
 pub use plugin::{REQUIRED_EXIT_CODE, SteamPlugin, SteamRuntimeStatus, event_json, status_json};
 #[cfg(all(
     feature = "steam",

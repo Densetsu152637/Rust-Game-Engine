@@ -84,6 +84,8 @@ pub struct LobbyFilter {
     pub string_equals: Vec<(String, String)>,
     /// Maximum results; `0` means the backend default.
     pub max_results: u32,
+    /// Only lobbies with at least this many free slots (`0` ignores the slot count).
+    pub open_slots: u32,
 }
 
 /// Snapshot of a lobby.

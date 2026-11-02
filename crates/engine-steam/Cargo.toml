@@ -10,10 +10,13 @@ description = "Steamworks integration seam: backend trait, null and fake backend
 default = []
 # Adds the real Steamworks backend (needs the steam_api library next to the executable at run time).
 steam = ["dep:steamworks"]
+# Adapter from lobby events to the engine-online notification vocabulary.
+online = ["dep:engine-online"]
 
 [dependencies]
 bevy_ecs.workspace = true
 engine-network = { path = "../engine-network" }
+engine-online = { path = "../engine-online", optional = true }
 engine-project = { path = "../engine-project" }
 serde_json = "1"
 steamworks = { version = "=0.13.1", optional = true }
