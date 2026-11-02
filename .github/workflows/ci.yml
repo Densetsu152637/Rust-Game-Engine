@@ -51,8 +51,8 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: bash scripts/ci/install-toolchain.sh
-      - name: Move the target directory to the C: volume
-        # The workspace lives on the small D: volume; C: has far more free space.
+      - name: Move the target directory to the C drive
+        # The workspace lives on the small D drive; C has far more free space.
         run: echo "CARGO_TARGET_DIR=C:/cargo-target" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -102,8 +102,8 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: bash scripts/ci/install-toolchain.sh
-      - name: Move the target directory to the C: volume
-        # The workspace lives on the small D: volume; C: has far more free space.
+      - name: Move the target directory to the C drive
+        # The workspace lives on the small D drive; C has far more free space.
         run: echo "CARGO_TARGET_DIR=C:/cargo-target" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
