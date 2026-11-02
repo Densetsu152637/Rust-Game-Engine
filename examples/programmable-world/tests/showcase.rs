@@ -1,4 +1,4 @@
-use engine_project::{
+use engine::project::{
     ActionFrame,
     ui_tree::{UiRoot, UiWidget},
 };

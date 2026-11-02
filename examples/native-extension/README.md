@@ -1,14 +1,14 @@
 # External native extension fixture
 
-This standalone game Cargo crate uses only public engine-core, engine-project and
-engine-desktop APIs. Its configure function defines a heap-owning CustomActor
+This standalone game Cargo crate uses only the public API of the `engine` facade crate (`engine::core`, `engine::project`
+and `engine::desktop`). Its configure function defines a heap-owning CustomActor
 component (String/Vec), CustomState resource (Vec<String>), CustomBundle and ordered
 GameSystems sets. Native systems mutate these types and the core extracts custom
 components into its separate render world. No authored schema or reflection
 registration is required for arbitrary native types.
 
 CustomTriangle implements the public render feature trait
-(`engine_desktop::render_pipeline::PipelineFeature`) in the overlay stage. It owns
+(`engine::desktop::render_pipeline::PipelineFeature`) in the overlay stage. It owns
 its uniform buffer, bind group, pipeline layout and WGSL shader/pipeline, built for
 the output format on first use; encode reads an extracted custom component from
 the feature context, writes its color uniform and issues a real wgpu render pass

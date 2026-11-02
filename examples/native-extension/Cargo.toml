@@ -6,7 +6,5 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-engine-core = { path = "../../crates/engine-core" }
-engine-project = { path = "../../crates/engine-project" }
-engine-desktop = { path = "../../crates/engine-desktop" }
+engine = { path = "../../crates/engine" }
 pollster = "=0.4.0"

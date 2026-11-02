@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "name": "My Game",
+  "rust": { "manifest": "Cargo.toml" },
+  "inputActions": { "move_right": "Right" },
+  "assets": [
+    { "id": "asset:player-script", "path": "src/lib.rs", "kind": "script" }
+  ],
+  "startup_scene": "scenes/main.scene.json"
+}

@@ -47,7 +47,9 @@ protocols need an adapter. See [Custom and accessible input](docs/custom-input.m
 | `crates/engine-ai` | Pure AI runtimes: behavior trees (composites, decorators with observer aborts, services, native tasks) over a typed blackboard, compiled from `engine-graph` documents |
 | `crates/engine-editor` | Portable egui/eframe scene editor, real rendered viewport, shared `EditorController` and isolated Cargo-backed play; retained Win32 smoke controls |
 | `crates/engine-mcp` | MCP stdio server for agents: project/scene/asset/file read tools, `--allow-write` scene and file edits, `project://` resources, and a `ToolProvider` for the CLI's `--allow-exec` build/run/screenshot tools |
+| `crates/engine` | Facade crate: one Cargo dependency for games, re-exporting the public API with forwarded features and a prelude |
 | `crates/engine-tooling` | Native Rust compiler/launcher, generation management, asset index, shader import, packaging and the `engine` command-line tool |
+| `templates/game` | Versioned game template: manifest, startup scene and a minimal game crate depending on `engine` by git tag |
 | `examples/first-project` | Minimal authored project with a game crate and lifecycle fixtures |
 | `examples/desktop-2d` | 2D desktop synthetic lab: sprites, text, collision, rooms, audio, saves |
 | `examples/native-extension` | Custom components, systems and a custom wgpu render pass |
@@ -103,6 +105,9 @@ cargo test --manifest-path assets/scripts/moving_entity/Cargo.toml
 ```
 
 ## Using the engine
+
+From your own repository, depend on the `engine` facade crate by git tag and start
+from `templates/game`; see [Using the engine](docs/using-the-engine.md).
 
 A game is a Cargo crate with an authored `project.json` next to it. The crate
 exposes `configure(&mut EngineApp)`, which registers components, resources, systems

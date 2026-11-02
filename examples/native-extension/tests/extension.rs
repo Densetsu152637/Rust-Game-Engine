@@ -1,6 +1,6 @@
-use engine_core::EngineApp;
-use engine_desktop::{GpuContext, GpuRenderer, OffscreenTarget, PipelineFeatures, RenderLimits};
-use engine_project::{Camera2D, runtime::RenderFrame};
+use engine::core::EngineApp;
+use engine::desktop::{GpuContext, GpuRenderer, OffscreenTarget, PipelineFeatures, RenderLimits};
+use engine::project::{Camera2D, runtime::RenderFrame};
 use native_extension_gameplay::*;
 
 #[test]

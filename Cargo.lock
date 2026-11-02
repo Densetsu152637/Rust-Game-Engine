@@ -1492,6 +1492,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "engine-acoustics",
+ "engine-ai",
+ "engine-animation",
+ "engine-assets",
+ "engine-audio",
+ "engine-core",
+ "engine-desktop",
+ "engine-destruction",
+ "engine-ecs",
+ "engine-fluids",
+ "engine-foliage",
+ "engine-gameplay",
+ "engine-graph",
+ "engine-locale",
+ "engine-log",
+ "engine-material-graph",
+ "engine-mesh-lod",
+ "engine-ml",
+ "engine-navigation",
+ "engine-net-predict",
+ "engine-net-quic",
+ "engine-net-replication",
+ "engine-net-voice",
+ "engine-network",
+ "engine-pcg",
+ "engine-physics",
+ "engine-project",
+ "engine-script",
+ "engine-sequencer",
+ "engine-streaming",
+ "engine-terrain",
+ "engine-text",
+ "engine-tilemap",
+ "engine-video",
+ "engine-water",
+ "engine-xpbd",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-acoustics"
 version = "0.1.0"
 dependencies = [

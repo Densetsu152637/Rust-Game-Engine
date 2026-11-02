@@ -1,11 +1,11 @@
 //! An external game can own heap data, native schedules and unrestricted GPU
 //! passes (render features) without changes to the engine's fixed authored
 //! component catalog.
-use engine_core::{bevy_ecs, prelude::*};
-use engine_desktop::render_pipeline::{
+use engine::core::{bevy_ecs, prelude::*};
+use engine::desktop::render_pipeline::{
     FeatureContext, FeatureDescriptor, PipelineFeature, Stage as RenderStage,
 };
-use engine_desktop::{PipelineFeatures, wgpu};
+use engine::desktop::{PipelineFeatures, wgpu};
 
 #[derive(Component, Clone, Debug)]
 pub struct CustomActor {
@@ -154,11 +154,11 @@ impl PipelineFeature for CustomTriangle {
     fn encode(&mut self, ctx: &mut FeatureContext<'_>) -> Result<()> {
         let world = ctx
             .world
-            .ok_or_else(|| engine_core::anyhow::anyhow!("custom pass requires extracted world"))?;
+            .ok_or_else(|| engine::core::anyhow::anyhow!("custom pass requires extracted world"))?;
         let color = world
             .iter_entities()
             .find_map(|entity| entity.get::<CustomColor>().copied())
-            .ok_or_else(|| engine_core::anyhow::anyhow!("custom component was not extracted"))?;
+            .ok_or_else(|| engine::core::anyhow::anyhow!("custom component was not extracted"))?;
         let target = ctx.output()?.clone();
         if self
             .pipeline

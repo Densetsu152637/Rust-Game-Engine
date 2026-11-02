@@ -1,0 +1,68 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+description = "Single-dependency facade for the Rust game engine: re-exports the public API a game needs"
+
+[features]
+default = ["desktop", "text-scripting"]
+# The winit/wgpu desktop host (`engine::desktop`): windows, input, GPU rendering, audio output.
+# Off: only the GPU-free simulation, project and asset layers are built.
+desktop = ["dep:engine-desktop"]
+# Rhai text scripts (`engine.TextScript`). Forwards `engine-project/text-scripting`.
+text-scripting = ["engine-project/text-scripting"]
+# DLSS Super Resolution through NGX on Vulkan. Needs NGX_SDK_DIR and VULKAN_HEADERS_DIR at
+# build time; see docs/dlss.md.
+dlss = ["desktop", "engine-desktop/dlss"]
+# Operating-system clipboard for game text inputs instead of the in-process clipboard.
+system-clipboard = ["desktop", "engine-desktop/system-clipboard"]
+# Bit-identical cross-platform physics maths (slower). See docs/physics-queries.md#determinism.
+deterministic-physics = ["engine-physics/deterministic"]
+
+[dependencies]
+engine-desktop = { path = "../engine-desktop", optional = true }
+engine-project = { path = "../engine-project", default-features = false }
+engine-log = { path = "../engine-log" }
+engine-ecs = { path = "../engine-ecs" }
+engine-core = { path = "../engine-core" }
+engine-assets = { path = "../engine-assets" }
+engine-audio = { path = "../engine-audio" }
+engine-acoustics = { path = "../engine-acoustics" }
+engine-ai = { path = "../engine-ai" }
+engine-animation = { path = "../engine-animation" }
+engine-destruction = { path = "../engine-destruction" }
+engine-fluids = { path = "../engine-fluids" }
+engine-foliage = { path = "../engine-foliage" }
+engine-gameplay = { path = "../engine-gameplay" }
+engine-graph = { path = "../engine-graph" }
+engine-locale = { path = "../engine-locale" }
+engine-material-graph = { path = "../engine-material-graph" }
+engine-mesh-lod = { path = "../engine-mesh-lod" }
+engine-navigation = { path = "../engine-navigation" }
+engine-network = { path = "../engine-network" }
+engine-net-predict = { path = "../engine-net-predict" }
+engine-net-quic = { path = "../engine-net-quic" }
+engine-net-replication = { path = "../engine-net-replication" }
+engine-net-voice = { path = "../engine-net-voice" }
+engine-pcg = { path = "../engine-pcg" }
+engine-physics = { path = "../engine-physics" }
+engine-script = { path = "../engine-script", default-features = false }
+engine-sequencer = { path = "../engine-sequencer" }
+engine-streaming = { path = "../engine-streaming" }
+engine-text = { path = "../engine-text" }
+engine-terrain = { path = "../engine-terrain" }
+engine-tilemap = { path = "../engine-tilemap" }
+engine-video = { path = "../engine-video" }
+engine-water = { path = "../engine-water" }
+engine-xpbd = { path = "../engine-xpbd" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+engine-ml = { path = "../engine-ml" }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

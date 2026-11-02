@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "scene_id": "scene:main",
+  "entities": [
+    {
+      "id": "entity:camera",
+      "name": "Camera",
+      "components": {
+        "Transform": { "position": [0.0, 2.0, 8.0] },
+        "Camera3D": {}
+      }
+    },
+    {
+      "id": "entity:player",
+      "name": "Player",
+      "components": {
+        "Transform": { "position": [0.0, 0.0, 0.0] },
+        "Script": { "asset": "asset:player-script" }
+      }
+    }
+  ]
+}

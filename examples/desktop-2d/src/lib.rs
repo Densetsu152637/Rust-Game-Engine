@@ -15,8 +15,8 @@ mod test_restore_female;
 #[path = "test-restore-male.rs"]
 mod test_restore_male;
 
-use engine_core::{EngineApp, Result};
-use engine_project::register_script;
+use engine::core::{EngineApp, Result};
+use engine::project::register_script;
 pub fn configure(app: &mut EngineApp) -> Result<()> {
     register_script(app, "asset:player", player::factory)?;
     register_script(app, "asset:test-new-male", test_new_male::factory)?;

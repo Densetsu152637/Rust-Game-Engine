@@ -1,16 +1,16 @@
 //! Separate-process acceptance driver; the same configure/scripts are loaded by
 //! the native runtime compiler and desktop launcher.
-use engine_audio::{AudioConfig, AudioEngine};
-use engine_project::{ActionFrame, Project, Runtime};
+use engine::audio::{AudioConfig, AudioEngine};
+use engine::project::{ActionFrame, Project, Runtime};
 use std::path::PathBuf;
-fn run() -> engine_core::Result<serde_json::Value> {
+fn run() -> engine::core::Result<serde_json::Value> {
     let args: Vec<_> = std::env::args().collect();
-    engine_core::anyhow::ensure!(
+    engine::core::anyhow::ensure!(
         args.len() >= 4,
         "usage: lab-walkthrough new|restore male|female USER_DATA [--omit-confirm]"
     );
     let (mode, variant) = (&args[1], &args[2]);
-    engine_core::anyhow::ensure!(
+    engine::core::anyhow::ensure!(
         matches!(mode.as_str(), "new" | "restore") && matches!(variant.as_str(), "male" | "female"),
         "invalid walkthrough mode/variant"
     );
@@ -51,12 +51,12 @@ fn run() -> engine_core::Result<serde_json::Value> {
         }
     );
     let snapshot = runtime.snapshot();
-    engine_core::anyhow::ensure!(
+    engine::core::anyhow::ensure!(
         snapshot.logs.iter().any(|s| s == &marker),
         "walkthrough did not reach {marker}"
     );
     runtime.stop()?;
-    engine_core::anyhow::ensure!(audio.voice_count() == 0, "scene teardown leaked voices");
+    engine::core::anyhow::ensure!(audio.voice_count() == 0, "scene teardown leaked voices");
     Ok(
         serde_json::json!({"ok":true,"snapshot":snapshot,"audioVoicesAfterStop":audio.voice_count()}),
     )
