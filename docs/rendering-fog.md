@@ -4,8 +4,10 @@ Status: implemented to ready-to-test on branch `feat/render-r9-fog`; GPU readbac
 tests written and run on Windows / RTX 5080 (Vulkan). Second of the stage 9
 "atmosphere, fog, clouds" slices (`pending-features-plan.md`, dependency item
 5), built on the merged [atmosphere](rendering-atmosphere.md). Clouds are the
-next slice and can reuse the pieces listed under
-[Parameters later slices can reuse](#parameters-later-slices-can-reuse).
+next slice ([rendering-clouds.md](rendering-clouds.md), implemented): they reuse
+the pieces listed under
+[Parameters later slices can reuse](#parameters-later-slices-can-reuse) and are
+composited before the fog, so the fog also covers them.
 
 ## What exists
 
@@ -118,6 +120,10 @@ between).
   constraint is ignored (as the framework does for unknown names) when the
   atmosphere is not registered. Register both in one registry (the desktop host
   does) so the constraint is applied across them.
+- **Clouds run before the fog.** `engine.clouds` is ordered between
+  `engine.atmosphere.aerial` and `engine.fog` ([rendering-clouds.md](rendering-clouds.md)),
+  so the fog is applied over the cloud-composited colour; the fog distance of a
+  sky pixel stays `sky_distance` and is not extended to the cloud distance.
 - **SSR reflections are fogged as part of the reflecting surface.** SSR runs
   earlier, so the reflected radiance is already in the scene colour of the
   reflecting pixel and is attenuated by that pixel's view distance. The reflected

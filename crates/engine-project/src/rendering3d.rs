@@ -415,6 +415,131 @@ impl Default for Fog3D {
     }
 }
 
+/// Volumetric clouds over opaque geometry and sky pixels (OpaqueEffects
+/// stage, after aerial perspective and before fog).
+pub const CLOUDS_FEATURE: &str = "engine.clouds";
+
+/// Most primary march steps per pixel.
+pub const MAX_CLOUD_PRIMARY_STEPS: u32 = 96;
+/// Most light-march steps per primary sample.
+pub const MAX_CLOUD_LIGHT_STEPS: u32 = 12;
+/// Most cloud noise octaves.
+pub const MAX_CLOUD_OCTAVES: u32 = 4;
+
+/// Optional volumetric cloud layer for one camera. Absent means off. Altitudes
+/// are world heights in metres (the floating origin is included), rates 1/m.
+/// The sun is the scene's first directional light; the wind advects the noise
+/// with the runtime's scene clock. See docs/rendering-clouds.md.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Clouds3D {
+    /// Altitude of the bottom of the layer.
+    pub base_altitude: f32,
+    /// Altitude of the top of the layer; must exceed `base_altitude`.
+    pub top_altitude: f32,
+    /// Extinction at full density, 1/m; zero disables the clouds.
+    pub density: f32,
+    /// Fraction of the layer that holds cloud, `0..=1`; zero disables them.
+    pub coverage: f32,
+    /// Scattering albedo per channel.
+    pub albedo: [f32; 3],
+    /// Forward Cornette-Shanks asymmetry in `-0.99..=0.99`.
+    pub anisotropy: f32,
+    /// Multiplier on the in-scatter of the sun.
+    pub sun_intensity: f32,
+    /// Multiplier on the in-scatter of the view's ambient radiance.
+    pub ambient_intensity: f32,
+    /// Whether the cheap multiple-scattering approximation is added.
+    pub multiple_scattering: bool,
+    /// Strength of the noise `mix(1, fbm, amount)`; zero is a uniform layer.
+    pub noise_amount: f32,
+    /// Size of the base noise cell, metres.
+    pub noise_scale: f32,
+    /// Noise octaves, `1..=4`.
+    pub noise_octaves: u32,
+    /// Selects one of the noise patterns.
+    pub noise_seed: u32,
+    /// Wind that advects the noise, m/s per axis.
+    pub wind: [f32; 3],
+    /// Distance the primary march covers at most, metres.
+    pub max_distance: f32,
+    /// Horizon fade distance, metres; zero turns the fade off.
+    pub fade_distance: f32,
+    /// Primary march samples per pixel, `1..=96`.
+    pub primary_steps: u32,
+    /// Light-march samples per primary sample, `1..=12`.
+    pub light_steps: u32,
+    /// Length of the light march, metres.
+    pub light_distance: f32,
+}
+
+impl Default for Clouds3D {
+    fn default() -> Self {
+        Self {
+            base_altitude: 1500.0,
+            top_altitude: 3500.0,
+            density: 0.004,
+            coverage: 0.5,
+            albedo: [1.0; 3],
+            anisotropy: 0.6,
+            sun_intensity: 1.0,
+            ambient_intensity: 1.0,
+            multiple_scattering: true,
+            noise_amount: 1.0,
+            noise_scale: 1500.0,
+            noise_octaves: 3,
+            noise_seed: 0,
+            wind: [0.0; 3],
+            max_distance: 40_000.0,
+            fade_distance: 0.0,
+            primary_steps: 48,
+            light_steps: 6,
+            light_distance: 800.0,
+        }
+    }
+}
+
+impl Clouds3D {
+    pub fn validate(&self) -> Result<()> {
+        let within = |v: f32, max: f32| v.is_finite() && (0.0..=max).contains(&v);
+        let thickness = f64::from(self.top_altitude) - f64::from(self.base_altitude);
+        if !self.base_altitude.is_finite()
+            || !self.top_altitude.is_finite()
+            || self.base_altitude.abs() > 1.0e7
+            || self.top_altitude.abs() > 1.0e7
+            || !(1.0..=1.0e5).contains(&thickness)
+            || !within(self.density, 1.0)
+            || !within(self.coverage, 1.0)
+            || !self.albedo.into_iter().all(|v| within(v, 1.0))
+            || !self.anisotropy.is_finite()
+            || self.anisotropy.abs() > 0.99
+            || !within(self.sun_intensity, 1000.0)
+            || !within(self.ambient_intensity, 1000.0)
+            || !within(self.noise_amount, 1.0)
+            || !self.noise_scale.is_finite()
+            || !(1.0..=1.0e6).contains(&self.noise_scale)
+            || !(1..=MAX_CLOUD_OCTAVES).contains(&self.noise_octaves)
+            || !self
+                .wind
+                .into_iter()
+                .all(|v| v.is_finite() && v.abs() <= 200.0)
+            || !self.max_distance.is_finite()
+            || !(1.0..=1.0e6).contains(&self.max_distance)
+            || !within(self.fade_distance, 1.0e7)
+            || !(1..=MAX_CLOUD_PRIMARY_STEPS).contains(&self.primary_steps)
+            || !(1..=MAX_CLOUD_LIGHT_STEPS).contains(&self.light_steps)
+            || !self.light_distance.is_finite()
+            || !(1.0..=1.0e5).contains(&self.light_distance)
+        {
+            return Err(Error::new(
+                "camera3d.clouds.invalid",
+                "Clouds need altitudes within 1e7 m with the top 1..1e5 m above the base, density 0..1 per metre, coverage 0..1, albedo 0..1, anisotropy within +-0.99, sun and ambient intensity 0..1000, noise amount 0..1, noise scale 1..1e6 m, noise octaves 1..4, wind within 200 m/s per axis, max distance 1..1e6 m, fade distance 0..1e7 m, primary steps 1..96, light steps 1..12 and light distance 1..1e5 m, all finite",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl ScreenSpaceReflections3D {
     pub fn validate(&self) -> Result<()> {
         if !(1..=MAX_SSR_STEPS).contains(&self.max_steps)
@@ -693,6 +818,10 @@ pub struct Camera3D {
     /// `render_features["engine.fog"] = false`. See docs/rendering-fog.md.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fog: Option<Fog3D>,
+    /// Absent means off. Present enables `engine.clouds` unless
+    /// `render_features["engine.clouds"] = false`. See docs/rendering-clouds.md.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clouds: Option<Clouds3D>,
     /// Projected decals in world space, at most 64, drawn in list order (later
     /// on top). Empty means off. `render_features["engine.decals"] = false`
     /// wins. See docs/rendering-decals.md.
@@ -723,6 +852,7 @@ impl Default for Camera3D {
             screen_space_reflections: None,
             atmosphere: None,
             fog: None,
+            clouds: None,
             decals: Vec::new(),
             render_features: BTreeMap::new(),
         }
@@ -1220,6 +1350,9 @@ impl Camera3D {
         if self.fog.is_some() {
             features.entry(FOG_FEATURE.into()).or_insert(true);
         }
+        if self.clouds.is_some() {
+            features.entry(CLOUDS_FEATURE.into()).or_insert(true);
+        }
         if !self.decals.is_empty() {
             features.entry(DECALS_FEATURE.into()).or_insert(true);
         }
@@ -1243,6 +1376,9 @@ impl Camera3D {
             settings.validate()?;
         }
         if let Some(settings) = self.fog {
+            settings.validate()?;
+        }
+        if let Some(settings) = self.clouds {
             settings.validate()?;
         }
         if self.decals.len() > MAX_DECALS_3D {

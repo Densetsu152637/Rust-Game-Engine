@@ -13,6 +13,7 @@
 
 mod atmosphere;
 mod cache;
+mod clouds;
 mod decals;
 mod fog;
 mod framegen;
@@ -52,6 +53,7 @@ use engine_render::{DrawCommand, RenderCommandBuffer, RenderTarget};
 #[cfg(any(feature = "dlss", test))]
 use engine_render_pipeline::Presentation;
 use engine_render_pipeline::atmosphere::AtmosphereControls;
+use engine_render_pipeline::clouds::CloudControls;
 use engine_render_pipeline::fog::FogControls;
 use engine_render_pipeline::{
     Activity, FeatureOverrides, GpuTexture, HdrOutputSettings, HostStages, HostUpscale,
@@ -160,6 +162,7 @@ pub struct GpuRenderer {
     temporal: TemporalControls,
     atmosphere: AtmosphereControls,
     fog: FogControls,
+    clouds: CloudControls,
     rt: rt::RtHost,
     /// A camera cut requested for the next native view (`reset_history`).
     native_reset: bool,
@@ -387,6 +390,7 @@ impl GpuRenderer {
             temporal: TemporalControls::default(),
             atmosphere: AtmosphereControls::default(),
             fog: FogControls::default(),
+            clouds: CloudControls::default(),
             rt: rt::RtHost::default(),
             native_reset: false,
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
@@ -549,12 +553,14 @@ impl GpuRenderer {
             scene.register(MotionBlurFeature::new(self.post_effects.clone()))?;
             scene.register(SpatialAaFeature::new(self.post_effects.clone()))?;
             scene.register(TemporalResolveFeature::new(self.temporal.clone()))?;
-            // One registry: fog orders itself after aerial perspective.
+            // One registry: clouds order themselves after aerial perspective
+            // and fog after the clouds.
             let mut scattering = engine_render_pipeline::FeatureRegistry::default();
             engine_render_pipeline::atmosphere::register_features(
                 &mut scattering,
                 &self.atmosphere,
             )?;
+            engine_render_pipeline::clouds::register_features(&mut scattering, &self.clouds)?;
             engine_render_pipeline::fog::register_features(&mut scattering, &self.fog)?;
             scene.add_features(scattering)?;
             self.scene = Some(scene);
@@ -871,6 +877,7 @@ impl GpuRenderer {
         self.temporal.set(ViewId::MAIN, None)?;
         self.atmosphere.set(ViewId::MAIN, None)?;
         self.fog.set(ViewId::MAIN, None)?;
+        self.clouds.set(ViewId::MAIN, None)?;
         let size = (self.info.width, self.info.height);
         self.sprites.validate_scene(frame, size)?;
         let built = self.sprites.build_overlay(frame, size)?;
@@ -976,6 +983,7 @@ impl GpuRenderer {
         ssr::prepare(frame, &mut view)?;
         atmosphere::prepare(&self.atmosphere, frame, &view)?;
         fog::prepare(&self.fog, frame, &view, world)?;
+        clouds::prepare(&self.clouds, frame, &view, world)?;
         decals::prepare(frame, &mut view)?;
         // The upscaler mode alone drives the resolve: an authored
         // `render_features` entry for it is ignored.
@@ -2127,6 +2135,7 @@ pub fn preview_pipeline_status(
         &AtmosphereControls::default(),
     )?;
     engine_render_pipeline::fog::register_features(&mut registry, &FogControls::default())?;
+    engine_render_pipeline::clouds::register_features(&mut registry, &CloudControls::default())?;
     if let Some(features) = features {
         registry.absorb(features.0.descriptor_copy()?)?;
     }

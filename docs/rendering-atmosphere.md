@@ -6,8 +6,10 @@ item 5). It covers the **sky, the planet below the horizon, the sun disk and
 aerial perspective on opaque meshes**. Fog is the next slice
 ([rendering-fog.md](rendering-fog.md): `engine.fog`, ordered after
 `engine.atmosphere.aerial`, sharing this model's sun lookup and Cornette-Shanks
-phase through `wgsl/scatter.wgsl`); clouds are later. This document marks the
-parameters they can build on.
+phase through `wgsl/scatter.wgsl`); clouds are implemented too
+([rendering-clouds.md](rendering-clouds.md): `engine.clouds`, ordered after
+`engine.atmosphere.aerial` and before `engine.fog`, composited over this sky).
+This document marks the parameters they build on.
 
 ## What exists
 
@@ -197,13 +199,14 @@ so a cube-face view could drive it later.
 
 - `scatter.wgsl` (the Cornette-Shanks phase, the pixel ray, the view distance and
   the sun lookup) was split out of this model and is now shared with the fog slice
-  ([rendering-fog.md](rendering-fog.md)); clouds should import it too.
+  ([rendering-fog.md](rendering-fog.md)) and the clouds ([rendering-clouds.md](rendering-clouds.md)).
 - Height fog is implemented with its own exponential-height density and analytic
   integral (`fog` module); it does not reuse `atm_march`, whose density is
   planetary. The fog is a separate medium composed after aerial perspective.
 - Wind and cloud layers: the fog slice added the world-space, wind-advected noise
-  and a scene-clock input (`SceneRenderFrame::scene_time`); a cloud layer reuses
-  them. Cloud shadows and light shafts remain open.
+  and a scene-clock input (`SceneRenderFrame::scene_time`); the cloud layer reuses
+  them. The clouds are a flat layer and do not read this model's planet radius or
+  sun transmittance. Cloud shadows and light shafts remain open.
 - `aerial_perspective_scale` is the stylisation knob; the fog has its own density.
 
 ## Tests

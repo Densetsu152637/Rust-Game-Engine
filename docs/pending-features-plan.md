@@ -1004,8 +1004,41 @@ comparison.
 - Open work: no shadowed in-scatter or light shafts (a froxel grid is the
   follow-up), only the first directional light scatters, one noise octave, no
   fog volumes, transparent geometry and the water surface are not fogged,
-  reflections are fogged by the reflecting surface distance. Clouds depend on
-  this slice and remain pending.
+  reflections are fogged by the reflecting surface distance.
+
+### Clouds status (`feat/render-r9-clouds`)
+
+- Last of the dependency item 5 slices, built on the merged atmosphere and fog:
+  `engine.clouds` (OpaqueEffects, disabled by default, idle without per-view
+  `CloudControls`), authored as `Camera3D.clouds` (absent = byte-identical
+  output, `render_features["engine.clouds"]=false` wins). Design, equations,
+  placement and limits are in [rendering-clouds.md](rendering-clouds.md).
+- Model: a flat layer between two world altitudes; extinction is density times
+  coverage-remapped fractal value noise (the fog's lattice, up to 4 octaves)
+  times a height profile; the view ray is marched in at most 96 midpoint steps
+  with early exit at 1 % transmittance, each sample marches at most 12 steps
+  toward the sun (Beer-Lambert self-shadowing), dual-lobe Cornette-Shanks phase
+  (`scatter.wgsl`) with the three-octave Wrenninge multiple-scattering
+  approximation, and the view ambient. Wind advects the noise with
+  `SceneRenderFrame::scene_time` through the fog's `f64` wrapped noise origin.
+- Placement: after `engine.ssr` and `engine.atmosphere.aerial`, before
+  `engine.fog`. Scene depth occludes the clouds (nearer geometry hides them,
+  geometry inside the layer limits the march, farther geometry and the
+  atmosphere sky are covered by them); the fog is then applied over the clouds.
+  No clouds while the camera is under a water surface.
+- Evidence (RTX 5080, Vulkan, ignored tests): `gpu_clouds` in
+  `engine-render-pipeline` (slab transmittance against the closed form, coverage
+  and noise against the CPU march, sun / silver lining / self-shadowing /
+  sun changes, depth occlusion, order against the atmosphere sky, aerial
+  perspective and fog, wind equals a moved camera and zero wind static, disabled
+  and unconfigured frames identical to a pipeline without it, resize,
+  `forget_view`, jitter) and an authored project-to-`GpuRenderer` test in
+  `engine-desktop`. The fog, atmosphere, SSR and water GPU files still pass.
+- Open work: flat layer (no planet curvature), no cloud shadows on the ground,
+  no light shafts, no sun transmittance or planet occultation, full-resolution
+  march with no temporal reprojection or reduced-resolution buffer, no weather
+  system, one value-noise layer (no curl/erosion noise), transparent geometry is
+  neither covered nor hidden by the clouds. This closes dependency item 5.
 
 ### GPU particles status (`feat/render-r9-particles`)
 

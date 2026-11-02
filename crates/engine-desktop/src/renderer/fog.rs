@@ -29,7 +29,7 @@ fn settings(authored: &Fog3D) -> FogSettings {
 /// Whether the view's camera is below a water surface that the underwater pass
 /// fogs. The air fog then stays off: the water's own fog owns the medium, so
 /// no pixel is fogged twice. Uses the same test as `world.water.underwater`.
-fn submerged(view: &ViewData, world: Option<&World>) -> bool {
+pub(super) fn submerged(view: &ViewData, world: Option<&World>) -> bool {
     if view
         .features
         .get(engine_world_render::names::WATER_UNDERWATER)

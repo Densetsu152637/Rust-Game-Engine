@@ -179,6 +179,32 @@ fn fog_schema() -> Value {
     }), &[]), {"type":"null"}],"description":"Optional height fog (participating medium with exponential height density, optional wind-advected 3D noise, sun and ambient in-scatter) on opaque geometry and sky pixels; absent or null disables it. Camera3D.render_features.engine.fog=false takes precedence. Not applied while the camera is under water (docs/rendering-fog.md)."})
 }
 
+fn clouds_schema() -> Value {
+    let non_negative = |maximum: f64, default: f64, description: &str| json!({"type":"number","minimum":0,"maximum":maximum,"default":default,"description":description});
+    let vec3 = |minimum: f64, maximum: f64, defaults: [f64; 3], description: &str| json!({"type":"array","items":{"type":"number","minimum":minimum,"maximum":maximum},"minItems":3,"maxItems":3,"default":defaults,"description":description});
+    json!({"oneOf":[closed(json!({
+        "base_altitude":{"type":"number","minimum":-1.0e7,"maximum":1.0e7,"default":1500.0,"description":"World altitude in metres of the bottom of the cloud layer; the floating origin is included."},
+        "top_altitude":{"type":"number","minimum":-1.0e7,"maximum":1.0e7,"default":3500.0,"description":"World altitude in metres of the top of the layer; must exceed base_altitude by 1 to 100000 metres."},
+        "density":non_negative(1.0, 0.004, "Extinction coefficient in 1/m at full density; zero disables the clouds."),
+        "coverage":non_negative(1.0, 0.5, "Fraction of the layer that holds cloud; zero disables the clouds, one fills it with the noise unchanged."),
+        "albedo":vec3(0.0, 1.0, [1.0, 1.0, 1.0], "Scattering albedo per channel."),
+        "anisotropy":{"type":"number","minimum":-0.99,"maximum":0.99,"default":0.6,"description":"Forward Cornette-Shanks asymmetry of the sun in-scatter (a fixed backward lobe is added)."},
+        "sun_intensity":non_negative(1000.0, 1.0, "Multiplier on the in-scatter of the first directional light."),
+        "ambient_intensity":non_negative(1000.0, 1.0, "Multiplier on the in-scatter of the view's ambient radiance (Camera3D.lighting.ambient)."),
+        "multiple_scattering":{"type":"boolean","default":true,"description":"Adds the three-octave multiple-scattering approximation to the sun term."},
+        "noise_amount":non_negative(1.0, 1.0, "Strength of the fractal noise, mix(1, noise, amount); zero is a uniform layer."),
+        "noise_scale":{"type":"number","minimum":1.0,"maximum":1.0e6,"default":1500.0,"description":"Size of the base noise cell in metres."},
+        "noise_octaves":{"type":"integer","minimum":1,"maximum":4,"default":3,"description":"Number of noise octaves."},
+        "noise_seed":{"type":"integer","minimum":0,"maximum":4294967295u64,"default":0,"description":"Selects one of the noise patterns."},
+        "wind":vec3(-200.0, 200.0, [0.0, 0.0, 0.0], "Wind velocity in m/s that advects the noise with the scene clock; zero keeps the clouds static."),
+        "max_distance":{"type":"number","minimum":1.0,"maximum":1.0e6,"default":40000.0,"description":"Farthest distance in metres the view ray is marched."},
+        "fade_distance":non_negative(1.0e7, 0.0, "Horizon fade: cloud opacity is scaled by exp(-entry distance / fade_distance); zero turns the fade off."),
+        "primary_steps":{"type":"integer","minimum":1,"maximum":96,"default":48,"description":"Midpoint samples along the view ray per pixel."},
+        "light_steps":{"type":"integer","minimum":1,"maximum":12,"default":6,"description":"Midpoint samples toward the sun per view sample."},
+        "light_distance":{"type":"number","minimum":1.0,"maximum":1.0e5,"default":800.0,"description":"Length in metres of the light march toward the sun."}
+    }), &[]), {"type":"null"}],"description":"Optional volumetric cloud layer (flat, ray-marched, self-shadowed, wind-advected) over opaque geometry and sky; absent or null disables it. The sun is the first directional light. Camera3D.render_features.engine.clouds=false takes precedence (docs/rendering-clouds.md)."})
+}
+
 fn decals_schema() -> Value {
     json!({"type":"array","maxItems":64,"default":[],"items":closed(json!({
         "position":{"type":"array","items":{"type":"number","minimum":-100000,"maximum":100000},"minItems":3,"maxItems":3,"default":[0,0,0],"description":"World position of the box centre."},
@@ -208,10 +234,10 @@ fn builtin_docs() -> Vec<ComponentDoc> {
     vec![
         ComponentDoc {
             name: "Camera3D",
-            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution or the native temporal resolve and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them. Optional `screen_space_reflections` enables bounded screen-space reflections of built-in lit materials (docs/rendering-ssr.md). Optional `atmosphere` adds a physically based sky, planet, sun disk and aerial perspective driven by the first directional light (docs/rendering-atmosphere.md). Optional `fog` adds height fog with wind-advected noise on opaque geometry and sky pixels (docs/rendering-fog.md). Optional `decals` lists up to 64 world-space projected decals (docs/rendering-decals.md).",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution or the native temporal resolve and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them. Optional `screen_space_reflections` enables bounded screen-space reflections of built-in lit materials (docs/rendering-ssr.md). Optional `atmosphere` adds a physically based sky, planet, sun disk and aerial perspective driven by the first directional light (docs/rendering-atmosphere.md). Optional `fog` adds height fog with wind-advected noise on opaque geometry and sky pixels (docs/rendering-fog.md). Optional `clouds` adds a ray-marched volumetric cloud layer with self-shadowing and wind over sky and geometry (docs/rendering-clouds.md). Optional `decals` lists up to 64 world-space projected decals (docs/rendering-decals.md).",
             requires: &["Transform"],
             schema: closed(
-                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"screen_space_reflections":screen_space_reflections_schema(),"atmosphere":atmosphere_schema(),"fog":fog_schema(),"decals":decals_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
+                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"screen_space_reflections":screen_space_reflections_schema(),"atmosphere":atmosphere_schema(),"fog":fog_schema(),"clouds":clouds_schema(),"decals":decals_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
                     "description":"Per-camera render feature overrides by stable feature name (for example engine.opaque, engine.shadows, engine.sprites, the UI features ui.sdf_text, ui.world and ui.color_filter of engine-ui-render, or a native feature such as world.terrain): false disables the feature in this camera view, true enables a feature that is off by default. Required features (engine.output) cannot be disabled. Unknown names are reported in the run report's render_pipeline.unknown_overrides."},"projection":{"oneOf":[
                     closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
                     closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])
