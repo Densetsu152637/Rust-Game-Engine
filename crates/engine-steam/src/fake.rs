@@ -26,6 +26,8 @@ pub struct FakeBackend {
     stored_stats: BTreeMap<String, StatValue>,
     stored_achievements: BTreeMap<String, bool>,
     stats_requested: bool,
+    stats_delayed: bool,
+    stats_ready: bool,
     cloud_enabled: bool,
     cloud_account_enabled: bool,
     cloud_quota: usize,
@@ -67,6 +69,8 @@ impl FakeBackend {
             stored_stats: BTreeMap::new(),
             stored_achievements: BTreeMap::new(),
             stats_requested: false,
+            stats_delayed: false,
+            stats_ready: true,
             cloud_enabled: true,
             cloud_account_enabled: true,
             cloud_quota: usize::MAX,
@@ -145,6 +149,19 @@ impl FakeBackend {
     pub fn with_restart_required(mut self, required: bool) -> Self {
         self.restart_required = required;
         self
+    }
+
+    /// Stats stay `StatsNotReady` after the request until [`FakeBackend::deliver_stats`].
+    pub fn with_delayed_stats(mut self) -> Self {
+        self.stats_delayed = true;
+        self.stats_ready = false;
+        self
+    }
+
+    /// Delivers the user stats, as Steam does some time after the request.
+    pub fn deliver_stats(&mut self) {
+        self.stats_ready = true;
+        self.events.push(SteamEvent::StatsReceived);
     }
 
     /// Declares an achievement (locked).
@@ -258,10 +275,12 @@ impl FakeBackend {
     }
 
     fn require_stats(&self) -> SteamResult<()> {
-        if self.stats_requested {
-            Ok(())
-        } else {
+        if !self.stats_requested {
             Err(SteamError::StatsNotRequested)
+        } else if !self.stats_ready {
+            Err(SteamError::StatsNotReady)
+        } else {
+            Ok(())
         }
     }
 

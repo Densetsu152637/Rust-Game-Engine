@@ -9,6 +9,13 @@ use crate::backend::SteamBackend;
 use crate::error::{SteamError, SteamResult};
 use crate::types::StatValue;
 
+/// A change made before Steam delivered the user stats.
+#[derive(Debug, Clone, PartialEq)]
+enum Pending {
+    Unlock(String),
+    SetStat(String, StatValue),
+}
+
 /// Fixed ticks (10 seconds at 60 Hz) between automatic stat stores.
 pub const DEFAULT_STORE_INTERVAL_TICKS: u64 = 600;
 
@@ -19,6 +26,9 @@ pub struct StatsService {
     dirty: bool,
     last_store: Option<u64>,
     interval_ticks: u64,
+    /// Changes queued while the stats were not ready; applied by `tick`, or by the
+    /// next call that finds the stats ready.
+    pending: Vec<Pending>,
 }
 
 impl Default for StatsService {
@@ -35,6 +45,45 @@ impl StatsService {
             dirty: false,
             last_store: None,
             interval_ticks,
+            pending: Vec::new(),
+        }
+    }
+
+    /// Number of changes waiting for Steam to deliver the stats.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Applies queued changes once the stats are ready (a not-ready backend keeps
+    /// them queued). Unknown names are dropped. Called by `tick` and every other entry.
+    pub fn apply_pending(&mut self, backend: &mut dyn SteamBackend) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let queue = std::mem::take(&mut self.pending);
+        let mut rest = queue.into_iter();
+        while let Some(op) = rest.next() {
+            let outcome = match &op {
+                Pending::Unlock(name) => match backend.achievement(name) {
+                    Ok(true) => Ok(false),
+                    Ok(false) => backend.set_achievement(name, true).map(|()| true),
+                    Err(e) => Err(e),
+                },
+                Pending::SetStat(name, value) => match backend.stat(name) {
+                    Ok(current) if current == *value => Ok(false),
+                    Ok(_) => backend.set_stat(name, *value).map(|()| true),
+                    Err(e) => Err(e),
+                },
+            };
+            match outcome {
+                Ok(changed) => self.dirty |= changed,
+                Err(SteamError::StatsNotReady | SteamError::StatsNotRequested) => {
+                    self.pending.push(op);
+                    self.pending.extend(rest);
+                    return;
+                }
+                Err(_) => {} // unknown or refused: nothing to retry
+            }
         }
     }
 
@@ -55,6 +104,7 @@ impl StatsService {
     /// Whether an achievement is unlocked.
     pub fn is_unlocked(&mut self, backend: &mut dyn SteamBackend, name: &str) -> SteamResult<bool> {
         self.request(backend)?;
+        self.apply_pending(backend);
         backend.achievement(name)
     }
 
@@ -62,8 +112,19 @@ impl StatsService {
     /// unlocking an already unlocked achievement does nothing.
     pub fn unlock(&mut self, backend: &mut dyn SteamBackend, name: &str) -> SteamResult<bool> {
         self.request(backend)?;
-        if backend.achievement(name)? {
-            return Ok(false);
+        self.apply_pending(backend);
+        let queued = Pending::Unlock(name.to_owned());
+        match backend.achievement(name) {
+            Ok(true) => return Ok(false),
+            Ok(false) => {}
+            Err(SteamError::StatsNotReady) => {
+                if self.pending.contains(&queued) {
+                    return Ok(false);
+                }
+                self.pending.push(queued);
+                return Ok(true);
+            }
+            Err(other) => return Err(other),
         }
         backend.set_achievement(name, true)?;
         self.dirty = true;
@@ -73,6 +134,7 @@ impl StatsService {
     /// Reads a stat.
     pub fn stat(&mut self, backend: &mut dyn SteamBackend, name: &str) -> SteamResult<StatValue> {
         self.request(backend)?;
+        self.apply_pending(backend);
         backend.stat(name)
     }
 
@@ -84,8 +146,18 @@ impl StatsService {
         value: StatValue,
     ) -> SteamResult<()> {
         self.request(backend)?;
-        if backend.stat(name)? == value {
-            return Ok(());
+        self.apply_pending(backend);
+        match backend.stat(name) {
+            Ok(current) if current == value => return Ok(()),
+            Ok(_) => {}
+            Err(SteamError::StatsNotReady) => {
+                // The latest queued value for a stat wins.
+                self.pending
+                    .retain(|p| !matches!(p, Pending::SetStat(n, _) if n == name));
+                self.pending.push(Pending::SetStat(name.to_owned(), value));
+                return Ok(());
+            }
+            Err(other) => return Err(other),
         }
         backend.set_stat(name, value)?;
         self.dirty = true;
@@ -128,6 +200,7 @@ impl StatsService {
     /// (the first store is immediate). Returns whether a store was issued. A failed
     /// store keeps the batch dirty and waits a full interval before retrying.
     pub fn tick(&mut self, backend: &mut dyn SteamBackend, tick: u64) -> SteamResult<bool> {
+        self.apply_pending(backend);
         if !self.dirty {
             return Ok(false);
         }
@@ -144,6 +217,7 @@ impl StatsService {
 
     /// Stores pending changes now (for shutdown). Returns whether a store was issued.
     pub fn flush(&mut self, backend: &mut dyn SteamBackend) -> SteamResult<bool> {
+        self.apply_pending(backend);
         if !self.dirty {
             return Ok(false);
         }

@@ -63,6 +63,7 @@ pub struct RealBackend {
     tickets: BTreeMap<u32, steamworks::AuthTicket>,
     next_ticket: u32,
     stats_requested: bool,
+    stats_received: Arc<AtomicBool>,
     net: RealNet,
 }
 
@@ -76,6 +77,7 @@ impl RealBackend {
             tickets: BTreeMap::new(),
             next_ticket: 1,
             stats_requested: false,
+            stats_received: Arc::new(AtomicBool::new(false)),
             net: RealNet::default(),
         }
     }
@@ -95,11 +97,25 @@ impl RealBackend {
         self.client()
     }
 
+    /// `StatsNotReady` until Steam has delivered the stats, otherwise the given error.
+    fn pending_or(&self, error: SteamError) -> SteamError {
+        if self.stats_received.load(Ordering::SeqCst) {
+            error
+        } else {
+            SteamError::StatsNotReady
+        }
+    }
+
+    fn not_found_or_pending(&self, what: String) -> SteamError {
+        self.pending_or(SteamError::NotFound(what))
+    }
+
     fn register_callbacks(
         client: &Client,
         me: u64,
         events: &EventQueue,
         auth: &AuthEvents,
+        stats_received: &Arc<AtomicBool>,
     ) -> Vec<CallbackHandle> {
         let queue = Arc::clone(events);
         let overlay = client.register_callback(move |cb: GameOverlayActivated| {
@@ -120,8 +136,10 @@ impl RealBackend {
             lock(&queue).push(SteamEvent::ConnectionChanged { connected: false });
         });
         let queue = Arc::clone(events);
+        let flag = Arc::clone(stats_received);
         let received = client.register_callback(move |cb: UserStatsReceived| {
             if cb.steam_id.raw() == me && cb.result.is_ok() {
+                flag.store(true, Ordering::SeqCst);
                 lock(&queue).push(SteamEvent::StatsReceived);
             }
         });
@@ -208,8 +226,13 @@ impl SteamBackend for RealBackend {
                     name: client.friends().name(),
                 };
                 let app_id = AppId(client.utils().app_id().0);
-                let handles =
-                    Self::register_callbacks(&client, me, &self.events, &self.net.auth_events);
+                let handles = Self::register_callbacks(
+                    &client,
+                    me,
+                    &self.events,
+                    &self.net.auth_events,
+                    &self.stats_received,
+                );
                 self.live = Some(Live {
                     _handles: handles,
                     client,
@@ -302,9 +325,11 @@ impl SteamBackend for RealBackend {
     fn achievement(&self, name: &str) -> SteamResult<bool> {
         reject_nul(name)?;
         let client = self.stats_client()?;
-        client.user_stats().achievement(name).get().map_err(|()| {
-            SteamError::NotFound(format!("achievement {name:?} (or stats not received yet)"))
-        })
+        client
+            .user_stats()
+            .achievement(name)
+            .get()
+            .map_err(|()| self.not_found_or_pending(format!("achievement {name:?}")))
     }
 
     fn set_achievement(&mut self, name: &str, unlocked: bool) -> SteamResult<()> {
@@ -317,7 +342,11 @@ impl SteamBackend for RealBackend {
         } else {
             achievement.clear()
         };
-        result.map_err(|()| SteamError::Rejected(format!("achievement {name:?} was refused")))
+        result.map_err(|()| {
+            self.pending_or(SteamError::Rejected(format!(
+                "achievement {name:?} was refused"
+            )))
+        })
     }
 
     fn stat(&self, name: &str) -> SteamResult<StatValue> {
@@ -329,9 +358,7 @@ impl SteamBackend for RealBackend {
         stats
             .get_stat_f32(name)
             .map(StatValue::Float)
-            .map_err(|()| {
-                SteamError::NotFound(format!("stat {name:?} (or stats not received yet)"))
-            })
+            .map_err(|()| self.not_found_or_pending(format!("stat {name:?}")))
     }
 
     fn set_stat(&mut self, name: &str, value: StatValue) -> SteamResult<()> {
@@ -342,7 +369,9 @@ impl SteamBackend for RealBackend {
             StatValue::Float(v) => stats.set_stat_f32(name, v),
         };
         result.map_err(|()| {
-            SteamError::Rejected(format!("stat {name:?} was refused (unknown or wrong type)"))
+            self.pending_or(SteamError::Rejected(format!(
+                "stat {name:?} was refused (unknown or wrong type)"
+            )))
         })
     }
 

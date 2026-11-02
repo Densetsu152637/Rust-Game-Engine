@@ -40,6 +40,8 @@ pub enum SteamError {
     LobbyFull,
     /// Stats or achievements were used before the stats request was made.
     StatsNotRequested,
+    /// The stats were requested but Steam has not delivered them yet.
+    StatsNotReady,
     /// Networking: Steam's send buffer for the connection is full.
     SendQueueFull,
     /// Networking: the message is larger than Steam allows.
@@ -60,6 +62,7 @@ impl fmt::Display for SteamError {
             Self::CloudDisabled => f.write_str("Steam Cloud is disabled"),
             Self::LobbyFull => f.write_str("lobby is full"),
             Self::StatsNotRequested => f.write_str("stats were not requested yet"),
+            Self::StatsNotReady => f.write_str("Steam has not delivered the stats yet"),
             Self::SendQueueFull => f.write_str("the connection send queue is full"),
             Self::MessageTooLarge => f.write_str("the message exceeds the networking limit"),
             Self::ConnectionClosed => f.write_str("the connection is closed"),
