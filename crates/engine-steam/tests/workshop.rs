@@ -197,7 +197,7 @@ fn bad_updates_are_refused_before_reaching_steam() {
     };
     assert!(bad(ItemUpdate::new().title("")));
     assert!(bad(ItemUpdate::new().title(&"x".repeat(129))));
-    assert!(bad(ItemUpdate::new().description(&"x".repeat(8001))));
+    assert!(bad(ItemUpdate::new().description(&"x".repeat(8000))));
     assert!(bad(ItemUpdate::new().tags(&["a,b"])));
     assert!(bad(ItemUpdate::new().tags(&[""])));
     assert!(bad(ItemUpdate::new().title("a\0b")));
@@ -457,4 +457,81 @@ fn without_steam_the_service_is_unavailable() {
     ));
     assert!(rig.service.subscribed().is_err());
     assert!(rig.service.poll().is_empty());
+}
+
+#[test]
+fn tag_and_text_limits_follow_steams_buffers() {
+    let mut rig = Rig::new(ready().with_workshop_item(item(5, ME, ItemVisibility::Public, &[])));
+    let id = WorkshopItemId(5);
+    // 4 tags of 255 bytes with 3 separators is 1023 bytes: fine; a fifth pushes past 1024.
+    let tag = "t".repeat(255);
+    let four: Vec<&str> = vec![&tag; 4];
+    assert!(
+        rig.service
+            .submit_item(id, &ItemUpdate::new().tags(&four))
+            .is_ok()
+    );
+    let five: Vec<&str> = vec![&tag; 5];
+    assert!(matches!(
+        rig.service.submit_item(id, &ItemUpdate::new().tags(&five)),
+        Err(SteamError::Rejected(_))
+    ));
+    // The description and change note limits include Steam's terminating NUL.
+    assert!(
+        rig.service
+            .submit_item(id, &ItemUpdate::new().description(&"d".repeat(7999)))
+            .is_ok()
+    );
+    assert!(
+        rig.service
+            .submit_item(id, &ItemUpdate::new().change_note(&"n".repeat(8000)))
+            .is_err()
+    );
+}
+
+#[test]
+fn an_unanswered_submission_times_out_and_is_forgotten() {
+    let mut rig = Rig::new(ready().with_workshop_item(item(5, ME, ItemVisibility::Public, &[])));
+    rig.service.set_tracking_timeout(std::time::Duration::ZERO);
+    let request = rig
+        .service
+        .submit_item(WorkshopItemId(5), &ItemUpdate::new().title("t"))
+        .unwrap();
+    let events = rig.service.poll();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        UgcEvent::Reply(UgcRaw::Submitted { request: r, result: Err(_) }) if *r == request
+    )));
+    // Tracking is gone: no more events, and the fake no longer advances it.
+    assert!(rig.service.poll().is_empty());
+}
+
+#[test]
+fn a_download_without_a_callback_ends_when_the_item_is_installed() {
+    let mut rig = Rig::new(
+        ready()
+            .with_workshop_item(item(7, OTHER, ItemVisibility::Public, &[]))
+            .with_installed_item(installed(7, false))
+            .with_download_polls(2)
+            .with_silent_downloads(),
+    );
+    let id = WorkshopItemId(7);
+    let request = rig.service.subscribe(id).unwrap();
+    rig.reply(request);
+    rig.service.download_item(id, false).unwrap();
+    let events = rig.until("the state-based completion", |e| {
+        matches!(e, UgcEvent::Reply(UgcRaw::Downloaded { .. }))
+    });
+    assert_eq!(
+        events.last(),
+        Some(&UgcEvent::Reply(UgcRaw::Downloaded {
+            item: id,
+            result: Ok(())
+        }))
+    );
+    assert_eq!(
+        rig.session.run_callbacks(),
+        vec![SteamEvent::WorkshopItemInstalled(id)]
+    );
+    assert!(rig.service.poll().is_empty(), "no longer tracked");
 }

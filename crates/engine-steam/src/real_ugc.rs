@@ -5,11 +5,12 @@
 //! their `UpdateWatchHandle` so progress can be read until the reply arrives.
 
 use std::collections::BTreeMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
 use steamworks::{
     AppIDs, Client, FileType, ItemState as RawState, PublishedFileId, PublishedFileVisibility,
-    UGCQueryType, UGCStatisticType, UGCType, UpdateStatus, UpdateWatchHandle,
+    QueryResults, UGCQueryType, UGCStatisticType, UGCType, UpdateStatus, UpdateWatchHandle,
 };
 
 use crate::backend::SteamBackend;
@@ -21,8 +22,11 @@ use crate::workshop::{
     UgcRaw, UpdateProgress, UpdateStage, WorkshopItem,
 };
 
-/// Replies waiting for `ugc_poll` (replies are rare; the queue is bounded anyway).
+/// Most replies held between polls. Replies to requests are never evicted: new requests
+/// are refused once `REQUEST_ROOM` replies wait, and only unsolicited download
+/// notifications (Steam downloads subscribed items on its own) are dropped when full.
 const MAX_REPLIES: usize = 256;
+const REQUEST_ROOM: usize = 128;
 
 type Replies = Arc<Mutex<Vec<UgcRaw>>>;
 
@@ -38,9 +42,39 @@ fn push(replies: &Replies, raw: UgcRaw) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if queue.len() >= MAX_REPLIES {
-        queue.remove(0);
+        if matches!(raw, UgcRaw::Downloaded { .. }) {
+            return;
+        }
+        if let Some(at) = queue
+            .iter()
+            .position(|r| matches!(r, UgcRaw::Downloaded { .. }))
+        {
+            queue.remove(at);
+        }
     }
     queue.push(raw);
+}
+
+fn check_room(ugc: &RealUgc) -> SteamResult<()> {
+    let waiting = ugc
+        .replies
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len();
+    if waiting >= REQUEST_ROOM {
+        Err(SteamError::Rejected(
+            "too many Workshop replies are waiting to be polled".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+impl RealUgc {
+    /// Drops the update handles, which hold the Steam client alive.
+    pub(crate) fn release_updates(&mut self) {
+        self.updates.clear();
+    }
 }
 
 /// Registers the download-finished notification.
@@ -77,9 +111,10 @@ fn reject_nul(text: &str) -> SteamResult<()> {
     }
 }
 
-fn next_request(ugc: &mut RealUgc) -> RequestId {
+fn next_request(ugc: &mut RealUgc) -> SteamResult<RequestId> {
+    check_room(ugc)?;
     ugc.next += 1;
-    RequestId(ugc.next)
+    Ok(RequestId(ugc.next))
 }
 
 fn visibility_in(v: ItemVisibility) -> PublishedFileVisibility {
@@ -102,7 +137,7 @@ fn visibility_out(v: PublishedFileVisibility) -> ItemVisibility {
 
 pub(crate) fn create_item(backend: &mut RealBackend) -> SteamResult<RequestId> {
     let app = app_id(backend)?;
-    let request = next_request(&mut backend.ugc);
+    let request = next_request(&mut backend.ugc)?;
     let replies = Arc::clone(&backend.ugc.replies);
     backend.client()?.ugc().create_item(
         steamworks::AppId(app.0),
@@ -132,34 +167,46 @@ pub(crate) fn submit_item(
     for tag in update.tags.iter().flatten() {
         reject_nul(tag)?;
     }
-    let request = next_request(&mut backend.ugc);
+    let request = next_request(&mut backend.ugc)?;
     let replies = Arc::clone(&backend.ugc.replies);
     let ugc = backend.client()?.ugc();
-    let mut handle = ugc.start_item_update(steamworks::AppId(app.0), PublishedFileId(item.0));
-    if let Some(title) = &update.title {
-        handle = handle.title(title);
-    }
-    if let Some(description) = &update.description {
-        handle = handle.description(description);
-    }
-    if let Some(visibility) = update.visibility {
-        handle = handle.visibility(visibility_in(visibility));
-    }
-    if let Some(tags) = &update.tags {
-        handle = handle.tags(tags.clone(), false);
-    }
-    if let Some(folder) = &update.content_folder {
-        handle = handle.content_path(folder);
-    }
-    if let Some(preview) = &update.preview {
-        handle = handle.preview_path(preview);
-    }
-    let watch = handle.submit(update.change_note.as_deref(), move |result| {
-        let result = result
-            .map(|(id, legal)| (WorkshopItemId(id.0), legal))
-            .map_err(|e| e.to_string());
-        push(&replies, UgcRaw::Submitted { request, result });
-    });
+    // The binding's setters `assert!` on Steam's answer and `unwrap` path
+    // canonicalisation, so a value Steam dislikes (or a folder that vanished) would panic.
+    // Building happens on this thread, outside any Steam callback; contain it and refuse.
+    // On Windows the binding passes Steam the canonical path with a `\\?\` prefix; the
+    // binding offers no way to change that.
+    let built = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut handle = ugc.start_item_update(steamworks::AppId(app.0), PublishedFileId(item.0));
+        if let Some(title) = &update.title {
+            handle = handle.title(title);
+        }
+        if let Some(description) = &update.description {
+            handle = handle.description(description);
+        }
+        if let Some(visibility) = update.visibility {
+            handle = handle.visibility(visibility_in(visibility));
+        }
+        if let Some(tags) = &update.tags {
+            handle = handle.tags(tags.clone(), false);
+        }
+        if let Some(folder) = &update.content_folder {
+            handle = handle.content_path(folder);
+        }
+        if let Some(preview) = &update.preview {
+            handle = handle.preview_path(preview);
+        }
+        handle.submit(update.change_note.as_deref(), move |result| {
+            let result = result
+                .map(|(id, legal)| (WorkshopItemId(id.0), legal))
+                .map_err(|e| e.to_string());
+            push(&replies, UgcRaw::Submitted { request, result });
+        })
+    }));
+    let Ok(watch) = built else {
+        return Err(SteamError::Rejected(
+            "the Steam binding refused part of the update (a value or path was rejected)".into(),
+        ));
+    };
     backend.ugc.updates.insert(request, watch);
     Ok(request)
 }
@@ -182,7 +229,7 @@ pub(crate) fn subscribe(
     item: WorkshopItemId,
     subscribe: bool,
 ) -> SteamResult<RequestId> {
-    let request = next_request(&mut backend.ugc);
+    let request = next_request(&mut backend.ugc)?;
     let replies = Arc::clone(&backend.ugc.replies);
     let ugc = backend.client()?.ugc();
     let done = move |result: Result<(), steamworks::SteamError>| {
@@ -206,7 +253,7 @@ pub(crate) fn subscribe(
 
 pub(crate) fn query(backend: &mut RealBackend, query: &UgcQuery) -> SteamResult<RequestId> {
     let app = app_id(backend)?;
-    let request = next_request(&mut backend.ugc);
+    let request = next_request(&mut backend.ugc)?;
     let replies = Arc::clone(&backend.ugc.replies);
     let ugc = backend.client()?.ugc();
     let handle = match query {
@@ -228,37 +275,49 @@ pub(crate) fn query(backend: &mut RealBackend, query: &UgcQuery) -> SteamResult<
     .map_err(|_| SteamError::Rejected("Steam refused to create the query".into()))?;
     let done = replies;
     handle.fetch(move |result| {
-        let result = result
-            .map(|results| {
-                let items = (0..results.returned_results())
-                    .filter_map(|at| results.get(at).map(|r| (at, r)))
-                    .map(|(at, r)| WorkshopItem {
-                        id: WorkshopItemId(r.published_file_id.0),
-                        title: r.title,
-                        description: r.description,
-                        owner: SteamId(r.owner.raw()),
-                        visibility: visibility_out(r.visibility),
-                        tags: r.tags.into_iter().filter(|t| !t.is_empty()).collect(),
-                        time_created: r.time_created,
-                        time_updated: r.time_updated,
-                        file_size: r.file_size,
-                        votes_up: r.num_upvotes,
-                        votes_down: r.num_downvotes,
-                        subscriptions: results
-                            .statistic(at, UGCStatisticType::Subscriptions)
-                            .unwrap_or(0),
-                        banned: r.banned,
-                    })
-                    .collect();
-                QueryPage {
-                    items,
-                    total: results.total_results(),
-                }
-            })
-            .map_err(|e| e.to_string());
+        // This closure runs inside Steam's callback dispatch: a panic must never unwind
+        // out of it. The binding's `QueryResults::get` panics on a visibility or file type
+        // it does not know, so convert under `catch_unwind` and answer with an error.
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| convert_page(result)))
+            .unwrap_or_else(|_| {
+                Err(
+                    "the Steam binding could not read an item (unknown visibility or file type)"
+                        .to_owned(),
+                )
+            });
         push(&done, UgcRaw::Queried { request, result });
     });
     Ok(request)
+}
+
+fn convert_page(
+    result: Result<QueryResults<'_>, steamworks::SteamError>,
+) -> Result<QueryPage, String> {
+    let results = result.map_err(|e| e.to_string())?;
+    let items = (0..results.returned_results())
+        .filter_map(|at| results.get(at).map(|r| (at, r)))
+        .map(|(at, r)| WorkshopItem {
+            id: WorkshopItemId(r.published_file_id.0),
+            title: r.title,
+            description: r.description,
+            owner: SteamId(r.owner.raw()),
+            visibility: visibility_out(r.visibility),
+            tags: r.tags.into_iter().filter(|t| !t.is_empty()).collect(),
+            time_created: r.time_created,
+            time_updated: r.time_updated,
+            file_size: r.file_size,
+            votes_up: r.num_upvotes,
+            votes_down: r.num_downvotes,
+            subscriptions: results
+                .statistic(at, UGCStatisticType::Subscriptions)
+                .unwrap_or(0),
+            banned: r.banned,
+        })
+        .collect();
+    Ok(QueryPage {
+        items,
+        total: results.total_results(),
+    })
 }
 
 fn public_query(
@@ -365,4 +424,8 @@ pub(crate) fn poll(backend: &mut RealBackend) -> Vec<UgcRaw> {
         }
     }
     raws
+}
+
+pub(crate) fn forget_update(backend: &mut RealBackend, request: RequestId) {
+    backend.ugc.updates.remove(&request);
 }

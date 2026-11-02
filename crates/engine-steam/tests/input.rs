@@ -187,7 +187,8 @@ fn unknown_action_set_is_rejected_and_changes_nothing() {
     let fake = ready()
         .with_controller(PAD)
         .with_action_set("gameplay", &["jump"]);
-    let rig = Rig::new(fake, layout());
+    let mut rig = Rig::new(fake, layout());
+    rig.tick(); // starts Steam Input
     assert!(matches!(
         rig.session.set_action_set("nope"),
         Err(SteamError::NotFound(_))
@@ -197,6 +198,33 @@ fn unknown_action_set_is_rejected_and_changes_nothing() {
     let early = Rig::new(ready(), layout());
     early.session.set_action_set("gameplay").unwrap();
     assert_eq!(early.session.action_set().as_deref(), Some("gameplay"));
+}
+
+#[test]
+fn an_unknown_set_requested_before_the_first_poll_fails_once_and_is_dropped() {
+    let fake = ready()
+        .with_controller(PAD)
+        .with_action_set("gameplay", &["jump"]);
+    let mut rig = Rig::new(fake, layout());
+    // Steam Input has not started, so the request is only remembered.
+    rig.session.set_action_set("typo").unwrap();
+    rig.tick();
+    let snapshot = rig.world.resource::<InputDevices>().snapshot();
+    assert!(
+        snapshot.devices[0].error.is_some(),
+        "the failure is surfaced"
+    );
+    assert_eq!(rig.session.action_set(), None, "the bad set is forgotten");
+    assert_eq!(
+        rig.session.run_callbacks(),
+        vec![SteamEvent::ControllerConnected(PAD)]
+    );
+    // Later ticks are healthy and announce nothing again.
+    rig.tick();
+    let snapshot = rig.world.resource::<InputDevices>().snapshot();
+    assert!(snapshot.devices[0].error.is_none() && snapshot.devices[0].connected);
+    rig.tick();
+    assert!(rig.session.run_callbacks().is_empty());
 }
 
 #[test]

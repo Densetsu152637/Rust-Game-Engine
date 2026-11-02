@@ -580,9 +580,31 @@ for event in ugc.poll() { /* UgcEvent */ }
   also raises `SteamEvent::WorkshopItemInstalled(item)` (`steam.workshop_item_installed`).
   Steam normally downloads subscribed items by itself; `download_item` forces or prioritises it.
 - `item_state(id)` reports subscribed, installed, needs-update, downloading and pending flags.
-- `ItemUpdate` is validated before reaching Steam: title 1 to 128 bytes, description at most
-  8000, at most 100 tags of 1 to 255 bytes without commas, no NUL, and the content folder and
+- `ItemUpdate` is validated before reaching Steam, against the buffers in the Steamworks
+  headers (each limit counts Steam's terminating NUL): title 1 to 128 bytes, description and
+  change note at most 7999 bytes, at most 100 tags of 1 to 255 bytes without commas, the
+  comma-joined tag list at most 1024 bytes, no NUL anywhere, and the content folder and
   preview file must exist.
+- Tracking is bounded. A download also ends (reply `Downloaded Ok` plus the installed event)
+  when Steam reports the item installed, current and no longer downloading, because Steam
+  sends no callback for an item that is already up to date. A submission or download Steam
+  never answers ends with an error reply after the tracking timeout (default two hours,
+  `set_tracking_timeout`). The real backend refuses new requests while 128 replies wait
+  unpolled and never evicts a request's reply; only unsolicited download notifications are
+  dropped when 256 replies pile up.
+
+### Binding panics, contained
+
+The `steamworks` 0.13.1 binding panics in places: the `UpdateHandle` setters `assert!` on
+Steam's boolean answer and `unwrap` the path canonicalisation, and `QueryResults::get`
+reaches `unreachable!()` for a visibility or file type it does not know. The real backend
+builds update handles under `catch_unwind` (returning `Rejected`, on the calling thread) and
+converts query results under `catch_unwind` inside the Steam callback (answering with an error
+reply), so a panic never unwinds across Steam's C callback boundary. On Windows the binding
+canonicalises the content and preview paths and so hands Steam a `\?\`-prefixed path; the
+binding gives no way to change that, and an upload was not run to confirm Steam accepts it
+(see the manual procedure below). Two conversions remain in the binding: visibility maps to
+`ItemVisibility` and the file type is read but not exposed.
 
 ### Uploading is manual only
 

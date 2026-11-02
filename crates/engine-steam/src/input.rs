@@ -157,18 +157,29 @@ impl InputSource for SteamInputSource {
         let controllers = backend.controllers().map_err(engine_error)?;
 
         let current: BTreeSet<ControllerId> = controllers.iter().copied().collect();
-        for gone in input.known.difference(&current) {
-            pending.push(SteamEvent::ControllerDisconnected(*gone));
+        let gone: Vec<_> = input.known.difference(&current).copied().collect();
+        let new: Vec<_> = current.difference(&input.known).copied().collect();
+        // Record the controllers first: whatever happens below, each change is announced
+        // exactly once.
+        input.known = current;
+        for controller in gone {
+            pending.push(SteamEvent::ControllerDisconnected(controller));
         }
-        for new in current.difference(&input.known) {
-            pending.push(SteamEvent::ControllerConnected(*new));
-            if let Some(set) = &input.action_set {
-                backend
-                    .activate_action_set(*new, set)
-                    .map_err(engine_error)?;
+        let mut set_error = None;
+        for controller in new {
+            pending.push(SteamEvent::ControllerConnected(controller));
+            if let Some(set) = input.action_set.clone()
+                && let Err(error) = backend.activate_action_set(controller, &set)
+            {
+                // A set Steam does not know (a typo requested before the first poll) is
+                // dropped instead of failing every tick; the failure is reported once.
+                input.action_set = None;
+                set_error.get_or_insert(error);
             }
         }
-        input.known = current;
+        if let Some(error) = set_error {
+            return Err(engine_error(error));
+        }
         if controllers.is_empty() {
             return Ok(DeviceSample::disconnected());
         }

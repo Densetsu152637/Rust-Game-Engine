@@ -224,7 +224,9 @@ fn reject_nul(text: &str) -> SteamResult<()> {
 
 impl Drop for RealBackend {
     fn drop(&mut self) {
-        // Steam Input must be shut down before the client; fields drop after this runs.
+        // Update handles hold the client alive, which would defer SteamAPI_Shutdown past the
+        // init guard; release them first. Steam Input must be shut down before the client.
+        self.ugc.release_updates();
         if self.input_ready
             && let Some(live) = &self.live
         {
@@ -280,6 +282,10 @@ impl SteamBackend for RealBackend {
 
     fn ugc_download_progress(&self, item: WorkshopItemId) -> Option<(u64, u64)> {
         crate::real_ugc::download_progress(self, item)
+    }
+
+    fn ugc_forget_update(&mut self, request: RequestId) {
+        crate::real_ugc::forget_update(self, request)
     }
 
     fn ugc_poll(&mut self) -> Vec<UgcRaw> {

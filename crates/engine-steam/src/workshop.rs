@@ -10,8 +10,9 @@
 //! Uploading (`submit_item`) publishes content on the Steam Workshop. Nothing in this
 //! crate's automated tests does it; see `docs/steam.md` for the manual procedure.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use bevy_ecs::prelude::Resource;
 
@@ -23,11 +24,18 @@ use crate::types::{InstalledItem, SteamEvent, SteamId, SteamStatus, WorkshopItem
 pub const MAX_QUERY_IDS: usize = 50;
 /// Concurrent submissions or downloads the service tracks.
 pub const MAX_TRACKED: usize = 64;
+// Steam's limits (steamworks-sys `k_cchPublishedDocumentTitleMax` = 129,
+// `k_cchPublishedDocumentDescriptionMax` = 8000, `..ChangeDescriptionMax` = 8000 and
+// `k_cchTagListMax` = 1025), each counting the terminating NUL.
 const MAX_TITLE_BYTES: usize = 128;
-const MAX_DESCRIPTION_BYTES: usize = 8000;
+const MAX_DESCRIPTION_BYTES: usize = 7999;
 const MAX_TAGS: usize = 100;
 const MAX_TAG_BYTES: usize = 255;
-const MAX_NOTE_BYTES: usize = 8000;
+/// The comma-joined tag list, without the NUL.
+const MAX_TAG_LIST_BYTES: usize = 1024;
+const MAX_NOTE_BYTES: usize = 7999;
+/// How long a submission or download may stay tracked without Steam answering.
+const DEFAULT_TRACKING_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Identifies one asynchronous request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -101,12 +109,12 @@ impl ItemUpdate {
         if let Some(d) = &self.description
             && (d.len() > MAX_DESCRIPTION_BYTES || !text(d))
         {
-            return bad("a description holds at most 8000 bytes and no NUL");
+            return bad("a description holds at most 7999 bytes and no NUL");
         }
         if let Some(note) = &self.change_note
             && (note.len() > MAX_NOTE_BYTES || !text(note))
         {
-            return bad("a change note holds at most 8000 bytes and no NUL");
+            return bad("a change note holds at most 7999 bytes and no NUL");
         }
         if let Some(tags) = &self.tags {
             if tags.len() > MAX_TAGS {
@@ -117,6 +125,10 @@ impl ItemUpdate {
                 .any(|t| t.is_empty() || t.len() > MAX_TAG_BYTES || t.contains([',', '\0']))
             {
                 return bad("a tag needs 1..=255 bytes without commas or NUL");
+            }
+            let joined = tags.iter().map(String::len).sum::<usize>() + tags.len().saturating_sub(1);
+            if joined > MAX_TAG_LIST_BYTES {
+                return bad("the tags together (with separators) hold at most 1024 bytes");
             }
         }
         if let Some(folder) = &self.content_folder
@@ -287,8 +299,11 @@ pub enum UgcEvent {
 #[derive(Resource)]
 pub struct UgcService {
     session: SteamSession,
-    submits: BTreeMap<RequestId, (WorkshopItemId, Option<UpdateProgress>)>,
-    downloads: BTreeMap<WorkshopItemId, Option<(u64, u64)>>,
+    submits: BTreeMap<RequestId, (WorkshopItemId, Option<UpdateProgress>, Instant)>,
+    downloads: BTreeMap<WorkshopItemId, (Option<(u64, u64)>, Instant)>,
+    /// Items whose install was announced from their state; swallows the late callback.
+    retired: BTreeSet<WorkshopItemId>,
+    timeout: Duration,
 }
 
 impl UgcService {
@@ -299,6 +314,8 @@ impl UgcService {
                 session,
                 submits: BTreeMap::new(),
                 downloads: BTreeMap::new(),
+                retired: BTreeSet::new(),
+                timeout: DEFAULT_TRACKING_TIMEOUT,
             }),
             other => Err(SteamError::Unavailable(
                 other
@@ -306,6 +323,11 @@ impl UgcService {
                     .unwrap_or(crate::UnavailableReason::NotRunning),
             )),
         }
+    }
+
+    /// How long a submission or download may stay unanswered before it ends with an error.
+    pub fn set_tracking_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
     }
 
     /// Creates an empty (private) Workshop item for this app. Reply: [`UgcRaw::Created`].
@@ -331,7 +353,7 @@ impl UgcService {
         let request = self
             .session
             .with_backend(|b| b.ugc_submit_item(item, update))?;
-        self.submits.insert(request, (item, None));
+        self.submits.insert(request, (item, None, Instant::now()));
         Ok(request)
     }
 
@@ -408,12 +430,17 @@ impl UgcService {
         }
         self.session
             .with_backend(|b| b.ugc_download(item, high_priority))?;
-        self.downloads.entry(item).or_insert(None);
+        self.downloads.entry(item).or_insert((None, Instant::now()));
         Ok(())
     }
 
     /// Collects finished requests and progress changes. Call once per tick, after the
     /// session pumped Steam callbacks.
+    ///
+    /// A tracked download also ends when Steam reports the item installed, up to date and
+    /// no longer downloading (Steam sends no callback for an already current item), and a
+    /// submission or download that Steam has not answered within the tracking timeout
+    /// (default two hours) ends with an error reply, so nothing is tracked forever.
     pub fn poll(&mut self) -> Vec<UgcEvent> {
         let mut events = Vec::new();
         let mut installed = Vec::new();
@@ -421,10 +448,15 @@ impl UgcService {
             let mut state = self.session.lock();
             let backend = state.backend.as_mut();
             let raws = backend.ugc_poll();
-            for (request, (item, last)) in &mut self.submits {
+            let mut timed_out = Vec::new();
+            for (request, (item, last, started)) in &mut self.submits {
                 if raws.iter().any(
                     |r| matches!(r, UgcRaw::Submitted { request: done, .. } if done == request),
                 ) {
+                    continue;
+                }
+                if started.elapsed() >= self.timeout {
+                    timed_out.push(*request);
                     continue;
                 }
                 if let Some(progress) = backend.ugc_update_progress(*request)
@@ -438,14 +470,36 @@ impl UgcService {
                     });
                 }
             }
-            for (item, last) in &mut self.downloads {
+            for request in timed_out {
+                self.submits.remove(&request);
+                backend.ugc_forget_update(request);
+                events.push(UgcEvent::Reply(UgcRaw::Submitted {
+                    request,
+                    result: Err("Steam did not answer the submission in time".into()),
+                }));
+            }
+            let mut finished = Vec::new();
+            for (item, (last, started)) in &mut self.downloads {
                 if raws
                     .iter()
                     .any(|r| matches!(r, UgcRaw::Downloaded { item: done, .. } if done == item))
                 {
                     continue;
                 }
-                if let Some(now) = backend.ugc_download_progress(*item)
+                let state_now = backend.ugc_item_state(*item).ok();
+                if let Some(s) = state_now
+                    && s.installed
+                    && !s.needs_update
+                    && !s.downloading
+                    && !s.download_pending
+                {
+                    finished.push((*item, Ok(())));
+                } else if started.elapsed() >= self.timeout {
+                    finished.push((
+                        *item,
+                        Err("Steam did not finish the download in time".into()),
+                    ));
+                } else if let Some(now) = backend.ugc_download_progress(*item)
                     && *last != Some(now)
                 {
                     *last = Some(now);
@@ -456,6 +510,19 @@ impl UgcService {
                     });
                 }
             }
+            for (item, result) in finished {
+                self.downloads.remove(&item);
+                if result.is_ok() {
+                    installed.push(item);
+                    if self.retired.len() >= MAX_TRACKED {
+                        self.retired.clear();
+                    }
+                    // A callback for the same download may still arrive; do not announce
+                    // the install twice.
+                    self.retired.insert(item);
+                }
+                events.push(UgcEvent::Reply(UgcRaw::Downloaded { item, result }));
+            }
             for raw in raws {
                 match &raw {
                     UgcRaw::Submitted { request, .. } => {
@@ -463,7 +530,7 @@ impl UgcService {
                     }
                     UgcRaw::Downloaded { item, result } => {
                         self.downloads.remove(item);
-                        if result.is_ok() {
+                        if result.is_ok() && !self.retired.remove(item) {
                             installed.push(*item);
                         }
                     }
