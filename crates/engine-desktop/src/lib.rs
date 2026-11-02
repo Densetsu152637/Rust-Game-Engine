@@ -35,6 +35,7 @@ mod backend;
 mod camera;
 mod defaults;
 mod dlss;
+pub mod hdr;
 mod input;
 mod interpolation;
 mod pacing;
@@ -59,6 +60,10 @@ pub use engine_render_rt as render_rt;
 pub use engine_render_wgpu::{
     BACKEND_ENV_VAR, DeviceFeatureReport, DeviceFeatureRequest, GpuContext, GpuRequirements,
     OffscreenTarget, RenderTargetInfo, WgpuBackend, WgpuBackends, WgpuOptions,
+};
+pub use hdr::{
+    HDR_ENV_VAR, HDR_PAPER_WHITE_ENV_VAR, HDR_PEAK_ENV_VAR, HdrChoice, HdrPreference, HdrRequest,
+    HdrSelection, HdrStatus, select_hdr_surface,
 };
 #[cfg(feature = "system-clipboard")]
 pub use input::clipboard;
