@@ -134,6 +134,29 @@ fn screen_space_reflections_schema() -> Value {
     }), &[]), {"type":"null"}],"description":"Optional screen-space reflections of built-in lit materials over the opaque scene; absent or null disables them. Camera3D.render_features.engine.ssr=false takes precedence, and an enabled engine.rt.reflections replaces them for the camera. Custom-shader and unlit materials are not reflective."})
 }
 
+fn atmosphere_schema() -> Value {
+    let coefficient = |default: f64, description: &str| json!({"type":"number","minimum":0,"maximum":0.01,"default":default,"description":description});
+    let channels = |defaults: [f64; 3], maximum: f64, description: &str| json!({"type":"array","items":{"type":"number","minimum":0,"maximum":maximum},"minItems":3,"maxItems":3,"default":defaults,"description":description});
+    let height = |default: f64, description: &str| json!({"type":"number","minimum":1,"maximum":1.0e6,"default":default,"description":description});
+    json!({"oneOf":[closed(json!({
+        "planet_radius":{"type":"number","minimum":1.0e3,"maximum":1.0e8,"default":6_360_000.0,"description":"Planet radius in metres. The surface is world y = 0."},
+        "atmosphere_radius":{"type":"number","exclusiveMinimum":0,"default":6_460_000.0,"description":"Radius of the top of the atmosphere in metres; 100 m to 1e7 m above planet_radius."},
+        "rayleigh_scattering":channels([5.802e-6, 13.558e-6, 33.1e-6], 0.01, "Rayleigh scattering at the ground per colour channel, 1/m."),
+        "rayleigh_scale_height":height(8000.0, "Exponential scale height of Rayleigh density in metres."),
+        "mie_scattering":coefficient(3.996e-6, "Mie scattering at the ground, 1/m."),
+        "mie_absorption":coefficient(0.444e-6, "Mie absorption at the ground, 1/m."),
+        "mie_scale_height":height(1200.0, "Exponential scale height of Mie density in metres."),
+        "mie_anisotropy":{"type":"number","minimum":-0.99,"maximum":0.99,"default":0.8,"description":"Cornette-Shanks asymmetry; positive scatters forward."},
+        "ozone_absorption":channels([0.650e-6, 1.881e-6, 0.085e-6], 0.01, "Ozone absorption at the centre of its layer per colour channel, 1/m."),
+        "ozone_center_height":{"type":"number","minimum":0,"maximum":1.0e7,"default":25_000.0,"description":"Altitude of the ozone layer centre in metres."},
+        "ozone_width":{"type":"number","minimum":1,"maximum":1.0e7,"default":15_000.0,"description":"Distance in metres from the layer centre to where ozone density reaches zero."},
+        "ground_albedo":channels([0.3, 0.3, 0.3], 1.0, "Lambertian albedo of the planet seen below the horizon."),
+        "sun_angular_diameter":{"type":"number","minimum":0,"maximum":0.5,"default":0.0093,"description":"Sun disk angular diameter in radians; zero hides the disk."},
+        "intensity":{"type":"number","minimum":0,"maximum":1000,"default":1.0,"description":"Multiplier on the sun irradiance (lux times lighting exposure) seen by the atmosphere; zero skips both passes."},
+        "aerial_perspective_scale":{"type":"number","minimum":0,"maximum":1000,"default":1.0,"description":"Multiplier on geometry view distance for aerial perspective on opaque meshes; one is physical, zero disables it."}
+    }), &[]), {"type":"null"}],"description":"Optional single-scattering atmosphere (sky, planet, sun disk, aerial perspective); absent or null disables it. The sun is the first directional light; with none the atmosphere draws nothing. Camera3D.render_features.engine.atmosphere=false and engine.atmosphere.aerial=false disable the passes individually."})
+}
+
 /// All authored component documents.
 pub fn component_docs() -> Vec<ComponentDoc> {
     let mut docs = builtin_docs();
@@ -147,10 +170,10 @@ fn builtin_docs() -> Vec<ComponentDoc> {
     vec![
         ComponentDoc {
             name: "Camera3D",
-            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution or the native temporal resolve and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them. Optional `screen_space_reflections` enables bounded screen-space reflections of built-in lit materials (docs/rendering-ssr.md).",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution or the native temporal resolve and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them. Optional `screen_space_reflections` enables bounded screen-space reflections of built-in lit materials (docs/rendering-ssr.md). Optional `atmosphere` adds a physically based sky, planet, sun disk and aerial perspective driven by the first directional light (docs/rendering-atmosphere.md).",
             requires: &["Transform"],
             schema: closed(
-                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"screen_space_reflections":screen_space_reflections_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
+                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"screen_space_reflections":screen_space_reflections_schema(),"atmosphere":atmosphere_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
                     "description":"Per-camera render feature overrides by stable feature name (for example engine.opaque, engine.shadows, engine.sprites, the UI features ui.sdf_text, ui.world and ui.color_filter of engine-ui-render, or a native feature such as world.terrain): false disables the feature in this camera view, true enables a feature that is off by default. Required features (engine.output) cannot be disabled. Unknown names are reported in the run report's render_pipeline.unknown_overrides."},"projection":{"oneOf":[
                     closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
                     closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])

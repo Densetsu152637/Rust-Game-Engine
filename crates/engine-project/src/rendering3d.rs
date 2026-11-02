@@ -230,6 +230,62 @@ impl Default for ScreenSpaceReflections3D {
     }
 }
 
+/// Sky, planet and sun disk of the authored atmosphere (Sky stage).
+pub const ATMOSPHERE_FEATURE: &str = "engine.atmosphere";
+/// Aerial perspective of the authored atmosphere (OpaqueEffects stage).
+pub const ATMOSPHERE_AERIAL_FEATURE: &str = "engine.atmosphere.aerial";
+
+/// Optional physically based atmosphere for one camera. Absent means off.
+/// Lengths are metres and coefficients 1/m; the defaults are an Earth-like
+/// atmosphere. The sun is the scene's first directional light, and the
+/// camera altitude is its absolute height above world `y = 0` (the applied
+/// floating origin included). See docs/rendering-atmosphere.md.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Atmosphere3D {
+    pub planet_radius: f32,
+    /// Radius of the top of the atmosphere; must exceed `planet_radius`.
+    pub atmosphere_radius: f32,
+    pub rayleigh_scattering: [f32; 3],
+    pub rayleigh_scale_height: f32,
+    pub mie_scattering: f32,
+    pub mie_absorption: f32,
+    pub mie_scale_height: f32,
+    pub mie_anisotropy: f32,
+    pub ozone_absorption: [f32; 3],
+    pub ozone_center_height: f32,
+    pub ozone_width: f32,
+    pub ground_albedo: [f32; 3],
+    /// Angular diameter of the sun disk in radians; zero hides the disk.
+    pub sun_angular_diameter: f32,
+    /// Multiplier on the sun irradiance seen by the atmosphere.
+    pub intensity: f32,
+    /// Multiplier on geometry distance for aerial perspective; zero disables it.
+    pub aerial_perspective_scale: f32,
+}
+
+impl Default for Atmosphere3D {
+    fn default() -> Self {
+        Self {
+            planet_radius: 6_360_000.0,
+            atmosphere_radius: 6_460_000.0,
+            rayleigh_scattering: [5.802e-6, 13.558e-6, 33.1e-6],
+            rayleigh_scale_height: 8000.0,
+            mie_scattering: 3.996e-6,
+            mie_absorption: 0.444e-6,
+            mie_scale_height: 1200.0,
+            mie_anisotropy: 0.8,
+            ozone_absorption: [0.650e-6, 1.881e-6, 0.085e-6],
+            ozone_center_height: 25_000.0,
+            ozone_width: 15_000.0,
+            ground_albedo: [0.3; 3],
+            sun_angular_diameter: 0.0093,
+            intensity: 1.0,
+            aerial_perspective_scale: 1.0,
+        }
+    }
+}
+
 impl ScreenSpaceReflections3D {
     pub fn validate(&self) -> Result<()> {
         if !(1..=MAX_SSR_STEPS).contains(&self.max_steps)
@@ -250,6 +306,47 @@ impl ScreenSpaceReflections3D {
             return Err(Error::new(
                 "camera3d.screen_space_reflections.invalid",
                 "Screen-space reflections need max_steps in 1..=256, max_distance in (0, 10000], thickness in (0, 100], roughness_cutoff in (0, 1], edge_fade in 0..=0.5 and intensity in 0..=4, all finite",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Atmosphere3D {
+    pub fn validate(&self) -> Result<()> {
+        let coefficient = |v: f32| v.is_finite() && (0.0..=1.0e-2).contains(&v);
+        let height = |v: f32| v.is_finite() && (1.0..=1.0e6).contains(&v);
+        let thickness = f64::from(self.atmosphere_radius) - f64::from(self.planet_radius);
+        if !self.planet_radius.is_finite()
+            || !(1.0e3..=1.0e8).contains(&self.planet_radius)
+            || !self.atmosphere_radius.is_finite()
+            || !(100.0..=1.0e7).contains(&thickness)
+            || !self.rayleigh_scattering.into_iter().all(coefficient)
+            || !coefficient(self.mie_scattering)
+            || !coefficient(self.mie_absorption)
+            || !self.ozone_absorption.into_iter().all(coefficient)
+            || !height(self.rayleigh_scale_height)
+            || !height(self.mie_scale_height)
+            || !self.mie_anisotropy.is_finite()
+            || self.mie_anisotropy.abs() > 0.99
+            || !self.ozone_center_height.is_finite()
+            || !(0.0..=1.0e7).contains(&self.ozone_center_height)
+            || !self.ozone_width.is_finite()
+            || !(1.0..=1.0e7).contains(&self.ozone_width)
+            || !self
+                .ground_albedo
+                .into_iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+            || !self.sun_angular_diameter.is_finite()
+            || !(0.0..=0.5).contains(&self.sun_angular_diameter)
+            || !self.intensity.is_finite()
+            || !(0.0..=1000.0).contains(&self.intensity)
+            || !self.aerial_perspective_scale.is_finite()
+            || !(0.0..=1000.0).contains(&self.aerial_perspective_scale)
+        {
+            return Err(Error::new(
+                "camera3d.atmosphere.invalid",
+                "Atmosphere needs planet radius 1e3..1e8 m, atmosphere radius 100 m..1e7 m above it, coefficients 0..0.01 per metre, scale heights 1..1e6 m, Mie anisotropy within +-0.99, ozone centre 0..1e7 m and width 1..1e7 m, ground albedo 0..1, sun diameter 0..0.5 rad, intensity 0..1000 and aerial perspective scale 0..1000",
             ));
         }
         Ok(())
@@ -393,6 +490,10 @@ pub struct Camera3D {
     /// can ray trace.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen_space_reflections: Option<ScreenSpaceReflections3D>,
+    /// Absent means off. Present enables `engine.atmosphere` and
+    /// `engine.atmosphere.aerial` unless `render_features` says otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atmosphere: Option<Atmosphere3D>,
     /// Per-camera render feature overrides by stable feature name
     /// (`engine.opaque`, `world.terrain`, ...): `false` disables a feature in
     /// this camera's view, `true` enables one that is off by default. Names of
@@ -416,6 +517,7 @@ impl Default for Camera3D {
             motion_blur: None,
             spatial_aa: None,
             screen_space_reflections: None,
+            atmosphere: None,
             render_features: BTreeMap::new(),
         }
     }
@@ -903,6 +1005,12 @@ impl Camera3D {
         if self.screen_space_reflections.is_some() {
             features.entry(SSR_FEATURE.into()).or_insert(true);
         }
+        if self.atmosphere.is_some() {
+            features.entry(ATMOSPHERE_FEATURE.into()).or_insert(true);
+            features
+                .entry(ATMOSPHERE_AERIAL_FEATURE.into())
+                .or_insert(true);
+        }
         features
     }
 
@@ -917,6 +1025,9 @@ impl Camera3D {
             settings.validate()?;
         }
         if let Some(settings) = self.screen_space_reflections {
+            settings.validate()?;
+        }
+        if let Some(settings) = self.atmosphere {
             settings.validate()?;
         }
         self.lighting.validate()?;

@@ -685,7 +685,7 @@ impl Shared {
             });
         }
         let copies = self.copies.as_ref().expect("created");
-        let hdr = ctx.hdr()?.texture.clone();
+        let hdr = ctx.scene_color()?.texture.clone();
         let depth = ctx.depth()?.texture.clone();
         let extent = wgpu::Extent3d {
             width: size[0],
@@ -978,7 +978,7 @@ impl Shared {
                     },
                 ],
             });
-        let hdr = ctx.hdr()?.view.clone();
+        let hdr = ctx.scene_color()?.view.clone();
         let view_group = ctx.view_bind_group;
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("world.water.underwater"),
