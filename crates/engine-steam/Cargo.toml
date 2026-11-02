@@ -1,0 +1,18 @@
+[package]
+name = "engine-steam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+description = "Steamworks integration seam: backend trait, null and fake backends, and an off-by-default real backend behind the steam feature"
+
+[features]
+default = []
+# Adds the real Steamworks backend (needs the steam_api library next to the executable at run time).
+steam = ["dep:steamworks"]
+
+[dependencies]
+steamworks = { version = "=0.13.1", optional = true }
+
+[lints]
+workspace = true
