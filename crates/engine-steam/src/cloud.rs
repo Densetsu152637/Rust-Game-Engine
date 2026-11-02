@@ -75,6 +75,13 @@ fn store_error(error: engine_project::Error) -> SteamError {
     }
 }
 
+fn is_corrupt(error: &engine_project::Error) -> bool {
+    error
+        .diagnostics
+        .first()
+        .is_some_and(|d| d.code == "persistence.corrupt")
+}
+
 impl CloudSync {
     /// Mirrors the slots of `store`.
     pub fn new(store: Arc<PersistenceStore>) -> Self {
@@ -150,12 +157,25 @@ impl CloudSync {
 
     fn sync_slot(&self, backend: &mut dyn SteamBackend, slot: &str) -> SteamResult<SyncAction> {
         let name = prefix_name(slot);
-        let local = self.store.slot_header(slot).map_err(store_error)?;
+        // A local slot that exists but does not parse is treated as absent, so a valid
+        // cloud copy heals it (`install_slot_bytes` keeps the damaged file as `.bak`).
+        // Other failures (invalid name, links, I/O) still stop the sync.
+        let (local, corrupt) = match self.store.slot_header(slot) {
+            Ok(header) => (header, None),
+            Err(error) if is_corrupt(&error) => (None, Some(store_error(error))),
+            Err(error) => return Err(store_error(error)),
+        };
         let cloud_stamp = match backend.cloud_timestamp(&name) {
             Ok(stamp) => Some(stamp),
             Err(SteamError::NotFound(_)) => None,
             Err(other) => return Err(other),
         };
+        if let Some(error) = corrupt
+            && cloud_stamp.is_none()
+        {
+            // Nothing to heal from; never upload the damaged file.
+            return Err(error);
+        }
         let (Some(local), Some(cloud_stamp)) = (local, cloud_stamp) else {
             return match (local.is_some(), cloud_stamp.is_some()) {
                 (true, false) => self.push(backend, slot).map(|()| SyncAction::Pushed),

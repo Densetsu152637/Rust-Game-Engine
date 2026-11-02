@@ -2,6 +2,7 @@
 
 /// Forwards the networking methods of `SteamBackend` to `self.fake` (an
 /// `Arc<Mutex<FakeBackend>>`), so a wrapper backend can share one fake with a test.
+#[allow(unused_macros)]
 macro_rules! forward_net {
     () => {
         fn net_init_relay(&mut self) -> SteamResult<()> {
@@ -65,4 +66,49 @@ macro_rules! forward_net {
         }
     };
 }
+#[allow(unused_imports)]
 pub(crate) use forward_net;
+
+/// Implements `LobbyBackend` for a wrapper holding `fake: Arc<Mutex<FakeBackend>>`.
+#[allow(unused_macros)]
+macro_rules! forward_lobby {
+    ($ty:ty) => {
+        impl LobbyBackend for $ty {
+            fn lobby_create(
+                &mut self,
+                visibility: LobbyVisibility,
+                max_members: u32,
+            ) -> SteamResult<()> {
+                self.fake
+                    .lock()
+                    .unwrap()
+                    .lobby_create(visibility, max_members)
+            }
+            fn lobby_join(&mut self, lobby: LobbyId) -> SteamResult<()> {
+                self.fake.lock().unwrap().lobby_join(lobby)
+            }
+            fn lobby_leave(&mut self, lobby: LobbyId) -> SteamResult<()> {
+                self.fake.lock().unwrap().lobby_leave(lobby)
+            }
+            fn lobby_request_list(&mut self, filter: &LobbyFilter) -> SteamResult<()> {
+                self.fake.lock().unwrap().lobby_request_list(filter)
+            }
+            fn lobby_set_data(
+                &mut self,
+                lobby: LobbyId,
+                key: &str,
+                value: Option<&str>,
+            ) -> SteamResult<()> {
+                self.fake.lock().unwrap().lobby_set_data(lobby, key, value)
+            }
+            fn lobby_info(&self, lobby: LobbyId) -> Option<LobbyInfo> {
+                self.fake.lock().unwrap().lobby_info(lobby)
+            }
+            fn lobby_poll(&mut self) -> Vec<LobbyRaw> {
+                self.fake.lock().unwrap().lobby_poll()
+            }
+        }
+    };
+}
+#[allow(unused_imports)]
+pub(crate) use forward_lobby;

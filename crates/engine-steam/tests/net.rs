@@ -603,3 +603,117 @@ fn a_stalled_handshake_with_no_ticket_times_out_on_the_client() {
         LinkEvent::Disconnected { reason, .. } if reason.contains("timed out")
     )));
 }
+
+#[test]
+fn refused_requests_do_not_leak_router_state() {
+    let (session, _) = session_for(ready());
+    let limits = SteamLimits {
+        max_peers: 1,
+        max_pending_requests: 2,
+        ..SteamLimits::default()
+    };
+    let mut server = SteamServerEndpoint::listen(
+        session.clone(),
+        SteamServerConfig::p2p(0).with_limits(limits),
+    )
+    .unwrap();
+    let mut first =
+        SteamClientEndpoint::connect_p2p(session.clone(), me(), 0, SteamClientConfig::default())
+            .unwrap();
+    for _ in 0..8 {
+        server.poll(full()).unwrap();
+        first.poll(full()).unwrap();
+    }
+    assert_eq!(server.connected_peers().len(), 1);
+    let baseline = session.net_route_count();
+    // Past max_peers (server full) and past the pending-request cap, with a tight accept budget.
+    let mut spam: Vec<_> = (0..20)
+        .map(|_| {
+            SteamClientEndpoint::connect_p2p(session.clone(), me(), 0, SteamClientConfig::default())
+                .unwrap()
+        })
+        .collect();
+    let tight = PollBudget {
+        max_accepts: 1,
+        ..PollBudget::default()
+    };
+    for _ in 0..60 {
+        server.poll(tight).unwrap();
+        first.poll(full()).unwrap();
+        for client in &mut spam {
+            client.poll(full()).unwrap();
+        }
+    }
+    assert!(spam.iter().all(|c| c.connected_peers().is_empty()));
+    drop(spam);
+    assert_eq!(
+        session.net_route_count(),
+        baseline,
+        "refused connections left ownership entries behind"
+    );
+}
+
+#[test]
+fn a_newer_pending_claim_supersedes_an_older_one() {
+    let (session, fake) = session_for(ready());
+    let mut server =
+        SteamServerEndpoint::listen(session.clone(), SteamServerConfig::p2p(0)).unwrap();
+    let hello = |ticket: u32| {
+        let mut f = vec![0x80, 1];
+        f.extend_from_slice(&me().0.to_le_bytes());
+        f.extend_from_slice(&ticket.to_le_bytes());
+        f
+    };
+    let (t1, t2) = {
+        let mut f = fake.lock().unwrap();
+        (
+            f.auth_session_ticket().unwrap().handle,
+            f.auth_session_ticket().unwrap().handle,
+        )
+    };
+    let a = Raw::open(&session, &fake, &mut server);
+    let b = Raw::open(&session, &fake, &mut server);
+    // Both claims arrive before Steam answers either.
+    a.send(&hello(t1));
+    b.send(&hello(t2));
+    for _ in 0..4 {
+        server.poll(full()).unwrap();
+    }
+    assert_eq!(server.connected_peers().len(), 1, "the newer claim won");
+    assert_eq!(server.pending_peers(), 0);
+}
+
+#[test]
+fn a_backlogged_request_does_not_stall_other_events() {
+    let (session, _) = session_for(ready());
+    let mut server =
+        SteamServerEndpoint::listen(session.clone(), SteamServerConfig::p2p(0)).unwrap();
+    let mut client =
+        SteamClientEndpoint::connect_p2p(session.clone(), me(), 0, SteamClientConfig::default())
+            .unwrap();
+    let tight = PollBudget {
+        max_accepts: 1,
+        ..PollBudget::default()
+    };
+    for _ in 0..8 {
+        server.poll(tight).unwrap();
+        client.poll(full()).unwrap();
+    }
+    assert_eq!(server.connected_peers().len(), 1);
+    // A second request waits behind a zero accept budget while the first peer disconnects.
+    let _second =
+        SteamClientEndpoint::connect_p2p(session, me(), 0, SteamClientConfig::default()).unwrap();
+    client.disconnect(SERVER_PEER);
+    let no_accepts = PollBudget {
+        max_accepts: 0,
+        max_messages: 8,
+        max_bytes: 1024,
+    };
+    let events = server.poll(no_accepts).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::Disconnected { .. })),
+        "{events:?}"
+    );
+}

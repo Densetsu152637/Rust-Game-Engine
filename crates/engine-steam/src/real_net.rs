@@ -42,10 +42,18 @@ pub(crate) struct RealNet {
     pub(crate) auth_events: AuthEvents,
 }
 
+/// A Steam identity, or the `ip:<addr>` text form of an IP identity. Distinct IP clients
+/// have distinct addresses, so accepted connections can be matched to listen-socket
+/// events by remote even without a connection handle.
 fn remote_of(identity: &NetworkingIdentity) -> NetRemote {
+    if let Some(id) = identity.steam_id() {
+        return NetRemote::Steam(SteamId(id.raw()));
+    }
     identity
-        .steam_id()
-        .map_or(NetRemote::Unknown, |id| NetRemote::Steam(SteamId(id.raw())))
+        .debug_string()
+        .strip_prefix("ip:")
+        .and_then(|text| text.parse::<SocketAddr>().ok())
+        .map_or(NetRemote::Unknown, NetRemote::Ip)
 }
 
 fn nul_free(text: &str) -> String {

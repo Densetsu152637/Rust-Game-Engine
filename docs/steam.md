@@ -5,7 +5,8 @@ off by default: a normal build contains no Steam code and no Steam dependency, a
 nothing in a game changes unless it opts in.
 
 Status: the skeleton (S1), the real backend core (S2), the host integration (S3),
-achievements and stats (S4), Cloud saves (S5) and the Networking Sockets transport (S6) of
+achievements and stats (S4), Cloud saves (S5), the Networking Sockets transport (S6) and
+lobbies (S7) of
 `docs/platform-and-steam-plan.md` exist: the backend trait, the null and fake
 backends, the status and error types, the build feature, and a `RealBackend` that
 initialises Steam, reports identity, issues auth tickets, opens the overlay, sets rich
@@ -185,6 +186,13 @@ readable), so do not wait for it: reads fail softly with `NotFound` until stats 
 Other events: `steam.achievement_unlocked` (`{"name"}`; progress-only notifications are
 not unlocks) and `steam.stats_stored`.
 
+Before delivery. Steam delivers the user stats some time after the request. Unlocks and
+stat sets made until then are queued (the latest value per stat wins, duplicate unlocks
+are ignored), `unlock` and `set_*` report success, and the queue is applied on the next
+tick or the next successful read, after which the normal throttled store runs. Reads
+before delivery return `SteamError::StatsNotReady`; `add_progress` needs the current value
+and so returns that error too. Unknown names in the queue are dropped when applied.
+
 ## Steam Cloud saves
 
 With `"cloud": true` in the manifest `steam` block and a ready Steam, the plugin mirrors
@@ -221,6 +229,10 @@ needs no code.)
 The real backend cannot query the remaining quota (the `steamworks` binding has no
 `GetQuota`), so a failed write is reported as `QuotaExceeded`.
 
+A local slot that exists but does not parse is treated as absent: a valid cloud copy
+replaces it and the damaged file is kept as the `.bak`. With no cloud copy to heal from the
+sync reports a failure and never uploads the damaged file.
+
 ## Networking Sockets transport (S6)
 
 `SteamServerEndpoint` and `SteamClientEndpoint` (`crates/engine-steam/src/transport.rs`)
@@ -244,7 +256,10 @@ Threats and answers (the TLS certificate-binding token flow of `engine-network` 
 - Spoofed identity. A P2P (`ConnectP2P`) connection is authenticated by Steam: the
   remote `SteamId` comes from the connection's identity, signed by Steam's certificate
   authority, and cannot be chosen by the peer. The server records that identity as the
-  peer's SteamID. A connection by IP address carries only an unauthenticated address.
+  peer's SteamID. A connection by IP address from a signed-in Steam client also reports the client's
+  Steam identity on App 480 (observed live), but a peer without Steam credentials shows only
+  its address (matched by `ip:<addr>`, so concurrent IP clients stay distinct); the
+  server therefore never trusts an IP connection's identity without a ticket.
 - Replayed or stolen identity claims. The client sends its SteamID and an auth session
   ticket (`ISteamUser::GetAuthSessionTicket`) in a `Hello` frame as the first message.
   The server calls `BeginAuthSession` for that SteamID and ticket and admits the peer
@@ -256,6 +271,11 @@ Threats and answers (the TLS certificate-binding token flow of `engine-network` 
   already authenticated the identity (it exists for single-account loopback tests, where
   Steam allows one auth session per SteamID in a process). An IP listener refuses
   `IdentityOnly` at construction.
+- Duplicate logins. A SteamID that is already admitted cannot log in again. A claim for a
+  SteamID whose ticket is still being validated supersedes the older pending claim, so an
+  unauthenticated peer cannot hold a SteamID hostage until its handshake times out. The
+  cost: a forged claim can briefly cancel a real user's in-flight login, which the real
+  client retries; ticket validation always decides admission.
 - Server identity. P2P: the client dials a SteamID, so Steam authenticates the server.
   IP: the server is unauthenticated, which makes IP mode suitable for LAN, development
   and dedicated servers at a known address only. The server's `Accept` frame repeats
@@ -269,7 +289,7 @@ Threats and answers (the TLS certificate-binding token flow of `engine-network` 
   `max_peers`, must finish the handshake within `handshake_timeout`, and a bounded
   backlog of connection requests is processed `max_accepts` per poll; further requests are
   rejected. Every received frame is untrusted: an empty frame, reserved header bits, a
-  lane above `Lane::MAX`, a truncated sequence number, an oversize message or any data
+  truncated sequence number, an oversize message or any data
   before admission closes that peer. `poll` is bounded by `PollBudget` for dequeued
   messages and bytes, and tickets are capped at 1024 bytes.
 - Revocation. A later failed `ValidateAuthTicketResponse` for an admitted peer
@@ -297,7 +317,7 @@ connection lanes are not used.
 ### Limits and backpressure
 
 `max_payload` is Steam's per-message send limit (512 KiB) minus the header and, for
-sequenced delivery, the sequence number. Oversize payloads, lanes above `Lane::MAX` and
+sequenced delivery, the sequence number. Oversize payloads, lanes out of range and
 unknown or unadmitted peers return `Error::Invalid`. When Steam reports its send buffer
 full a reliable send returns `Error::QueueFull` and queues nothing; an unreliable send is
 dropped and counted in `dropped_unreliable`.
@@ -312,6 +332,63 @@ within `relay_timeout` or reports `Failed` produces `Disconnected` with the reas
 mode needs no relay. A listener can be created before the relay is ready; clients cannot
 reach it until it is.
 
+## Lobbies and matchmaking (S7)
+
+`SteamLobbies` (`crates/engine-steam/src/lobby.rs`) is the game-facing lobby API over a
+`SteamSession`; it is a Bevy `Resource`. Steam's lobby calls are asynchronous, so they sit
+behind `LobbyBackend`: requests (`lobby_create`, `lobby_join`, `lobby_request_list`,
+`lobby_set_data`) return at once and their results arrive as `LobbyRaw` callbacks, in
+whatever order Steam delivers them. `RealBackend` implements it over
+`steamworks::Matchmaking`; `FakeBackend` implements it with a scriptable lobby world.
+
+```rust
+let mut lobbies = SteamLobbies::new(session.clone())?;
+lobbies.create_p2p(LobbyVisibility::Public, 4, 0)?;   // host: publishes SteamID + virtual port
+// each tick, after the plugin has pumped Steam callbacks:
+for event in lobbies.poll() { /* Created, Joined, MemberJoined, OwnerChanged, ... */ }
+// a joiner: list, join, then dial the host
+lobbies.list(&LobbyFilter { string_equals: vec![("mode".into(), "ctf".into())], open_slots: 1, ..Default::default() })?;
+lobbies.join(lobby)?;
+let client = lobbies.connect_client(lobby, SteamClientConfig::default())?;
+```
+
+Normalisation. A raw callback only says that a lobby changed; the truth is a snapshot
+read with `lobby_info` and diffed against the last snapshot the crate reported. Therefore
+duplicated, late or reordered callbacks never produce duplicate or missing events. A
+change for a lobby this client has not entered yet (a creator is told it entered before
+`LobbyCreated` can arrive; a joiner can be told of changes before `LobbyEnter`) is held,
+bounded, and replayed when the lobby becomes known. A lobby that disappears, or a
+snapshot without the local user, becomes `Left`. Events: `Created`, `CreateFailed`,
+`Joined`, `JoinFailed` (`Full`, `NotFound`, `NotAllowed`, `Other`), `ListReceived`,
+`ListFailed`, `MemberJoined`, `MemberLeft`, `OwnerChanged`, `DataChanged` (per key,
+`None` when removed) and `Left`. Steam does not say why a member left, so `MemberLeft` has
+no reason. Lobbies hold at most 250 members; keys are at most 255 bytes and values 8192.
+Only the owner may set lobby data (checked locally before Steam). Filters support
+string equality, free slots and a result count; the real backend searches worldwide.
+
+Connect identity. The host publishes its SteamID and virtual port under the metadata keys
+`engine.p2p_host` and `engine.p2p_port` (`create_p2p`, or `publish_host` again after
+becoming owner by migration). `connect_identity` returns them only while the host key
+names the current owner, so metadata left by a previous host is ignored, and
+`connect_client` builds a `SteamClientEndpoint` that dials the host (it refuses when the
+local player is the host). Lobby metadata is untrusted input: a lobby owner can claim any
+host, but the client dials that SteamID through Steam's authenticated P2P path and the
+server still validates the client with an auth ticket, so a lying lobby cannot make the
+client trust the wrong peer; at worst it makes the client dial one that refuses.
+
+`engine-online` adapter. With the `online` Cargo feature, `OnlineAdapter::convert` maps
+member, host, attribute and leave events to `engine_online::ServerBody` notifications
+(`MemberJoined`, `MemberLeft`, `HostChanged` with a counted epoch, `AttributesChanged`,
+`Left`) so code written for a self-hosted session can follow a Steam lobby. Session ids are
+the low 53 bits of the lobby id (the protocol keeps ids exactly representable as JSON
+numbers); a player is its decimal SteamID; engine-internal keys are not exposed as
+attributes. `engine-online` itself is unchanged.
+
+Known limits. Steam's `LobbyChatUpdate` binding panics on a state-change code it does not
+know; Steam sends only the five documented values. The old synchronous lobby methods on
+`SteamBackend` (`create_lobby` and friends) are the S1 sketch and are superseded by
+`LobbyBackend`.
+
 ## Live tests
 
 Live tests are `#[ignore]` and use App ID 480 (Spacewar). With the Steam client open:
@@ -320,6 +397,8 @@ Live tests are `#[ignore]` and use App ID 480 (Spacewar). With the Steam client 
 cargo test -p engine-steam --features steam -- --ignored core --nocapture
 ```
 
+`-- --ignored lobby_` creates a private lobby on App 480 with a published P2P host identity,
+changes its metadata, observes Steam's confirmations and leaves it.
 `-- --ignored net` runs the Networking Sockets loopbacks (`net_ip`: `ConnectByIPAddress` to a
 local listen socket with auth tickets; `net_p2p`: `ConnectP2P` to the signed-in account's own
 SteamID through the relay network): both exchange ordered reliable messages, a 200 KB message and a

@@ -317,3 +317,94 @@ mod net_live {
         exchange(&mut pair);
     }
 }
+
+mod lobby_live {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Polls callbacks and lobby events until `done` matches or the timeout passes.
+    fn wait_for(
+        session: &SteamSession,
+        lobbies: &mut SteamLobbies,
+        seconds: u64,
+        mut done: impl FnMut(&LobbyEvent) -> bool,
+    ) -> Option<Vec<LobbyEvent>> {
+        let end = Instant::now() + Duration::from_secs(seconds);
+        let mut all = Vec::new();
+        while Instant::now() < end {
+            let _ = session.run_callbacks();
+            let events = lobbies.poll();
+            let hit = events.iter().any(&mut done);
+            all.extend(events);
+            if hit {
+                return Some(all);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        println!("timed out; events so far: {all:?}");
+        None
+    }
+
+    /// Creates a private lobby on App 480, publishes the P2P host identity, changes
+    /// metadata, sees the confirmations, then leaves.
+    #[test]
+    #[ignore = "needs a running Steam client"]
+    fn lobby_create_and_leave() {
+        let Some((_guard, backend)) = steam_live() else {
+            return;
+        };
+        let session = SteamSession::new(Box::new(backend));
+        let mut lobbies = SteamLobbies::new(session.clone()).expect("lobbies");
+        lobbies
+            .create_p2p(LobbyVisibility::Private, 2, 5)
+            .expect("create");
+        let events = wait_for(&session, &mut lobbies, 30, |e| {
+            matches!(
+                e,
+                LobbyEvent::Created { .. } | LobbyEvent::CreateFailed { .. }
+            )
+        })
+        .expect("a creation result");
+        let Some(LobbyEvent::Created { lobby }) = events
+            .iter()
+            .find(|e| matches!(e, LobbyEvent::Created { .. }))
+            .cloned()
+        else {
+            panic!("lobby creation failed: {events:?}");
+        };
+        println!("created lobby {}", lobby.0);
+        let me = lobbies.me();
+        let view = lobbies.lobby(lobby).expect("view").clone();
+        assert_eq!(view.owner, me);
+        assert!(view.members.contains(&me));
+
+        // The published host identity arrives back as metadata.
+        wait_for(&session, &mut lobbies, 3, |_| false);
+        assert_eq!(
+            lobbies.connect_identity(lobby),
+            Some(ConnectIdentity {
+                host: me,
+                virtual_port: 5
+            }),
+            "host identity published: {:?}",
+            lobbies.lobby(lobby)
+        );
+        lobbies
+            .set_data(lobby, "mode", Some("engine-live-test"))
+            .expect("set data");
+        wait_for(&session, &mut lobbies, 3, |_| false);
+        assert_eq!(
+            lobbies
+                .lobby(lobby)
+                .and_then(|v| v.data.get("mode"))
+                .map(String::as_str),
+            Some("engine-live-test")
+        );
+
+        lobbies.leave(lobby).expect("leave");
+        let left = lobbies.poll();
+        assert_eq!(left, vec![LobbyEvent::Left { lobby }]);
+        assert!(lobbies.lobby(lobby).is_none());
+        let _ = session.run_callbacks();
+    }
+}

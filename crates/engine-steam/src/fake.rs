@@ -8,7 +8,9 @@ use std::net::SocketAddr;
 
 use crate::backend::{SteamBackend, valid_cloud_name};
 use crate::error::{SteamError, SteamResult};
+use crate::fake_lobby::FakeLobbies;
 use crate::fake_net::FakeNet;
+use crate::lobby::{LobbyBackend, LobbyRaw};
 use crate::net::*;
 use crate::types::*;
 
@@ -26,6 +28,8 @@ pub struct FakeBackend {
     stored_stats: BTreeMap<String, StatValue>,
     stored_achievements: BTreeMap<String, bool>,
     stats_requested: bool,
+    stats_delayed: bool,
+    stats_ready: bool,
     cloud_enabled: bool,
     cloud_account_enabled: bool,
     cloud_quota: usize,
@@ -39,6 +43,7 @@ pub struct FakeBackend {
     action_sets: BTreeMap<ControllerId, String>,
     canceled_tickets: BTreeSet<u32>,
     net: FakeNet,
+    lobby_world: FakeLobbies,
 }
 
 impl FakeBackend {
@@ -67,6 +72,8 @@ impl FakeBackend {
             stored_stats: BTreeMap::new(),
             stored_achievements: BTreeMap::new(),
             stats_requested: false,
+            stats_delayed: false,
+            stats_ready: true,
             cloud_enabled: true,
             cloud_account_enabled: true,
             cloud_quota: usize::MAX,
@@ -80,6 +87,7 @@ impl FakeBackend {
             action_sets: BTreeMap::new(),
             canceled_tickets: BTreeSet::new(),
             net: FakeNet::default(),
+            lobby_world: FakeLobbies::default(),
         }
     }
 
@@ -141,10 +149,80 @@ impl FakeBackend {
         self.net.active_auth_sessions()
     }
 
+    /// A lobby owned by a remote player, joinable and listable.
+    pub fn sim_add_lobby(
+        &mut self,
+        owner: SteamId,
+        max_members: u32,
+        data: &[(&str, &str)],
+    ) -> LobbyId {
+        let data = data
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        self.lobby_world.sim_add(owner, max_members, data)
+    }
+
+    /// A remote player joins a lobby (a change callback reaches the local user).
+    pub fn sim_lobby_join(&mut self, lobby: LobbyId, user: SteamId) {
+        self.lobby_world.sim_join(lobby, user);
+    }
+
+    /// A remote player leaves; ownership migrates to the first remaining member.
+    pub fn sim_lobby_leave(&mut self, lobby: LobbyId, user: SteamId) {
+        self.lobby_world.sim_leave(lobby, user);
+    }
+
+    pub fn sim_lobby_set_owner(&mut self, lobby: LobbyId, user: SteamId) {
+        self.lobby_world.sim_set_owner(lobby, user);
+    }
+
+    pub fn sim_lobby_set_data(&mut self, lobby: LobbyId, key: &str, value: &str) {
+        self.lobby_world.sim_set_data(lobby, key, value);
+    }
+
+    /// The lobby disappears (all members gone).
+    pub fn sim_lobby_destroy(&mut self, lobby: LobbyId) {
+        self.lobby_world.sim_destroy(lobby);
+    }
+
+    /// The next `lobby_create` fails with this reason.
+    pub fn fail_next_lobby_create(&mut self, reason: &str) {
+        self.lobby_world.fail_next_create(reason);
+    }
+
+    /// While held, lobby callbacks accumulate instead of being delivered.
+    pub fn hold_lobby_callbacks(&mut self, hold: bool) {
+        self.lobby_world.set_hold(hold);
+    }
+
+    /// Delivers held lobby callbacks, optionally in reverse order.
+    pub fn release_lobby_callbacks(&mut self, reversed: bool) {
+        self.lobby_world.release(reversed);
+    }
+
+    /// Repeats every pending lobby callback once.
+    pub fn duplicate_lobby_callbacks(&mut self) {
+        self.lobby_world.duplicate_pending();
+    }
+
     /// Makes `restart_app_if_necessary` return `true`.
     pub fn with_restart_required(mut self, required: bool) -> Self {
         self.restart_required = required;
         self
+    }
+
+    /// Stats stay `StatsNotReady` after the request until [`FakeBackend::deliver_stats`].
+    pub fn with_delayed_stats(mut self) -> Self {
+        self.stats_delayed = true;
+        self.stats_ready = false;
+        self
+    }
+
+    /// Delivers the user stats, as Steam does some time after the request.
+    pub fn deliver_stats(&mut self) {
+        self.stats_ready = true;
+        self.events.push(SteamEvent::StatsReceived);
     }
 
     /// Declares an achievement (locked).
@@ -258,10 +336,12 @@ impl FakeBackend {
     }
 
     fn require_stats(&self) -> SteamResult<()> {
-        if self.stats_requested {
-            Ok(())
-        } else {
+        if !self.stats_requested {
             Err(SteamError::StatsNotRequested)
+        } else if !self.stats_ready {
+            Err(SteamError::StatsNotReady)
+        } else {
+            Ok(())
         }
     }
 
@@ -270,7 +350,68 @@ impl FakeBackend {
     }
 }
 
+impl FakeBackend {
+    fn local_user(&self) -> SteamResult<SteamId> {
+        match &self.status {
+            SteamStatus::Ready { user, .. } => Ok(user.id),
+            _ => Err(self.unavailable()),
+        }
+    }
+}
+
+impl LobbyBackend for FakeBackend {
+    fn lobby_create(&mut self, _visibility: LobbyVisibility, max_members: u32) -> SteamResult<()> {
+        self.record("lobby_create");
+        let me = self.local_user()?;
+        self.lobby_world.create(me, max_members);
+        Ok(())
+    }
+
+    fn lobby_join(&mut self, lobby: LobbyId) -> SteamResult<()> {
+        self.record("lobby_join");
+        let me = self.local_user()?;
+        self.lobby_world.join(me, lobby);
+        Ok(())
+    }
+
+    fn lobby_leave(&mut self, lobby: LobbyId) -> SteamResult<()> {
+        self.record("lobby_leave");
+        let me = self.local_user()?;
+        self.lobby_world.leave(me, lobby)
+    }
+
+    fn lobby_request_list(&mut self, filter: &LobbyFilter) -> SteamResult<()> {
+        self.record("lobby_request_list");
+        self.local_user()?;
+        self.lobby_world.request_list(filter);
+        Ok(())
+    }
+
+    fn lobby_set_data(
+        &mut self,
+        lobby: LobbyId,
+        key: &str,
+        value: Option<&str>,
+    ) -> SteamResult<()> {
+        self.record("lobby_set_data");
+        let me = self.local_user()?;
+        self.lobby_world.set_data(me, lobby, key, value)
+    }
+
+    fn lobby_info(&self, lobby: LobbyId) -> Option<LobbyInfo> {
+        self.lobby_world.info(lobby)
+    }
+
+    fn lobby_poll(&mut self) -> Vec<LobbyRaw> {
+        self.lobby_world.poll()
+    }
+}
+
 impl SteamBackend for FakeBackend {
+    fn lobby_backend(&mut self) -> Option<&mut dyn LobbyBackend> {
+        Some(self)
+    }
+
     fn status(&self) -> SteamStatus {
         self.status.clone()
     }

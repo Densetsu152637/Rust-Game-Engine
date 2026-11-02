@@ -121,3 +121,40 @@ fn session_handle_works_with_a_ready_backend() {
     assert_eq!(session.add_progress("games", 2, 5), Ok(2));
     assert_eq!(session.store_stats_now(), Ok(true));
 }
+
+#[test]
+fn changes_made_before_stats_arrive_are_queued_and_applied() {
+    let mut fake = ready().with_delayed_stats();
+    let mut stats = StatsService::default();
+    // Before delivery: queued, reported as done, not applied.
+    assert_eq!(stats.unlock(&mut fake, "WIN"), Ok(true));
+    assert_eq!(stats.unlock(&mut fake, "WIN"), Ok(false), "no double queue");
+    assert_eq!(stats.set_progress(&mut fake, "games", 4, 10), Ok(4));
+    assert_eq!(stats.set_progress(&mut fake, "games", 6, 10), Ok(6));
+    assert_eq!(stats.pending_len(), 2);
+    assert_eq!(fake.call_count("set_achievement"), 0);
+    assert_eq!(
+        stats.stat(&mut fake, "games"),
+        Err(SteamError::StatsNotReady)
+    );
+    assert!(!stats.is_dirty());
+    // Steam delivers the stats; the next tick applies the queue and stores it.
+    fake.deliver_stats();
+    assert!(fake.run_callbacks().contains(&SteamEvent::StatsReceived));
+    assert_eq!(stats.tick(&mut fake, 0), Ok(true));
+    assert_eq!(stats.pending_len(), 0);
+    assert_eq!(fake.stored_achievements().get("WIN"), Some(&true));
+    assert_eq!(fake.stored_stats().get("games"), Some(&StatValue::Int(6)));
+}
+
+#[test]
+fn a_successful_read_applies_the_queue_and_unknown_names_are_dropped() {
+    let mut fake = ready().with_delayed_stats();
+    let mut stats = StatsService::default();
+    stats.unlock(&mut fake, "WIN").unwrap();
+    stats.unlock(&mut fake, "NOPE").unwrap();
+    fake.deliver_stats();
+    assert_eq!(stats.is_unlocked(&mut fake, "WIN"), Ok(true));
+    assert_eq!(stats.pending_len(), 0);
+    assert!(stats.is_dirty());
+}
