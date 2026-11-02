@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use bevy_ecs::prelude::Resource;
+use engine_project::content_roots::{ContentRoots, RootRevision};
 
 use crate::error::{SteamError, SteamResult};
 use crate::session::SteamSession;
@@ -546,5 +547,128 @@ impl UgcService {
                 .extend(installed.into_iter().map(SteamEvent::WorkshopItemInstalled));
         }
         events
+    }
+}
+
+/// What [`WorkshopContent`] did with a Workshop item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WorkshopContentEvent {
+    /// The item folder was mounted as `@workshop-<id>/...`.
+    Mounted {
+        item: WorkshopItemId,
+        revision: RootRevision,
+    },
+    /// An updated item folder replaced the previous mount.
+    Replaced {
+        item: WorkshopItemId,
+        revision: RootRevision,
+    },
+    /// The item was unsubscribed and its mount removed.
+    Unmounted { item: WorkshopItemId },
+    /// The item folder was not mounted (it failed validation); the game carries on.
+    Skipped {
+        item: WorkshopItemId,
+        reason: String,
+    },
+}
+
+/// Mounts installed Workshop items as read-only content roots.
+///
+/// Feed it the events of [`UgcService::poll`]: a finished download mounts (or replaces) the
+/// item as mount `workshop-<id>`, an unsubscribe removes it, and an item whose folder fails
+/// validation is skipped and reported. At startup call [`WorkshopContent::mount_subscribed`].
+/// Item content is other players' data: it is mounted under the content-root rules (leaf
+/// kinds only, no links, confined below the folder Steam installs items into).
+pub struct WorkshopContent {
+    roots: ContentRoots,
+    mounted: BTreeSet<WorkshopItemId>,
+}
+
+impl WorkshopContent {
+    /// Mounts into `roots` (usually `project.content_roots`).
+    pub fn new(roots: ContentRoots) -> Self {
+        Self {
+            roots,
+            mounted: BTreeSet::new(),
+        }
+    }
+
+    /// The mount name of an item.
+    pub fn mount_name(item: WorkshopItemId) -> String {
+        format!("workshop-{}", item.0)
+    }
+
+    /// The full asset id of `id` inside an item's content root.
+    pub fn asset_id(item: WorkshopItemId, id: &str) -> String {
+        format!("@{}/{id}", Self::mount_name(item))
+    }
+
+    /// Mounts every subscribed item that Steam reports installed.
+    pub fn mount_subscribed(&mut self, ugc: &UgcService) -> Vec<WorkshopContentEvent> {
+        let items = ugc.subscribed().unwrap_or_default();
+        items
+            .into_iter()
+            .filter_map(|item| self.mount(ugc, item))
+            .collect()
+    }
+
+    /// Reacts to the events of one [`UgcService::poll`].
+    pub fn process(&mut self, ugc: &UgcService, events: &[UgcEvent]) -> Vec<WorkshopContentEvent> {
+        let mut out = Vec::new();
+        for event in events {
+            match event {
+                UgcEvent::Reply(UgcRaw::Downloaded {
+                    item,
+                    result: Ok(()),
+                }) => out.extend(self.mount(ugc, *item)),
+                UgcEvent::Reply(UgcRaw::Subscription {
+                    item,
+                    subscribed: false,
+                    result: Ok(()),
+                    ..
+                }) => {
+                    self.mounted.remove(item);
+                    if self.roots.unregister(&Self::mount_name(*item)) {
+                        out.push(WorkshopContentEvent::Unmounted { item: *item });
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn mount(&mut self, ugc: &UgcService, item: WorkshopItemId) -> Option<WorkshopContentEvent> {
+        let info = ugc.installed(item).ok()??;
+        // An update is still downloading: keep the mounted version until it finishes.
+        if info.needs_update && self.mounted.contains(&item) {
+            return None;
+        }
+        let skipped = |reason: String| Some(WorkshopContentEvent::Skipped { item, reason });
+        let Some(parent) = info.path.parent() else {
+            return skipped("the install folder has no parent".into());
+        };
+        match self
+            .roots
+            .register(&Self::mount_name(item), &info.path, parent)
+        {
+            Ok(revision) => {
+                let replaced = !self.mounted.insert(item);
+                Some(if replaced {
+                    WorkshopContentEvent::Replaced { item, revision }
+                } else {
+                    WorkshopContentEvent::Mounted { item, revision }
+                })
+            }
+            Err(error) => {
+                let reason = error
+                    .diagnostics
+                    .first()
+                    .map(|d| format!("{}: {}", d.code, d.message))
+                    .unwrap_or_else(|| "registration failed".into());
+                skipped(reason)
+            }
+        }
     }
 }

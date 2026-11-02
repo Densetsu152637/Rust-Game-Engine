@@ -43,6 +43,9 @@ pub struct Project {
     pub scene: Scene,
     /// Optional Steam settings; plain data, parsed whether or not Steam is compiled in.
     pub steam: Option<SteamManifest>,
+    /// Extra read-only content roots (mods); empty unless a host registers some. Shared by
+    /// every clone of the project.
+    pub content_roots: crate::content_roots::ContentRoots,
 }
 /// The `steam` manifest block. Unknown keys are rejected.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

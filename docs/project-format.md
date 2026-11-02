@@ -55,7 +55,10 @@ rejected rather than dropped.
 
 ### Assets
 
-Each asset has a stable `id`, a project-relative `path` and a `kind`. Kinds are
+Each asset has a stable `id`, a project-relative `path` and a `kind`. Ids may not start with
+`@`: that prefix is reserved for assets of mounted content roots (mods, installed Workshop
+items), which are addressed as `@<mount>/<id>`; see
+[Additional read-only content roots](asset-pipeline.md#additional-read-only-content-roots). Kinds are
 `script`, `mesh`, `texture`, `font`, `font_face`, `font_config`, `audio`, `scene` and `shader`
 (plus `prefab`, `model`, `animation`, `navigation`, `string_table`, `locale_config`,
 `caption_track`, `indirect`, `graph` and `text_script`; see their pages). A `text_script`

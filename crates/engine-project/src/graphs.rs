@@ -278,6 +278,7 @@ mod tests {
             input_actions: BTreeMap::new(),
             input_bindings: BTreeMap::new(),
             steam: None,
+            content_roots: Default::default(),
             scene: Scene {
                 schema: 1,
                 id: "scene".into(),

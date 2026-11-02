@@ -606,6 +606,29 @@ binding gives no way to change that, and an upload was not run to confirm Steam 
 (see the manual procedure below). Two conversions remain in the binding: visibility maps to
 `ItemVisibility` and the file type is read but not exposed.
 
+### Mounting installed items as content roots (S10)
+
+`WorkshopContent::new(project.content_roots.clone())` mounts installed items as read-only
+content roots (generic mechanism: `engine_project::content_roots`). Feed it the events of each
+`UgcService::poll()` with `process(&service, &events)`, and call `mount_subscribed(&service)`
+once at startup:
+
+- a finished download mounts the item's install folder as mount `workshop-<id>`, or replaces
+  the previous mount when the item updated (`WorkshopContentEvent::Mounted` / `Replaced`);
+  while `needs_update` is true and the item is mounted, the old version stays;
+- a completed unsubscribe removes the mount (`Unmounted`);
+- a folder that fails validation is skipped with `Skipped { reason }` and nothing else stops.
+
+Mounted assets are addressed `@workshop-<id>/<id>` (`WorkshopContent::asset_id`) and resolve
+through `Project::resolve_asset` / `services::resolve_asset`. An item folder needs a
+`content.json` (same asset records as `project.json`) listing leaf data only: `mesh`,
+`texture`, `audio`, `lut`, `string_table` and a bitmap `font` whose texture is in the same
+item. Scripts, shaders, graphs and scene-like kinds are refused, as is any link anywhere in the
+item; the folder must lie directly below the directory Steam reports as its parent. The
+full rules are in [Additional read-only content roots](asset-pipeline.md#additional-read-only-content-roots).
+Not yet supported (planned v2): scenes, prefabs and other composite kinds, and mod ids in
+scene component fields.
+
 ### Uploading is manual only
 
 `create_item` and `submit_item` change the Steam Workshop for the app. A new item is private

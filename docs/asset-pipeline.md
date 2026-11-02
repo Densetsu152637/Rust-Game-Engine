@@ -190,7 +190,7 @@ MCP tests exercise write gating and actual import; a CLI test launches the
 
 ## Additional read-only content roots
 
-Status: design note for plan stage S10, reviewed before code. Nothing here is implemented yet.
+Status: implemented in `engine-project` (`content_roots`) and `engine-steam` (`WorkshopContent`). The decisions D1 to D5 at the end were accepted by root; the text below is the design as built.
 
 A project can mount extra, read-only content roots next to its own root. The mechanism is
 generic: it knows nothing about Steam. A mod source (Steam Workshop installs, a local mods
@@ -283,8 +283,8 @@ whole registration with `content_root.kind`.
 4. Asset files are re-validated on every resolution (`confined_file` plus the link walk), so
    a file replaced by a link after registration fails with a path error. As elsewhere,
    this is not an OS sandbox and cannot stop hostile replacement racing a read.
-5. Existing per-kind size and format limits apply at load time; nothing is read at
-   registration except the manifest.
+5. Existing per-kind size and format limits apply at load time. Registration reads only the
+   manifest, plus each `font` asset's JSON (at most 4 MiB) to check the texture it names.
 
 ### Limits
 
@@ -324,14 +324,22 @@ registers on download completion, its texture/audio/mesh loads through
 folder is skipped with an event. A manual live check on App 480 (subscribe, install, load an
 asset) is recorded in the plan Outcome, or recorded as not possible with the reason.
 
-### Decisions needed from root before code
+### Scope: v1 and the planned v2
 
-- D1: the root manifest name and shape (`content.json`, same asset records as `project.json`).
+v1 mounts leaf data only and resolves it by full id through `Project::resolve_asset` and
+`services::resolve_asset`; the loaders that take an asset id (audio, texture, mesh, string
+table) work with mounted ids because they resolve through the project. Scene component
+fields cannot reference mod ids yet: scenes keep validating at load, before any root is
+mounted, and `require_asset` returns a borrowed `&Asset`. Planned v2: composite kinds
+(`scene`, `prefab`, `model`, `animation`, `tilemap` and so on) with ids inside a mod's files
+resolved against the owning root, and mod ids accepted in scene component fields (an owned
+or lazily checked asset lookup).
+
+### Decisions (accepted by root)
+
+- D1: the root manifest is `content.json` with the same asset records as `project.json`.
 - D2: the v1 kind allow-list above (leaf data only; no scripts, graphs, shaders or composites).
-- D3: mod assets are reachable through `resolve_asset` by full id, but not yet from scene
-  component fields, because `require_asset` returns a borrowed `&Asset` and scene validation
-  runs at load before mods are mounted. Admit mod ids in scenes later (needs an owned return
-  or a lazily checked field), or require it now?
-- D4: stricter-than-project link handling inside mod roots (reject all links).
-- D5: reserve `@` as the first character of project asset ids (rejecting such ids at load), as
-  the namespace marker; the alternative is a separate resolution API with no id syntax.
+- D3: mod ids resolve by full id now; scene component fields referencing mod ids are v2.
+- D4: every link inside a mod root is rejected, re-checked on each resolution.
+- D5: a leading `@` is reserved in project asset ids and rejected at load
+  (`project.asset.id.reserved`); `docs/project-format.md` says so.

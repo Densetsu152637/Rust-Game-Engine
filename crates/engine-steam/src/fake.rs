@@ -321,6 +321,13 @@ impl FakeBackend {
         self
     }
 
+    /// Changes where an installed item lives (an existing `with_installed_item` entry).
+    pub fn set_installed_path(&mut self, id: WorkshopItemId, path: std::path::PathBuf) {
+        if let Some(item) = self.installed.get_mut(&id) {
+            item.path = path;
+        }
+    }
+
     /// Switches the silent-download behaviour while running.
     pub fn set_silent_downloads(&mut self, silent: bool) {
         self.ugc.silent_downloads = silent;
