@@ -311,11 +311,14 @@ const AERIAL_WGSL: &str = include_str!("../wgsl/atmosphere_aerial.wgsl");
 
 /// The uncomposed WGSL of a pass: view import, step counts, shared model, pass.
 fn pass_source(pass: &str) -> String {
+    // One source for the limb normalisation: `model::SUN_DISK_NORMALISATION`.
+    let disk = format!("{:?}", model::SUN_DISK_NORMALISATION);
     format!(
         "#import engine::view
 const SKY_STEPS: u32 = {SKY_STEPS}u;
 const AERIAL_STEPS: u32 = {AERIAL_STEPS}u;
 const SUN_STEPS: u32 = {SUN_STEPS}u;
+const ATM_DISK_NORMALISATION: f32 = {disk};
 {COMMON_WGSL}
 {pass}"
     )

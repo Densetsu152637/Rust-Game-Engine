@@ -391,6 +391,11 @@ fn assert_close(actual: [f64; 3], expected: [f64; 3], relative: f64, what: &str)
     }
 }
 
+/// True when `actual` is outside the `assert_close` tolerance of `expected`.
+fn misses(actual: [f64; 3], expected: [f64; 3], relative: f64) -> bool {
+    (0..3).any(|k| (actual[k] - expected[k]).abs() > relative * expected[k].abs() + 2.0e-4)
+}
+
 fn all_pixels(image: &HdrImage) -> impl Iterator<Item = [f32; 4]> + '_ {
     image.pixels.iter().copied()
 }
@@ -876,6 +881,11 @@ fn orthographic_views_are_finite_and_use_the_view_axis() -> Result<()> {
     Ok(())
 }
 
+/// Projection jitter (render pixels) and the relative tolerance of its checks.
+/// Large enough that ignoring the jitter fails the same comparison.
+const JITTER: [f32; 2] = [0.95, -0.9];
+const JITTER_TOLERANCE: f64 = 0.02;
+
 /// A jittered projection moves the rasterized image and the reconstructed rays
 /// together: sky pixels and an aerial-perspective wall still match the
 /// reference evaluated at the shifted direction.
@@ -887,45 +897,92 @@ fn jittered_views_use_the_shifted_ray_for_sky_and_aerial_perspective() -> Result
     shot.sun_elevation = 35.0;
     shot.sun_azimuth = 60.0;
     shot.pitch = 0.3;
-    shot.jitter = [0.75, -0.5];
+    shot.jitter = JITTER;
     let plain = rig.render(&Shot {
         jitter: [0.0; 2],
         ..shot.clone()
     })?;
     let jittered = rig.render(&shot)?;
     assert_ne!(plain.pixels, jittered.pixels, "jitter moves the sky");
+    let unjittered = Shot {
+        jitter: [0.0; 2],
+        ..shot.clone()
+    };
     for (x, y) in [(3, 3), (32, 10), (60, 20), (20, 33)] {
         assert_close(
             rgb(jittered.pixel(x, y)),
             shot.expected_sky(x, y),
-            0.04,
+            JITTER_TOLERANCE,
             &format!("jittered sky pixel ({x},{y})"),
         );
     }
+    // Discriminating: wherever the unshifted ray would fall outside the tolerance
+    // (steep gradients: horizon, sun limb), the image must still match the shifted
+    // reference. A shader that ignored the jitter fails every one of those pixels.
+    let [w, h] = shot.size;
+    let mut steep = 0;
+    for y in 0..h {
+        for x in 0..w {
+            let want = shot.expected_sky(x, y);
+            if misses(unjittered.expected_sky(x, y), want, JITTER_TOLERANCE) {
+                steep += 1;
+                assert_close(
+                    rgb(jittered.pixel(x, y)),
+                    want,
+                    JITTER_TOLERANCE,
+                    &format!("jitter-sensitive sky pixel ({x},{y})"),
+                );
+            }
+        }
+    }
+    assert!(steep >= 20, "only {steep} jitter-sensitive sky pixels");
 
     // An opaque wall: distance follows the jittered ray, not the pixel centre.
     shot.pitch = 0.0;
     shot.sun_azimuth = 90.0;
-    let distance = 4_000.0f32;
+    let distance = 40_000.0f32;
     rig.set_wall(Some(([0.2; 3], shot.wall_depth(distance))));
     let image = rig.render(&shot)?;
-    for (x, y) in [(32, 18), (6, 4), (58, 30)] {
-        let reach = shot.wall_distance(x, y, distance);
+    let wall_reference = |shot: &Shot, x: u32, y: u32| -> [f64; 3] {
         let (inscatter, transmittance) = aerial(
             &shot.medium(),
             shot.altitude,
             shot.dir(x, y),
             shot.sun(),
             shot.irradiance(),
-            reach,
+            shot.wall_distance(x, y, distance),
         );
-        let expected: [f64; 3] = std::array::from_fn(|k| 0.2 * transmittance[k] + inscatter[k]);
-        assert_close(
-            rgb(image.pixel(x, y)),
-            expected,
-            0.05,
-            &format!("jittered wall pixel ({x},{y}) at {reach:.0} m"),
-        );
+        std::array::from_fn(|k| 0.2 * transmittance[k] + inscatter[k])
+    };
+    let mut sensitive = 0;
+    for y in 0..h {
+        for x in 0..w {
+            let want = wall_reference(&shot, x, y);
+            let reach = shot.wall_distance(x, y, distance);
+            if (x, y) == (32, 18) || (x, y) == (6, 4) || (x, y) == (58, 30) {
+                assert_close(
+                    rgb(image.pixel(x, y)),
+                    want,
+                    JITTER_TOLERANCE,
+                    &format!("jittered wall pixel ({x},{y}) at {reach:.0} m"),
+                );
+            }
+            // Wherever ignoring the jitter would leave the tolerance, the image
+            // must still follow the jittered ray and distance.
+            if misses(wall_reference(&unjittered, x, y), want, JITTER_TOLERANCE) {
+                sensitive += 1;
+                assert_close(
+                    rgb(image.pixel(x, y)),
+                    want,
+                    JITTER_TOLERANCE,
+                    &format!("jitter-sensitive wall pixel ({x},{y}) at {reach:.0} m"),
+                );
+            }
+        }
     }
+    assert!(
+        sensitive >= 20,
+        "only {sensitive} jitter-sensitive wall pixels"
+    );
     Ok(())
 }

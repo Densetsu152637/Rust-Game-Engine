@@ -16,6 +16,13 @@ use std::sync::Arc;
 
 const SIZE: [u32; 2] = [160, 120];
 
+/// Atmosphere camera altitude for the aerial cases, passed explicitly because the
+/// scaled view path is clipped at the planet surface: a ray dropping 3 km over the
+/// scaled floor distance needs a camera higher than that or the clip hides the tint.
+const ALTITUDE_ABOVE: f64 = 4_000.0;
+/// Underwater camera: below the surface the shader altitude clamps to 0.
+const ALTITUDE_BELOW: f64 = 0.0;
+
 fn gpu() -> Result<GpuContext> {
     let gpu = GpuContext::headless_with_options(&WgpuOptions::default())?;
     eprintln!("adapter: {:?}", gpu.adapter.get_info().name);
@@ -168,6 +175,7 @@ impl Renderer {
         view: &ViewData,
         meshes: &[SceneMesh<'_>],
         world: Option<&World>,
+        altitude: f64,
         on: bool,
     ) -> Result<Vec<u8>> {
         let controls = self.aerial.clone().expect("built with_aerial");
@@ -179,7 +187,7 @@ impl Renderer {
                         aerial_perspective_scale: 1000.0,
                         ..Default::default()
                     },
-                    f64::from(view.camera_position().y),
+                    altitude,
                 )
             })
             .transpose()?;
@@ -612,17 +620,29 @@ fn water_follows_the_scene_colour_after_aerial_perspective() -> Result<()> {
     let floor_meshes = [unlit("floor", &floor, [1.0, 1.0, 1.0, 1.0])];
     let lake_world = world_with(surface(lake(60.0), Waves::Flat, 0.0), 60.0, 16);
     let above = view(Vec3::new(0.0, 3.0, 6.0), Vec3::new(0.0, -3.0, -6.0))?;
-    let with_water_on = r.render_aerial(&above, &floor_meshes, Some(&lake_world), true)?;
-    let with_water_off = r.render_aerial(&above, &floor_meshes, Some(&lake_world), false)?;
-    let floor_on = r.render_aerial(&above, &floor_meshes, None, true)?;
-    let floor_off = r.render_aerial(&above, &floor_meshes, None, false)?;
+    let with_water_on = r.render_aerial(
+        &above,
+        &floor_meshes,
+        Some(&lake_world),
+        ALTITUDE_ABOVE,
+        true,
+    )?;
+    let with_water_off = r.render_aerial(
+        &above,
+        &floor_meshes,
+        Some(&lake_world),
+        ALTITUDE_ABOVE,
+        false,
+    )?;
+    let floor_on = r.render_aerial(&above, &floor_meshes, None, ALTITUDE_ABOVE, true)?;
+    let floor_off = r.render_aerial(&above, &floor_meshes, None, ALTITUDE_ABOVE, false)?;
     let (water_on, water_off) = (
         pixel(&with_water_on, cx, cy),
         pixel(&with_water_off, cx, cy),
     );
     let (bare_on, bare_off) = (pixel(&floor_on, cx, cy), pixel(&floor_off, cx, cy));
     eprintln!("floor {bare_off:?} -> {bare_on:?}; water over floor {water_off:?} -> {water_on:?}");
-    // Aerial perspective visibly tints the bare floor (about 17 km after scaling).
+    // Aerial perspective visibly tints the bare floor (about 6.7 km after scaling).
     let (channel, tint) = (0..3)
         .map(|c| (c, bare_on[c] as i32 - bare_off[c] as i32))
         .max_by_key(|(_, d)| d.abs())
@@ -654,12 +674,24 @@ fn water_follows_the_scene_colour_after_aerial_perspective() -> Result<()> {
     let wall_meshes = [unlit("wall", &wall, [1.0, 1.0, 1.0, 1.0])];
     let below = view(Vec3::new(0.0, -2.0, 0.0), Vec3::new(0.0, -2.0, -4.0))?;
     let plain = pixel(
-        &r.render_aerial(&below, &wall_meshes, Some(&lake_world), false)?,
+        &r.render_aerial(
+            &below,
+            &wall_meshes,
+            Some(&lake_world),
+            ALTITUDE_BELOW,
+            false,
+        )?,
         cx,
         cy,
     );
     let tinted = pixel(
-        &r.render_aerial(&below, &wall_meshes, Some(&lake_world), true)?,
+        &r.render_aerial(
+            &below,
+            &wall_meshes,
+            Some(&lake_world),
+            ALTITUDE_BELOW,
+            true,
+        )?,
         cx,
         cy,
     );
@@ -670,7 +702,7 @@ fn water_follows_the_scene_colour_after_aerial_perspective() -> Result<()> {
     };
     let (inscatter, transmittance) = atmosphere::aerial(
         &atmosphere::Medium::new(&settings),
-        0.0,
+        ALTITUDE_BELOW,
         [0.0, 0.0, -1.0],
         sun_toward.as_dvec3().to_array(),
         [1.0; 3],

@@ -26,8 +26,8 @@ struct Atmosphere {
 const ATM_PI: f32 = 3.14159265358979;
 const ATM_MAX_RADIANCE: f32 = 60000.0;
 const ATM_BLOCKED: f32 = 1.0e6;
-// Solid-angle fraction covered by the soft limb (SUN_DISK_NORMALISATION in model.rs).
-const ATM_DISK_NORMALISATION: f32 = 0.812;
+// ATM_DISK_NORMALISATION (solid-angle fraction covered by the soft limb) is
+// injected from SUN_DISK_NORMALISATION in model.rs by pass_source.
 
 struct AtmMarch {
     inscatter: vec3<f32>,

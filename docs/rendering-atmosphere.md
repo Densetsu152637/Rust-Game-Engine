@@ -58,7 +58,8 @@ integration (no precomputed tables):
   atmosphere).
 - Sun disk: radiance `E_sun / solid_angle * T` inside the angular radius, only
   for rays that do not hit the planet. The soft 20 % limb's coverage is divided
-  by 0.812 (the fraction of the full disk's solid angle it covers), so the disk
+  by `SUN_DISK_NORMALISATION` = 0.812 (the fraction of the full disk's solid
+  angle it covers, single-sourced into the shader), so the disk
   carries the full attenuated sun irradiance (a unit test integrates it). Clamped
   to 60 000 so `Rgba16Float` never receives infinity.
 
@@ -89,6 +90,12 @@ direct radius difference).
 - **Distance** is the euclidean view-space distance of the depth sample
   (orthographic views: the view-axis depth), times `aerial_perspective_scale`,
   clipped to the atmosphere exit and to the planet.
+  The planet clip starts to apply as soon as the scaled path reaches the surface:
+  a downward ray (vertical cosine `d.y < 0`) from altitude `a` is cut at roughly
+  `a / |d.y|` metres, so at low altitude a geometry distance times
+  `aerial_perspective_scale` beyond that gets no extra tint (a camera 3 m up looking
+  45 degrees down stops accumulating after about 4 m, however large the scale).
+  Rays at or above the horizon are only clipped by the atmosphere exit.
 - **Large worlds.** The shader only needs the camera's **absolute altitude** (a
   horizontal move does not change a locally spherical sky). The host computes it
   as `applied_origin.y + camera.y` in `f64` (`absolute_altitude`) so floating
