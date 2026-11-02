@@ -19,6 +19,7 @@ mod model;
 
 use crate::context::{FeatureContext, FeatureSetup};
 use crate::feature::{FeatureDescriptor, FeatureRegistry, PipelineFeature, Stage};
+use crate::shader::SCATTER_WGSL;
 use crate::targets::{DEPTH_FORMAT, HDR_FORMAT};
 use crate::view::ViewId;
 use anyhow::{Context, Result, ensure};
@@ -319,6 +320,7 @@ const SKY_STEPS: u32 = {SKY_STEPS}u;
 const AERIAL_STEPS: u32 = {AERIAL_STEPS}u;
 const SUN_STEPS: u32 = {SUN_STEPS}u;
 const ATM_DISK_NORMALISATION: f32 = {disk};
+{SCATTER_WGSL}
 {COMMON_WGSL}
 {pass}"
     )

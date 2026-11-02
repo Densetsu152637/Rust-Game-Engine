@@ -37,6 +37,8 @@ pub(crate) const POST_MAIN_WGSL: &str = include_str!("wgsl/post_main.wgsl");
 pub(crate) const POST_BLOOM_WGSL: &str = include_str!("wgsl/post_bloom.wgsl");
 pub(crate) const POST_EXPOSURE_WGSL: &str = include_str!("wgsl/post_exposure.wgsl");
 pub(crate) const POST_OUTPUT_WGSL: &str = include_str!("wgsl/post_output.wgsl");
+/// Phase function, pixel rays and sun shared by the atmosphere and fog passes.
+pub(crate) const SCATTER_WGSL: &str = include_str!("wgsl/scatter.wgsl");
 pub(crate) const SSR_WGSL: &str = include_str!("wgsl/ssr.wgsl");
 pub(crate) const DECALS_WGSL: &str = include_str!("wgsl/decals.wgsl");
 pub(crate) const PARTICLES_SIM_WGSL: &str = include_str!("wgsl/particles_sim.wgsl");

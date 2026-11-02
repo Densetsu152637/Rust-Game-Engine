@@ -20,18 +20,7 @@
         return color;
     }
     let dir = atm_view_direction(frag.xy);
-    let ndc = vec2<f32>(
-        frag.x * engine_view.render_size.z * 2.0 - 1.0,
-        1.0 - frag.y * engine_view.render_size.w * 2.0,
-    );
-    let clip = engine_view.view_from_clip * vec4<f32>(ndc, depth, 1.0);
-    let position = clip.xyz / clip.w;
-    // Orthographic views measure along the view axis; perspective views use
-    // the euclidean distance to the camera.
-    var distance = length(position);
-    if engine_view.clip_from_view[3][3] > 0.5 {
-        distance = -position.z;
-    }
+    let distance = scatter_view_distance(frag.xy, depth);
     let m = atm_aerial(dir, sun, irradiance, distance * atmosphere.layer.z);
     return vec4<f32>(color.rgb * m.transmittance + m.inscatter, color.a);
 }

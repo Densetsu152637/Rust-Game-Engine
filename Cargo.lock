@@ -1591,6 +1591,7 @@ dependencies = [
  "engine-render-wgpu",
  "engine-terrain",
  "engine-ui-render",
+ "engine-water",
  "engine-world-render",
  "epaint_default_fonts",
  "gilrs",

@@ -64,6 +64,9 @@
   volume blending and post status.
 - [Atmosphere](rendering-atmosphere.md): physically based single-scattering sky, planet,
   sun disk and aerial perspective (`Camera3D.atmosphere`), model, placement and limits.
+- [Fog](rendering-fog.md): height fog with wind-advected 3D noise on opaque geometry and sky
+  (`Camera3D.fog`), analytic optical depth, sun and ambient in-scatter, placement after
+  aerial perspective, sky and underwater behaviour, scene-clock wind and limits.
 - [GPU particles](rendering-particles.md): `engine.particles` fixed-capacity GPU
   emitters simulated once per scene tick (tick contract, seeded CPU reference,
   bounded overflow), depth-tested billboards in the `Transparent` stage, limits and

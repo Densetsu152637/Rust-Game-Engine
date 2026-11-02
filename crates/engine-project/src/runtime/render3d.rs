@@ -65,6 +65,7 @@ impl Runtime {
             })
             .transpose()?;
         frame.applied_origin = crate::world::coordinates::render_origin(world);
+        frame.scene_time = self.elapsed;
         frame.camera3d = Some(CameraInstance3D {
             camera,
             world: crate::world_transform(world, entity)?.matrix,

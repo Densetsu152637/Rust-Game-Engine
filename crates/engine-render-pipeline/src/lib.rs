@@ -14,6 +14,8 @@
 //!   and `engine::lighting` shades them (docs/rendering-lights.md).
 //! * [`atmosphere`]: physically based sky and aerial perspective features
 //!   (`engine.atmosphere`, `engine.atmosphere.aerial`, docs/rendering-atmosphere.md).
+//! * [`fog`]: height fog with wind-advected noise (`engine.fog`,
+//!   docs/rendering-fog.md).
 //! * [`FrameTargets`]: HDR scene colour (`Rgba16Float`), depth, optional
 //!   normals and motion vectors.
 //! * [`InstanceBatcher`] and the built-in mesh path: identical mesh +
@@ -33,6 +35,7 @@ mod builtin;
 mod context;
 pub mod decals;
 mod feature;
+pub mod fog;
 pub mod hdr;
 pub mod indirect;
 mod instancing;

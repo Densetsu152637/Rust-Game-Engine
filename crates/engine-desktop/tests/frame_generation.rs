@@ -81,6 +81,7 @@ fn scene(x: f32, camera_x: f32, generation: FrameGenerationSettings) -> SceneRen
     SceneRenderFrame {
         indirect: None,
         applied_origin: [0.0; 3],
+        scene_time: 0.0,
         mesh_options: Default::default(),
         sprites: RenderFrame {
             camera: Camera2D {

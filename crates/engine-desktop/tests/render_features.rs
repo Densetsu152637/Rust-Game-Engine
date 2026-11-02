@@ -143,6 +143,7 @@ fn streamed_scene(stream: &StreamFrame) -> SceneRenderFrame {
     SceneRenderFrame {
         indirect: None,
         applied_origin: [0.0; 3],
+        scene_time: 0.0,
         mesh_options: Default::default(),
         sprites: RenderFrame {
             camera: Camera2D {
@@ -283,6 +284,7 @@ fn xr_eyes_render_into_external_targets_with_their_own_views() -> anyhow::Result
     let frame = SceneRenderFrame {
         indirect: None,
         applied_origin: [0.0; 3],
+        scene_time: 0.0,
         mesh_options: Default::default(),
         sprites: RenderFrame {
             camera: Camera2D::default(),

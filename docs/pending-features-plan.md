@@ -972,8 +972,40 @@ comparison.
   taken); transparent surfaces get no aerial perspective; direct sunlight on
   surfaces is not reddened by extinction; the sky does not feed ambient, IBL or
   reflections (a generated environment would be its own slice); the sun is the
-  first directional light only. Fog, clouds, light shafts and cloud shadows
-  remain pending slices of item 5.
+  first directional light only. Clouds, light shafts and cloud shadows remain
+  pending slices of item 5; fog follows below.
+
+### Fog status (`feat/render-r9-fog`)
+
+- Second of the dependency item 5 slices, built on the merged atmosphere:
+  `engine.fog` (OpaqueEffects, disabled by default, idle without per-view
+  `FogControls`), authored as `Camera3D.fog` (absent = byte-identical output).
+  Design, parameters, placement and limits are in
+  [rendering-fog.md](rendering-fog.md).
+- Model: exponential height fog with exact (analytic) optical depth, an optional
+  wind-advected 3D value-noise modulation marched in at most 64 bounded steps
+  over a configurable distance, and single-scattering in-scatter of the first
+  directional light (the atmosphere sun lookup and Cornette-Shanks phase, now
+  shared through `wgsl/scatter.wgsl`) plus the view ambient. The source term is
+  constant along the ray, so only the optical depth is integrated.
+- Placement: after `engine.ssr` and `engine.atmosphere.aerial` (reflections are
+  fogged with the reflecting surface). Sky pixels are fogged over `sky_distance`
+  (0 = untouched). No double fogging with `world.water.underwater`: the desktop
+  adapter sets no air fog while the camera is under a water surface. The wind
+  reads `SceneRenderFrame::scene_time`, the runtime accumulated tick time, and the
+  noise origin is folded in `f64` so floating origins and long runs keep precision.
+- Evidence (RTX 5080, Vulkan, ignored tests): `gpu_fog` in `engine-render-pipeline`
+  (sun, density against the closed form, depth, sky, wind equals a moved camera,
+  zero wind static, noise against the CPU march, disabled/unconfigured/zero-density
+  frames identical to a pipeline without it, resize, `forget_view`, orthographic,
+  jitter) and an authored project-to-`GpuRenderer` test in `engine-desktop`
+  (reference match, rebasing, scene-clock wind through real ticks, submerged
+  camera). The atmosphere, SSR and water GPU files still pass.
+- Open work: no shadowed in-scatter or light shafts (a froxel grid is the
+  follow-up), only the first directional light scatters, one noise octave, no
+  fog volumes, transparent geometry and the water surface are not fogged,
+  reflections are fogged by the reflecting surface distance. Clouds depend on
+  this slice and remain pending.
 
 ### GPU particles status (`feat/render-r9-particles`)
 

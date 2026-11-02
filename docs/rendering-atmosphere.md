@@ -3,8 +3,11 @@
 Status: implemented and GPU-tested on Windows / RTX 5080 (Vulkan). First of the
 stage 9 "atmosphere, fog, clouds" slices (`pending-features-plan.md`, dependency
 item 5). It covers the **sky, the planet below the horizon, the sun disk and
-aerial perspective on opaque meshes**. Fog and clouds are separate, later
-slices; this document marks the parameters they can build on.
+aerial perspective on opaque meshes**. Fog is the next slice
+([rendering-fog.md](rendering-fog.md): `engine.fog`, ordered after
+`engine.atmosphere.aerial`, sharing this model's sun lookup and Cornette-Shanks
+phase through `wgsl/scatter.wgsl`); clouds are later. This document marks the
+parameters they can build on.
 
 ## What exists
 
@@ -90,7 +93,8 @@ direct radius difference).
 - **Aerial perspective after decals and SSR.** `engine.atmosphere.aerial` is
   constrained `.after("engine.ssr")` (and `engine.decals` is `.before("engine.ssr")`),
   so the `OpaqueEffects` order is `engine.surface_material`, `engine.decals`,
-  `engine.ssr`, `engine.atmosphere.aerial`. Decals therefore change what SSR
+  `engine.ssr`, `engine.atmosphere.aerial` (then `engine.fog`, see
+  [rendering-fog.md](rendering-fog.md)). Decals therefore change what SSR
   reflects, and the combined image, reflections included, is then attenuated and
   tinted by the view distance of each reflecting surface pixel. The reflected
   ray's own path is not integrated: the reflection is fogged as part of the
@@ -191,11 +195,16 @@ so a cube-face view could drive it later.
 
 ## Parameters later slices can reuse
 
-- `AtmosphereFrame` already carries altitude and the full medium; fog can use the
-  same `exp(-h/H)` density machinery and `atm_extinction`/`atm_march`.
-- Wind and cloud layers would need time and a world-space density source; the
-  per-view `time` already exists in `engine::view`.
-- `aerial_perspective_scale` is the stylisation knob a height-fog slice can share.
+- `scatter.wgsl` (the Cornette-Shanks phase, the pixel ray, the view distance and
+  the sun lookup) was split out of this model and is now shared with the fog slice
+  ([rendering-fog.md](rendering-fog.md)); clouds should import it too.
+- Height fog is implemented with its own exponential-height density and analytic
+  integral (`fog` module); it does not reuse `atm_march`, whose density is
+  planetary. The fog is a separate medium composed after aerial perspective.
+- Wind and cloud layers: the fog slice added the world-space, wind-advected noise
+  and a scene-clock input (`SceneRenderFrame::scene_time`); a cloud layer reuses
+  them. Cloud shadows and light shafts remain open.
+- `aerial_perspective_scale` is the stylisation knob; the fog has its own density.
 
 ## Tests
 

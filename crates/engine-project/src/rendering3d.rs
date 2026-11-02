@@ -350,6 +350,71 @@ impl Default for Atmosphere3D {
     }
 }
 
+/// Height fog with wind-advected noise on opaque geometry and sky pixels
+/// (OpaqueEffects stage).
+pub const FOG_FEATURE: &str = "engine.fog";
+
+/// Most noise steps per pixel.
+pub const MAX_FOG_NOISE_STEPS: u32 = 64;
+
+/// Optional participating-medium fog for one camera. Absent means off.
+/// Lengths are metres and rates 1/m. The sun is the scene's first directional
+/// light (shared with the atmosphere); the wind advects the noise with the
+/// runtime's scene clock. See docs/rendering-fog.md.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Fog3D {
+    /// Extinction at `base_height`, 1/m; zero disables the fog.
+    pub density: f32,
+    /// Exponential decay of the density with height, 1/m (zero: uniform).
+    pub height_falloff: f32,
+    /// World height at which the density equals `density`, metres.
+    pub base_height: f32,
+    /// Scattering albedo (fog colour under white light), per channel.
+    pub albedo: [f32; 3],
+    /// Cornette-Shanks asymmetry in `-0.99..=0.99`; positive scatters forward.
+    pub anisotropy: f32,
+    /// Multiplier on the in-scatter of the sun.
+    pub sun_intensity: f32,
+    /// Multiplier on the in-scatter of the view's ambient radiance.
+    pub ambient_intensity: f32,
+    /// Distance integrated for sky (far-plane) pixels; zero leaves the sky.
+    pub sky_distance: f32,
+    /// Strength of the noise modulation `1 +- amount`; zero turns noise off.
+    pub noise_amount: f32,
+    /// Noise cell size, metres.
+    pub noise_scale: f32,
+    /// Distance from the camera marched with noise.
+    pub noise_distance: f32,
+    /// Noise segments per pixel, `1..=64`.
+    pub noise_steps: u32,
+    /// Selects one of the noise patterns.
+    pub noise_seed: u32,
+    /// Wind that advects the noise, m/s per axis.
+    pub wind: [f32; 3],
+}
+
+impl Default for Fog3D {
+    fn default() -> Self {
+        Self {
+            density: 0.01,
+            height_falloff: 0.1,
+            base_height: 0.0,
+            albedo: [0.8, 0.85, 0.9],
+            anisotropy: 0.3,
+            sun_intensity: 1.0,
+            ambient_intensity: 1.0,
+            sky_distance: 10_000.0,
+            noise_amount: 0.0,
+            noise_scale: 20.0,
+            noise_distance: 300.0,
+            noise_steps: 16,
+            noise_seed: 0,
+            wind: [0.0; 3],
+        }
+    }
+}
+
 impl ScreenSpaceReflections3D {
     pub fn validate(&self) -> Result<()> {
         if !(1..=MAX_SSR_STEPS).contains(&self.max_steps)
@@ -370,6 +435,39 @@ impl ScreenSpaceReflections3D {
             return Err(Error::new(
                 "camera3d.screen_space_reflections.invalid",
                 "Screen-space reflections need max_steps in 1..=256, max_distance in (0, 10000], thickness in (0, 100], roughness_cutoff in (0, 1], edge_fade in 0..=0.5 and intensity in 0..=4, all finite",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Fog3D {
+    pub fn validate(&self) -> Result<()> {
+        let within = |v: f32, max: f32| v.is_finite() && (0.0..=max).contains(&v);
+        if !within(self.density, 10.0)
+            || !within(self.height_falloff, 1.0)
+            || !self.base_height.is_finite()
+            || self.base_height.abs() > 1.0e7
+            || !self.albedo.into_iter().all(|v| within(v, 1.0))
+            || !self.anisotropy.is_finite()
+            || self.anisotropy.abs() > 0.99
+            || !within(self.sun_intensity, 1000.0)
+            || !within(self.ambient_intensity, 1000.0)
+            || !within(self.sky_distance, 1.0e6)
+            || !within(self.noise_amount, 1.0)
+            || !self.noise_scale.is_finite()
+            || !(0.5..=1.0e5).contains(&self.noise_scale)
+            || !self.noise_distance.is_finite()
+            || !(1.0..=1.0e5).contains(&self.noise_distance)
+            || !(1..=MAX_FOG_NOISE_STEPS).contains(&self.noise_steps)
+            || !self
+                .wind
+                .into_iter()
+                .all(|v| v.is_finite() && v.abs() <= 200.0)
+        {
+            return Err(Error::new(
+                "camera3d.fog.invalid",
+                "Fog needs density 0..10 per metre, height falloff 0..1 per metre, base height within 1e7 m, albedo 0..1, anisotropy within +-0.99, sun and ambient intensity 0..1000, sky distance 0..1e6 m, noise amount 0..1, noise scale 0.5..1e5 m, noise distance 1..1e5 m, noise steps 1..64 and wind within 200 m/s per axis, all finite",
             ));
         }
         Ok(())
@@ -591,6 +689,10 @@ pub struct Camera3D {
     /// `engine.atmosphere.aerial` unless `render_features` says otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub atmosphere: Option<Atmosphere3D>,
+    /// Absent means off. Present enables `engine.fog` unless
+    /// `render_features["engine.fog"] = false`. See docs/rendering-fog.md.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fog: Option<Fog3D>,
     /// Projected decals in world space, at most 64, drawn in list order (later
     /// on top). Empty means off. `render_features["engine.decals"] = false`
     /// wins. See docs/rendering-decals.md.
@@ -620,6 +722,7 @@ impl Default for Camera3D {
             spatial_aa: None,
             screen_space_reflections: None,
             atmosphere: None,
+            fog: None,
             decals: Vec::new(),
             render_features: BTreeMap::new(),
         }
@@ -1114,6 +1217,9 @@ impl Camera3D {
                 .entry(ATMOSPHERE_AERIAL_FEATURE.into())
                 .or_insert(true);
         }
+        if self.fog.is_some() {
+            features.entry(FOG_FEATURE.into()).or_insert(true);
+        }
         if !self.decals.is_empty() {
             features.entry(DECALS_FEATURE.into()).or_insert(true);
         }
@@ -1134,6 +1240,9 @@ impl Camera3D {
             settings.validate()?;
         }
         if let Some(settings) = self.atmosphere {
+            settings.validate()?;
+        }
+        if let Some(settings) = self.fog {
             settings.validate()?;
         }
         if self.decals.len() > MAX_DECALS_3D {
@@ -1324,6 +1433,9 @@ pub struct SceneRenderFrame {
     pub indirect: Option<Arc<crate::indirect::IndirectAsset>>,
     /// Applied floating origin matching extracted camera and mesh transforms.
     pub applied_origin: [f64; 3],
+    /// Simulated seconds since the runtime started: the scene clock that
+    /// time-driven effects (fog wind) read instead of wall time.
+    pub scene_time: f64,
     pub meshes: Vec<MeshDraw3D>,
     /// Draw-ID-keyed options, absent for legacy level-zero direct draws.
     pub mesh_options: BTreeMap<String, MeshDrawOptions3D>,
@@ -1364,6 +1476,7 @@ impl From<RenderFrame> for SceneRenderFrame {
             camera3d: None,
             indirect: None,
             applied_origin: [0.0; 3],
+            scene_time: 0.0,
             meshes: vec![],
             mesh_options: BTreeMap::new(),
             lights: vec![],

@@ -67,7 +67,8 @@ Transparent), registered disabled by default. It needs the normals prepass
   after the pass and is neither decorated nor does it hide or shift decals.
 - `engine.decals` is ordered `.before("engine.ssr")`: SSR reflects decorated
   surfaces, and `engine.atmosphere.aerial` (`.after("engine.ssr")`) tints them,
-  so the `OpaqueEffects` order is decals, SSR, aerial perspective. Later stages
+  and `engine.fog` (after both, [rendering-fog.md](rendering-fog.md)) fogs them,
+  so the `OpaqueEffects` order is decals, SSR, aerial perspective, fog. Later stages
   (upscaling, post-processing) see the decorated colour.
 - The pass reads `ScenePipeline` depth at render size, so it works with every
   upscale route (the decorated colour is the scene colour).

@@ -49,6 +49,8 @@ dlss = ["dep:engine-dlss", "engine-dlss/ngx-vulkan"]
 [dev-dependencies]
 # Terrain assets for the default render feature tests (workspace crate).
 engine-terrain = { path = "../engine-terrain" }
+# Water surfaces for the submerged-camera fog test (workspace crate).
+engine-water = { path = "../engine-water" }
 # Test fonts for the TrueType text GPU test (already used by other crates).
 epaint_default_fonts = "=0.37.0"
 image = { version = "0.25", default-features = false, features = ["png"] }

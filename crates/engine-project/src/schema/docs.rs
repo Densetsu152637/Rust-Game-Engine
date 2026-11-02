@@ -158,6 +158,27 @@ fn atmosphere_schema() -> Value {
     }), &[]), {"type":"null"}],"description":"Optional single-scattering atmosphere (sky, planet, sun disk, aerial perspective); absent or null disables it. The sun is the first directional light; with none the atmosphere draws nothing. Camera3D.render_features.engine.atmosphere=false and engine.atmosphere.aerial=false disable the passes individually."})
 }
 
+fn fog_schema() -> Value {
+    let non_negative = |maximum: f64, default: f64, description: &str| json!({"type":"number","minimum":0,"maximum":maximum,"default":default,"description":description});
+    let vec3 = |minimum: f64, maximum: f64, defaults: [f64; 3], description: &str| json!({"type":"array","items":{"type":"number","minimum":minimum,"maximum":maximum},"minItems":3,"maxItems":3,"default":defaults,"description":description});
+    json!({"oneOf":[closed(json!({
+        "density":non_negative(10.0, 0.01, "Extinction coefficient at base_height in 1/m; zero disables the fog."),
+        "height_falloff":non_negative(1.0, 0.1, "Exponential decay of the density with height in 1/m; zero is uniform fog."),
+        "base_height":{"type":"number","minimum":-1.0e7,"maximum":1.0e7,"default":0.0,"description":"World height in metres at which the density equals density; the floating origin is included."},
+        "albedo":vec3(0.0, 1.0, [0.8, 0.85, 0.9], "Scattering albedo (fog colour under white light) per channel."),
+        "anisotropy":{"type":"number","minimum":-0.99,"maximum":0.99,"default":0.3,"description":"Cornette-Shanks asymmetry of the sun in-scatter; positive scatters forward."},
+        "sun_intensity":non_negative(1000.0, 1.0, "Multiplier on the in-scatter of the first directional light."),
+        "ambient_intensity":non_negative(1000.0, 1.0, "Multiplier on the in-scatter of the view's ambient radiance (Camera3D.lighting.ambient)."),
+        "sky_distance":non_negative(1.0e6, 10_000.0, "Distance in metres integrated along the view ray for sky (far-plane) pixels; zero leaves the sky unfogged."),
+        "noise_amount":non_negative(1.0, 0.0, "Strength of the 3D noise modulation of the density, 1 +- amount; zero is pure height fog."),
+        "noise_scale":{"type":"number","minimum":0.5,"maximum":1.0e5,"default":20.0,"description":"Noise cell size in metres."},
+        "noise_distance":{"type":"number","minimum":1,"maximum":1.0e5,"default":300.0,"description":"Distance in metres from the camera marched with noise; beyond it the density is the unmodulated height fog."},
+        "noise_steps":{"type":"integer","minimum":1,"maximum":64,"default":16,"description":"Noise segments per pixel."},
+        "noise_seed":{"type":"integer","minimum":0,"maximum":4294967295u64,"default":0,"description":"Selects one of the noise patterns."},
+        "wind":vec3(-200.0, 200.0, [0.0, 0.0, 0.0], "Wind velocity in m/s that advects the noise with the scene clock; zero keeps the fog static.")
+    }), &[]), {"type":"null"}],"description":"Optional height fog (participating medium with exponential height density, optional wind-advected 3D noise, sun and ambient in-scatter) on opaque geometry and sky pixels; absent or null disables it. Camera3D.render_features.engine.fog=false takes precedence. Not applied while the camera is under water (docs/rendering-fog.md)."})
+}
+
 fn decals_schema() -> Value {
     json!({"type":"array","maxItems":64,"default":[],"items":closed(json!({
         "position":{"type":"array","items":{"type":"number","minimum":-100000,"maximum":100000},"minItems":3,"maxItems":3,"default":[0,0,0],"description":"World position of the box centre."},
@@ -187,10 +208,10 @@ fn builtin_docs() -> Vec<ComponentDoc> {
     vec![
         ComponentDoc {
             name: "Camera3D",
-            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution or the native temporal resolve and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them. Optional `screen_space_reflections` enables bounded screen-space reflections of built-in lit materials (docs/rendering-ssr.md). Optional `atmosphere` adds a physically based sky, planet, sun disk and aerial perspective driven by the first directional light (docs/rendering-atmosphere.md). Optional `decals` lists up to 64 world-space projected decals (docs/rendering-decals.md).",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution or the native temporal resolve and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them. Optional `screen_space_reflections` enables bounded screen-space reflections of built-in lit materials (docs/rendering-ssr.md). Optional `atmosphere` adds a physically based sky, planet, sun disk and aerial perspective driven by the first directional light (docs/rendering-atmosphere.md). Optional `fog` adds height fog with wind-advected noise on opaque geometry and sky pixels (docs/rendering-fog.md). Optional `decals` lists up to 64 world-space projected decals (docs/rendering-decals.md).",
             requires: &["Transform"],
             schema: closed(
-                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"screen_space_reflections":screen_space_reflections_schema(),"atmosphere":atmosphere_schema(),"decals":decals_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
+                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"screen_space_reflections":screen_space_reflections_schema(),"atmosphere":atmosphere_schema(),"fog":fog_schema(),"decals":decals_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
                     "description":"Per-camera render feature overrides by stable feature name (for example engine.opaque, engine.shadows, engine.sprites, the UI features ui.sdf_text, ui.world and ui.color_filter of engine-ui-render, or a native feature such as world.terrain): false disables the feature in this camera view, true enables a feature that is off by default. Required features (engine.output) cannot be disabled. Unknown names are reported in the run report's render_pipeline.unknown_overrides."},"projection":{"oneOf":[
                     closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
                     closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])

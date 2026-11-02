@@ -1,7 +1,7 @@
 // Single-scattering atmosphere shared by the sky and aerial-perspective
 // passes (docs/rendering-atmosphere.md). CPU twin: atmosphere/model.rs.
 //
-// Needs `#import engine::view`, the SKY_STEPS / AERIAL_STEPS / SUN_STEPS
+// Needs `#import engine::view`, scatter.wgsl, the SKY_STEPS / AERIAL_STEPS / SUN_STEPS
 // constants and a `var<uniform> atmosphere: Atmosphere` declared by the pass.
 //
 // Heights. A point P with |P|^2 - R^2 = u has altitude u / (|P| + R), which
@@ -64,10 +64,7 @@ fn atm_rayleigh_phase(mu: f32) -> f32 {
 
 // Cornette-Shanks; integrates to one over the sphere.
 fn atm_mie_phase(mu: f32) -> f32 {
-    let g = atmosphere.mie.w;
-    let g2 = g * g;
-    let denom = pow(max(1.0 + g2 - 2.0 * g * mu, 1.0e-4), 1.5);
-    return 3.0 / (8.0 * ATM_PI) * (1.0 - g2) * (1.0 + mu * mu) / ((2.0 + g2) * denom);
+    return scatter_cornette_shanks(mu, atmosphere.mie.w);
 }
 
 // Optical depth from altitude h along the sun direction to the top of the
@@ -208,20 +205,10 @@ fn atm_aerial(dir: vec3<f32>, sun: vec3<f32>, irradiance: vec3<f32>, distance: f
     return atm_march(dir, sun, irradiance, range.x, stop, AERIAL_STEPS);
 }
 
-// World-space direction of the ray through render-target pixel `frag`.
-// Perspective rays pass through the near-plane point, which stays accurate
-// for any far plane; orthographic views look along view -Z.
+// World-space direction of the ray through render-target pixel `frag`
+// (scatter.wgsl).
 fn atm_view_direction(frag: vec2<f32>) -> vec3<f32> {
-    let ndc = vec2<f32>(
-        frag.x * engine_view.render_size.z * 2.0 - 1.0,
-        1.0 - frag.y * engine_view.render_size.w * 2.0,
-    );
-    var view_dir = vec3<f32>(0.0, 0.0, -1.0);
-    if engine_view.clip_from_view[3][3] < 0.5 {
-        let p = engine_view.view_from_clip * vec4<f32>(ndc, 0.0, 1.0);
-        view_dir = normalize(p.xyz / p.w);
-    }
-    return normalize((engine_view.world_from_view * vec4<f32>(view_dir, 0.0)).xyz);
+    return scatter_view_direction(frag);
 }
 
 // The first directional light is the sun. Returns false without one.

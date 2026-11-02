@@ -149,9 +149,11 @@ the view, so SSR stays `superseded` there.
 * **Decals and aerial perspective.** `OpaqueEffects` order is
   `engine.surface_material`, `engine.decals`, `engine.ssr`,
   `engine.atmosphere.aerial` (decals are `.before("engine.ssr")`, aerial is
-  `.after("engine.ssr")`). SSR therefore reflects decorated surfaces, and
-  aerial perspective then tints the SSR result, so a reflection is fogged by the
-  view distance of the reflecting pixel (not by the reflected ray's own length).
+  `.after("engine.ssr")`), followed by `engine.fog` (`.after` both). SSR
+  therefore reflects decorated surfaces, and aerial perspective and fog then
+  tint the SSR result, so a reflection is fogged by the view distance of the
+  reflecting pixel (not by the reflected ray's own length); see
+  [rendering-fog.md](rendering-fog.md).
   `gpu_ssr.rs::aerial_perspective_fogs_the_reflection_after_ssr` reads this back.
 * **Upscalers, post, DLSS.** SSR runs at render size before `Upscale`;
   `scene_color()` is the SSR destination for everything later.

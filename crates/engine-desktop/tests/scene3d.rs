@@ -13,6 +13,7 @@ fn scene() -> SceneRenderFrame {
     SceneRenderFrame {
         indirect: None,
         applied_origin: [0.0; 3],
+        scene_time: 0.0,
         mesh_options: Default::default(),
         sprites: RenderFrame {
             camera: Camera2D {
