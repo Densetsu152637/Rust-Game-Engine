@@ -56,6 +56,41 @@ impl ScreenLighting {
     }
 }
 
+/// Format of the three surface-material targets ([`SurfaceMaterial`]).
+pub const SURFACE_MATERIAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Shaded surface description of the built-in lit materials, one texel per
+/// render pixel, written by `engine.surface_material` in the OpaqueEffects stage
+/// (after Opaque and Sky, before `engine.ssr`)
+/// (depth-tested against the final scene depth, so only the visible surface
+/// of each pixel is described). Custom-shader materials and unlit materials
+/// write nothing: their texels keep coverage 0 and are non-reflective.
+/// Allocated while `engine.ssr` runs in the view and freed when it stops;
+/// cleared to zero every frame.
+///
+/// | texture | contents |
+/// | --- | --- |
+/// | `normal_roughness` | xyz: world-space unit normal after normal mapping, facing the viewer; w: perceptual roughness 0..1 |
+/// | `f0_coverage` | rgb: specular F0 (`mix(0.04, albedo, metallic)`); a: 1 where a lit surface drew, else 0 |
+/// | `fallback_specular` | rgb: the specular term the opaque pass already added (probe / environment specular; zero without native indirect lighting) |
+#[derive(Clone, Debug)]
+pub struct SurfaceMaterial {
+    pub normal_roughness: Target,
+    pub f0_coverage: Target,
+    pub fallback_specular: Target,
+}
+
+impl SurfaceMaterial {
+    /// The three targets in binding order.
+    pub fn targets(&self) -> [&Target; 3] {
+        [
+            &self.normal_roughness,
+            &self.f0_coverage,
+            &self.fallback_specular,
+        ]
+    }
+}
+
 /// A texture and its default view.
 #[derive(Clone, Debug)]
 pub struct Target {
@@ -111,6 +146,7 @@ const COLOR_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
 /// | `normals` | `Rgba16Float` | attachment, sampled, copy src | after the Prepass stage when a running feature needs normals |
 /// | `motion` | `Rg16Float` | attachment, sampled, copy src | after the Prepass stage when a feature or the host needs motion |
 /// | `screen_lighting` | `Rgba16Float` x 4 | attachment, sampled, storage, copy | when a running feature needs screen lighting ([`ScreenLighting`]) |
+/// | `surface_material` | `Rgba16Float` x 3 | attachment, sampled, copy src | written in the OpaqueEffects stage (after Opaque and Sky, before `engine.ssr`) while `engine.ssr` runs ([`SurfaceMaterial`]) |
 pub struct FrameTargets {
     pub render_size: [u32; 2],
     pub output_size: [u32; 2],
@@ -124,6 +160,9 @@ pub struct FrameTargets {
     pub motion: Option<Target>,
     /// Screen-lighting inputs, when a running feature needs them.
     pub screen_lighting: Option<ScreenLighting>,
+    /// Shaded surface description for screen-space effects, when a running
+    /// feature needs it.
+    pub surface_material: Option<SurfaceMaterial>,
     /// Depth of the motion prepass (kept apart from scene depth).
     pub(crate) motion_depth: Option<Target>,
     pub(crate) upscaled: Option<Target>,
@@ -163,6 +202,7 @@ impl FrameTargets {
             normals: None,
             motion: None,
             screen_lighting: None,
+            surface_material: None,
             motion_depth: None,
             upscaled: None,
             post: [None, None],
@@ -206,6 +246,28 @@ impl FrameTargets {
                 ambient_occlusion: target("engine screen ambient occlusion"),
                 indirect: target("engine screen indirect"),
                 reflection: target("engine screen reflection"),
+            });
+        }
+    }
+
+    pub(crate) fn ensure_surface_material(&mut self, device: &wgpu::Device) {
+        let size = self.render_size;
+        if self.surface_material.is_none() {
+            let target = |label| {
+                Target::new(
+                    device,
+                    label,
+                    size,
+                    SURFACE_MATERIAL_FORMAT,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
+                )
+            };
+            self.surface_material = Some(SurfaceMaterial {
+                normal_roughness: target("engine surface normal roughness"),
+                f0_coverage: target("engine surface f0 coverage"),
+                fallback_specular: target("engine surface fallback specular"),
             });
         }
     }

@@ -19,6 +19,7 @@ mod post_effects;
 mod rt;
 mod scene3d;
 mod sprite;
+mod ssr;
 mod temporal;
 mod upscale;
 mod vertex;
@@ -823,6 +824,7 @@ impl GpuRenderer {
             &mut view,
             upscale.is_some() || temporal.is_some(),
         )?;
+        ssr::prepare(frame, &mut view)?;
         // The upscaler mode alone drives the resolve: an authored
         // `render_features` entry for it is ignored.
         view.features

@@ -6,6 +6,17 @@ use crate::view::ViewId;
 use anyhow::{Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// `(winner, loser)` pairs of features that cannot both run in one view: when
+/// both are enabled the loser is reported as [`Activity::Superseded`] by the
+/// winner and neither runs nor requests inputs. Names that are not registered
+/// are ignored. Hardware ray-traced reflections replace screen-space ones; a
+/// host that cannot run ray tracing must not enable its reflection feature (the
+/// desktop host withdraws the request when it has no RT device).
+const EXCLUSIVE_FEATURES: [(&str, &str); 1] = [(
+    crate::pipeline::names::RT_REFLECTIONS,
+    crate::pipeline::names::SSR,
+)];
+
 /// Longest feature name, in bytes.
 pub const MAX_FEATURE_NAME_BYTES: usize = 64;
 /// Most features one registry holds.
@@ -495,6 +506,13 @@ impl FeatureRegistry {
                 }
             }
         }
+        for (winner, loser) in EXCLUSIVE_FEATURES {
+            if states.iter().any(|s| s.name == winner && s.runs())
+                && let Some(state) = states.iter_mut().find(|s| s.name == loser && s.runs())
+            {
+                state.activity = Activity::Superseded(winner.to_owned());
+            }
+        }
         let unknown = overrides
             .iter()
             .filter(|(name, _)| self.descriptor(name).is_none())
@@ -576,7 +594,9 @@ pub enum Activity {
     /// needed, or an upscaler with equal render and output sizes).
     Idle,
     Disabled,
-    /// Enabled in a single-winner stage, but the named feature ran instead.
+    /// Enabled, but the named feature ran instead: the winner of a
+    /// single-winner stage, or the feature the named one excludes (hardware
+    /// ray-traced reflections replace `engine.ssr`).
     Superseded(String),
     /// Enabled, but the host replaced the stage (for example DLSS upscaling).
     ReplacedByHost,
@@ -860,6 +880,72 @@ mod tests {
         assert!(!resolved.is_enabled("post.aces"));
         assert!(resolved.is_enabled("debug.grid"));
         assert_eq!(resolved.unknown, ["not.registered"]);
+    }
+
+    #[test]
+    fn screen_space_reflections_register_between_opaque_and_transparent() {
+        let registry = crate::pipeline::builtin_registry().unwrap();
+        let names = registry.names();
+        let at = |name: &str| names.iter().position(|n| *n == name).unwrap();
+        let ssr = crate::pipeline::names::SSR;
+        let material = crate::pipeline::names::SURFACE_MATERIAL;
+        assert!(at("engine.opaque") < at(material));
+        assert_eq!(at(material) + 1, at(ssr), "the producer runs right before");
+        assert!(at(ssr) < at("engine.transparent"));
+        assert!(at(ssr) < at("engine.upscale"));
+        for name in [material, ssr] {
+            assert_eq!(
+                registry.descriptor(name).unwrap().stage,
+                Stage::OpaqueEffects
+            );
+        }
+        assert!(!registry.descriptor(ssr).unwrap().enabled_by_default);
+        assert!(registry.descriptor(material).unwrap().enabled_by_default);
+        // Registered later or earlier, constraints keep the producer first.
+        let resolved = registry.resolve(&FeatureOverrides::default());
+        assert!(
+            !resolved.is_enabled(ssr),
+            "off without settings or overrides"
+        );
+        assert!(
+            resolved.is_enabled(material),
+            "idle producer, enabled by default"
+        );
+    }
+
+    #[test]
+    fn hardware_reflections_supersede_screen_space_reflections() {
+        let mut registry = crate::pipeline::builtin_registry().unwrap();
+        registry
+            .register_engine(Stub(
+                feature(crate::pipeline::names::RT_REFLECTIONS, Stage::Prepass)
+                    .disabled_by_default(),
+            ))
+            .unwrap();
+        let ssr = crate::pipeline::names::SSR;
+        let rt = crate::pipeline::names::RT_REFLECTIONS;
+        let mut overrides = FeatureOverrides::default();
+        assert!(
+            !registry.resolve(&overrides).is_enabled(ssr),
+            "off by default"
+        );
+        overrides.set(ssr, true);
+        let resolved = registry.resolve(&overrides);
+        assert!(resolved.is_enabled(ssr));
+        assert_eq!(resolved.get(ssr).unwrap().activity, Activity::Pending);
+        overrides.set(rt, true);
+        let resolved = registry.resolve(&overrides);
+        assert!(!resolved.is_enabled(ssr), "RT reflections win");
+        assert!(resolved.is_enabled(rt));
+        assert_eq!(
+            resolved.get(ssr).unwrap().activity,
+            Activity::Superseded(rt.into())
+        );
+        assert!(resolved.get(ssr).unwrap().enabled, "still requested");
+        assert!(!registry.needs(&resolved).normals);
+        // Disabling the winner hands the view back to screen-space reflections.
+        overrides.set(rt, false);
+        assert!(registry.resolve(&overrides).is_enabled(ssr));
     }
 
     #[test]

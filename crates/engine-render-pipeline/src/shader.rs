@@ -36,6 +36,7 @@ pub(crate) const POST_MAIN_WGSL: &str = include_str!("wgsl/post_main.wgsl");
 pub(crate) const POST_BLOOM_WGSL: &str = include_str!("wgsl/post_bloom.wgsl");
 pub(crate) const POST_EXPOSURE_WGSL: &str = include_str!("wgsl/post_exposure.wgsl");
 pub(crate) const POST_OUTPUT_WGSL: &str = include_str!("wgsl/post_output.wgsl");
+pub(crate) const SSR_WGSL: &str = include_str!("wgsl/ssr.wgsl");
 
 /// Longest composed shader accepted, in bytes.
 pub const MAX_COMPOSED_BYTES: usize = 4 * 1024 * 1024;
@@ -298,6 +299,59 @@ pub(crate) fn lit_lightmap_source() -> Result<String> {
         ))
 }
 
+/// Opening of the fragment entry point and the lighting tail of [`LIT_WGSL`]
+/// that the surface-material variant replaces.
+const SURFACE_SIGNATURE: &str = "@fragment fn fs_main(input: Output, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {";
+const SURFACE_TAIL_START: &str = "    let direct = engine_direct_lighting(";
+const SURFACE_TAIL_END: &str = "    return vec4<f32>(result, color.a);";
+
+/// The built-in lit material with its lighting tail replaced by the
+/// surface-material outputs read by screen-space reflections: the shaded
+/// (normal-mapped) world normal with perceptual roughness, F0 with coverage
+/// (zero for unlit materials) and the specular term the opaque pass adds. It
+/// is derived from `lit` (the plain or the lightmapped source) so the normal
+/// and material logic can never drift from the shading body.
+pub(crate) fn lit_surface_source(lit: &str) -> Result<String> {
+    let lit = lit.replace("\r\n", "\n");
+    for anchor in [SURFACE_SIGNATURE, SURFACE_TAIL_START, SURFACE_TAIL_END] {
+        ensure!(
+            lit.matches(anchor).count() == 1,
+            "the built-in lit shader changed; surface-material anchor missing: {anchor}"
+        );
+    }
+    let signature = lit.find(SURFACE_SIGNATURE).expect("checked above");
+    let start = lit.find(SURFACE_TAIL_START).expect("checked above");
+    let end = lit.find(SURFACE_TAIL_END).expect("checked above") + SURFACE_TAIL_END.len();
+    ensure!(
+        signature < start && start < end,
+        "the built-in lit shader changed; surface-material anchors are out of order"
+    );
+    let mut out = String::with_capacity(lit.len() + 1024);
+    out.push_str(&lit[..signature]);
+    out.push_str(
+        "struct EngineSurfaceMaterialOut {
+    // World-space shaded normal (xyz) and perceptual roughness (w).
+    @location(0) normal_roughness: vec4<f32>,
+    // F0 (rgb) and coverage (a): 0 for unlit materials.
+    @location(1) f0_coverage: vec4<f32>,
+    // Specular term of the indirect lighting already in the opaque colour.
+    @location(2) fallback: vec4<f32>,
+}
+
+@fragment fn fs_main(input: Output, @builtin(front_facing) front: bool) -> EngineSurfaceMaterialOut {",
+    );
+    out.push_str(&lit[signature + SURFACE_SIGNATURE.len()..start]);
+    out.push_str(
+        "    var out: EngineSurfaceMaterialOut;
+    out.normal_roughness = vec4<f32>(n, surface.roughness);
+    out.f0_coverage = vec4<f32>(mix(vec3<f32>(0.04), surface.albedo, surface.metallic), select(1.0, 0.0, material.options.x > 0.5));
+    out.fallback = vec4<f32>(engine_material_indirect_specular(surface, v), 1.0);
+    return out;",
+    );
+    out.push_str(&lit[end..]);
+    Ok(out)
+}
+
 fn compose_material_mode(source: &str, target: MaterialTarget, indirect: bool) -> Result<String> {
     let mut composer = ShaderComposer::for_target(target);
     if indirect {
@@ -417,6 +471,32 @@ mod tests {
     }
 
     #[test]
+    fn surface_material_variant_composes_against_both_material_paths_and_lightmaps() {
+        let plain = lit_surface_source(LIT_WGSL).unwrap();
+        let lightmapped = lit_surface_source(&lit_lightmap_source().unwrap()).unwrap();
+        for (source, indirect) in [(&plain, false), (&plain, true), (&lightmapped, true)] {
+            let composed = compose_mesh_material(source, indirect).unwrap();
+            let module = validate_wgsl(&composed).unwrap();
+            let fragment = module
+                .entry_points
+                .iter()
+                .find(|e| e.stage == naga::ShaderStage::Fragment && e.name == "fs_main")
+                .unwrap();
+            let result = fragment.function.result.as_ref().unwrap();
+            let naga::TypeInner::Struct { members, .. } = &module.types[result.ty].inner else {
+                panic!("three surface outputs");
+            };
+            assert_eq!(members.len(), 3);
+        }
+        // The shading body is the lit material's: normal-map logic stays shared.
+        assert!(plain.contains("let sampled_normal = textureSample(normal_map"));
+        assert!(!plain.contains("engine_direct_lighting("));
+        assert!(plain.contains("engine_material_indirect_specular(surface, v)"));
+        assert!(!plain.contains("return vec4<f32>(result, color.a);"));
+        assert!(lit_surface_source("fn fs_main() {}").is_err());
+    }
+
+    #[test]
     fn lightmap_variant_changes_only_the_extension_points_of_the_lit_shader() {
         let source = lit_lightmap_source().unwrap();
         assert!(source.contains("engine_material_indirect_lighting_lightmap"));
@@ -490,6 +570,7 @@ mod tests {
             POST_BLOOM_WGSL,
             POST_EXPOSURE_WGSL,
             POST_OUTPUT_WGSL,
+            SSR_WGSL,
         ] {
             validate_wgsl(&composer.compose(source).unwrap()).unwrap();
         }

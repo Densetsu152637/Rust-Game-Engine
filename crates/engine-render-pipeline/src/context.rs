@@ -77,6 +77,34 @@ pub(crate) struct FrameIo {
     pub final_output: Option<OutputTarget>,
 }
 
+impl FrameIo {
+    /// The current render-size scene colour and a distinct destination, which
+    /// becomes the scene colour (the pair an opaque effect reads and writes).
+    pub(crate) fn swap_scene(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> Result<(wgpu::TextureView, wgpu::TextureView)> {
+        let targets = self.targets.as_mut().context("no scene targets")?;
+        let source = if self.scene_index == 0 {
+            targets.hdr.view.clone()
+        } else {
+            targets
+                .scene_scratch
+                .as_ref()
+                .expect("scene source exists")
+                .view
+                .clone()
+        };
+        let destination = if self.scene_index == 0 {
+            targets.ensure_scene_scratch(device).view.clone()
+        } else {
+            targets.hdr.view.clone()
+        };
+        self.scene_index = 1 - self.scene_index;
+        Ok((source, destination))
+    }
+}
+
 /// Which texture holds the current HDR colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum HdrSource {
@@ -215,24 +243,16 @@ impl<'a> FeatureContext<'a> {
             self.name
         );
         let device = self.gpu.device.clone();
-        let targets = self.io.targets.as_mut().context("no scene targets")?;
-        let source = if self.io.scene_index == 0 {
-            targets.hdr.view.clone()
-        } else {
-            targets
-                .scene_scratch
-                .as_ref()
-                .expect("scene source exists")
-                .view
-                .clone()
-        };
-        let destination = if self.io.scene_index == 0 {
-            targets.ensure_scene_scratch(&device).view.clone()
-        } else {
-            targets.hdr.view.clone()
-        };
-        self.io.scene_index = 1 - self.io.scene_index;
-        Ok((source, destination))
+        self.io.swap_scene(&device)
+    }
+
+    /// The shaded surface description of the built-in lit materials
+    /// ([`crate::SurfaceMaterial`]); `None` unless `engine.ssr` runs in this
+    /// view. Written by `engine.surface_material` in the OpaqueEffects stage
+    /// (after Opaque and Sky, before `engine.ssr`), so it is valid for
+    /// `engine.ssr` and later features of that stage and for later stages.
+    pub fn surface_material(&self) -> Option<&crate::SurfaceMaterial> {
+        self.io.targets.as_ref()?.surface_material.as_ref()
     }
 
     /// Scene depth (`Depth32Float`, render size). Complete after the

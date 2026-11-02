@@ -42,6 +42,7 @@ mod resources;
 pub mod shader;
 pub mod shadows;
 pub mod sprite_lighting;
+pub mod ssr;
 mod streams;
 mod targets;
 mod view;
@@ -87,10 +88,12 @@ pub use resources::{
 };
 pub use shader::{LIT_WGSL, MaterialTarget, ShaderComposer, compose_material, validate_wgsl};
 pub use shadows::{ShadowAtlasConfig, ShadowRenderView, cascade_splits};
+pub use ssr::{MAX_SSR_STEPS, SsrSettings};
 pub use streams::{MAX_STREAMS, StreamMode, TextureStreams};
 pub use targets::{
     DEPTH_FORMAT, FrameTargets, HDR_FORMAT, MOTION_FORMAT, NORMALS_FORMAT,
-    SCREEN_LIGHTING_DEFAULTS, SCREEN_LIGHTING_FORMAT, ScreenLighting, Target,
+    SCREEN_LIGHTING_DEFAULTS, SCREEN_LIGHTING_FORMAT, SURFACE_MATERIAL_FORMAT, ScreenLighting,
+    SurfaceMaterial, Target,
 };
 pub use view::{
     Presentation, VIEW_UNIFORM_BYTES, ViewData, ViewHistory, ViewId, ViewKind, ViewUniform,

@@ -21,8 +21,9 @@ blur are separate optional HDR features documented in
 [Camera spatial antialiasing](#camera-spatial-antialiasing); the native
 temporal resolve (temporal anti-aliasing at render scale 1 and temporal
 upscaling below it) is an `Upscale`-stage feature described in
-[rendering-temporal.md](rendering-temporal.md). Not in this release: SSAO and
-SSR.
+[rendering-temporal.md](rendering-temporal.md). Screen-space reflections are an
+`OpaqueEffects` feature (before transparents and the upscale), documented in
+[rendering-ssr.md](rendering-ssr.md). Not in this release: SSAO.
 
 ## Order of operations
 
