@@ -1,14 +1,14 @@
 # Plan: Linux/macOS support, release packaging and Steam integration
 
-Revision: 2026-11-02 (base `main` 27bf7e7; owner: Claude root, single writer)
+Revision: 2026-11-02, plan-gate round 1 applied (base `main` 27bf7e7; owner: Claude root, single writer)
 
 Goals (each must be true at close):
 1. CI green on all platforms: one `main` run has "Workspace tests (Windows)", "(Linux)", "(macOS)", "Format and Clippy (Windows)", every example job and "Test count gate" succeeding, with Linux and macOS included in the count gate. Check: `gh run view <id> --json jobs`.
-2. Platform runtime parity: macOS user data lives under `~/Library/Application Support`, a packaged `tools/ffmpeg[.exe]` is found before `PATH`, and a bundled game starts with no arguments from a `.app`. Check: unit tests per item, run on each OS in CI.
+2. Platform runtime parity: macOS user data lives under `~/Library/Application Support`, a packaged `tools/ffmpeg[.exe]` is found before `PATH`, and a bundled game resolves its `project.json` with no arguments from a real `.app`. Check: unit tests per item, run on each OS in CI, plus the P8 resolve-only launch of the built bundle.
 3. Packaging: `engine project package --format zip|tar.gz|appimage|app|steam-depot` produces the documented layout; each release artifact passes a headless smoke run (`--headless --ticks 3`) on its own runner. macOS `.app` is universal (arm64 + x86_64) and ad-hoc signed (`codesign --verify --deep` passes); Developer ID signing and notarisation are wired but gated on secrets. Check: `release.yml` `workflow_dispatch` run artifacts and smoke steps.
 4. Steam is optional: with default features `cargo tree -p engine` and `cargo tree -p engine-desktop` contain no `steamworks`; the workspace builds and tests exactly as before. Check: `cargo tree ... | grep -c steamworks` = 0, `cargo test --workspace --locked`.
 5. Steam features work behind `engine/steam`: core (init, restart check, identity, overlay, rich presence), achievements/stats, Steam Cloud saves, lobbies, Networking Sockets transport, Steam Input, Workshop upload/download and Workshop content loading. Check: fake-backend unit tests in the normal suite; `--features steam` clippy on all three OSes in CI; live `#[ignore]` tests on App ID 480 run locally with Steam open, results recorded in this document.
-6. Docs match behaviour: `docs/platforms.md`, `docs/desktop-packaging.md`, `docs/building.md`, `docs/steam.md` (new), `docs/project-format.md`, README platform statements. Check: review against code at each stage.
+6. Docs match behaviour: `docs/platforms.md`, `docs/desktop-packaging.md`, `docs/building.md`, `docs/steam.md` (new), `docs/project-format.md`, README platform statements. Check: `grep -n -i "unverified" README.md docs/platforms.md docs/desktop-packaging.md` returns no Linux/macOS build-or-test claims; every command shown in `docs/steam.md` and `docs/desktop-packaging.md` was executed in its stage (recorded in Outcome); `docs/steam.md` states Valve's redistribution terms for the bundled `steam_api` libraries.
 
 Scope / non-goals:
 - In: CI repair, Linux and macOS runtime fixes, per-platform packaging and a release workflow, Steam via steamworks-rs, the `steam` feature on the `engine` facade (`docs/using-the-engine.md`, branch `feat/engine-facade`).
@@ -33,13 +33,22 @@ Relevant paths: `.github/workflows/ci.yml`, `scripts/ci/`, `crates/engine-toolin
 
 Related docs: `docs/platforms.md`, `docs/desktop-packaging.md`, `docs/building.md`, `docs/testing.md`, `docs/video.md`, `docs/project-format.md`, `docs/using-the-engine.md` (facade). Feature docs win on behaviour; this plan wins on sequencing and open decisions.
 
-Execution rules: one implementer at a time (user rule); each stage commits on its own branch and is merged into `main` by root after acceptance; Cargo targets at `D:/cargo-targets/Rust-Game-Engine/<task-id>`; worktrees at `D:/Git-Worktrees/Rust-Game-Engine/<task-id>`.
+Execution rules: one implementer at a time (user rule); each stage commits on its own branch and is merged into `main` by root after acceptance; Cargo targets at `D:/cargo-targets/Rust-Game-Engine/<task-id>`; worktrees at `D:/Git-Worktrees/Rust-Game-Engine/<task-id>`. `ci.yml` runs on `push: main` and `pull_request` only, so a CI-dependent stage (P1–P4, P7–P9, S11) is accepted on its pull request's checks (`gh pr checks <n>` all passing, run id recorded); opening those PRs needs the user's go-ahead at P1. A `main` run (`gh run view <id> --json jobs`) is the final evidence for P4 and P10. Any stage that edits `Cargo.toml`/`Cargo.lock` re-runs `cargo check --workspace --locked` and the standalone example tests before acceptance.
+
+## Stage F0: Facade crate on main
+- Objective: the `engine` facade crate (`crates/engine`, re-exports, features, prelude), examples switched to it, `docs/using-the-engine.md`, and a versioned game template exist on `main`.
+- Depends on: none (in progress as task `engine-facade`, branch `feat/engine-facade`, worktree `D:/Git-Worktrees/Rust-Game-Engine/engine-facade`).
+- Owned paths: `crates/engine/**`, workspace `Cargo.toml`/`Cargo.lock`, `examples/*/Cargo.toml` and sources, `docs/using-the-engine.md`, template location chosen by the task.
+- Acceptance checks: `cargo metadata --format-version 1 --no-deps` lists package `engine`; `cargo test -p engine`; the switched examples' `cargo test --manifest-path ...` and `scripts/ci/check-desktop-examples.sh` pass; `cargo clippy --workspace --all-targets --locked -- -D warnings`; merged into `main`.
+- Status: in progress
+- Outcome:
+- Handoff notes: S1 and S11 edit the same manifests; they start only after F0 is merged so lockfile edits are serialized.
 
 ## Stage P1: CI environment repair
 - Objective: remove runner disk exhaustion (Windows LNK1318/LNK1140 at 85 MB free; Linux linker SIGBUS) and unmask hidden failures.
 - Depends on: none (needs a push to observe CI).
 - Owned paths: `.github/workflows/ci.yml`, `scripts/ci/`.
-- Acceptance checks: Linux free-disk step and `df -h` diagnostics present; CI debuginfo reduced (`CARGO_PROFILE_DEV_DEBUG=0`/`CARGO_PROFILE_TEST_DEBUG=0` or equivalent) and Windows target dir on the larger volume; Linux and macOS run `cargo test --workspace --locked --no-fail-fast`; "Workspace tests (Windows)" and "(Linux)" finish without LNK1318/LNK1140/SIGBUS; "Format and Clippy (Windows)" still passes; workflow syntax validated (`actionlint` or `gh workflow view`).
+- Acceptance checks: Linux free-disk step and `df -h` diagnostics present in every job that builds the workspace (including "Format and Clippy (Windows)"); CI debuginfo reduced (`CARGO_PROFILE_DEV_DEBUG=0`/`CARGO_PROFILE_TEST_DEBUG=0` or equivalent) and Windows target dir on the larger volume; Linux and macOS run `cargo test --workspace --locked --no-fail-fast`; "Workspace tests (Windows)" and "(Linux)" finish without LNK1318/LNK1140/SIGBUS; "Format and Clippy (Windows)" still passes; workflow syntax validated (`actionlint` or `gh workflow view`).
 - Status: pending
 - Outcome:
 - Handoff notes: the last data point is run 40858178120 on 12de3e2; current main has not run in CI. Linux cause is inferred (no disk warning printed) — confirm with `df -h`.
@@ -57,7 +66,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: every workspace test passes on macOS CI.
 - Depends on: P1.
 - Owned paths: `crates/engine-audio` (failure-race test and stream code), other macOS failures, `ci.yml`.
-- Acceptance checks: "Workspace tests (macOS)" green; `refresh_retains_decoder_and_dsp_errors_published_before_worker_status` passes 20 consecutive CI runs (temporary repeat job, removed after); audio tests still pass on Windows.
+- Acceptance checks: a written root cause (with the evidence that established it) in Outcome; "Workspace tests (macOS)" green; in one macOS job, `for i in $(seq 200); do cargo test -p engine-audio refresh_retains_decoder_and_dsp_errors_published_before_worker_status -- --test-threads=1 || exit 1; done` passes (temporary PR-only job, removed after); audio tests still pass on Windows.
 - Status: pending
 - Outcome:
 - Handoff notes: failure is "producer never reached failure publication barrier" (`sources.rs:541`, 5 s deadline). Suspect: the pause is a thread-local consumed at stream shared-state creation (`stream.rs:244`); check where macOS creates/starts the stream. Root-cause before any ignore.
@@ -66,14 +75,14 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: Windows green after P1; Linux and macOS counts in `test-count-gate`.
 - Depends on: P2, P3.
 - Owned paths: `ci.yml`, `scripts/ci/test-count.sh`.
-- Acceptance checks: one `main` run with every job above green, including "Test count gate" covering all three OSes.
+- Acceptance checks: `linux-tests` and `macos-tests` upload `test-count-<os>` artifacts and `test-count-gate` `needs` them; `scripts/ci/test-count.sh gate` enforces a per-file minimum for each OS (not only a sum) and its log names all three OS count files; one `main` run with every job above green, including "Test count gate".
 - Status: pending
 - Outcome:
-- Handoff notes: calibrate per-OS minimums from observed counts.
+- Handoff notes: calibrate per-OS minimums from observed counts; a sum alone would let one OS regress behind the others.
 
 ## Stage P5: Platform runtime fixes
-- Objective: macOS user-data root, bundled FFmpeg lookup, bundle-relative game resolution.
-- Depends on: P2.
+- Objective: macOS user-data root, bundled FFmpeg lookup, bundle-relative game resolution, and a resolve-only mode (flag or environment variable) that prints the resolved `project.json` path and exits, for packaging checks.
+- Depends on: P2, P3.
 - Owned paths: `crates/engine-project/src/persistence/mod.rs`, `crates/engine-video/` (decoder tool lookup), `crates/engine-tooling/src/runtime_entry.rs`, `docs/platforms.md`, `docs/desktop-services.md`, `docs/video.md`.
 - Acceptance checks: path-builder unit tests for each OS root (executed per OS in CI); `tools/` lookup order test (`ENGINE_VIDEO_FFMPEG` > `tools/` > `PATH`); runtime with no arguments finds `../Resources/game/project.json` inside a `.app` layout and `game/project.json` beside the runtime (test with a temp layout).
 - Status: pending
@@ -82,9 +91,9 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 
 ## Stage S1: `engine-steam` skeleton and no-Steam path
 - Objective: crate with public types, `SteamBackend`, `NullBackend`, `FakeBackend`, `SteamStatus`, `SteamError`, and the `steam` feature (real backend stub only).
-- Depends on: none (code); lands after the facade merge.
+- Depends on: F0.
 - Owned paths: `crates/engine-steam/**`, workspace `Cargo.toml`/`Cargo.lock`, `docs/steam.md`.
-- Acceptance checks: `cargo test -p engine-steam` passes and `cargo tree -p engine-steam -e normal | grep -c steamworks` = 0; feature-off calls return `Unavailable(NotCompiled)` (test); `cargo clippy -p engine-steam --all-targets -- -D warnings`; `cargo check --workspace --locked`.
+- Acceptance checks: S1 adds `steamworks = "=0.13.1"` as an optional dependency (so the lockfile changes once, here); `cargo test -p engine-steam` passes and `cargo tree -p engine-steam -e normal | grep -c steamworks` = 0; feature-off calls return `Unavailable(NotCompiled)` (test); `cargo clippy -p engine-steam --all-targets -- -D warnings`; `cargo check --workspace --locked`; standalone example tests pass; `docs/steam.md` records Valve's redistribution terms for the libraries bundled in `steamworks-sys`.
 - Status: pending
 - Outcome:
 - Handoff notes: commit the lockfile change. Gate the real backend on `cfg(any(windows, target_os = "linux", target_os = "macos"))`.
@@ -93,7 +102,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: `RealBackend` over `steamworks::Client` — `restart_app_if_necessary`, `init_app`, user identity and auth ticket, overlay, rich presence, callback drain to events.
 - Depends on: S1.
 - Owned paths: `crates/engine-steam/src/{core,real}.rs`.
-- Acceptance checks: `cargo clippy -p engine-steam --features steam --all-targets -- -D warnings` on Windows; live `#[ignore]` core test passes with Steam open and prints "skipped" and passes with Steam closed (`cargo test -p engine-steam --features steam -- --ignored core`); fake status-transition tests pass without the feature.
+- Acceptance checks: `cargo clippy -p engine-steam --features steam --all-targets -- -D warnings` and `cargo build -p engine-steam --features steam --all-targets` (links, not only type-checks) on Windows and in WSL; live `#[ignore]` core test passes with Steam open and prints "skipped" and passes with Steam closed (`cargo test -p engine-steam --features steam -- --ignored core`); fake status-transition tests pass without the feature.
 - Status: pending
 - Outcome:
 - Handoff notes: the test exe needs `steam_api64.dll` on the loader path (copy in a test helper or build script); `steam_appid.txt` for dev runs only, never packaged.
@@ -102,7 +111,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: generic `HostService` hook in the desktop runner (init before graphics, teardown after GPU idle, shutdown request), `SteamPlugin`, per-tick pump, `steam` manifest block (`app_id`, `cloud`, `required`, rich presence defaults), no Steam for editor play generations.
 - Depends on: S2.
 - Owned paths: `crates/engine-desktop/src/runner.rs` (hook only), `crates/engine-project/src/schema/**`, `crates/engine-steam/src/plugin.rs`, `docs/project-format.md`.
-- Acceptance checks: project without `steam` loads unchanged; `steam.app_id` parses; unknown `steam` keys rejected; a fake-backend headless run pumps exactly once per tick; `steam.required` with an absent client exits/relaunches as documented (fake test); `cargo test --workspace --locked` passes with default features.
+- Acceptance checks: project without `steam` loads unchanged; `steam.app_id` parses; unknown `steam` keys rejected; a fake-backend headless run pumps exactly once per tick; two runner generations in one process call `init`/`restart_app_if_necessary` at most once (fake call counter) and the editor play path never constructs `SteamPlugin` (test); `steam.required` with an absent client exits with the documented exit code before any window or GPU device is created, asserted through the fake backend's recorded call order, and checked once live on the dev box with Steam closed (recorded in Outcome); a Steam-feature runtime build with the library staged next to it runs `--headless --ticks 3` with Steam closed and reports the soft "not running" status (dev box); `cargo test --workspace --locked` passes with default features.
 - Status: pending
 - Outcome:
 - Handoff notes: keep `runner.rs` diff minimal; the hook carries no Steam types.
@@ -129,7 +138,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: `SteamServerEndpoint`/`SteamClientEndpoint` implementing `MessageEndpoint` (1-byte lane header, delivery → `SendFlags`, emulated `UnreliableSequenced`, peer table, `PollBudget`, `max_payload`), SteamID/auth-ticket identity; additive `TransportKind`/`TransportSecurity` variants with `#[non_exhaustive]`.
 - Depends on: S3.
 - Owned paths: `crates/engine-steam/src/transport.rs`; additive edits in `crates/engine-network/src/{channel,lib}.rs` and any exhaustive matches in dependents.
-- Acceptance checks: a fake in-process socket pair passes the shared `MessageEndpoint` contract tests (per-lane ordering, sequenced stale drop, budget bounds, `QueueFull`, oversize rejection) — add a shared contract-test helper if none exists; `cargo test -p engine-network -p engine-net-quic -p engine-online -p engine-net-replication` unchanged; live `#[ignore]` loopback on 480.
+- Acceptance checks: a fake in-process socket pair passes the shared `MessageEndpoint` contract tests (per-lane ordering, sequenced stale drop, budget bounds, `QueueFull`, oversize rejection) — add a shared contract-test helper if none exists; `cargo test --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings` pass (they catch exhaustive matches on the changed enums in dependents such as `engine-net-quic` and `engine-project` networking tests); standalone example tests pass; live `#[ignore]` loopback on 480.
 - Status: pending
 - Outcome:
 - Handoff notes: highest-risk stage. Write the identity/auth design into `docs/steam.md` before code. Relay access (`init_relay_network_access`) is asynchronous.
@@ -165,7 +174,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: the asset catalog accepts additional read-only content roots (installed Workshop items) with the same validation and confinement as the project root.
 - Depends on: S9. Starts with a short design note in `docs/asset-pipeline.md` (root precedence, id collisions, kinds allowed from mods, reload) reviewed by root before code.
 - Owned paths: `crates/engine-project` asset catalog/resolution, `crates/engine-steam/src/workshop.rs` (root registration), `docs/asset-pipeline.md`, `docs/steam.md`.
-- Acceptance checks: traversal and link/junction rejection tests per extra root; kind validation; id collision policy test; projects with no extra roots resolve identically (existing asset tests unchanged); a fake installed item's asset loads at runtime.
+- Acceptance checks: traversal and link/junction rejection tests inside each extra root, and rejection of an extra root whose own path is a symlink, junction/reparse point or escapes its declared parent; kind validation; id collision policy test; projects with no extra roots resolve identically (existing asset tests unchanged); a fake installed item's asset loads at runtime; manual live check on App 480 (subscribe to an item, let it install, load an asset from it) recorded in Outcome, or recorded as not possible with the reason.
 - Status: pending
 - Outcome:
 - Handoff notes: core change; keep it generic (not Steam-specific) so other mod sources can reuse it.
@@ -192,7 +201,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: `--format app` with `Info.plist`, `Resources/game`, `Frameworks/`, universal binary (`lipo` of arm64 + x86_64), ad-hoc signing; Developer ID signing/notarisation steps gated on secrets.
 - Depends on: P5, P6.
 - Owned paths: `crates/engine-tooling/src/packaging/macos.rs`, CI job, `docs/desktop-packaging.md`.
-- Acceptance checks: plist and layout generation unit tests (any OS); on macOS CI: `plutil -lint`, `lipo -archs` lists `x86_64 arm64`, headless launch, `codesign --verify --deep` passes; notarisation documented as unverified until secrets exist.
+- Acceptance checks: plist and layout generation unit tests (any OS); on macOS CI: `plutil -lint`, `lipo -archs` lists `x86_64 arm64`, the bundle binary started with no arguments in resolve-only mode (P5) prints `.../Resources/game/project.json`, headless launch, `codesign --verify --deep` passes; the x86_64 slice is smoke-run with `arch -x86_64` if the runner has Rosetta, otherwise documented as built but unexecuted; notarisation documented as unverified until secrets exist.
 - Status: pending
 - Outcome:
 - Handoff notes: no local macOS — each iteration costs a CI run.
@@ -210,7 +219,7 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Objective: `engine/steam` facade feature, `--format steam-depot` (per-platform depot directories, copied `steam_api` library, `app_build.vdf`/`depot_build_*.vdf` templates, no `steam_appid.txt`), MCP read-only `steam_status`, CI `cargo check`/`clippy --features steam` on all three OSes, docs pass.
 - Depends on: S1–S10, P9, facade merged.
 - Owned paths: `crates/engine` (facade features), `crates/engine-tooling/src/packaging/steam.rs`, `crates/engine-mcp/src/tools/`, `ci.yml`, `docs/steam.md`, `docs/desktop-packaging.md`.
-- Acceptance checks: `cargo check -p engine --features steam` passes on all OSes in CI; default `cargo tree -p engine` has no `steamworks`; depot layout test passes; `cargo test --workspace --locked` passes.
+- Acceptance checks: `cargo check -p engine --features steam` and `cargo build -p engine-steam --features steam --all-targets` pass on all OSes in CI; on the Windows CI runner a Steam-feature runtime with the library staged runs `--headless --ticks 3` (no Steam client: soft status); default `cargo tree -p engine` has no `steamworks`; depot layout test passes; the release workflow smoke-runs the Steam-variant package per OS; `cargo test --workspace --locked` passes.
 - Status: pending
 - Outcome:
 - Handoff notes: real depot upload stays manual (SteamCMD + partner credentials).
@@ -224,4 +233,4 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Outcome:
 - Handoff notes:
 
-Execution order (one implementer at a time): P1 → P2 → P3 → P4 → P5 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → P6 → P7 → P8 → P9 → S11 → P10.
+Execution order (one implementer at a time): F0 (running) → P1 → P2 → P3 → P4 → P5 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → P6 → P7 → P8 → P9 → S11 → P10.
