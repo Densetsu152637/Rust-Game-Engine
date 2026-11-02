@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use crate::error::{SteamError, SteamResult};
 use crate::net::*;
 use crate::types::*;
+use crate::workshop::{ItemState, ItemUpdate, RequestId, UgcQuery, UgcRaw, UpdateProgress};
 
 /// Abstraction over the Steamworks API.
 ///
@@ -136,6 +137,45 @@ pub trait SteamBackend {
     }
     fn installed_item(&self, _item: WorkshopItemId) -> SteamResult<Option<InstalledItem>> {
         Err(self.unavailable())
+    }
+
+    // Workshop service (see `UgcService`). Requests are asynchronous and answered through
+    // `ugc_poll`; the sync `subscribe_item`/`unsubscribe_item` above are the S1 sketch.
+    fn ugc_create_item(&mut self) -> SteamResult<RequestId> {
+        Err(self.unavailable())
+    }
+    /// Updates and submits an item in one step (Steam's start-update then submit).
+    fn ugc_submit_item(
+        &mut self,
+        _item: WorkshopItemId,
+        _update: &ItemUpdate,
+    ) -> SteamResult<RequestId> {
+        Err(self.unavailable())
+    }
+    /// Progress of an in-flight submission, or `None` when unknown or finished.
+    fn ugc_update_progress(&self, _request: RequestId) -> Option<UpdateProgress> {
+        None
+    }
+    fn ugc_subscribe(&mut self, _item: WorkshopItemId, _subscribe: bool) -> SteamResult<RequestId> {
+        Err(self.unavailable())
+    }
+    /// An empty `ById` list is answered with an empty page.
+    fn ugc_query(&mut self, _query: &UgcQuery) -> SteamResult<RequestId> {
+        Err(self.unavailable())
+    }
+    fn ugc_item_state(&self, _item: WorkshopItemId) -> SteamResult<ItemState> {
+        Err(self.unavailable())
+    }
+    fn ugc_download(&mut self, _item: WorkshopItemId, _high_priority: bool) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    /// Bytes `(done, total)` of an item that is downloading.
+    fn ugc_download_progress(&self, _item: WorkshopItemId) -> Option<(u64, u64)> {
+        None
+    }
+    /// Drains finished requests.
+    fn ugc_poll(&mut self) -> Vec<UgcRaw> {
+        Vec::new()
     }
 
     // Steam Input.

@@ -75,6 +75,7 @@ impl SteamBackend for Spy {
     }
     common::forward_net!();
     common::forward_input!();
+    common::forward_ugc!();
 }
 
 struct Harness {

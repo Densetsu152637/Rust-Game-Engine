@@ -151,6 +151,8 @@ fn fake_workshop_and_input() {
         id: WorkshopItemId(7),
         path: "mods/7".into(),
         size_bytes: 10,
+        timestamp: 5,
+        needs_update: false,
     };
     let mut fake = ready()
         .with_installed_item(item.clone())

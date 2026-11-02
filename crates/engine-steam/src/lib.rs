@@ -12,6 +12,7 @@ mod error;
 mod fake;
 mod fake_lobby;
 mod fake_net;
+mod fake_ugc;
 mod input;
 mod lobby;
 mod net;
@@ -39,11 +40,17 @@ mod real_lobby;
     any(windows, target_os = "linux", target_os = "macos")
 ))]
 mod real_net;
+#[cfg(all(
+    feature = "steam",
+    any(windows, target_os = "linux", target_os = "macos")
+))]
+mod real_ugc;
 mod session;
 mod stats;
 mod transport;
 mod types;
 mod wire;
+mod workshop;
 
 pub use backend::SteamBackend;
 pub use cloud::{CloudReport, CloudSync, SyncAction};
@@ -71,6 +78,10 @@ pub use transport::{
     SteamServerConfig, SteamServerEndpoint,
 };
 pub use types::*;
+pub use workshop::{
+    ItemState, ItemUpdate, ItemVisibility, MAX_QUERY_IDS, PublicQuery, PublicSort, QueryPage,
+    RequestId, UgcEvent, UgcQuery, UgcRaw, UgcService, UpdateProgress, UpdateStage, WorkshopItem,
+};
 
 /// True when this build contains the real Steam backend.
 pub const STEAM_COMPILED: bool = cfg!(all(
