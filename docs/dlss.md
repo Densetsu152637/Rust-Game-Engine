@@ -139,8 +139,14 @@ per view: `dlss_sr` (DLSS only), `native_temporal` (the engine's own resolve,
 `dlss_sr` that cannot run renders the plain native frame with the reason; it is
 never replaced by the native temporal resolve (only `auto_temporal` asks for
 that, and then reports `active` with `backend = native_temporal` and the DLSS
-reason in `fallback_reason`). The two share the Halton sequence, the history
-reset rules and the spatial AA yield. The native resolve does not run under DLSS
+reason in `fallback_reason`). The two share the Halton sequence and the spatial
+AA yield, and both reset on a cut or a projection change. They differ otherwise:
+DLSS does not restart the jitter sequence on a reset and tracks no render/output
+size pair (a new NGX session resets it), while the native resolve restarts the
+sequence and resets on any render or output size change. DLSS also resets
+whenever the previous presented frame was not resolved by DLSS (a native temporal
+period, a fallback or a plain native frame), so it never resumes on stale NGX
+history. The native resolve does not run under DLSS
 Frame Generation: with Frame Generation active, a `native_temporal` request (or
 an `auto_temporal` one DLSS could not serve) renders natively and reports
 `fallback`. Nothing here claims the native resolve

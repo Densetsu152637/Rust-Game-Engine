@@ -49,16 +49,22 @@ registered the feature; the desktop test compares mode on/off/on).
    centre to the texel's unjittered position (`texel + 0.5 - jitter`), `k` =
    `filter_sharpness` (default 5). Colour is processed as `c / (1 + luma(c))`, a
    reversible compression, so a bright HDR sample cannot dominate the
-   neighbourhood or the blend; inputs are clamped finite and non-negative.
+   neighbourhood or the blend. Inputs are clamped to a non-negative, bounded
+   range; a NaN is zeroed only where the implementation preserves NaNs (WGSL does
+   not require it), so NaN handling is best effort.
 2. **Reprojection.** Depth and motion come from the closest texel of the 3x3.
    Motion is the prepass's current-to-previous motion in render pixels (history
    position = pixel + motion scaled to output pixels). History is sampled with a
    Catmull-Rom filter (five bilinear taps; an exact texel load when the offset is
    below 0.002 pixel, so static content is not resampled).
 3. **Disocclusion.** History is rejected outside the image, where nothing was
-   accumulated, or when its stored view distance differs by more than 4 % from
-   the distance this surface had under camera motion alone (current view
-   position moved by the previous-to-current camera transform). A moving
+   accumulated, or when its stored view distance differs from the distance this
+   surface had under camera motion alone (current view position moved by the
+   previous-to-current camera transform) by more than 4 % plus three pixels of the
+   surface's own slope (the smaller one-sided distance difference per axis, so a
+   silhouette does not widen the tolerance across the edge). The slope term keeps
+   history on a receding, grazing plane, where the nearest-texel read alone
+   changes the distance by tens of percent. A moving
    object's own depth motion is not modelled; fast motion along the view axis
    therefore loses accumulation (more aliasing, no ghost).
 4. **Clipping.** History is clipped toward the box of the 3x3 neighbourhood in
@@ -80,7 +86,8 @@ in the `TemporalControls` store shared by the host and the feature.
 | --- | --- |
 | First frame, `set(view, None)`, forget | no history; `set(None)` and `forget_view` free the textures |
 | Camera cut (`reset_history`, `reset_temporal_history()`), projection change | `reset_history` callback discards; the frame is a fresh resolve |
-| Output or render size change (resize, render-scale change) | targets and history are reallocated; the host also passes a reset |
+| Output size change (resize) | history textures are reallocated at the new size and the frame is a fresh resolve |
+| Render-only size change (render scale at constant output) | textures are kept; the host passes a reset and the pipeline resets on the target change, so the history is discarded through that forced reset |
 | Scene attempt aborted or failed after encode | pending slot is dropped, `reset_next` resets the retry |
 | Scene committed (`finish_scene`) | pending slot becomes the history, with its camera/projection |
 | Mode switch (to DLSS, to none), 2D frame | the host calls `set(view, None)`, freeing the history |
@@ -112,15 +119,17 @@ coverage-integrated truth:
   within 0.005 for both a smooth background (colour clipping can also help) and
   a 2-pixel checker with a grey object (colour cannot help; only the distance
   test rejects).
-* Cut/reset, abort and retry, re-enable, resize and render-scale change give
-  frames equal (1e-5) to a fresh view's; two views interleaved equal the solo
+* Cut/reset, abort and retry, re-enable, resize and render-scale change (the
+  last enforced, no escape clause) give frames equal (1e-5) to a fresh view's; two views interleaved equal the solo
   run (1e-5); forgetting one view keeps the other; a disabled feature is
   bit-identical to a pipeline without it.
 * Desktop (`crates/engine-desktop/tests/gpu_temporal.rs`, 65x43 target, authored
   `Camera3D.upscaler` through `Runtime`, `GpuRenderer`, the real motion prepass
   and meshes): a static triangle edge goes from 0 to 103 intermediate-valued
   pixels at `dlaa` with a steady frame-to-frame change of 11/255; a camera cut
-  (`reset_temporal_history`) reproduces the very first frame byte for byte; at
+  (`reset_temporal_history`) reproduces the very first frame byte for byte, and
+  the first half-scale frame after 1:1 frames equals a fresh renderer's first
+  half-scale frame byte for byte; at
   `performance` the status reports render size 33x22 and the covered area (linear
   light) is 551.5 against 559.1 analytic (1:1: 558.5); mode off is byte-identical
   to the plain frame and re-enable reproduces the first resolve; requested DLSS
@@ -138,6 +147,11 @@ coverage-integrated truth:
 * Sub-render-pixel features flicker or erode (see the stripe above); there is no
   sharpening, no anti-ghosting for fast lighting changes beyond clipping, and no
   history-length adaptation to luminance change.
+* Camera motion over a striped grazing ground plane and a wall is covered by
+  `camera_motion_keeps_history_on_a_grazing_ground_plane_and_leaves_no_ghost` in
+  the desktop suite (history kept while moving, no red outside the wall's
+  silhouette); the slope tolerance above was added for it. Its measured numbers
+  were not recorded at the time of writing: they come from the batched test run.
 * Disocclusion ignores an object's own motion along the view axis.
 * Fixed constants (clip gamma 1.25, distance tolerance 4 %, speed cap) were set
   from the tests above, not tuned on real content.
