@@ -61,8 +61,10 @@ remain with their owner; do not resolve or commit their dirty state.
   needs its own execution gates. Deferred World limits remain documented.
 ### 2. AI-gameplay and scripting completion
 
-- Status: in progress; completed gameplay handed off. Scripting went to Codex on
-  2026-10-27 and to the Claude root on 2026-10-29.
+- Status: done (gameplay at `d88464d`; scripting V0-V4/T1-T2 and the Rhai text
+  backend merged; see "Claude root execution checkpoint (2026-10-29)" and the
+  stage 10 gate). Scripting went to Codex on 2026-10-27 and to the Claude root on
+  2026-10-29.
 - User handoff: Claude stopped at its weekly usage gate. Clean revision
   `d88464d` contains crowds, graph/BT/ST, perception, EQS, smart objects,
   predicted abilities, inventory, quests and dialogue. The author reports focused
@@ -81,7 +83,9 @@ remain with their owner; do not resolve or commit their dirty state.
   gate. Root schedules all heavy builds and owns final integration.
 ### 3. Audio streaming and media clock
 
-- Status: in progress; depends on baseline only.
+- Status: done (streaming/clock, compressed decoding, authored streamed and procedural
+  sources merged; 355 native audio tests, see "Claude root execution checkpoint").
+  Audible-device output remains a hardware-only check.
 - Objective: bounded streamed PCM sources, pause/seek/underrun/EOF semantics,
   source clock epochs, incremental compressed decoding and cancellation.
 - Owned paths: engine-audio and focused audio documentation/tests.
@@ -100,7 +104,8 @@ remain with their owner; do not resolve or commit their dirty state.
 
 ### 4. Animation graph, blend spaces, IK and retargeting
 
-- Status: in progress; depends on committed engine-graph foundation.
+- Status: done (graph/blend, IK and retargeting merged; native and project retargeting
+  tests pass, see "Claude root execution checkpoint").
 - Objective: executable pose graph and state transitions, 1D/2D blends,
   validated IK solvers/retarget maps and project runtime integration.
 - Owned paths: engine-animation, animation-specific project modules/tests/docs.
@@ -120,8 +125,9 @@ remain with their owner; do not resolve or commit their dirty state.
 
 ### 5. Editor scene recovery and graph authoring
 
-- Status: in progress (scene accepted; reusable graph canvas validation pending). The canvas
-  uses the committed engine-graph foundation; shell wiring follows scene handoff.
+- Status: done (scene recovery and the graph canvas merged; six native graph-editor
+  tests pass, see "Claude root execution checkpoint"). Interactive editor use remains a
+  hardware-only check.
 - Objective: finish scene WIP `9e4a063`, multi-selection/gizmos/picking/settings,
   then reusable node/port canvas with graph-kind palettes, edits, undo and save.
 - Owned paths: engine-editor, engine-editor-settings, editor docs/tests.
@@ -138,8 +144,9 @@ remain with their owner; do not resolve or commit their dirty state.
 
 ### 6. Render integration seams
 
-- Status: in progress (shared shadows accepted; UI seams source checkpoint); depends on baseline and
-  committed World rendering contracts for terrain/foliage integration.
+- Status: done (shared shadows, terrain/foliage casters, ordered overlays and the
+  OpaqueEffects seam merged; all four `gpu_foliage` readbacks and `engine-ui-render`
+  GPU tests pass). Hardware Frame Generation remains a separate check.
 - Objective: shared shadow targets/writer API, terrain and foliage casters,
   ordered UI overlays and final compositing including Frame Generation, and
   the two UI pipeline hooks. Establish scene-effects and temporal-resolve seams.
@@ -154,7 +161,9 @@ remain with their owner; do not resolve or commit their dirty state.
 
 ### 7. Platform services
 
-- Status: in progress (XR, ML, server and video milestones accepted; final combined checks pending).
+- Status: done (XR, ML, server and video merged; workspace gate passes). Headset
+  interoperability, macOS execution, sprite texture-stream integration and hardware
+  presentation timing remain unverified.
 - Objective: review OpenXR `daa2888`, finish ML WIP `609ccb2`, implement
   existing self-hosted services and real video decode/playback. The user clarified
   that services means completing/validating the existing server, not adding cloud
@@ -183,8 +192,9 @@ remain with their owner; do not resolve or commit their dirty state.
 
 ### 8. Remaining animation/editor/audio integrations
 
-- Status: in progress (hot reload and morph accepted; native audio, voice and sequencer tests pass); runtime integration checks remain and
-  depend on relevant earlier stages.
+- Status: done (hot reload, morph, sequencer, procedural audio, voice and physics audio
+  merged; project runtime tests pass, see "Claude root execution checkpoint"). The
+  microphone test remains ignored (hardware-only).
 - Objective: morph import/animation/deformation, cinematics timeline/sequencer,
   editor hot reload/tooling, procedural audio graph, microphone/voice codec,
   streamed voice playback and physics3D-reactive spatial audio.
@@ -230,8 +240,11 @@ remain with their owner; do not resolve or commit their dirty state.
 
 ### 9. Rendering round two
 
-- Status: in progress (native SpriteLit/post GPU checks pass; authored lighting and scene lifecycle work active); remaining effects depend on
-  stage 6 and relevant World/material contracts.
+- Status: done (every feature merged: IBL/probes/lightmaps, SSR, DOF/motion blur,
+  spatial AA, temporal upscaler, atmosphere, fog, clouds, decals, GPU particles,
+  Hi-Z/LOD, HDR output, material graph, 2D lighting; per-feature sections below and
+  the stage 10 gate record the GPU results). HDR presentation on a real HDR monitor
+  remains a manual check.
 - Objective: IBL/probes/lightmaps; SSR/DOF/motion blur; AA/vendor-neutral upscale;
   atmosphere/fog/clouds/decals/GPU particles; Hi-Z with LOD; HDR display output;
   material graph; 2D lighting/tilemap rendering.
@@ -315,15 +328,26 @@ remain with their owner; do not resolve or commit their dirty state.
 
 ### 10. Final integration, review and publication
 
-- Status: pending; depends on stages 1–9.
+- Status: gate passed on `c0ab566` (2026-11-02); publication follows root acceptance.
+  Hardware-only checks (headset, microphone, audio device, HDR monitor, interactive
+  editor, hardware Frame Generation) remain unverified.
 - Objective: combine reviewed commits, run required workspace/example checks,
   resolve cross-stream conflicts, align docs and publish validated work.
 - Acceptance: goals above, required repository reviews/CI, clean owned changes,
   explicit hardware limitations and reconciliation of every task worktree.
-- Outcome: not yet established. Source-only assembly in the isolated integration
-  branch does not count as an accepted feature or final merge. Combined native
-  checks use one root-owned build slot and a dedicated cache per checkout; never share Cargo target directories across main and integration after observed stale dependency metadata;
-  required project, editor, MCP, GPU and final workspace/example gates follow.
+- Outcome: final combined gate on `main` @ `c0ab566` (RTX 5080, Vulkan, per-checkout
+  target directories, VS 2019 Build Tools CMake for native Opus): rustfmt check passes
+  (`cargo fmt --all` hit Windows error 206, so `cargo fmt -p <pkg> --check` passed for
+  all 57 workspace packages); strict workspace Clippy passes; `cargo test --workspace
+  --locked` passes 5,880 tests, zero failed, 358 ignored over 464 result lines, with no
+  flake reruns; `check-desktop-examples.sh` passes; the five standalone example crates
+  pass (13, 77, 1, 1 and 10 tests) and `validate_fixture.py` passes. All 45
+  `crates/*/tests/gpu_*.rs` files plus the whole `engine-render-rt` and
+  `engine-render-hiz` packages pass with `--include-ignored --test-threads=1`
+  (686 passed, zero failed). Source-only assembly does not by itself count as
+  acceptance; this gate is the acceptance record. Combined native checks use one
+  root-owned build slot and a dedicated cache per checkout; never share Cargo target
+  directories across main and integration after observed stale dependency metadata.
 
 ## Session worktree record
 
