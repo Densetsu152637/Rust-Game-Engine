@@ -1,5 +1,7 @@
 //! Steam as a desktop host service, driven through the headless runner.
 
+mod common;
+
 use engine_desktop::{RunOptions, run_with_services};
 use engine_project::{HostService, HostServiceExit, Project, Runtime, SteamManifest};
 use engine_steam::*;
@@ -71,6 +73,7 @@ impl SteamBackend for Spy {
     fn set_rich_presence(&mut self, key: &str, value: Option<&str>) -> SteamResult<()> {
         self.fake.lock().unwrap().set_rich_presence(key, value)
     }
+    common::forward_net!();
 }
 
 struct Harness {

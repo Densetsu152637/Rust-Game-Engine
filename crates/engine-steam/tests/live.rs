@@ -149,3 +149,171 @@ fn cloud() {
         Err(SteamError::NotFound(_))
     ));
 }
+
+mod net_live {
+    use super::*;
+    use engine_network::{
+        Delivery, Lane, LinkEvent, MessageEndpoint, PollBudget, SERVER_PEER, TransportSecurity,
+    };
+    use std::time::{Duration, Instant};
+
+    struct Pair {
+        session: SteamSession,
+        server: SteamServerEndpoint,
+        client: SteamClientEndpoint,
+        server_events: Vec<LinkEvent>,
+        client_events: Vec<LinkEvent>,
+    }
+
+    impl Pair {
+        /// Pumps Steam callbacks and both endpoints until `done` or the timeout.
+        fn drive(&mut self, what: &str, seconds: u64, done: impl Fn(&Pair) -> bool) {
+            let end = Instant::now() + Duration::from_secs(seconds);
+            while !done(self) {
+                assert!(
+                    Instant::now() < end,
+                    "timed out waiting for {what}; server {:?} client {:?}",
+                    self.server_events,
+                    self.client_events
+                );
+                let _ = self.session.run_callbacks();
+                self.server_events.extend(
+                    self.server
+                        .poll(PollBudget::default())
+                        .expect("server poll"),
+                );
+                self.client_events.extend(
+                    self.client
+                        .poll(PollBudget::default())
+                        .expect("client poll"),
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn connected(&self) -> bool {
+            !self.server.connected_peers().is_empty() && !self.client.connected_peers().is_empty()
+        }
+    }
+
+    fn exchange(pair: &mut Pair) {
+        let peer = pair.server.connected_peers()[0];
+        assert_eq!(
+            pair.server.transport(),
+            engine_network::TransportKind::Steam
+        );
+        assert_eq!(pair.server.security(), TransportSecurity::PlatformEncrypted);
+        let me = pair.server.local_steam_id();
+        assert_eq!(pair.server.peer_steam_id(peer), Some(me));
+        println!("admitted: peer {peer} is {}", me.0);
+        let big = vec![0xAB; 200_000];
+        for i in 0u8..5 {
+            pair.client
+                .send(SERVER_PEER, Lane::RPC, Delivery::ReliableOrdered, &[i])
+                .expect("send");
+        }
+        pair.client
+            .send(
+                SERVER_PEER,
+                Lane::REPLICATION,
+                Delivery::ReliableOrdered,
+                &big,
+            )
+            .expect("big send");
+        pair.server
+            .send(peer, Lane::INPUT, Delivery::UnreliableSequenced, b"tick")
+            .expect("server send");
+        pair.drive("payloads", 15, |p| {
+            let got = |events: &[LinkEvent]| {
+                events
+                    .iter()
+                    .filter(|e| matches!(e, LinkEvent::Message { .. }))
+                    .count()
+            };
+            got(&p.server_events) >= 6 && got(&p.client_events) >= 1
+        });
+        let rpc: Vec<u8> = pair
+            .server_events
+            .iter()
+            .filter_map(|e| match e {
+                LinkEvent::Message { lane, payload, .. } if *lane == Lane::RPC => Some(payload[0]),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rpc, vec![0, 1, 2, 3, 4]);
+        assert!(pair.server_events.iter().any(
+            |e| matches!(e, LinkEvent::Message { payload, .. } if payload.len() == big.len())
+        ));
+        let stats = pair.client.stats(SERVER_PEER).expect("stats");
+        println!("client stats: {stats:?}");
+        assert!(stats.sent_packets >= 6);
+        assert!(pair.client.disconnect(SERVER_PEER));
+        pair.drive("the server to see the disconnect", 15, |p| {
+            p.server_events
+                .iter()
+                .any(|e| matches!(e, LinkEvent::Disconnected { .. }))
+        });
+        println!("disconnect reason: {:?}", pair.server_events.last());
+    }
+
+    /// `ConnectByIPAddress` to a local listen socket, with auth session tickets.
+    #[test]
+    #[ignore = "needs a running Steam client"]
+    fn net_ip() {
+        let Some((_guard, backend)) = steam_live() else {
+            return;
+        };
+        let session = SteamSession::new(Box::new(backend));
+        let addr = "127.0.0.1:27333".parse().unwrap();
+        let server = SteamServerEndpoint::listen(session.clone(), SteamServerConfig::ip(addr))
+            .expect("listen");
+        let client =
+            SteamClientEndpoint::connect_ip(session.clone(), addr, SteamClientConfig::default())
+                .expect("connect");
+        let mut pair = Pair {
+            session,
+            server,
+            client,
+            server_events: Vec::new(),
+            client_events: Vec::new(),
+        };
+        pair.drive("the IP loopback to connect", 20, Pair::connected);
+        exchange(&mut pair);
+    }
+
+    /// `ConnectP2P` to our own SteamID through the relay network (identity from Steam).
+    #[test]
+    #[ignore = "needs a running Steam client"]
+    fn net_p2p() {
+        let Some((_guard, backend)) = steam_live() else {
+            return;
+        };
+        let session = SteamSession::new(Box::new(backend));
+        let SteamStatus::Ready { user, .. } = session.status() else {
+            panic!("not ready");
+        };
+        let config = SteamServerConfig::p2p(0).with_auth(AuthPolicy::IdentityOnly);
+        let server = SteamServerEndpoint::listen(session.clone(), config).expect("listen");
+        let client = SteamClientEndpoint::connect_p2p(
+            session.clone(),
+            user.id,
+            0,
+            SteamClientConfig::default(),
+        )
+        .expect("connect");
+        println!("relay status at start: {:?}", client.relay_status());
+        let mut pair = Pair {
+            session,
+            server,
+            client,
+            server_events: Vec::new(),
+            client_events: Vec::new(),
+        };
+        pair.drive("the P2P loopback to connect", 60, Pair::connected);
+        println!(
+            "relay status when connected: {:?}",
+            pair.client.relay_status()
+        );
+        exchange(&mut pair);
+    }
+}

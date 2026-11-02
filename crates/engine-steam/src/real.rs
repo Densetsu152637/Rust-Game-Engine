@@ -6,6 +6,7 @@
 //! the remaining `SteamBackend` methods.
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -13,11 +14,13 @@ use steamworks::networking_types::NetworkingIdentity;
 use steamworks::{
     CallbackHandle, Client, GameOverlayActivated, PersonaStateChange, SteamAPIInitError,
     SteamServersConnected, SteamServersDisconnected, UserAchievementStored, UserStatsReceived,
-    UserStatsStored,
+    UserStatsStored, ValidateAuthTicketResponse,
 };
 
 use crate::backend::SteamBackend;
 use crate::error::{SteamError, SteamResult};
+use crate::net::*;
+use crate::real_net::{AuthEvents, RealNet};
 use crate::types::{AppId, AuthTicket, StatValue, SteamEvent, SteamId, SteamStatus, SteamUser};
 
 /// `SteamAPI_Init` may only be paired with one `SteamAPI_Shutdown` per process.
@@ -60,6 +63,7 @@ pub struct RealBackend {
     tickets: BTreeMap<u32, steamworks::AuthTicket>,
     next_ticket: u32,
     stats_requested: bool,
+    net: RealNet,
 }
 
 impl RealBackend {
@@ -72,6 +76,7 @@ impl RealBackend {
             tickets: BTreeMap::new(),
             next_ticket: 1,
             stats_requested: false,
+            net: RealNet::default(),
         }
     }
 
@@ -90,7 +95,12 @@ impl RealBackend {
         self.client()
     }
 
-    fn register_callbacks(client: &Client, me: u64, events: &EventQueue) -> Vec<CallbackHandle> {
+    fn register_callbacks(
+        client: &Client,
+        me: u64,
+        events: &EventQueue,
+        auth: &AuthEvents,
+    ) -> Vec<CallbackHandle> {
         let queue = Arc::clone(events);
         let overlay = client.register_callback(move |cb: GameOverlayActivated| {
             lock(&queue).push(SteamEvent::OverlayToggled(cb.active));
@@ -128,6 +138,21 @@ impl RealBackend {
                 lock(&queue).push(SteamEvent::AchievementUnlocked(cb.achievement_name));
             }
         });
+        let queue = Arc::clone(auth);
+        let validated = client.register_callback(move |cb: ValidateAuthTicketResponse| {
+            let (accepted, reason) = match &cb.response {
+                Ok(()) => (true, String::new()),
+                Err(error) => (false, error.to_string()),
+            };
+            queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(NetEvent::AuthResult {
+                    user: SteamId(cb.steam_id.raw()),
+                    accepted,
+                    reason,
+                });
+        });
         vec![
             overlay,
             persona,
@@ -136,6 +161,7 @@ impl RealBackend {
             received,
             stored,
             achievement,
+            validated,
         ]
     }
 }
@@ -182,7 +208,8 @@ impl SteamBackend for RealBackend {
                     name: client.friends().name(),
                 };
                 let app_id = AppId(client.utils().app_id().0);
-                let handles = Self::register_callbacks(&client, me, &self.events);
+                let handles =
+                    Self::register_callbacks(&client, me, &self.events, &self.net.auth_events);
                 self.live = Some(Live {
                     _handles: handles,
                     client,
@@ -400,6 +427,87 @@ impl SteamBackend for RealBackend {
         } else {
             Err(SteamError::NotFound(name.to_owned()))
         }
+    }
+
+    fn net_init_relay(&mut self) -> SteamResult<()> {
+        let client = self.client()?.clone();
+        self.net.init_relay(&client);
+        Ok(())
+    }
+
+    fn net_relay_status(&self) -> SteamResult<RelayStatus> {
+        Ok(self.net.relay_status(self.client()?))
+    }
+
+    fn net_max_message_size(&self) -> SteamResult<usize> {
+        self.client()?;
+        Ok(self.net.max_message())
+    }
+
+    fn net_listen_p2p(&mut self, virtual_port: i32) -> SteamResult<NetListenId> {
+        let client = self.client()?.clone();
+        self.net.listen_p2p(&client, virtual_port)
+    }
+
+    fn net_listen_ip(&mut self, addr: SocketAddr) -> SteamResult<NetListenId> {
+        let client = self.client()?.clone();
+        self.net.listen_ip(&client, addr)
+    }
+
+    fn net_close_listen(&mut self, listen: NetListenId) -> SteamResult<()> {
+        self.net.close_listen(listen)
+    }
+
+    fn net_connect_p2p(&mut self, peer: SteamId, virtual_port: i32) -> SteamResult<NetConnId> {
+        let client = self.client()?.clone();
+        self.net.connect_p2p(&client, peer, virtual_port)
+    }
+
+    fn net_connect_ip(&mut self, addr: SocketAddr) -> SteamResult<NetConnId> {
+        let client = self.client()?.clone();
+        self.net.connect_ip(&client, addr)
+    }
+
+    fn net_accept(&mut self, conn: NetConnId) -> SteamResult<()> {
+        self.net.accept(conn)
+    }
+
+    fn net_close(&mut self, conn: NetConnId, reason: &str, linger: bool) -> SteamResult<()> {
+        self.net.close(conn, reason, linger)
+    }
+
+    fn net_send(&mut self, conn: NetConnId, data: &[u8], flags: NetSendFlags) -> SteamResult<()> {
+        self.net.send(conn, data, flags)
+    }
+
+    fn net_flush(&mut self, conn: NetConnId) -> SteamResult<()> {
+        self.net.flush(conn)
+    }
+
+    fn net_receive(&mut self, conn: NetConnId, max: usize) -> SteamResult<Vec<Vec<u8>>> {
+        self.net.receive(conn, max)
+    }
+
+    fn net_poll_events(&mut self) -> Vec<NetEvent> {
+        self.net.poll_events()
+    }
+
+    fn net_conn_stats(&self, conn: NetConnId) -> Option<NetConnStats> {
+        self.net.conn_stats(self.client().ok()?, conn)
+    }
+
+    fn net_begin_auth(&mut self, user: SteamId, ticket: &[u8]) -> SteamResult<()> {
+        self.client()?
+            .user()
+            .begin_authentication_session(steamworks::SteamId::from_raw(user.0), ticket)
+            .map_err(|e| SteamError::Rejected(e.to_string()))
+    }
+
+    fn net_end_auth(&mut self, user: SteamId) -> SteamResult<()> {
+        self.client()?
+            .user()
+            .end_authentication_session(steamworks::SteamId::from_raw(user.0));
+        Ok(())
     }
 }
 
