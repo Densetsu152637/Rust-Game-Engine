@@ -96,7 +96,7 @@ fn services(h: &Harness, required: bool) -> Vec<Box<dyn HostService>> {
 #[test]
 fn headless_run_pumps_exactly_once_per_tick_and_inits_first() {
     let h = harness(FakeBackend::ready(AppId(480), "tester"));
-    let report = run_with_services(runtime(), headless(5), None, services(&h, false)).unwrap();
+    let report = run_with_services(runtime(), headless(5), None, services(&h, true)).unwrap();
     assert_eq!(report.ticks, 5);
     let calls = h.calls();
     assert_eq!(&calls[..2], ["restart_app_if_necessary", "init"]);
@@ -127,8 +127,8 @@ fn backend_is_dropped_only_after_the_last_session_holder() {
 #[test]
 fn two_generations_share_one_init() {
     let h = harness(FakeBackend::ready(AppId(480), "tester"));
-    run_with_services(runtime(), headless(2), None, services(&h, false)).unwrap();
-    run_with_services(runtime(), headless(3), None, services(&h, false)).unwrap();
+    run_with_services(runtime(), headless(2), None, services(&h, true)).unwrap();
+    run_with_services(runtime(), headless(3), None, services(&h, true)).unwrap();
     let fake = h.fake.lock().unwrap();
     assert_eq!(fake.call_count("restart_app_if_necessary"), 1);
     assert_eq!(fake.call_count("init"), 1);
@@ -195,8 +195,18 @@ fn relaunch_by_steam_exits_quietly_without_init() {
         runtime(),
         headless(2),
         None,
-        services(&h, false),
+        services(&h, true),
     ));
     assert_eq!(exit.code, 0);
     assert_eq!(h.calls(), ["restart_app_if_necessary"]);
+}
+
+#[test]
+fn optional_steam_never_asks_for_a_relaunch() {
+    let h = harness(FakeBackend::ready(AppId(480), "tester").with_restart_required(true));
+    let report = run_with_services(runtime(), headless(2), None, services(&h, false)).unwrap();
+    assert_eq!(report.ticks, 2);
+    let fake = h.fake.lock().unwrap();
+    assert_eq!(fake.call_count("restart_app_if_necessary"), 0);
+    assert_eq!(fake.call_count("init"), 1);
 }

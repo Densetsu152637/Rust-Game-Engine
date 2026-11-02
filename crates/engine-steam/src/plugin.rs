@@ -91,8 +91,11 @@ impl HostService for SteamPlugin {
         if !state.started {
             state.started = true;
             let app_id = AppId(self.manifest.app_id);
-            // An unavailable backend refuses the call; that is the soft path.
-            if state.backend.restart_app_if_necessary(app_id) == Ok(true) {
+            // Only a required game relaunches itself through Steam; an optional one
+            // just tries `init` and keeps running with a soft status. An
+            // unavailable backend refuses the call, which is also the soft path.
+            if self.manifest.required && state.backend.restart_app_if_necessary(app_id) == Ok(true)
+            {
                 state.relaunching = true;
             } else {
                 let status = state.backend.init(Some(app_id));

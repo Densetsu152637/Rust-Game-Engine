@@ -119,10 +119,11 @@ The desktop runner knows nothing about Steam. `engine_desktop::run_with_services
    and audio is shut down.
 
 `SteamPlugin` (a `HostService`) uses a `SteamSession`, the process-wide owner of the
-backend. The first `before_graphics` calls `restart_app_if_necessary(app_id)` and, if
-that is not a relaunch, `init(Some(app_id))`, then sets the manifest `rich_presence`
-defaults. Later runner generations in the same process reuse the session, so
-`restart_app_if_necessary` and `init` happen at most once. The backend drops (Steam
+backend. The first `before_graphics` calls `restart_app_if_necessary(app_id)` only when
+the manifest sets `required: true` (an optional game never relaunches itself through
+Steam), and, if that is not a relaunch, `init(Some(app_id))`, then sets the manifest
+`rich_presence` defaults. Later runner generations in the same process reuse the
+session, so the restart check and `init` happen at most once. The backend drops (Steam
 shuts down) when the last session holder drops, after the GPU is idle.
 
 Per tick, `run_callbacks()` is called once and each `SteamEvent` becomes an engine
@@ -140,13 +141,14 @@ Exit behaviour (`runtime_entry`):
 | no `steam` block | Steam is never touched |
 | Steam unavailable, `required: false` | soft: the game runs, status is not `ready` |
 | Steam unavailable, `required: true` | exit code `4`, before any window or GPU device |
-| Steam asks for a relaunch (`restart_app_if_necessary` is true) | exit code `0`, result `{"steam":"relaunching"}`, no window |
+| `required: true` and Steam asks for a relaunch (`restart_app_if_necessary` is true) | exit code `0`, result `{"steam":"relaunching"}`, no window |
+| `required: false` | no relaunch check is made; only `init` is tried |
 | editor play generation (`ENGINE_GENERATION_READY_FILE` set) | Steam is never constructed |
 
-When launched outside Steam, `SteamAPI_RestartAppIfNecessary` returns true (and asks
-Steam to relaunch the game) unless `steam_appid.txt` is in the working directory or the
-`SteamAppId` environment variable is set; set `SteamAppId=<app_id>` for development
-runs. `ShutdownRequested` is part of the event type, but `steamworks` 0.13.1 does not
+For a `required` game launched outside Steam, `SteamAPI_RestartAppIfNecessary` returns
+true (and asks Steam to relaunch the game) unless `steam_appid.txt` is in the working
+directory or the `SteamAppId` environment variable is set; set `SteamAppId=<app_id>`
+for development runs of required games. Optional games never make this check. `ShutdownRequested` is part of the event type, but `steamworks` 0.13.1 does not
 expose Steam's shutdown notification, so the real backend never produces it yet.
 
 ## Live tests
