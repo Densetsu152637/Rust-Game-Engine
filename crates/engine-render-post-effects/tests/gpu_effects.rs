@@ -55,8 +55,11 @@ struct Pixel { @location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32 }
 
 // Variants of `AA_SCENE_SHADER`, selected by `aa_mode` 2.. in order: the covered
 // side is an HDR 8.0 instead of 1.0; a flat image; an edge below the contrast
-// threshold (0.95 against 1.0).
-fn aa_variant_shaders() -> [String; 3] {
+// threshold (0.95 against 1.0); a saturated coloured highlight above 1.0
+// (HDR_COLOUR) on black.
+const HDR_COLOUR: [f32; 3] = [8.0, 1.0, 0.5];
+
+fn aa_variant_shaders() -> [String; 4] {
     [
         AA_SCENE_SHADER.replace("select(0.0, 1.0,", "select(0.0, 8.0,"),
         AA_SCENE_SHADER.replace(
@@ -64,6 +67,11 @@ fn aa_variant_shaders() -> [String; 3] {
             "let diagonal = true;",
         ),
         AA_SCENE_SHADER.replace("select(0.0, 1.0,", "select(0.95, 1.0,"),
+        AA_SCENE_SHADER.replace(
+            "out.color = vec4<f32>(select(0.0, 1.0, diagonal || detail || sliver), 0.0, 0.0, 0.375);",
+            "let k = select(0.0, 1.0, diagonal || detail || sliver);
+    out.color = vec4<f32>(k * 8.0, k * 1.0, k * 0.5, 0.375);",
+        ),
     ]
 }
 
@@ -467,13 +475,12 @@ fn spatial_aa_blends_bright_hdr_edges_in_a_display_compressed_domain() -> Result
     }
     eprintln!("bright HDR edge display-space error: plain {plain_error} aa {aa_error}");
     // Measured on the RTX 5080: blending in linear HDR gave 4.73 (worse than
-    // the unfiltered 2.14 because the 8.0 side dominates every mixed pixel);
-    // the compressed-domain mix gives about 3.4. The along-edge kernel still
-    // does not estimate coverage across the edge, so this bounds the
-    // regression and documents the limit instead of claiming parity.
+    // the unfiltered 2.14 because the 8.0 side dominates every mixed pixel).
+    // The compressed-domain mix plus the strength guard must never be worse
+    // than the unfiltered image.
     assert!(
-        aa_error < 4.0,
-        "bright HDR edges regressed towards linear HDR blending: {aa_error} (plain {plain_error})"
+        aa_error <= plain_error,
+        "bright HDR edge is worse than unfiltered: aa {aa_error} > plain {plain_error}"
     );
     for y in 0..size[1] {
         for x in 0..size[0] {
@@ -486,6 +493,56 @@ fn spatial_aa_blends_bright_hdr_edges_in_a_display_compressed_domain() -> Result
     }
     assert!(close(aa.pixel(2, 20), plain.pixel(2, 20), 0.002));
     assert!(close(aa.pixel(58, 20), plain.pixel(58, 20), 0.002));
+    Ok(())
+}
+
+/// A saturated highlight above 1.0 against black: every filtered pixel is a
+/// scalar multiple of the highlight colour (hue preserved) and the per-channel
+/// display-space error is no worse than the unfiltered image.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn spatial_aa_keeps_hue_and_error_bound_on_coloured_hdr_edges() -> Result<()> {
+    let display = |value: f32| value / (1.0 + value);
+    let mut rig = Rig::new()?;
+    rig.aa_mode.store(5, Ordering::Relaxed);
+    let id = ViewId(46);
+    let size = [65, 43];
+    let projection = perspective(size[0] as f32 / size[1] as f32);
+    let plain = rig.frame(id, size, size, projection, false, false, false)?;
+    rig.controls
+        .set_spatial_aa(id, Some(SpatialAaSettings::default()))?;
+    let aa = rig.frame(id, size, size, projection, false, false, false)?;
+    let mut plain_error = 0.0;
+    let mut aa_error = 0.0;
+    let mut filtered = 0;
+    for y in 9..40 {
+        for x in 10..55 {
+            let coverage = diagonal_coverage(x, y);
+            let pixel = aa.pixel(x, y);
+            for channel in 0..3 {
+                let truth = coverage * display(HDR_COLOUR[channel]);
+                plain_error += (display(plain.pixel(x, y)[channel]) - truth).powi(2);
+                aa_error += (display(pixel[channel]) - truth).powi(2);
+            }
+            if pixel[0] > 0.05 && (pixel[0] - plain.pixel(x, y)[0]).abs() > 1e-3 {
+                filtered += 1;
+                for channel in 1..3 {
+                    let expected = HDR_COLOUR[channel] / HDR_COLOUR[0];
+                    let ratio = pixel[channel] / pixel[0];
+                    assert!(
+                        (ratio - expected).abs() < 0.01,
+                        "hue shifted at ({x}, {y}) channel {channel}: {ratio} vs {expected}"
+                    );
+                }
+            }
+        }
+    }
+    eprintln!("coloured HDR edge display-space error: plain {plain_error} aa {aa_error}");
+    assert!(filtered > 10, "the filter changed only {filtered} pixels");
+    assert!(
+        aa_error <= plain_error,
+        "coloured HDR edge is worse than unfiltered: aa {aa_error} > plain {plain_error}"
+    );
     Ok(())
 }
 

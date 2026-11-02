@@ -210,7 +210,12 @@ validation cannot tell whether a texture really holds irradiance.
 - **Cost and limits.** Lightmapped draws use a derived pipeline (the lit shader plus
   a second vertex stream); other draws are untouched apart from the extra neutral
   binding. Bilinear filtering can bleed neighbouring atlas texels at region borders;
-  pad regions when baking. Multiple UV-set conflicts, lightmap streaming, directional
+  pad regions when baking. A runtime `GeometryOverride` (skinning, World terrain,
+  foliage, water and tilemap chunks) replaces the mesh that is validated and drawn,
+  and every engine producer writes an empty `uv2`, so a `MeshLightmap` on such an
+  entity is rejected with `render.lightmap.uv2`; lightmaps are unsupported for
+  runtime-generated geometry, and authored `MeshLods` are ignored on an overridden
+  mesh. Multiple UV-set conflicts, lightmap streaming, directional
   or spherical-harmonic lightmaps, lightmapped World terrain/foliage/water and custom
   shader opt-in remain unimplemented.
 
