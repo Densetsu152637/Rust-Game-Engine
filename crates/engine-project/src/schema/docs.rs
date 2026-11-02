@@ -123,6 +123,21 @@ fn spatial_aa_schema() -> Value {
     }), &[]), {"type":"null"}],"description":"Optional current-frame spatial AA; absent or null disables it. Camera3D.render_features.effects.spatial_aa=false takes precedence."})
 }
 
+fn decals_schema() -> Value {
+    json!({"type":"array","maxItems":64,"default":[],"items":closed(json!({
+        "position":{"type":"array","items":{"type":"number","minimum":-100000,"maximum":100000},"minItems":3,"maxItems":3,"default":[0,0,0],"description":"World position of the box centre."},
+        "rotation":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4,"default":[0,0,0,1],"description":"Orientation quaternion [x, y, z, w]; finite and nonzero. The decal faces local +Z and projects toward -Z."},
+        "half_extents":{"type":"array","items":{"type":"number","exclusiveMinimum":0,"maximum":100000},"minItems":3,"maxItems":3,"default":[0.5,0.5,0.5],"description":"Half size of the projection box along local X, Y and Z."},
+        "albedo":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":3,"maxItems":3,"default":[1,1,1],"description":"Linear albedo."},
+        "opacity":{"type":"number","minimum":0,"maximum":1,"default":1.0,"description":"Opacity of the albedo response."},
+        "blend":{"enum":["multiply","paint"],"default":"multiply","description":"multiply: lit * lerp(1, albedo, opacity). paint: lerp(lit, albedo * luma(lit), opacity)."},
+        "emissive":{"type":"array","items":{"type":"number","minimum":0,"maximum":1000},"minItems":3,"maxItems":3,"default":[0,0,0],"description":"Radiance added where the decal covers the surface; not scaled by opacity."},
+        "max_angle":{"type":"number","exclusiveMinimum":0,"maximum":std::f64::consts::FRAC_PI_2,"default":1.2217,"description":"Largest radians between the surface normal and the decal axis that still receives the decal."},
+        "angle_fade":{"type":"number","minimum":0,"default":0.2618,"description":"Fade width in radians below max_angle; at most max_angle."},
+        "edge_fade":{"type":"number","minimum":0,"maximum":1,"default":0.1,"description":"Fade width at each box face as a fraction of the half extent."}
+    }), &[]),"description":"Optional projected decals in world space, drawn in list order. Absent or empty disables them. Camera3D.render_features.engine.decals=false takes precedence. Decals tint the lit scene colour of opaque built-in meshes; they do not change normals or roughness (docs/rendering-decals.md)."})
+}
+
 /// All authored component documents.
 pub fn component_docs() -> Vec<ComponentDoc> {
     let mut docs = builtin_docs();
@@ -136,10 +151,10 @@ fn builtin_docs() -> Vec<ComponentDoc> {
     vec![
         ComponentDoc {
             name: "Camera3D",
-            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them.",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them. Optional `decals` lists up to 64 world-space projected decals (docs/rendering-decals.md).",
             requires: &["Transform"],
             schema: closed(
-                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
+                json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"decals":decals_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},
                     "description":"Per-camera render feature overrides by stable feature name (for example engine.opaque, engine.shadows, engine.sprites, the UI features ui.sdf_text, ui.world and ui.color_filter of engine-ui-render, or a native feature such as world.terrain): false disables the feature in this camera view, true enables a feature that is off by default. Required features (engine.output) cannot be disabled. Unknown names are reported in the run report's render_pipeline.unknown_overrides."},"projection":{"oneOf":[
                     closed(json!({"kind":{"const":"perspective"},"fov_y_radians":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":std::f32::consts::PI},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","fov_y_radians","near","far"]),
                     closed(json!({"kind":{"const":"orthographic"},"height":{"type":"number","exclusiveMinimum":0},"near":{"type":"number","exclusiveMinimum":0},"far":{"type":"number","exclusiveMinimum":0}}), &["kind","height","near","far"])
