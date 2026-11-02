@@ -12,9 +12,7 @@ behaviour. No git submodule is needed.
 engine = { git = "https://github.com/Densetsu152637/Rust-Game-Engine.git", tag = "v0.1.0" }
 ```
 
-No release tag has been published yet: until `v0.1.0` exists on the remote, use
-`rev = "<commit sha>"` or `branch = "main"` instead of `tag`, or a `path`
-dependency on a local checkout. Nothing is published on crates.io yet. Releases are git tags `vX.Y.Z` that match the
+The first release tag is `v0.1.0`. Nothing is published on crates.io yet. Releases are git tags `vX.Y.Z` that match the
 workspace `version` in the engine's root `Cargo.toml`; pin the tag you tested with and
 bump it deliberately. Most of the engine's third-party dependencies are `=` pinned and
 your game's own `Cargo.lock` records the exact engine commit, so a tag is a reproducible

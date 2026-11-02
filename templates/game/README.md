@@ -6,9 +6,7 @@ engine repository.
 
 1. Copy `templates/game` out of the engine checkout (at the tag you want) and rename
    the package in `Cargo.toml` and the `my_game` path in `src/main.rs`.
-2. Keep the `tag` in `Cargo.toml` equal to the engine version you copied from. No tag
-   is published yet: until it is, replace `tag = ...` with `rev = "<commit sha>"` or
-   `branch = "main"`.
+2. Keep the `tag` in `Cargo.toml` equal to the engine version you copied from.
 3. `cargo run` opens the window. `cargo test` runs your tests. `engine run` and
    editor play also work with the git dependency: the engine redirects it to the
    engine checkout that is running (see `docs/using-the-engine.md`).
