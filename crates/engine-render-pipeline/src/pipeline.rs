@@ -1209,7 +1209,7 @@ impl ScenePipeline {
                     .as_ref()
                     .context("no retained display source")?;
                 let composite = io.composite.as_ref().context("no presentation targets")?;
-                self.composite_copy.encode(
+                self.composite_copy.encode_with(
                     &device,
                     &queue,
                     &mut encoder,
@@ -1217,6 +1217,7 @@ impl ScenePipeline {
                     &composite.colors[0].view,
                     target.format,
                     Viewport::full(target.size),
+                    view.linear_output,
                 )?;
                 io.output.as_mut().context("no output")?.view = composite.colors[0].view.clone();
                 io.composite_index = 0;
@@ -1236,7 +1237,13 @@ impl ScenePipeline {
                         host,
                     )?;
                 }
-                finish_presentation(&mut self.composite_copy, &self.gpu, &mut encoder, &io)?;
+                finish_presentation(
+                    &mut self.composite_copy,
+                    &self.gpu,
+                    &mut encoder,
+                    &io,
+                    view.linear_output,
+                )?;
             } else {
                 for feature in resolved
                     .states
@@ -1329,7 +1336,7 @@ impl ScenePipeline {
             });
         let result = (|| -> Result<()> {
             let composite = io.composite.as_ref().context("no presentation targets")?;
-            self.composite_copy.encode(
+            self.composite_copy.encode_with(
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,
@@ -1337,6 +1344,7 @@ impl ScenePipeline {
                 &composite.colors[0].view,
                 target.format,
                 Viewport::full(target.size),
+                view.linear_output,
             )?;
             for stage in [Stage::Overlay, Stage::Composite] {
                 run_presentation(
@@ -1354,7 +1362,13 @@ impl ScenePipeline {
                     host,
                 )?;
             }
-            finish_presentation(&mut self.composite_copy, &self.gpu, &mut encoder, &io)
+            finish_presentation(
+                &mut self.composite_copy,
+                &self.gpu,
+                &mut encoder,
+                &io,
+                view.linear_output,
+            )
         })();
         if result.is_ok() {
             self.gpu.queue.submit([encoder.finish()]);
@@ -1510,7 +1524,7 @@ impl ScenePipeline {
                     host,
                 )?;
             }
-            finish_presentation(&mut self.composite_copy, gpu, &mut encoder, &io)
+            finish_presentation(&mut self.composite_copy, gpu, &mut encoder, &io, false)
         })();
         gpu.queue.submit([encoder.finish()]);
         state.composite = io.composite.take();
@@ -2226,7 +2240,7 @@ fn run_builtin(
         names::OUTPUT => {
             let hdr = io.current_hdr.clone().context("no HDR colour to output")?;
             let target = io.output.as_ref().context("no output target")?;
-            run.output.encode(
+            run.output.encode_with(
                 device,
                 &run.gpu.queue,
                 encoder,
@@ -2234,6 +2248,7 @@ fn run_builtin(
                 &target.view,
                 target.format,
                 target.viewport,
+                run.view.linear_output,
             )?;
             Ok(true)
         }
@@ -2286,10 +2301,11 @@ fn finish_presentation(
     gpu: &GpuContext,
     encoder: &mut wgpu::CommandEncoder,
     io: &FrameIo,
+    linear: bool,
 ) -> Result<()> {
     if let Some(target) = &io.final_output {
         let source = &io.output.as_ref().context("no composite source")?.view;
-        copy.encode(
+        copy.encode_with(
             &gpu.device,
             &gpu.queue,
             encoder,
@@ -2297,6 +2313,7 @@ fn finish_presentation(
             &target.view,
             target.format,
             Viewport::full(target.size),
+            linear,
         )?;
     }
     Ok(())

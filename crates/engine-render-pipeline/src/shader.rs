@@ -8,8 +8,9 @@
 //! math), `engine::lighting` (direct lighting of the light list),
 //! `engine::mesh` (engine vertex input, group 3 instance data),
 //! `engine::material` (material bindings, groups 1 and 2, plus lighting) and
-//! `engine::fullscreen`. Features register their own modules with
-//! [`ShaderComposer::register_module`] to keep shared code in separate files.
+//! `engine::fullscreen`, `engine::tonemap` and `engine::hdr`. Features
+//! register their own modules with [`ShaderComposer::register_module`] to keep
+//! shared code in separate files.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,6 +41,7 @@ pub(crate) const SSR_WGSL: &str = include_str!("wgsl/ssr.wgsl");
 pub(crate) const DECALS_WGSL: &str = include_str!("wgsl/decals.wgsl");
 pub(crate) const PARTICLES_SIM_WGSL: &str = include_str!("wgsl/particles_sim.wgsl");
 pub(crate) const PARTICLES_DRAW_WGSL: &str = include_str!("wgsl/particles_draw.wgsl");
+pub(crate) const HDR_OUTPUT_WGSL: &str = include_str!("wgsl/hdr_output.wgsl");
 
 /// Longest composed shader accepted, in bytes.
 pub const MAX_COMPOSED_BYTES: usize = 4 * 1024 * 1024;
@@ -84,6 +86,9 @@ impl ShaderComposer {
         modules.insert("engine::lighting".to_owned(), LIGHTING_WGSL.to_owned());
         modules.insert("engine::fullscreen".to_owned(), FULLSCREEN_WGSL.to_owned());
         modules.insert("engine::tonemap".to_owned(), TONEMAP_WGSL.to_owned());
+        // PQ / scRGB encoding, Rec.709 to Rec.2020 and the roll-off to the display
+        // peak, generated from the constants of `crate::hdr`.
+        modules.insert("engine::hdr".to_owned(), crate::hdr::wgsl_source());
         let material = match target {
             MaterialTarget::Mesh => MATERIAL_WGSL,
             MaterialTarget::Sprite => SPRITE_MATERIAL_WGSL,
@@ -577,6 +582,7 @@ mod tests {
             DECALS_WGSL,
             PARTICLES_SIM_WGSL,
             PARTICLES_DRAW_WGSL,
+            HDR_OUTPUT_WGSL,
         ] {
             validate_wgsl(&composer.compose(source).unwrap()).unwrap();
         }

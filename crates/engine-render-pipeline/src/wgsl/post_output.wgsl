@@ -9,7 +9,8 @@
 // 1: operator, encode_srgb, vignette_on, grain_on
 // 2: vignette intensity, smoothness, center.xy
 // 3: vignette color.xyz, grain frame
-// 4: grain intensity, grain response
+// 4: grain intensity, grain response, linear_output (HDR output transform
+//    follows: no operator, no clamp, no sRGB encode)
 @group(0) @binding(1) var<uniform> p: array<vec4<f32>, 5>;
 
 @vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -25,7 +26,11 @@ fn pcg(v: u32) -> u32 {
 @fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let pixel = position.xy - p[0].xy;
     let hdr = textureLoad(scene, vec2<i32>(pixel), 0);
-    var c = engine_tonemap(u32(p[1].x), hdr.rgb);
+    let linear_output = p[4].z > 0.5;
+    var c = max(hdr.rgb, vec3<f32>(0.0));
+    if (!linear_output) {
+        c = engine_tonemap(u32(p[1].x), hdr.rgb);
+    }
     if (p[1].z > 0.5) {
         let size = p[0].zw;
         let aspect = size.x / size.y;
@@ -44,6 +49,9 @@ fn pcg(v: u32) -> u32 {
         let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
         let amplitude = p[4].x * mix(1.0, 1.0 - luma, p[4].y);
         c = c + vec3<f32>(n * amplitude);
+    }
+    if (linear_output) {
+        return vec4<f32>(max(c, vec3<f32>(0.0)), clamp(hdr.a, 0.0, 1.0));
     }
     if (p[1].y > 0.5) {
         c = engine_srgb_encode(c);

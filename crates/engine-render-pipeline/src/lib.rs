@@ -33,6 +33,7 @@ mod builtin;
 mod context;
 pub mod decals;
 mod feature;
+pub mod hdr;
 pub mod indirect;
 mod instancing;
 pub mod jitter;
@@ -56,7 +57,7 @@ pub mod visibility;
 pub use builtin::mesh::{
     GpuInstance, MAX_SCENE_MESHES, MaterialParams, SceneMesh, id_hash, validate_params,
 };
-pub use builtin::passes::DepthExport;
+pub use builtin::passes::{DepthExport, HdrOutputPass};
 pub use context::{
     CompositeIo, FeatureContext, FeatureSetup, OutputTarget, PipelineLayouts, PresentationInput,
 };
@@ -73,6 +74,7 @@ pub use feature::{
     FeatureState, MAX_FEATURE_NAME_BYTES, MAX_FEATURES, PipelineFeature, PipelineFeatures,
     ResolvedFeatures, Stage, StageRule, validate_feature_name,
 };
+pub use hdr::{HdrEncoding, HdrOutputSettings};
 pub use instancing::{DrawStats, Grouping, InstanceBatcher, InstancedBatch, group_keys};
 pub use lighting::{
     CLUSTER_DIMS, ClusterMode, ClusterStats, LightingReport, MAX_LIGHTING_REASONS,

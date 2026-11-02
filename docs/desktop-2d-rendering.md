@@ -128,6 +128,10 @@ refresh rate. The final frame of a bounded run is drawn at `alpha = 1`.
 `ENGINE_PRESENT_MODE=fifo|mailbox|immediate|auto` selects the present mode
 (unsupported modes fall back to `fifo`; the non-vsync modes exist to measure
 frame rates above the display refresh).
+`ENGINE_HDR=off|auto|scrgb|pq` (off by default) requests an HDR window surface,
+with `ENGINE_HDR_PAPER_WHITE_NITS` and `ENGINE_HDR_PEAK_NITS`; a surface or
+display that cannot do HDR keeps the sRGB path and `WindowSurface::hdr_status()`
+says why ([rendering-hdr-output.md](rendering-hdr-output.md)).
 
 **What blends.** Extraction records, per sprite and mesh draw, the entity's
 unsnapped position (`Draw::motion`). Interpolation matches draws by stable ID and

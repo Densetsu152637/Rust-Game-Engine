@@ -15,6 +15,7 @@ mod atmosphere;
 mod cache;
 mod decals;
 mod framegen;
+mod hdr;
 mod material2d;
 mod particles;
 mod post;
@@ -34,7 +35,7 @@ pub use scene3d::{LIT_WGSL, camera_matrix};
 pub use sprite::{SpriteRenderer, TEXTURED_WGSL};
 pub use temporal::{halton, jitter_matrix, jitter_offset, jitter_phase_count, pixel_motion};
 
-use crate::{GpuContext, RenderTargetInfo, UpscalerDevice};
+use crate::{GpuContext, HdrStatus, RenderTargetInfo, UpscalerDevice};
 use anyhow::{Context, Result, ensure};
 use engine_core::bevy_ecs::world::World;
 use engine_project::lights::LightingStatus;
@@ -51,10 +52,10 @@ use engine_render::{DrawCommand, RenderCommandBuffer, RenderTarget};
 use engine_render_pipeline::Presentation;
 use engine_render_pipeline::atmosphere::AtmosphereControls;
 use engine_render_pipeline::{
-    Activity, FeatureOverrides, GpuTexture, HostStages, HostUpscale, LightingReport, OutputTarget,
-    OverlayBatch, OverlayItem, ParticleReport, ParticleTickReport, PipelineFeatures,
-    PresentationInput, SceneFrame, ScenePipeline, SceneTextures, Stage, ViewData, ViewId, ViewKind,
-    ViewReport, Viewport, names,
+    Activity, FeatureOverrides, GpuTexture, HdrOutputSettings, HostStages, HostUpscale,
+    LightingReport, OutputTarget, OverlayBatch, OverlayItem, ParticleReport, ParticleTickReport,
+    PipelineFeatures, PresentationInput, SceneFrame, ScenePipeline, SceneTextures, Stage, ViewData,
+    ViewId, ViewKind, ViewReport, Viewport, names,
 };
 use engine_render_post_effects::{
     DepthOfFieldFeature, MotionBlurFeature, PostEffects, SpatialAaFeature,
@@ -161,6 +162,9 @@ pub struct GpuRenderer {
     native_reset: bool,
     upscaler: upscale::Upscaler,
     framegen: framegen::FrameGeneration,
+    /// HDR display output while enabled ([`Self::enable_hdr_output`]).
+    hdr: Option<hdr::HdrOutput>,
+    hdr_status: HdrStatus,
 }
 
 /// How the `engine.sprites` overlay node draws a frame's 2D sprites/UI.
@@ -383,6 +387,8 @@ impl GpuRenderer {
             native_reset: false,
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
             framegen: framegen::FrameGeneration::new(),
+            hdr: None,
+            hdr_status: HdrStatus::default(),
         })
     }
 
@@ -461,8 +467,73 @@ impl GpuRenderer {
         self.framegen.request_reset();
     }
 
+    /// The presented target: with HDR output enabled the surface's HDR
+    /// format, not the internal display-linear render format.
     pub fn target_info(&self) -> RenderTargetInfo {
-        self.info
+        match &self.hdr {
+            Some(hdr) => RenderTargetInfo {
+                format: hdr.present_format,
+                ..self.info
+            },
+            None => self.info,
+        }
+    }
+
+    /// Set the presented surface format of an SDR renderer (the surface was
+    /// reconfigured). Not valid while HDR output is enabled.
+    pub(crate) fn set_target_format(&mut self, format: wgpu::TextureFormat) {
+        debug_assert!(self.hdr.is_none(), "disable HDR output first");
+        self.info.format = format;
+    }
+
+    /// Requested versus active HDR output (see [`HdrStatus`]).
+    pub fn hdr_status(&self) -> &HdrStatus {
+        &self.hdr_status
+    }
+
+    /// Record an HDR request that cannot run (surface fallback) so the status
+    /// reports why; the renderer stays on the SDR path.
+    pub fn note_hdr_fallback(&mut self, status: HdrStatus) {
+        self.disable_hdr_output();
+        self.hdr_status = status;
+    }
+
+    /// Switch to HDR display output. The renderer was created for the HDR
+    /// surface format of `settings.encoding` (`Rgba16Float` for scRGB,
+    /// `Rgb10a2Unorm` for PQ). From now on scene, post, sprites and UI render
+    /// into an `Rgba16Float` display-linear image (`1.0` = paper white, so the
+    /// UI sits at paper white) and one pass encodes it into the `target` of
+    /// each `render*` call. Frame generation is gated off while enabled (its
+    /// colour path is 8-bit SDR).
+    pub fn enable_hdr_output(
+        &mut self,
+        settings: HdrOutputSettings,
+        status: HdrStatus,
+    ) -> Result<()> {
+        self.disable_hdr_output();
+        let output = hdr::HdrOutput::new(&self.gpu.device, settings, self.info.format, status)?;
+        self.hdr_status = output.status.clone();
+        self.hdr = Some(output);
+        self.info.format = hdr::LINEAR_FORMAT;
+        self.framegen.set_output_gate(Some(
+            "frame generation is unavailable while HDR output is active: its colour path is              8-bit SDR (Rgba8Unorm, hdr flag off)"
+                .to_owned(),
+        ));
+        self.gpu.check_errors()
+    }
+
+    /// Return to the SDR path (the surface format is the render format again).
+    pub fn disable_hdr_output(&mut self) {
+        if let Some(output) = self.hdr.take() {
+            self.info.format = output.present_format;
+            self.framegen.set_output_gate(None);
+            self.hdr_status = HdrStatus::default();
+        }
+    }
+
+    /// The display-linear image of the last HDR frame (tests and tools).
+    pub fn hdr_linear_texture(&self) -> Option<&wgpu::Texture> {
+        self.hdr.as_ref().and_then(|hdr| hdr.linear_texture())
     }
 
     /// The 3D render pipeline, created on first use.
@@ -703,6 +774,33 @@ impl GpuRenderer {
         target: &wgpu::TextureView,
         world: Option<&World>,
     ) -> Result<RenderStats> {
+        if self.hdr.is_none() {
+            return self.render_frame(frame, target, world);
+        }
+        let (width, height) = (self.info.width, self.info.height);
+        let linear =
+            self.hdr
+                .as_mut()
+                .expect("checked above")
+                .linear_view(&self.gpu.device, width, height);
+        let stats = self.render_frame(frame, &linear, world)?;
+        self.hdr.as_mut().expect("checked above").present(
+            &self.gpu.device,
+            &self.gpu.queue,
+            target,
+        )?;
+        self.gpu.check_errors()?;
+        Ok(stats)
+    }
+
+    /// One frame into `target`, which is the presented target on the SDR path
+    /// and the display-linear image on the HDR path.
+    fn render_frame(
+        &mut self,
+        frame: &SceneRenderFrame,
+        target: &wgpu::TextureView,
+        world: Option<&World>,
+    ) -> Result<RenderStats> {
         self.gpu.check_errors()?;
         let request = frame.camera3d.as_ref().map(|c| c.camera.upscaler);
         let stats = match request {
@@ -828,6 +926,7 @@ impl GpuRenderer {
         // A requested camera cut discards the view's temporal history
         // (motion, RT denoisers).
         view.reset_history = std::mem::take(&mut self.native_reset);
+        view.linear_output = self.hdr.is_some();
         let output = self.output_target(target, viewport);
         let (_, stats) = self.draw_3d(frame, view, &output, world, true, None, None)?;
         Ok(stats)
@@ -1237,6 +1336,7 @@ impl GpuRenderer {
         view.jitter = jitter;
         view.reset_history = reset;
         view.host_needs.motion = true;
+        view.linear_output = self.hdr.is_some();
         if fg_inputs.is_some() {
             view.presentation = Presentation::SceneOnly;
         }

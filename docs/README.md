@@ -68,6 +68,10 @@
   emitters simulated once per scene tick (tick contract, seeded CPU reference,
   bounded overflow), depth-tested billboards in the `Transparent` stage, limits and
   the authored `ParticleEmitter` component.
+- [HDR display output](rendering-hdr-output.md): scRGB and PQ (HDR10) surfaces
+  through wgpu 30 surface colour spaces, capability detection and fallback,
+  paper-white UI, peak roll-off, Frame Generation gating and the manual monitor
+  check.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Projected decals](rendering-decals.md): `engine.decals` depth-projected box

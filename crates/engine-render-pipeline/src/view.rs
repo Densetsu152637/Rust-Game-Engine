@@ -104,6 +104,12 @@ pub struct ViewData {
     /// the feature on unless the view disables it; see [`crate::Decal`].
     pub decals: Vec<crate::decals::Decal>,
     pub presentation: Presentation,
+    /// Write display-linear colour for a later HDR output transform
+    /// ([`crate::HdrOutputPass`]): the output and tonemap stages skip the
+    /// 0..1 clamp, the tonemap operator and the sRGB encode, so `1.0` is
+    /// paper white and brighter values survive in a float target. `false`
+    /// (the default) is the SDR path, unchanged.
+    pub linear_output: bool,
 }
 
 impl ViewData {
@@ -134,6 +140,7 @@ impl ViewData {
             ssr: None,
             decals: Vec::new(),
             presentation: Presentation::Enabled,
+            linear_output: false,
         };
         view.validate()?;
         Ok(view)

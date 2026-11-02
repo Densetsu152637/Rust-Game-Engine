@@ -65,6 +65,9 @@ pub(crate) struct FrameGeneration {
     pub(super) presented: u64,
     pub(super) resets: u64,
     failure: Option<(FailureKey, String)>,
+    /// Why generation cannot run with the current output (HDR display
+    /// output), independent of the device.
+    output_gate: Option<String>,
     /// When the last generated sequence finished; a long gap resets history.
     last_frame: Option<Instant>,
     last_completed_source: Option<(u64, bool)>,
@@ -88,6 +91,7 @@ impl FrameGeneration {
             presented: 0,
             resets: 0,
             failure: None,
+            output_gate: None,
             last_frame: None,
             last_completed_source: None,
             presentable: Vec::new(),
@@ -112,6 +116,12 @@ impl FrameGeneration {
         self.last_completed_source = None;
         self.failure = None;
         self.discard_frames();
+    }
+
+    /// Gate generation off (`Some(reason)`) or on again for the current
+    /// output encoding.
+    pub fn set_output_gate(&mut self, reason: Option<String>) {
+        self.output_gate = reason;
     }
 
     pub fn request_reset(&mut self) {
@@ -222,6 +232,9 @@ impl FrameGeneration {
     ) -> Option<String> {
         if let Err(error) = requested.validate() {
             return Some(error.to_string());
+        }
+        if let Some(reason) = &self.output_gate {
+            return Some(reason.clone());
         }
         if let Some(reason) = device.frame_generation_unavailable_reason() {
             return Some(reason);

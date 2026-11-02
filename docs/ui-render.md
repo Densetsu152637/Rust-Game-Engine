@@ -112,7 +112,10 @@ For each view the feature:
    geometry in front hides it.
 4. **Blends** straight alpha into linear HDR colour. Vertex colours are sRGB and are
    converted to linear; image textures use their sRGB view; SDF pages use the
-   distance in alpha. A white UI colour is diffuse white 1.0 (not lit).
+   distance in alpha. A white UI colour is diffuse white 1.0 (not lit). World-space
+   panels are part of the scene, so under HDR display output they keep that
+   radiance (paper white at exposure 1.0); screen-space UI composites at paper white
+   ([rendering-hdr-output.md](rendering-hdr-output.md#ui-paper-white)).
 
 Views of kind `Probe` are skipped; camera, editor-viewport and XR-eye views draw,
 each with its own camera for billboards.

@@ -14,7 +14,9 @@ fn rows(m: &[V3; 3], v: V3) -> V3 {
     ]
 }
 
-const SRGB_TO_REC2020: [V3; 3] = [
+/// Linear Rec.709 / sRGB primaries to linear Rec.2020, row-major (also used
+/// by [`crate::hdr`] and mirrored in `wgsl/hdr.wgsl`).
+pub(crate) const SRGB_TO_REC2020: [V3; 3] = [
     [0.6274, 0.3293, 0.0433],
     [0.0691, 0.9195, 0.0114],
     [0.0164, 0.0880, 0.8956],
@@ -37,6 +39,11 @@ const AGX_OUTSET: [V3; 3] = [
 const AGX_MIN_EV: f32 = -12.473_93;
 const AGX_MAX_EV: f32 = 4.026_069;
 const LUMA: V3 = [0.2126, 0.7152, 0.0722];
+
+/// Linear Rec.709 (sRGB primaries) colour in linear Rec.2020 primaries.
+pub fn rec709_to_rec2020(color: V3) -> V3 {
+    rows(&SRGB_TO_REC2020, color)
+}
 
 fn dot(a: V3, b: V3) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]

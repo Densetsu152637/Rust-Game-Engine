@@ -1,8 +1,11 @@
 //! Fullscreen built-ins: the default output operator, bilinear upscale and
 //! the depth export used by upscaler/generator integrations.
 
+use crate::hdr::HdrOutputSettings;
 use crate::scoped;
-use crate::shader::{DEPTH_EXPORT_WGSL, OUTPUT_WGSL, ShaderComposer, UPSCALE_WGSL};
+use crate::shader::{
+    DEPTH_EXPORT_WGSL, HDR_OUTPUT_WGSL, OUTPUT_WGSL, ShaderComposer, UPSCALE_WGSL,
+};
 use crate::targets::HDR_FORMAT;
 use crate::view::Viewport;
 use anyhow::Result;
@@ -120,7 +123,8 @@ impl OutputPass {
         })
     }
 
-    /// Clear `target` to opaque black, then write `hdr` into `viewport`.
+    /// Clear `target` to opaque black, then write `hdr` into `viewport`
+    /// clamped to 0..1.
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
@@ -131,6 +135,23 @@ impl OutputPass {
         target: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         viewport: Viewport,
+    ) -> Result<()> {
+        self.encode_with(device, queue, encoder, hdr, target, format, viewport, false)
+    }
+
+    /// [`Self::encode`]; with `linear` the colour is written unclamped
+    /// (`ViewData::linear_output`, for a later HDR output transform).
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_with(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        hdr: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        viewport: Viewport,
+        linear: bool,
     ) -> Result<()> {
         let pipeline = match self.pipelines.get(&format) {
             Some(pipeline) => pipeline.clone(),
@@ -151,7 +172,12 @@ impl OutputPass {
         queue.write_buffer(
             &self.origin,
             0,
-            bytemuck::cast_slice(&[viewport.x as f32, viewport.y as f32, 0.0, 0.0]),
+            bytemuck::cast_slice(&[
+                viewport.x as f32,
+                viewport.y as f32,
+                if linear { 1.0 } else { 0.0 },
+                0.0,
+            ]),
         );
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("engine output"),
@@ -358,5 +384,120 @@ impl DepthExport {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+/// The HDR output transform: display-linear colour (`1.0` = paper white) to
+/// the signal of an HDR surface ([`HdrOutputSettings`]). Reads `source` at
+/// the target's size and covers the whole target.
+pub struct HdrOutputPass {
+    layout: wgpu::BindGroupLayout,
+    module: wgpu::ShaderModule,
+    pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    params: wgpu::Buffer,
+}
+
+impl HdrOutputPass {
+    pub fn new(device: &wgpu::Device) -> Result<Self> {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("engine hdr output"),
+            entries: &[
+                texture_entry(0, wgpu::TextureSampleType::Float { filterable: false }),
+                uniform_entry(1),
+            ],
+        });
+        let module = scoped(device, || {
+            module(device, "engine hdr output", HDR_OUTPUT_WGSL)
+        })?;
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("engine hdr output params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Ok(Self {
+            layout,
+            module,
+            pipelines: HashMap::new(),
+            params,
+        })
+    }
+
+    /// Encode `source` into `target` (a view of `format`, the HDR surface
+    /// format: `Rgba16Float` for scRGB, `Rgb10a2Unorm` for PQ). Fails for a
+    /// format that does not carry the settings' encoding.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        settings: &HdrOutputSettings,
+    ) -> Result<()> {
+        settings.validate()?;
+        anyhow::ensure!(
+            matches!(
+                (settings.encoding, format),
+                (crate::HdrEncoding::ScRgb, wgpu::TextureFormat::Rgba16Float)
+                    | (crate::HdrEncoding::Pq, wgpu::TextureFormat::Rgb10a2Unorm)
+            ),
+            "{} output needs an {} target, not {format:?}",
+            settings.encoding.label(),
+            match settings.encoding {
+                crate::HdrEncoding::ScRgb => "Rgba16Float",
+                crate::HdrEncoding::Pq => "Rgb10a2Unorm",
+            }
+        );
+        let pipeline = match self.pipelines.get(&format) {
+            Some(pipeline) => pipeline.clone(),
+            None => {
+                let pipeline = scoped(device, || {
+                    Ok(fullscreen_pipeline(
+                        device,
+                        "engine hdr output",
+                        &self.layout,
+                        &self.module,
+                        format,
+                    ))
+                })?;
+                self.pipelines.insert(format, pipeline.clone());
+                pipeline
+            }
+        };
+        queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&settings.uniform()));
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("engine hdr output"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.params.as_entire_binding(),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("engine hdr output"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..3, 0..1);
+        Ok(())
     }
 }

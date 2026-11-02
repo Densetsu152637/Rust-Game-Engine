@@ -593,6 +593,10 @@ integration and requests fall back with the build reason.
 - Screen-space reflections cover built-in lit materials only, trace the opaque
   scene once per frame without history, and yield to `engine.rt.reflections`
   when ray tracing can actually run ([rendering-ssr.md](rendering-ssr.md#limits)).
+- `ViewData::linear_output` makes the output and tonemap stages write unclamped
+  display-linear colour for `HdrOutputPass`, the HDR display output transform
+  (scRGB or PQ, paper white, peak roll-off); off by default
+  ([rendering-hdr-output.md](rendering-hdr-output.md)).
 - Presentation extensions must declare replay support to accompany DLSS frame
   generation; hardware validation of the revised late-UI integration is pending.
 - No automatic multi-camera rendering: hosts render additional views

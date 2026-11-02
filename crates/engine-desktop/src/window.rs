@@ -1,3 +1,4 @@
+use crate::hdr::{HdrChoice, HdrRequest, HdrSelection, HdrStatus};
 use crate::{
     DlssConfig, GpuContext, GpuRenderer, GpuRequirements, RenderLimits, RenderStats,
     RenderTargetInfo, WgpuOptions,
@@ -52,6 +53,68 @@ pub struct WindowSurface {
     config: wgpu::SurfaceConfiguration,
     suspended: bool,
     pacer: crate::PresentPacer,
+    hdr_request: HdrRequest,
+}
+
+type HdrMode = Option<(HdrChoice, engine_render_pipeline::HdrOutputSettings)>;
+
+/// Pick the surface format and colour space for `request` and write them into
+/// `config`: the HDR configuration when [`crate::select_hdr_surface`] allows
+/// it, otherwise the first sRGB format with `Auto` colour space (the SDR
+/// path, unchanged). Returns the HDR choice (with the output settings) when
+/// HDR is selected and the status describing the outcome.
+fn choose_surface_mode(
+    request: &HdrRequest,
+    caps: &wgpu::SurfaceCapabilities,
+    display: &wgpu::DisplayHdrInfo,
+    config: &mut wgpu::SurfaceConfiguration,
+) -> (HdrMode, HdrStatus) {
+    match crate::select_hdr_surface(request, &caps.format_capabilities, display) {
+        HdrSelection::Hdr(choice) => {
+            config.format = choice.format;
+            config.color_space = choice.color_space;
+            let settings = crate::hdr::output_settings(choice, request, display);
+            let status = HdrStatus::active(request, choice, &settings, display);
+            (Some((choice, settings)), status)
+        }
+        HdrSelection::Sdr { reason } => (None, sdr_surface(request, caps, config, reason)),
+    }
+}
+
+/// The SDR sRGB surface choice, with the status that records why.
+fn sdr_surface(
+    request: &HdrRequest,
+    caps: &wgpu::SurfaceCapabilities,
+    config: &mut wgpu::SurfaceConfiguration,
+    reason: Option<String>,
+) -> HdrStatus {
+    if let Some(format) = caps.formats.iter().find(|f| f.is_srgb()) {
+        config.format = *format;
+    } else if let Some(format) = caps.formats.first() {
+        config.format = *format;
+    }
+    config.color_space = wgpu::SurfaceColorSpace::Auto;
+    let space = if config.format == wgpu::TextureFormat::Rgba16Float {
+        wgpu::SurfaceColorSpace::ExtendedSrgbLinear
+    } else {
+        wgpu::SurfaceColorSpace::Srgb
+    };
+    HdrStatus::sdr(request, Some(config.format), Some(space), reason)
+}
+
+/// Configure `surface` with `config` inside a validation scope; the error is
+/// returned instead of becoming a fatal device error.
+fn configure_checked(
+    gpu: &GpuContext,
+    surface: &wgpu::Surface<'static>,
+    config: &wgpu::SurfaceConfiguration,
+) -> Result<(), String> {
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    surface.configure(&gpu.device, config);
+    match pollster::block_on(scope.pop()) {
+        Some(error) => Err(error.to_string()),
+        None => Ok(()),
+    }
 }
 
 impl WindowSurface {
@@ -131,15 +194,30 @@ impl WindowSurface {
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
             .context("surface has no supported configuration")?;
         let caps = surface.get_capabilities(&gpu.adapter);
-        if let Some(format) = caps.formats.iter().find(|f| f.is_srgb()) {
-            config.format = *format;
-        }
+        let display = surface.display_hdr_info(&gpu.adapter);
+        let hdr_request = HdrRequest::from_env()?;
         config.present_mode = resolve_present_mode(
             std::env::var(PRESENT_MODE_ENV_VAR).ok().as_deref(),
             &caps.present_modes,
         )?;
         config.desired_maximum_frame_latency = limits.max_frames_in_flight as u32;
-        surface.configure(&gpu.device, &config);
+        let (mut hdr, mut hdr_status) =
+            choose_surface_mode(&hdr_request, &caps, &display, &mut config);
+        if hdr.is_some()
+            && let Err(error) = configure_checked(&gpu, &surface, &config)
+        {
+            // The capabilities promised it; the driver disagreed. Stay SDR.
+            hdr = None;
+            hdr_status = sdr_surface(
+                &hdr_request,
+                &caps,
+                &mut config,
+                Some(format!("configuring the HDR surface failed: {error}")),
+            );
+        }
+        if hdr.is_none() {
+            surface.configure(&gpu.device, &config);
+        }
         let renderer = GpuRenderer::with_upscaler_device(
             gpu,
             RenderTargetInfo {
@@ -152,6 +230,10 @@ impl WindowSurface {
         )?;
         let mut renderer = renderer;
         renderer.note_ray_tracing_request(ray_tracing);
+        match hdr {
+            Some((_, settings)) => renderer.enable_hdr_output(settings, hdr_status)?,
+            None => renderer.note_hdr_fallback(hdr_status),
+        }
         Ok(Self {
             window,
             renderer,
@@ -159,6 +241,7 @@ impl WindowSurface {
             config,
             suspended: size.width == 0 || size.height == 0,
             pacer: crate::PresentPacer::default(),
+            hdr_request,
         })
     }
 
@@ -173,6 +256,53 @@ impl WindowSurface {
         self.surface
             .configure(&self.renderer.gpu.device, &self.config);
         self.renderer.gpu.check_errors()
+    }
+
+    /// Requested versus active HDR output of this window.
+    pub fn hdr_status(&self) -> &HdrStatus {
+        self.renderer.hdr_status()
+    }
+
+    /// Request HDR output (or switch it off) and reconfigure the surface.
+    /// Also the way to re-run the capability selection after the operating
+    /// system toggled HDR. A request the surface cannot honour keeps the SDR
+    /// path and says why in [`Self::hdr_status`].
+    pub fn set_hdr_request(&mut self, request: HdrRequest) -> Result<()> {
+        let caps = self.surface.get_capabilities(&self.renderer.gpu.adapter);
+        let display = self.surface.display_hdr_info(&self.renderer.gpu.adapter);
+        self.renderer.gpu.wait_idle()?;
+        let mut config = self.config.clone();
+        let (mut hdr, mut status) = choose_surface_mode(&request, &caps, &display, &mut config);
+        if hdr.is_some()
+            && let Err(error) = configure_checked(&self.renderer.gpu, &self.surface, &config)
+        {
+            hdr = None;
+            status = sdr_surface(
+                &request,
+                &caps,
+                &mut config,
+                Some(format!("configuring the HDR surface failed: {error}")),
+            );
+        }
+        if hdr.is_none() {
+            self.surface.configure(&self.renderer.gpu.device, &config);
+        }
+        self.renderer.disable_hdr_output();
+        // The renderer's presented format follows the surface.
+        self.renderer.set_target_format(config.format);
+        match hdr {
+            Some((_, settings)) => self.renderer.enable_hdr_output(settings, status)?,
+            None => self.renderer.note_hdr_fallback(status),
+        }
+        self.config = config;
+        self.hdr_request = request;
+        self.renderer.gpu.check_errors()
+    }
+
+    /// The request the window was created with (from the environment) or last
+    /// set.
+    pub fn hdr_request(&self) -> &HdrRequest {
+        &self.hdr_request
     }
 
     pub fn is_suspended(&self) -> bool {
