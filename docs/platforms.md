@@ -52,7 +52,9 @@ macOS app bundles/signing/notarization, mobile store bundles, or console package
 Desktop work targets Windows, Linux and macOS. Each has a native workspace test
 job. Linux and macOS also compile the standalone desktop examples, including the
 optional `programmable-world` window feature. Windows runs the example tests and
-lint jobs. Build with the pinned Rust toolchain and the native host linker:
+lint jobs. Build with the pinned Rust toolchain and the native host linker (on Windows MSVC,
+`.cargo/config.toml` selects `rust-lld`; see [Building quickly](building.md) for the
+`link.exe` override):
 
 ```text
 cargo build --workspace --locked
