@@ -51,9 +51,12 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: bash scripts/ci/install-toolchain.sh
-      - name: Move the target directory to the C drive
-        # The workspace lives on the small D drive; C has far more free space.
-        run: echo "CARGO_TARGET_DIR=C:/cargo-target" >> "$GITHUB_ENV"
+      - name: Move temporary files to the D drive
+        # C has about 30 GB free and D about 147 GB. The target directory is already on D;
+        # tests that spawn Cargo builds write into TEMP, which defaults to C.
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
@@ -102,9 +105,12 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: bash scripts/ci/install-toolchain.sh
-      - name: Move the target directory to the C drive
-        # The workspace lives on the small D drive; C has far more free space.
-        run: echo "CARGO_TARGET_DIR=C:/cargo-target" >> "$GITHUB_ENV"
+      - name: Move temporary files to the D drive
+        # C has about 30 GB free and D about 147 GB. The target directory is already on D;
+        # tests that spawn Cargo builds write into TEMP, which defaults to C.
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
