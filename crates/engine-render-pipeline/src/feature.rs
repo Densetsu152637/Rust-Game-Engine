@@ -890,7 +890,16 @@ mod tests {
         let ssr = crate::pipeline::names::SSR;
         let material = crate::pipeline::names::SURFACE_MATERIAL;
         assert!(at("engine.opaque") < at(material));
-        assert_eq!(at(material) + 1, at(ssr), "the producer runs right before");
+        // Decals (ordered before SSR) may sit between the producer and the trace:
+        // they change the lit colour, not the surface description.
+        let decals = crate::pipeline::names::DECALS;
+        assert!(at(material) < at(ssr), "the producer runs before the trace");
+        assert_eq!(
+            at(ssr) - at(material),
+            2,
+            "only the decal pass sits between"
+        );
+        assert!(at(material) < at(decals) && at(decals) < at(ssr));
         assert!(at(ssr) < at("engine.transparent"));
         assert!(at(ssr) < at("engine.upscale"));
         for name in [material, ssr] {
