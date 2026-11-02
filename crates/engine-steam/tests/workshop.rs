@@ -535,3 +535,35 @@ fn a_download_without_a_callback_ends_when_the_item_is_installed() {
     );
     assert!(rig.service.poll().is_empty(), "no longer tracked");
 }
+
+#[test]
+fn a_later_download_is_announced_after_a_state_retired_one() {
+    let mut rig = Rig::new(
+        ready()
+            .with_workshop_item(item(7, OTHER, ItemVisibility::Public, &[]))
+            .with_installed_item(installed(7, false))
+            .with_download_polls(2)
+            .with_silent_downloads(),
+    );
+    let id = WorkshopItemId(7);
+    let request = rig.service.subscribe(id).unwrap();
+    rig.reply(request);
+    let finished = |e: &UgcEvent| matches!(e, UgcEvent::Reply(UgcRaw::Downloaded { .. }));
+
+    rig.service.download_item(id, false).unwrap();
+    rig.until("the state-retired download", finished);
+    assert_eq!(
+        rig.session.run_callbacks(),
+        vec![SteamEvent::WorkshopItemInstalled(id)]
+    );
+
+    // The item updates later; this time Steam sends the completion callback.
+    rig.fake.lock().unwrap().set_silent_downloads(false);
+    rig.service.download_item(id, false).unwrap();
+    rig.until("the second download", finished);
+    assert_eq!(
+        rig.session.run_callbacks(),
+        vec![SteamEvent::WorkshopItemInstalled(id)],
+        "exactly one installed event for the second download"
+    );
+}

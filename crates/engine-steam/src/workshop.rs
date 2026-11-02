@@ -430,6 +430,9 @@ impl UgcService {
         }
         self.session
             .with_backend(|b| b.ugc_download(item, high_priority))?;
+        // A new download supersedes an earlier state-based retirement: the callback that
+        // may follow belongs to this one and must announce the install.
+        self.retired.remove(&item);
         self.downloads.entry(item).or_insert((None, Instant::now()));
         Ok(())
     }

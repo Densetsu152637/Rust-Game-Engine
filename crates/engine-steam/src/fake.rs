@@ -321,6 +321,11 @@ impl FakeBackend {
         self
     }
 
+    /// Switches the silent-download behaviour while running.
+    pub fn set_silent_downloads(&mut self, silent: bool) {
+        self.ugc.silent_downloads = silent;
+    }
+
     /// Finished downloads send no completion reply, only the changed item state.
     pub fn with_silent_downloads(mut self) -> Self {
         self.ugc.silent_downloads = true;
