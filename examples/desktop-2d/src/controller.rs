@@ -2,8 +2,8 @@ use crate::{
     bindings,
     progression::{PASSAGE, Progress, SavedPosition},
 };
-use engine_core::bevy_ecs::prelude::{Entity, World};
-use engine_project::{
+use engine::core::bevy_ecs::prelude::{Entity, World};
+use engine::project::{
     runtime::{
         self, ControlLocks, GameState, InputSettings, Persistence, SceneRequest, SpriteFrame,
         TriggerEvents,
@@ -26,7 +26,7 @@ pub struct Controller {
     preferences: Value,
     last_ui: Option<UiEvent>,
     muted: bool,
-    loop_voice: Option<engine_audio::VoiceHandle>,
+    loop_voice: Option<engine::audio::VoiceHandle>,
 }
 impl Controller {
     pub fn new(variant: &'static str, mode: &'static str) -> Self {
@@ -538,7 +538,7 @@ impl Controller {
     fn cue(&self, world: &mut World, gain: f32) {
         let result = (|| -> Result<()> {
             // The runtime cache is filled lazily, so load the declared asset on demand.
-            let clip = engine_project::audio::load_clip(world, "asset:cue")?;
+            let clip = engine::project::audio::load_clip(world, "asset:cue")?;
             let audio = world
                 .get_resource::<runtime::RuntimeAudio>()
                 .ok_or_else(|| invalid("audio unavailable"))?;
@@ -546,7 +546,7 @@ impl Controller {
                 .control
                 .play(
                     clip,
-                    engine_audio::PlayOptions {
+                    engine::audio::PlayOptions {
                         gain,
                         owner: "example:desktop-cue".into(),
                         ..Default::default()
@@ -560,9 +560,9 @@ impl Controller {
         }
     }
     fn start_music(&mut self, world: &mut World) {
-        let result = (|| -> Result<engine_audio::VoiceHandle> {
+        let result = (|| -> Result<engine::audio::VoiceHandle> {
             // The runtime cache is filled lazily, so load the declared asset on demand.
-            let clip = engine_project::audio::load_clip(world, "asset:loop")?;
+            let clip = engine::project::audio::load_clip(world, "asset:loop")?;
             let audio = world
                 .get_resource::<runtime::RuntimeAudio>()
                 .ok_or_else(|| invalid("audio unavailable"))?;
@@ -570,9 +570,9 @@ impl Controller {
                 .control
                 .play(
                     clip,
-                    engine_audio::PlayOptions {
+                    engine::audio::PlayOptions {
                         looped: true,
-                        bus: engine_audio::Bus::Music,
+                        bus: engine::audio::Bus::Music,
                         gain: 0.18,
                         owner: "example:desktop-loop".into(),
                         ..Default::default()
@@ -599,10 +599,10 @@ impl Controller {
     fn apply_audio_settings(&self, world: &mut World) -> Result<()> {
         if let Some(audio) = world.get_resource::<runtime::RuntimeAudio>() {
             for (name, bus) in [
-                ("master", engine_audio::Bus::Master),
-                ("music", engine_audio::Bus::Music),
-                ("effects", engine_audio::Bus::Effects),
-                ("dialogue", engine_audio::Bus::Dialogue),
+                ("master", engine::audio::Bus::Master),
+                ("music", engine::audio::Bus::Music),
+                ("effects", engine::audio::Bus::Effects),
+                ("dialogue", engine::audio::Bus::Dialogue),
             ] {
                 if let Some(value) = self.preferences["audio"][name].as_f64() {
                     audio
@@ -619,7 +619,7 @@ impl Controller {
             audio
                 .control
                 .set_bus_gain(
-                    engine_audio::Bus::Master,
+                    engine::audio::Bus::Master,
                     if self.muted { 0.0 } else { 0.8 },
                 )
                 .map_err(|e| invalid(&e.to_string()))?;

@@ -1,4 +1,4 @@
-use engine_project::input::BindingMap;
+use engine::project::input::BindingMap;
 /// Fixture configuration stays in the authored manifest, including gamepad and
 /// pointer tokens. Settings save the complete map, not only a changed action.
 pub fn defaults() -> BindingMap {

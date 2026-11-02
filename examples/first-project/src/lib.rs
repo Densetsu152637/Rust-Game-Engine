@@ -1,7 +1,7 @@
 //! Native authored-owner movement and project-defined component systems.
-use engine_core::bevy_ecs;
-use engine_core::{anyhow, prelude::*};
-use engine_project::{ActionFrame, NativeScript, Transform, register_script};
+use engine::core::bevy_ecs;
+use engine::core::{anyhow, prelude::*};
+use engine::project::{ActionFrame, NativeScript, Transform, register_script};
 
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct PlayerStats {
@@ -47,7 +47,7 @@ fn tick_stats(mut players: Query<&mut PlayerStats>, input: Res<ActionFrame>) {
 }
 pub struct Player;
 impl NativeScript for Player {
-    fn on_create(&mut self, world: &mut World, owner: Entity) -> engine_project::Result<()> {
+    fn on_create(&mut self, world: &mut World, owner: Entity) -> engine::project::Result<()> {
         world.entity_mut(owner).insert(PlayerStats {
             ticks: 0,
             moves: 0,
@@ -60,12 +60,12 @@ impl NativeScript for Player {
         world: &mut World,
         owner: Entity,
         _: f32,
-    ) -> engine_project::Result<()> {
+    ) -> engine::project::Result<()> {
         if world.resource::<ActionFrame>().pressed("move_right") {
             world
                 .get_mut::<Transform>(owner)
                 .ok_or_else(|| {
-                    engine_project::Error::new("example.transform", "Player requires Transform")
+                    engine::project::Error::new("example.transform", "Player requires Transform")
                 })?
                 .position[0] += 1.0;
         }
@@ -79,12 +79,12 @@ impl NativeScript for ReloadedPlayer {
         world: &mut World,
         owner: Entity,
         _: f32,
-    ) -> engine_project::Result<()> {
+    ) -> engine::project::Result<()> {
         if world.resource::<ActionFrame>().pressed("move_right") {
             world
                 .get_mut::<Transform>(owner)
                 .ok_or_else(|| {
-                    engine_project::Error::new("example.transform", "Player requires Transform")
+                    engine::project::Error::new("example.transform", "Player requires Transform")
                 })?
                 .position[0] += 10.0;
         }
@@ -96,7 +96,7 @@ pub struct CreateThenFail {
     spawned: Option<Entity>,
 }
 impl NativeScript for CreateThenFail {
-    fn on_create(&mut self, world: &mut World, _: Entity) -> engine_project::Result<()> {
+    fn on_create(&mut self, world: &mut World, _: Entity) -> engine::project::Result<()> {
         self.spawned = Some(
             world
                 .spawn(Transform {
@@ -109,12 +109,12 @@ impl NativeScript for CreateThenFail {
             .resource_mut::<LifecycleLog>()
             .0
             .push("partial-on-create-effect".into());
-        Err(engine_project::Error::new(
+        Err(engine::project::Error::new(
             "example.setup",
             "intentional setup failure after side effects",
         ))
     }
-    fn on_destroy(&mut self, world: &mut World, _: Entity) -> engine_project::Result<()> {
+    fn on_destroy(&mut self, world: &mut World, _: Entity) -> engine::project::Result<()> {
         if let Some(entity) = self.spawned.take() {
             world.despawn(entity);
             world
@@ -127,7 +127,7 @@ impl NativeScript for CreateThenFail {
 }
 pub struct TeardownFails;
 impl NativeScript for TeardownFails {
-    fn on_create(&mut self, world: &mut World, _: Entity) -> engine_project::Result<()> {
+    fn on_create(&mut self, world: &mut World, _: Entity) -> engine::project::Result<()> {
         world
             .resource_mut::<LifecycleLog>()
             .0
@@ -139,15 +139,15 @@ impl NativeScript for TeardownFails {
         world: &mut World,
         owner: Entity,
         dt: f32,
-    ) -> engine_project::Result<()> {
+    ) -> engine::project::Result<()> {
         Player.on_update(world, owner, dt)
     }
-    fn on_destroy(&mut self, world: &mut World, _: Entity) -> engine_project::Result<()> {
+    fn on_destroy(&mut self, world: &mut World, _: Entity) -> engine::project::Result<()> {
         world
             .resource_mut::<LifecycleLog>()
             .0
             .push("old-destroy".into());
-        Err(engine_project::Error::new(
+        Err(engine::project::Error::new(
             "example.teardown",
             "authored script teardown failed",
         ))
@@ -185,7 +185,7 @@ fn mutate_fixture(
                 commands.entity(spawned).remove::<TestState>();
             }
             if !fixture.created_late {
-                commands.spawn((LateState(1), engine_project::runtime::OwnedBy(owner)));
+                commands.spawn((LateState(1), engine::project::runtime::OwnedBy(owner)));
                 fixture.created_late = true;
             }
         }
@@ -201,9 +201,9 @@ pub struct SystemFixture {
     spawned: Option<Entity>,
 }
 impl NativeScript for SystemFixture {
-    fn on_create(&mut self, world: &mut World, owner: Entity) -> engine_project::Result<()> {
+    fn on_create(&mut self, world: &mut World, owner: Entity) -> engine::project::Result<()> {
         world.entity_mut(owner).insert(TestState(0));
-        self.spawned = Some(engine_project::runtime::spawn_owned(
+        self.spawned = Some(engine::project::runtime::spawn_owned(
             world,
             owner,
             TestState(0),
@@ -220,11 +220,11 @@ impl NativeScript for SystemFixture {
         world: &mut World,
         owner: Entity,
         _: f32,
-    ) -> engine_project::Result<()> {
+    ) -> engine::project::Result<()> {
         let _ = (world, owner);
         Ok(())
     }
-    fn on_destroy(&mut self, world: &mut World, _: Entity) -> engine_project::Result<()> {
+    fn on_destroy(&mut self, world: &mut World, _: Entity) -> engine::project::Result<()> {
         if let Some(entity) = self.spawned.take() {
             world.despawn(entity);
         }
@@ -236,20 +236,20 @@ impl NativeScript for SystemFixture {
 pub struct AbortState(pub u64);
 pub struct AbortFixture;
 impl NativeScript for AbortFixture {
-    fn on_create(&mut self, world: &mut World, owner: Entity) -> engine_project::Result<()> {
+    fn on_create(&mut self, world: &mut World, owner: Entity) -> engine::project::Result<()> {
         world.entity_mut(owner).insert(AbortState(0));
         Ok(())
     }
-    fn on_update(&mut self, _: &mut World, _: Entity, _: f32) -> engine_project::Result<()> {
+    fn on_update(&mut self, _: &mut World, _: Entity, _: f32) -> engine::project::Result<()> {
         // Validate a candidate mutation before publication. Native World changes
         // are not automatically rollbackable; this fixture publishes nothing.
         let _candidate = (AbortState(9), AbortState(1));
-        Err(engine_project::Error::new(
+        Err(engine::project::Error::new(
             "example.system",
             "intentional system failure",
         ))
     }
-    fn on_destroy(&mut self, world: &mut World, owner: Entity) -> engine_project::Result<()> {
+    fn on_destroy(&mut self, world: &mut World, owner: Entity) -> engine::project::Result<()> {
         let value = world.get::<AbortState>(owner).map_or(0, |s| s.0);
         world
             .resource_mut::<LifecycleLog>()

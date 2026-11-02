@@ -1,4 +1,4 @@
-use engine_project::{ActionFrame, Project, Runtime};
+use engine::project::{ActionFrame, Project, Runtime};
 use first_project_gameplay::*;
 
 fn make_runtime(asset: &str) -> Runtime {
@@ -169,7 +169,7 @@ fn movement_preserves_y_and_z() {
     runtime
         .app_mut()
         .world_mut()
-        .get_mut::<engine_project::Transform>(owner)
+        .get_mut::<engine::project::Transform>(owner)
         .unwrap()
         .position = [0.0, 3.0, -2.0];
     runtime.tick(1.0 / 60.0, press(&["move_right"])).unwrap();

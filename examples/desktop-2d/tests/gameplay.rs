@@ -1,8 +1,8 @@
 //! Headless behavioural tests for the lab's interactive controller. They drive the
-//! real `engine_project::Runtime` with injected actions: no window, GPU or device.
+//! real `engine::project::Runtime` with injected actions: no window, GPU or device.
 use desktop_2d_gameplay::{bindings, configure};
-use engine_audio::{AudioConfig, AudioEngine, Bus};
-use engine_project::{
+use engine::audio::{AudioConfig, AudioEngine, Bus};
+use engine::project::{
     ActionFrame, Project, Runtime,
     runtime::{ControlLocks, GameState, InputSettings, Persistence},
     ui::UiModel,
@@ -83,7 +83,7 @@ impl Lab {
             .runtime
             .app_mut()
             .world_mut()
-            .get_mut::<engine_project::Transform>(entity)
+            .get_mut::<engine::project::Transform>(entity)
             .unwrap();
         transform.position[0] = x;
         transform.position[1] = y;
@@ -230,7 +230,7 @@ fn z_is_preserved_while_moving() {
     lab.runtime
         .app_mut()
         .world_mut()
-        .get_mut::<engine_project::Transform>(entity)
+        .get_mut::<engine::project::Transform>(entity)
         .unwrap()
         .position[2] = 5.5;
     for _ in 0..20 {
@@ -856,7 +856,7 @@ fn pure_project_passes_its_native_progression_checks() {
 }
 #[test]
 fn registered_scripts_cover_every_scene_script_reference() {
-    use engine_project::ScriptRegistry;
+    use engine::project::ScriptRegistry;
     let dir = user_data();
     let lab = Lab::new(dir.path());
     let registry = lab.runtime.app().world().resource::<ScriptRegistry>();
@@ -882,7 +882,7 @@ fn bindings_defaults_match_the_authored_manifest_and_validate() {
     let project = Project::load(manifest("project.json")).unwrap();
     assert_eq!(defaults, project.input_bindings);
     assert!(
-        engine_project::input::validate_bindings(&defaults, false)
+        engine::project::input::validate_bindings(&defaults, false)
             .errors
             .is_empty()
     );
