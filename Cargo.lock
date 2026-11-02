@@ -2097,6 +2097,7 @@ dependencies = [
  "engine-project",
  "serde_json",
  "steamworks",
+ "tempfile",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::backend::SteamBackend;
+use crate::backend::{SteamBackend, valid_cloud_name};
 use crate::error::{SteamError, SteamResult};
 use crate::types::*;
 
@@ -22,9 +22,12 @@ pub struct FakeBackend {
     stats: BTreeMap<String, StatValue>,
     stored_stats: BTreeMap<String, StatValue>,
     stored_achievements: BTreeMap<String, bool>,
+    stats_requested: bool,
     cloud_enabled: bool,
+    cloud_account_enabled: bool,
     cloud_quota: usize,
-    cloud: BTreeMap<String, Vec<u8>>,
+    cloud: BTreeMap<String, (Vec<u8>, i64)>,
+    clock: i64,
     lobbies: BTreeMap<LobbyId, LobbyInfo>,
     next_lobby: u64,
     subscribed: BTreeSet<WorkshopItemId>,
@@ -58,9 +61,12 @@ impl FakeBackend {
             stats: BTreeMap::new(),
             stored_stats: BTreeMap::new(),
             stored_achievements: BTreeMap::new(),
+            stats_requested: false,
             cloud_enabled: true,
+            cloud_account_enabled: true,
             cloud_quota: usize::MAX,
             cloud: BTreeMap::new(),
+            clock: 1_000,
             lobbies: BTreeMap::new(),
             next_lobby: 1,
             subscribed: BTreeSet::new(),
@@ -100,6 +106,12 @@ impl FakeBackend {
         self
     }
 
+    /// Enables or disables Steam Cloud for the account.
+    pub fn with_cloud_account_enabled(mut self, enabled: bool) -> Self {
+        self.cloud_account_enabled = enabled;
+        self
+    }
+
     /// Caps total cloud bytes.
     pub fn with_cloud_quota(mut self, bytes: usize) -> Self {
         self.cloud_quota = bytes;
@@ -108,8 +120,22 @@ impl FakeBackend {
 
     /// Puts a file straight into the cloud store.
     pub fn with_cloud_file(mut self, name: &str, data: &[u8]) -> Self {
-        self.cloud.insert(name.to_owned(), data.to_vec());
+        self.clock += 1;
+        let stamp = self.clock;
+        self.cloud.insert(name.to_owned(), (data.to_vec(), stamp));
         self
+    }
+
+    /// Puts a file into the cloud store with an explicit Unix timestamp.
+    pub fn with_cloud_file_at(mut self, name: &str, data: &[u8], timestamp: i64) -> Self {
+        self.cloud
+            .insert(name.to_owned(), (data.to_vec(), timestamp));
+        self
+    }
+
+    /// Contents of a cloud file.
+    pub fn cloud_file(&self, name: &str) -> Option<&[u8]> {
+        self.cloud.get(name).map(|(data, _)| data.as_slice())
     }
 
     /// Registers an installed Workshop item.
@@ -172,20 +198,17 @@ impl FakeBackend {
         }
     }
 
-    fn cloud_bytes(&self) -> usize {
-        self.cloud.values().map(Vec::len).sum()
+    fn require_stats(&self) -> SteamResult<()> {
+        if self.stats_requested {
+            Ok(())
+        } else {
+            Err(SteamError::StatsNotRequested)
+        }
     }
-}
 
-fn valid_cloud_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('/')
-        && !name.contains('\\')
-        && !name.contains(':')
-        && !name.contains('\0')
-        && name
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
+    fn cloud_bytes(&self) -> usize {
+        self.cloud.values().map(|(data, _)| data.len()).sum()
+    }
 }
 
 impl SteamBackend for FakeBackend {
@@ -247,11 +270,14 @@ impl SteamBackend for FakeBackend {
 
     fn request_current_stats(&mut self) -> SteamResult<()> {
         self.record("request_current_stats");
-        self.require_ready()
+        self.require_ready()?;
+        self.stats_requested = true;
+        Ok(())
     }
 
     fn achievement(&self, name: &str) -> SteamResult<bool> {
         self.require_ready()?;
+        self.require_stats()?;
         self.achievements
             .get(name)
             .copied()
@@ -261,6 +287,7 @@ impl SteamBackend for FakeBackend {
     fn set_achievement(&mut self, name: &str, unlocked: bool) -> SteamResult<()> {
         self.record("set_achievement");
         self.require_ready()?;
+        self.require_stats()?;
         let slot = self
             .achievements
             .get_mut(name)
@@ -276,6 +303,7 @@ impl SteamBackend for FakeBackend {
 
     fn stat(&self, name: &str) -> SteamResult<StatValue> {
         self.require_ready()?;
+        self.require_stats()?;
         self.stats
             .get(name)
             .copied()
@@ -285,6 +313,7 @@ impl SteamBackend for FakeBackend {
     fn set_stat(&mut self, name: &str, value: StatValue) -> SteamResult<()> {
         self.record("set_stat");
         self.require_ready()?;
+        self.require_stats()?;
         let slot = self
             .stats
             .get_mut(name)
@@ -307,9 +336,25 @@ impl SteamBackend for FakeBackend {
         Ok(())
     }
 
-    fn cloud_enabled(&self) -> SteamResult<bool> {
+    fn cloud_enabled_for_app(&self) -> SteamResult<bool> {
         self.require_ready()?;
         Ok(self.cloud_enabled)
+    }
+
+    fn cloud_enabled_for_account(&self) -> SteamResult<bool> {
+        self.require_ready()?;
+        Ok(self.cloud_account_enabled)
+    }
+
+    fn cloud_timestamp(&self, name: &str) -> SteamResult<i64> {
+        self.require_ready()?;
+        if !valid_cloud_name(name) {
+            return Err(SteamError::InvalidName(name.to_owned()));
+        }
+        self.cloud
+            .get(name)
+            .map(|(_, stamp)| *stamp)
+            .ok_or_else(|| SteamError::NotFound(name.to_owned()))
     }
 
     fn cloud_list(&self) -> SteamResult<Vec<String>> {
@@ -324,7 +369,7 @@ impl SteamBackend for FakeBackend {
         }
         self.cloud
             .get(name)
-            .cloned()
+            .map(|(data, _)| data.clone())
             .ok_or_else(|| SteamError::NotFound(name.to_owned()))
     }
 
@@ -334,14 +379,16 @@ impl SteamBackend for FakeBackend {
         if !valid_cloud_name(name) {
             return Err(SteamError::InvalidName(name.to_owned()));
         }
-        if !self.cloud_enabled {
+        if !self.cloud_enabled || !self.cloud_account_enabled {
             return Err(SteamError::CloudDisabled);
         }
-        let existing = self.cloud.get(name).map_or(0, Vec::len);
+        let existing = self.cloud.get(name).map_or(0, |(data, _)| data.len());
         if self.cloud_bytes() - existing + data.len() > self.cloud_quota {
             return Err(SteamError::QuotaExceeded);
         }
-        self.cloud.insert(name.to_owned(), data.to_vec());
+        self.clock += 1;
+        self.cloud
+            .insert(name.to_owned(), (data.to_vec(), self.clock));
         Ok(())
     }
 

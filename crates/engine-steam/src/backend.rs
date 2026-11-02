@@ -73,7 +73,18 @@ pub trait SteamBackend {
     }
 
     // Remote storage (Steam Cloud).
+    fn cloud_enabled_for_app(&self) -> SteamResult<bool> {
+        Err(self.unavailable())
+    }
+    fn cloud_enabled_for_account(&self) -> SteamResult<bool> {
+        Err(self.unavailable())
+    }
+    /// True when Cloud is enabled for both the app and the account.
     fn cloud_enabled(&self) -> SteamResult<bool> {
+        Ok(self.cloud_enabled_for_app()? && self.cloud_enabled_for_account()?)
+    }
+    /// Last-modified time of a cloud file, in Unix seconds.
+    fn cloud_timestamp(&self, _name: &str) -> SteamResult<i64> {
         Err(self.unavailable())
     }
     fn cloud_list(&self) -> SteamResult<Vec<String>> {
@@ -131,4 +142,17 @@ pub trait SteamBackend {
     fn activate_action_set(&mut self, _controller: ControllerId, _set: &str) -> SteamResult<()> {
         Err(self.unavailable())
     }
+}
+
+/// Steam Cloud file names are relative, `/`-separated and may not escape upward.
+pub(crate) fn valid_cloud_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && !name.starts_with('/')
+        && !name.contains('\\')
+        && !name.contains(':')
+        && !name.contains('\0')
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }

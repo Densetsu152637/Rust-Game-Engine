@@ -62,6 +62,7 @@ fn fake_unavailable_statuses_gate_calls() {
 #[test]
 fn fake_achievements_unlock_once_and_persist_on_store() {
     let mut fake = ready().with_achievement("WIN");
+    fake.request_current_stats().unwrap();
     fake.set_achievement("WIN", true).unwrap();
     fake.set_achievement("WIN", true).unwrap();
     let events = fake.run_callbacks();
@@ -78,6 +79,7 @@ fn fake_achievements_unlock_once_and_persist_on_store() {
 #[test]
 fn fake_stats_reject_type_mismatch() {
     let mut fake = ready().with_stat("kills", StatValue::Int(1));
+    fake.request_current_stats().unwrap();
     fake.set_stat("kills", StatValue::Int(5)).unwrap();
     assert_eq!(fake.stat("kills"), Ok(StatValue::Int(5)));
     assert!(matches!(

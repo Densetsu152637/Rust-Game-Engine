@@ -44,6 +44,8 @@ rejected rather than dropped.
   `false`) and `rich_presence` (string defaults set once Steam is ready; at most 20
   keys, keys 1-64 bytes, values up to 256 bytes, no NUL). Unknown keys inside the block
   are rejected with `project.steam.invalid`/a parse error. With `required: true` the
+  game first lets Steam relaunch it when it was not started
+  through Steam (optional games never do), and the
   game exits with code `4` before creating a window or GPU device when Steam is not
   available. Without the block the game never touches Steam.
 

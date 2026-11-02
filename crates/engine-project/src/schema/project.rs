@@ -392,7 +392,7 @@ fn validate_steam(steam: &SteamManifest) -> Result<()> {
                 "steam.rich_presence key {key:?} must be 1-64 bytes with a value of at most 256 bytes"
             )));
         }
-        if key.contains(' ') || value.contains(' ') {
+        if key.contains('\0') || value.contains('\0') {
             return Err(invalid(format!(
                 "steam.rich_presence entry {key:?} contains a NUL byte"
             )));

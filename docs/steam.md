@@ -119,10 +119,11 @@ The desktop runner knows nothing about Steam. `engine_desktop::run_with_services
    and audio is shut down.
 
 `SteamPlugin` (a `HostService`) uses a `SteamSession`, the process-wide owner of the
-backend. The first `before_graphics` calls `restart_app_if_necessary(app_id)` and, if
-that is not a relaunch, `init(Some(app_id))`, then sets the manifest `rich_presence`
-defaults. Later runner generations in the same process reuse the session, so
-`restart_app_if_necessary` and `init` happen at most once. The backend drops (Steam
+backend. The first `before_graphics` calls `restart_app_if_necessary(app_id)` only when
+the manifest sets `required: true` (an optional game never relaunches itself through
+Steam), and, if that is not a relaunch, `init(Some(app_id))`, then sets the manifest
+`rich_presence` defaults. Later runner generations in the same process reuse the
+session, so the restart check and `init` happen at most once. The backend drops (Steam
 shuts down) when the last session holder drops, after the GPU is idle.
 
 Per tick, `run_callbacks()` is called once and each `SteamEvent` becomes an engine
@@ -140,14 +141,84 @@ Exit behaviour (`runtime_entry`):
 | no `steam` block | Steam is never touched |
 | Steam unavailable, `required: false` | soft: the game runs, status is not `ready` |
 | Steam unavailable, `required: true` | exit code `4`, before any window or GPU device |
-| Steam asks for a relaunch (`restart_app_if_necessary` is true) | exit code `0`, result `{"steam":"relaunching"}`, no window |
+| `required: true` and Steam asks for a relaunch (`restart_app_if_necessary` is true) | exit code `0`, result `{"steam":"relaunching"}`, no window |
+| `required: false` | no relaunch check is made; only `init` is tried |
 | editor play generation (`ENGINE_GENERATION_READY_FILE` set) | Steam is never constructed |
 
-When launched outside Steam, `SteamAPI_RestartAppIfNecessary` returns true (and asks
-Steam to relaunch the game) unless `steam_appid.txt` is in the working directory or the
-`SteamAppId` environment variable is set; set `SteamAppId=<app_id>` for development
-runs. `ShutdownRequested` is part of the event type, but `steamworks` 0.13.1 does not
+For a `required` game launched outside Steam, `SteamAPI_RestartAppIfNecessary` returns
+true (and asks Steam to relaunch the game) unless `steam_appid.txt` is in the working
+directory or the `SteamAppId` environment variable is set; set `SteamAppId=<app_id>`
+for development runs of required games. Optional games never make this check. `ShutdownRequested` is part of the event type, but `steamworks` 0.13.1 does not
 expose Steam's shutdown notification, so the real backend never produces it yet.
+
+## Game-facing handle, achievements and stats
+
+At `before_graphics` the plugin inserts two resources into the game world:
+`SteamRuntimeStatus` and `SteamSession`, the cloneable handle every Steam feature is
+reached through. Game systems and native scripts read it with
+`world.resource::<SteamSession>()` (only present for projects with a `steam` block).
+Its methods are safe without Steam: with no client or no Steam build they return
+`SteamError::Unavailable(..)`. Use them from the tick thread.
+
+- `unlock_achievement(name)` is idempotent: `Ok(true)` only for the call that unlocked
+  it, `Ok(false)` if it was already unlocked (no second Steam call, no second event).
+  `is_achievement_unlocked(name)` reads it.
+- `stat(name)` / `set_stat(name, StatValue)` read and write integer or float stats; a
+  write that does not change the value does nothing.
+- `set_progress(stat, value, max)` and `add_progress(stat, delta, max)` clamp an
+  integer progress stat to `0..=max` (addition saturates) and return the stored value.
+- Writes only change Steam's in-memory state. Changes are stored to Steam in batches:
+  the plugin calls `store_stats` at most once every 600 fixed ticks (10 s at 60 Hz;
+  `StatsService::new(n)` changes the interval, the first store is immediate), retries
+  after one interval if a store fails, and stores any pending change when the run ends.
+  `store_stats_now()` forces it. Steam shows the unlock overlay when the store happens.
+- Ordering: the user stats are requested before the first read or write (the plugin
+  requests them right after `init`; the service requests them lazily otherwise). The
+  fake backend refuses reads made before the request with `StatsNotRequested`.
+
+The `steamworks` 0.13.1 binding has no `RequestCurrentStats` call; with the bundled SDK
+(1.61 or newer) Steam delivers the stats automatically, so the real backend only marks
+the request as made. The `steam.stats_received` event (from Steam `UserStatsReceived`)
+reports delivery but did not fire in the live run on App 480 (the stats were already
+readable), so do not wait for it: reads fail softly with `NotFound` until stats exist.
+Other events: `steam.achievement_unlocked` (`{"name"}`; progress-only notifications are
+not unlocks) and `steam.stats_stored`.
+
+## Steam Cloud saves
+
+With `"cloud": true` in the manifest `steam` block and a ready Steam, the plugin mirrors
+the game save slots (`PersistenceStore` files `<user data>/<project>/saves/<slot>.json`)
+to Steam Remote Storage files named `saves/<slot>.json`. The store stays authoritative
+and a game that never enables Cloud is unaffected. (Steam Auto-Cloud, configured in the
+Steamworks partner site by pointing it at the save directory, is an alternative that
+needs no code.)
+
+- **Pull at startup:** in `before_graphics`, before the runtime starts and so before any
+  load, every slot is synced (`CloudSync::sync_all`). The result is available as
+  `SteamSession::cloud_report()`.
+- **Push after save:** the plugin registers a post-save listener on the store
+  (`PersistenceStore::set_save_listener`, an additive hook that runs after the slot lock
+  is released). Each successful `save` uploads that slot. `save_settings` and the `.bak`
+  file are not mirrored.
+- **Conflict policy** (slot on both sides with different bytes): the higher
+  `content_version` wins; on a tie the newer modification time (whole seconds) wins; a
+  full tie keeps the local file and raises `steam.cloud_conflict` (`{"name": slot}`)
+  without changing either side. A pulled file replaces the local one through the same
+  atomic write and the previous local file becomes the `.bak`.
+- **Safety:** only `saves/<slot>.json` names whose slot is a safe identifier
+  (`[A-Za-z0-9_-]{1,64}`) are considered; any other cloud name, and any slot or cloud
+  name such as `../x`, is rejected. Cloud copies are validated like a normal read (size,
+  nesting, schema and `content_version` not newer than the game) before they can replace
+  a local file; invalid copies are reported and ignored.
+- **Failures never break saving:** a failed sync or push (quota exceeded, Steam error,
+  invalid cloud copy) leaves the local save intact and raises
+  `steam.cloud_sync_failed` (`{"slot", "message"}`).
+- **Disabled Cloud:** `is_cloud_enabled_for_app` / `..._for_account` are checked. If
+  either is off, or Steam is absent, the report has `local_only: true`, nothing is read
+  or written in the cloud and saving continues locally.
+
+The real backend cannot query the remaining quota (the `steamworks` binding has no
+`GetQuota`), so a failed write is reported as `QuotaExceeded`.
 
 ## Live tests
 
@@ -158,6 +229,11 @@ cargo test -p engine-steam --features steam -- --ignored core --nocapture
 ```
 
 With Steam closed the same command passes and prints `skipped: Steam not running`.
+`-- --ignored stats` (read-only; never writes to the account) lists Spacewar stats such as
+`NumGames` and achievements such as `ACH_WIN_ONE_GAME`. Live tests share one Steam
+client per process and take turns. `-- --ignored cloud` writes, lists, reads and deletes
+the file `saves/engine_steam_live.json` on App 480 and prints whether Cloud is enabled
+for the app and account; when it is disabled it checks that writes are refused instead.
 
 A Steam-feature test or example executable needs the `steam_api` library at start-up,
 and Cargo only leaves it in a build-script output directory. `crates/engine-steam/build.rs`
@@ -196,8 +272,6 @@ advice.
 Everything below is planned in `docs/platform-and-steam-plan.md` and is not implemented
 at this stage.
 
-- S4: achievements and stats service with batched stat storing.
-- S5: Steam Cloud save sync beside the persistence store.
 - S6: Steam Networking Sockets transport for `MessageEndpoint`.
 - S7: lobbies and matchmaking.
 - S8: Steam Input as an input source.

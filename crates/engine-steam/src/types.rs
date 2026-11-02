@@ -126,9 +126,16 @@ pub enum SteamEvent {
         connected: bool,
     },
     AchievementUnlocked(String),
+    /// The signed-in user stats and achievements arrived from Steam.
+    StatsReceived,
     StatsStored,
     CloudConflict {
         name: String,
+    },
+    /// A Steam Cloud sync of a save slot failed (the local save is unaffected).
+    CloudSyncFailed {
+        slot: String,
+        message: String,
     },
     LobbyCreated(LobbyId),
     LobbyJoined(LobbyId),

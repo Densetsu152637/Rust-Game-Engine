@@ -190,8 +190,9 @@ pub fn run_with_services(
     mut runtime: Runtime,
     options: RunOptions,
     backends: Option<WgpuBackends>,
-    mut services: Vec<Box<dyn HostService>>,
+    services: Vec<Box<dyn HostService>>,
 ) -> Result<RunReport> {
+    let mut services = ServiceSet(services);
     let backends = resolve_backends_from_environment(backends)?;
     ensure!(
         (1..=1_000_000).contains(&options.ticks),
@@ -213,13 +214,11 @@ pub fn run_with_services(
     if let Some(path) = &options.user_data {
         runtime.set_user_data_root(path.clone())?;
     }
-    for index in 0..services.len() {
-        if let Err(exit) = services[index].before_graphics(&mut runtime) {
-            for service in services[..index].iter_mut().rev() {
-                service.after_gpu_idle();
-            }
-            return Err(anyhow::Error::new(exit)
-                .context(format!("host service {}", services[index].name())));
+    for index in 0..services.0.len() {
+        if let Err(exit) = services.0[index].before_graphics(&mut runtime) {
+            let name = services.0[index].name().to_owned();
+            // Dropping the set runs `after_gpu_idle` for every service.
+            return Err(anyhow::Error::new(exit).context(format!("host service {name}")));
         }
     }
     // Default world and physics render features, merged with the game's own;
@@ -291,9 +290,7 @@ pub fn run_with_services(
         .surface
         .as_ref()
         .map_or(Ok(()), |host| host.renderer.gpu.wait_idle());
-    for service in app.services.iter_mut().rev() {
-        service.after_gpu_idle();
-    }
+    app.services.finish();
     combine(
         app.error.take().map_or(event_result, Err),
         combine(
@@ -313,6 +310,27 @@ pub fn run_with_services(
         },
         presented_frames: app.presented_frames,
     })
+}
+
+/// Owns the host services. `after_gpu_idle` runs for all of them, in reverse
+/// order, exactly once: explicitly after the GPU is idle on a normal finish, or on
+/// drop for any early return (a failed `before_graphics`, audio, event-loop or
+/// runtime start error), including services whose own `before_graphics` never ran.
+struct ServiceSet(Vec<Box<dyn HostService>>);
+
+impl ServiceSet {
+    fn finish(&mut self) {
+        for service in self.0.iter_mut().rev() {
+            service.after_gpu_idle();
+        }
+        self.0.clear();
+    }
+}
+
+impl Drop for ServiceSet {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 fn combine(result: Result<()>, cleanup: Result<()>) -> Result<()> {
@@ -336,7 +354,7 @@ fn run_headless(
     mut runtime: Runtime,
     options: RunOptions,
     mut audio: AudioEngine,
-    mut services: Vec<Box<dyn HostService>>,
+    mut services: ServiceSet,
 ) -> Result<RunReport> {
     let mut previous = BTreeSet::new();
     let mut ticks = 0;
@@ -350,7 +368,7 @@ fn run_headless(
             let actions = options.inputs.get(&tick).cloned().unwrap_or_default();
             let input = merge_input(&Default::default(), &actions, &mut previous);
             runtime.enqueue_scheduled_events(&options.events, tick)?;
-            for service in &mut services {
+            for service in &mut services.0 {
                 service.before_tick(&mut runtime, tick);
             }
             runtime.tick(FIXED_DELTA as f32, input)?;
@@ -363,9 +381,7 @@ fn run_headless(
     let acoustics = runtime.acoustics_status();
     let cleanup = runtime.stop().map_err(anyhow::Error::from);
     audio.shutdown();
-    for service in services.iter_mut().rev() {
-        service.after_gpu_idle();
-    }
+    services.finish();
     combine(result, cleanup)?;
     Ok(RunReport {
         event_trace,
@@ -438,7 +454,7 @@ struct DesktopRunner {
     audio: AudioEngine,
     options: RunOptions,
     backends: WgpuBackends,
-    services: Vec<Box<dyn HostService>>,
+    services: ServiceSet,
     surface: Option<WindowSurface>,
     mapper: ActionMapper,
     raw: RawInput,
@@ -597,7 +613,7 @@ impl DesktopRunner {
             .insert_resource(RawInputTokens {
                 down: self.raw.down.clone(),
             });
-        for service in &mut self.services {
+        for service in &mut self.services.0 {
             service.before_tick(&mut self.runtime, self.ticks);
         }
         self.runtime.tick(FIXED_DELTA as f32, input)?;

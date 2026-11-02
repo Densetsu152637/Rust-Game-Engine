@@ -12,12 +12,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use steamworks::networking_types::NetworkingIdentity;
 use steamworks::{
     CallbackHandle, Client, GameOverlayActivated, PersonaStateChange, SteamAPIInitError,
-    SteamServersConnected, SteamServersDisconnected,
+    SteamServersConnected, SteamServersDisconnected, UserAchievementStored, UserStatsReceived,
+    UserStatsStored,
 };
 
 use crate::backend::SteamBackend;
 use crate::error::{SteamError, SteamResult};
-use crate::types::{AppId, AuthTicket, SteamEvent, SteamId, SteamStatus, SteamUser};
+use crate::types::{AppId, AuthTicket, StatValue, SteamEvent, SteamId, SteamStatus, SteamUser};
 
 /// `SteamAPI_Init` may only be paired with one `SteamAPI_Shutdown` per process.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
@@ -58,6 +59,7 @@ pub struct RealBackend {
     events: EventQueue,
     tickets: BTreeMap<u32, steamworks::AuthTicket>,
     next_ticket: u32,
+    stats_requested: bool,
 }
 
 impl RealBackend {
@@ -69,6 +71,7 @@ impl RealBackend {
             events: Arc::new(Mutex::new(Vec::new())),
             tickets: BTreeMap::new(),
             next_ticket: 1,
+            stats_requested: false,
         }
     }
 
@@ -77,6 +80,14 @@ impl RealBackend {
             (Some(live), true) => Ok(&live.client),
             _ => Err(self.unavailable()),
         }
+    }
+
+    /// The client, once the stats request has been made.
+    fn stats_client(&self) -> SteamResult<&Client> {
+        if !self.stats_requested {
+            return Err(SteamError::StatsNotRequested);
+        }
+        self.client()
     }
 
     fn register_callbacks(client: &Client, me: u64, events: &EventQueue) -> Vec<CallbackHandle> {
@@ -98,7 +109,34 @@ impl RealBackend {
         let disconnected = client.register_callback(move |_: SteamServersDisconnected| {
             lock(&queue).push(SteamEvent::ConnectionChanged { connected: false });
         });
-        vec![overlay, persona, connected, disconnected]
+        let queue = Arc::clone(events);
+        let received = client.register_callback(move |cb: UserStatsReceived| {
+            if cb.steam_id.raw() == me && cb.result.is_ok() {
+                lock(&queue).push(SteamEvent::StatsReceived);
+            }
+        });
+        let queue = Arc::clone(events);
+        let stored = client.register_callback(move |cb: UserStatsStored| {
+            if cb.result.is_ok() {
+                lock(&queue).push(SteamEvent::StatsStored);
+            }
+        });
+        let queue = Arc::clone(events);
+        let achievement = client.register_callback(move |cb: UserAchievementStored| {
+            // Progress notifications (current below maximum) are not unlocks.
+            if cb.max_progress == 0 || cb.current_progress >= cb.max_progress {
+                lock(&queue).push(SteamEvent::AchievementUnlocked(cb.achievement_name));
+            }
+        });
+        vec![
+            overlay,
+            persona,
+            connected,
+            disconnected,
+            received,
+            stored,
+            achievement,
+        ]
     }
 }
 
@@ -222,5 +260,154 @@ impl SteamBackend for RealBackend {
                 "rich presence key {key:?} was refused"
             )))
         }
+    }
+
+    /// The `steamworks` 0.13.1 binding has no `RequestCurrentStats` call: with the
+    /// bundled SDK (1.61 or newer) Steam delivers the user stats automatically
+    /// after init and signals it with `SteamEvent::StatsReceived`. This only marks
+    /// the request as made so reads are ordered after it.
+    fn request_current_stats(&mut self) -> SteamResult<()> {
+        self.client()?;
+        self.stats_requested = true;
+        Ok(())
+    }
+
+    fn achievement(&self, name: &str) -> SteamResult<bool> {
+        reject_nul(name)?;
+        let client = self.stats_client()?;
+        client.user_stats().achievement(name).get().map_err(|()| {
+            SteamError::NotFound(format!("achievement {name:?} (or stats not received yet)"))
+        })
+    }
+
+    fn set_achievement(&mut self, name: &str, unlocked: bool) -> SteamResult<()> {
+        reject_nul(name)?;
+        let client = self.stats_client()?;
+        let user_stats = client.user_stats();
+        let achievement = user_stats.achievement(name);
+        let result = if unlocked {
+            achievement.set()
+        } else {
+            achievement.clear()
+        };
+        result.map_err(|()| SteamError::Rejected(format!("achievement {name:?} was refused")))
+    }
+
+    fn stat(&self, name: &str) -> SteamResult<StatValue> {
+        reject_nul(name)?;
+        let stats = self.stats_client()?.user_stats();
+        if let Ok(value) = stats.get_stat_i32(name) {
+            return Ok(StatValue::Int(value));
+        }
+        stats
+            .get_stat_f32(name)
+            .map(StatValue::Float)
+            .map_err(|()| {
+                SteamError::NotFound(format!("stat {name:?} (or stats not received yet)"))
+            })
+    }
+
+    fn set_stat(&mut self, name: &str, value: StatValue) -> SteamResult<()> {
+        reject_nul(name)?;
+        let stats = self.stats_client()?.user_stats();
+        let result = match value {
+            StatValue::Int(v) => stats.set_stat_i32(name, v),
+            StatValue::Float(v) => stats.set_stat_f32(name, v),
+        };
+        result.map_err(|()| {
+            SteamError::Rejected(format!("stat {name:?} was refused (unknown or wrong type)"))
+        })
+    }
+
+    fn store_stats(&mut self) -> SteamResult<()> {
+        self.stats_client()?
+            .user_stats()
+            .store_stats()
+            .map_err(|()| SteamError::Rejected("storing stats failed".into()))
+    }
+
+    fn cloud_enabled_for_app(&self) -> SteamResult<bool> {
+        Ok(self.client()?.remote_storage().is_cloud_enabled_for_app())
+    }
+
+    fn cloud_enabled_for_account(&self) -> SteamResult<bool> {
+        Ok(self
+            .client()?
+            .remote_storage()
+            .is_cloud_enabled_for_account())
+    }
+
+    fn cloud_list(&self) -> SteamResult<Vec<String>> {
+        Ok(self
+            .client()?
+            .remote_storage()
+            .files()
+            .into_iter()
+            .map(|file| file.name)
+            .collect())
+    }
+
+    fn cloud_timestamp(&self, name: &str) -> SteamResult<i64> {
+        check_cloud_name(name)?;
+        let file = self.client()?.remote_storage().file(name);
+        if file.exists() {
+            Ok(file.timestamp())
+        } else {
+            Err(SteamError::NotFound(name.to_owned()))
+        }
+    }
+
+    fn cloud_read(&self, name: &str) -> SteamResult<Vec<u8>> {
+        use std::io::Read;
+        check_cloud_name(name)?;
+        let file = self.client()?.remote_storage().file(name);
+        if !file.exists() {
+            return Err(SteamError::NotFound(name.to_owned()));
+        }
+        let mut data = Vec::new();
+        file.read()
+            .read_to_end(&mut data)
+            .map_err(|e| SteamError::Rejected(format!("reading {name:?} failed: {e}")))?;
+        Ok(data)
+    }
+
+    fn cloud_write(&mut self, name: &str, data: &[u8]) -> SteamResult<()> {
+        use std::io::Write;
+        check_cloud_name(name)?;
+        let storage = self.client()?.remote_storage();
+        if !(storage.is_cloud_enabled_for_app() && storage.is_cloud_enabled_for_account()) {
+            return Err(SteamError::CloudDisabled);
+        }
+        let mut writer = storage.file(name).write();
+        // Steam reports a write failure for exceeded quota or an invalid name; the
+        // binding exposes no quota query, so both surface as `QuotaExceeded`.
+        writer
+            .write_all(data)
+            .map_err(|_| SteamError::QuotaExceeded)?;
+        drop(writer);
+        if storage.file(name).exists() {
+            Ok(())
+        } else {
+            Err(SteamError::Rejected(format!("{name:?} was not stored")))
+        }
+    }
+
+    fn cloud_delete(&mut self, name: &str) -> SteamResult<()> {
+        check_cloud_name(name)?;
+        let file = self.client()?.remote_storage().file(name);
+        if file.delete() {
+            Ok(())
+        } else {
+            Err(SteamError::NotFound(name.to_owned()))
+        }
+    }
+}
+
+/// The `steamworks` crate builds C strings with `unwrap`, so names are checked first.
+fn check_cloud_name(name: &str) -> SteamResult<()> {
+    if crate::backend::valid_cloud_name(name) {
+        Ok(())
+    } else {
+        Err(SteamError::InvalidName(name.to_owned()))
     }
 }
