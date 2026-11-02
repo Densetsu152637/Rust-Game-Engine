@@ -170,8 +170,16 @@ pub struct GpuRenderer {
     framegen: framegen::FrameGeneration,
     /// HDR display output while enabled ([`Self::enable_hdr_output`]).
     hdr: Option<hdr::HdrOutput>,
+    /// A frame is rendering into the HDR display-linear image.
+    hdr_frame: bool,
     hdr_status: HdrStatus,
 }
+
+/// Why frame generation is off while HDR output is active.
+const HDR_FRAME_GENERATION_REASON: &str = concat!(
+    "frame generation is unavailable while HDR output is active: its colour path is ",
+    "8-bit SDR (Rgba8Unorm, hdr flag off)"
+);
 
 /// How the `engine.sprites` overlay node draws a frame's 2D sprites/UI.
 enum SpriteMode {
@@ -396,6 +404,7 @@ impl GpuRenderer {
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
             framegen: framegen::FrameGeneration::new(),
             hdr: None,
+            hdr_frame: false,
             hdr_status: HdrStatus::default(),
         })
     }
@@ -523,10 +532,8 @@ impl GpuRenderer {
         self.hdr_status = output.status.clone();
         self.hdr = Some(output);
         self.info.format = hdr::LINEAR_FORMAT;
-        self.framegen.set_output_gate(Some(
-            "frame generation is unavailable while HDR output is active: its colour path is              8-bit SDR (Rgba8Unorm, hdr flag off)"
-                .to_owned(),
-        ));
+        self.framegen
+            .set_output_gate(Some(HDR_FRAME_GENERATION_REASON.to_owned()));
         self.gpu.check_errors()
     }
 
@@ -795,7 +802,10 @@ impl GpuRenderer {
                 .as_mut()
                 .expect("checked above")
                 .linear_view(&self.gpu.device, width, height);
-        let stats = self.render_frame(frame, &linear, world)?;
+        self.hdr_frame = true;
+        let stats = self.render_frame(frame, &linear, world);
+        self.hdr_frame = false;
+        let stats = stats?;
         self.hdr.as_mut().expect("checked above").present(
             &self.gpu.device,
             &self.gpu.queue,
@@ -914,8 +924,12 @@ impl GpuRenderer {
             .scene
             .as_mut()
             .context("overlay features require the render pipeline")?;
-        let report =
-            scene.render_overlay_only(&output, world, &FeatureOverrides::default(), &mut host)?;
+        let overrides = FeatureOverrides::default();
+        let report = if self.hdr_frame {
+            scene.render_overlay_only_linear(&output, world, &overrides, &mut host)?
+        } else {
+            scene.render_overlay_only(&output, world, &overrides, &mut host)?
+        };
         let stats = host.stats;
         self.status = status_of(&report, RenderPipelineState::Rendered, &Default::default());
         Ok(stats)
@@ -940,7 +954,6 @@ impl GpuRenderer {
         // A requested camera cut discards the view's temporal history
         // (motion, RT denoisers).
         view.reset_history = std::mem::take(&mut self.native_reset);
-        view.linear_output = self.hdr.is_some();
         let output = self.output_target(target, viewport);
         let (_, stats) = self.draw_3d(frame, view, &output, world, true, None, None)?;
         Ok(stats)
@@ -973,6 +986,10 @@ impl GpuRenderer {
         };
         self.pipeline()?;
         let mut view = view;
+        // Every 3D path of an HDR frame (native, temporal, DLSS) writes
+        // display-linear colour for the HDR output pass; XR eyes and frame
+        // generation inputs are drawn outside `hdr_frame`.
+        view.linear_output = self.hdr_frame;
         let post_status = self.post_host.prepare(frame, &mut view)?;
         post_effects::prepare(
             &self.post_effects,
@@ -1352,7 +1369,6 @@ impl GpuRenderer {
         view.jitter = jitter;
         view.reset_history = reset;
         view.host_needs.motion = true;
-        view.linear_output = self.hdr.is_some();
         if fg_inputs.is_some() {
             view.presentation = Presentation::SceneOnly;
         }
@@ -2200,6 +2216,12 @@ mod tests {
         let kept = auto_temporal_framegen_reason(Some("no driver"));
         assert!(kept.starts_with("no driver; the native temporal resolve"));
         assert!(!kept.contains("  "));
+    }
+
+    #[test]
+    fn the_hdr_frame_generation_reason_has_single_spaces() {
+        assert!(!HDR_FRAME_GENERATION_REASON.contains("  "));
+        assert!(HDR_FRAME_GENERATION_REASON.contains("path is 8-bit SDR"));
     }
 
     #[test]

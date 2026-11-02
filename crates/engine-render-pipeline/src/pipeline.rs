@@ -1412,7 +1412,20 @@ impl ScenePipeline {
         overrides: &crate::FeatureOverrides,
         host: &mut dyn HostStages,
     ) -> Result<ViewReport> {
-        self.render_presentation(None, target, world, overrides, host)
+        self.render_presentation(None, target, world, overrides, host, false)
+    }
+
+    /// [`Self::render_overlay_only`] into a display-linear HDR image: the
+    /// presentation copies keep values above 1.0 (see
+    /// `ViewData::linear_output`).
+    pub fn render_overlay_only_linear(
+        &mut self,
+        target: &OutputTarget,
+        world: Option<&World>,
+        overrides: &crate::FeatureOverrides,
+        host: &mut dyn HostStages,
+    ) -> Result<ViewReport> {
+        self.render_presentation(None, target, world, overrides, host, true)
     }
 
     /// Composite overlays and final filters over an already tonemapped,
@@ -1431,7 +1444,7 @@ impl ScenePipeline {
             source.size == target.size,
             "presentation source and target sizes must match"
         );
-        self.render_presentation(Some(source), target, world, overrides, host)
+        self.render_presentation(Some(source), target, world, overrides, host, false)
     }
 
     fn render_presentation(
@@ -1441,6 +1454,7 @@ impl ScenePipeline {
         world: Option<&World>,
         overrides: &crate::FeatureOverrides,
         host: &mut dyn HostStages,
+        linear: bool,
     ) -> Result<ViewReport> {
         ensure!(
             target.size[0] > 0 && target.size[1] > 0,
@@ -1483,7 +1497,7 @@ impl ScenePipeline {
         let result = (|| -> Result<()> {
             if let Some(source) = source {
                 let output = io.output.as_ref().context("no presentation output")?;
-                self.composite_copy.encode(
+                self.composite_copy.encode_with(
                     &device,
                     &gpu.queue,
                     &mut encoder,
@@ -1491,6 +1505,7 @@ impl ScenePipeline {
                     &output.view,
                     output.format,
                     Viewport::full(size),
+                    linear,
                 )?;
             } else if io.final_output.is_some() {
                 let output = io.output.as_ref().context("no presentation output")?;
@@ -1524,7 +1539,7 @@ impl ScenePipeline {
                     host,
                 )?;
             }
-            finish_presentation(&mut self.composite_copy, gpu, &mut encoder, &io, false)
+            finish_presentation(&mut self.composite_copy, gpu, &mut encoder, &io, linear)
         })();
         gpu.queue.submit([encoder.finish()]);
         state.composite = io.composite.take();

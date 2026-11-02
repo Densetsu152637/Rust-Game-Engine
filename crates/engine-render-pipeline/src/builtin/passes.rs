@@ -123,24 +123,9 @@ impl OutputPass {
         })
     }
 
-    /// Clear `target` to opaque black, then write `hdr` into `viewport`
-    /// clamped to 0..1.
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        hdr: &wgpu::TextureView,
-        target: &wgpu::TextureView,
-        format: wgpu::TextureFormat,
-        viewport: Viewport,
-    ) -> Result<()> {
-        self.encode_with(device, queue, encoder, hdr, target, format, viewport, false)
-    }
-
-    /// [`Self::encode`]; with `linear` the colour is written unclamped
-    /// (`ViewData::linear_output`, for a later HDR output transform).
+    /// Clear `target` to opaque black, then write `hdr` into `viewport`:
+    /// clamped to 0..1, or with `linear` unclamped (`ViewData::linear_output`,
+    /// for a later HDR output transform).
     #[allow(clippy::too_many_arguments)]
     pub fn encode_with(
         &mut self,

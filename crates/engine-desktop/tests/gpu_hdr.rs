@@ -7,9 +7,12 @@
 //! check (docs/rendering-hdr-output.md).
 
 use engine_desktop::hdr::{PQ_CHOICE, SCRGB_CHOICE, output_settings};
-use engine_desktop::render_pipeline::HdrOutputSettings;
 use engine_desktop::render_pipeline::hdr::{nits_from_scrgb, pq_oetf};
 use engine_desktop::render_pipeline::readback::read_rgba16f;
+use engine_desktop::render_pipeline::{
+    FeatureContext, FeatureDescriptor, HdrOutputSettings, PipelineFeature, PipelineFeatures, Stage,
+    ViewData,
+};
 use engine_desktop::*;
 use engine_project::{
     Camera2D,
@@ -434,5 +437,101 @@ fn frame_generation_is_gated_off_while_hdr_output_is_active() -> anyhow::Result<
     if let Some(reason) = status.fallback_reason {
         assert!(!reason.contains("HDR output"), "{reason}");
     }
+    Ok(())
+}
+
+/// A Composite-stage feature that is active but draws nothing: it only forces
+/// the retained-display composite copy that used to clamp HDR values.
+struct IdleComposite;
+
+impl PipelineFeature for IdleComposite {
+    fn descriptor(&self) -> FeatureDescriptor {
+        FeatureDescriptor::new("test.idle_composite", Stage::Composite)
+    }
+    fn composite_active(&self, _view: &ViewData) -> bool {
+        true
+    }
+    fn encode(&mut self, _ctx: &mut FeatureContext<'_>) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn every_upscaler_mode_without_dlss_keeps_values_above_paper_white() -> anyhow::Result<()> {
+    let mut renderer = renderer(wgpu::TextureFormat::Rgba16Float)?;
+    let settings = enable(&mut renderer, SCRGB_CHOICE)?;
+    let (texture, view) = target(&renderer.gpu, wgpu::TextureFormat::Rgba16Float, SIZE);
+    let (sx, sy) = scene_at(SIZE);
+    let (ux, uy) = ui_at(SIZE);
+    let want = settings.encode([4.0; 3]);
+    let requests = [
+        UpscalerSettings::default(),
+        UpscalerSettings {
+            mode: UpscalerMode::NativeTemporal,
+            quality: UpscalerQuality::Dlaa,
+        },
+        UpscalerSettings {
+            mode: UpscalerMode::NativeTemporal,
+            quality: UpscalerQuality::Quality,
+        },
+        UpscalerSettings {
+            mode: UpscalerMode::AutoTemporal,
+            quality: UpscalerQuality::Dlaa,
+        },
+        // Without the DLSS feature/device this falls back to native.
+        UpscalerSettings {
+            mode: UpscalerMode::DlssSr,
+            quality: UpscalerQuality::Quality,
+        },
+    ];
+    for request in requests {
+        let mut scene = frame(SIZE, 4.0);
+        scene.camera3d.as_mut().unwrap().camera.upscaler = request;
+        // Several frames: the temporal resolve needs history.
+        for _ in 0..4 {
+            renderer.render_scene(&scene, &view, None)?;
+        }
+        let pixel = float_pixel(&renderer, &texture, sx, sy);
+        assert!(pixel[0] > 1.5, "{request:?}: scene pixel {pixel:?}");
+        assert!(
+            close(pixel[0], want[0], 0.03),
+            "{request:?}: scene pixel {pixel:?} vs {want:?}"
+        );
+        let ui = float_pixel(&renderer, &texture, ux, uy);
+        assert!(
+            ui.iter().all(|&c| close(c, 203.0 / 80.0, 5e-3)),
+            "{request:?}: UI {ui:?}"
+        );
+        assert!(renderer.hdr_status().active);
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn a_2d_frame_with_a_composite_feature_keeps_values_above_paper_white() -> anyhow::Result<()> {
+    let mut renderer = renderer(wgpu::TextureFormat::Rgba16Float)?;
+    enable(&mut renderer, SCRGB_CHOICE)?;
+    let mut features = PipelineFeatures::default();
+    features.register(IdleComposite)?;
+    renderer.set_features(features)?;
+    let (texture, view) = target(&renderer.gpu, wgpu::TextureFormat::Rgba16Float, SIZE);
+    // A 2D-only frame whose UI quad is brighter than paper white.
+    let mut scene = frame(SIZE, 1.0);
+    scene.camera3d = None;
+    scene.meshes.clear();
+    let mut bright = (*scene.sprites.draws[0].mesh).clone();
+    for vertex in &mut bright.vertices {
+        vertex.color = [4.0, 4.0, 4.0, 1.0];
+    }
+    scene.sprites.draws[0].mesh = Arc::new(bright);
+    renderer.render_scene(&scene, &view, None)?;
+    let (x, y) = ui_at(SIZE);
+    let pixel = float_pixel(&renderer, &texture, x, y);
+    assert!(
+        pixel.iter().all(|&c| c > 1.5 * 203.0 / 80.0),
+        "2D value 4.0 must not clamp to paper white: {pixel:?}"
+    );
     Ok(())
 }

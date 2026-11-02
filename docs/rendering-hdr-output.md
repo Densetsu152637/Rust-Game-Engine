@@ -22,7 +22,9 @@ scene HDR -> post/tonemap stage -> sprites + UI  -> HDR output transform -> HDR 
 With HDR active (`GpuRenderer::enable_hdr_output`):
 
 1. The frame renders into an engine-owned `Rgba16Float` *display-linear* image
-   instead of the surface. `ViewData::linear_output` is set, so `engine.output`
+   instead of the surface. `draw_3d` sets `ViewData::linear_output` for every 3D
+   path of the frame (native, native temporal, DLSS Super Resolution), and 2D-only
+   frames with a composite feature use `render_overlay_only_linear`, so `engine.output`
    and `engine.tonemap` write the colour unclamped: no 0..1 clamp, no SDR
    tonemap operator, no sRGB encode, including the final copy from the
    UI-free display base to the target. Exposure, bloom, grading, vignette and
@@ -192,7 +194,7 @@ Nothing reports HDR active unless the configured surface is `Rgba16Float` +
   field, motion blur, spatial AA) now see display-linear unclamped values in the
   float image; they were not validated in HDR output.
 - `composite_presentations` (late presentation, used by Frame Generation) and
-  XR eye targets do not use the HDR path.
+  XR eye targets do not use the HDR path (Frame Generation is gated off in HDR).
 - The window surface path in `engine-render-wgpu/src/surface.rs` (the generic
   backend) stays sRGB-only.
 - HLG, encoded extended sRGB/P3, HDR metadata (ST 2086/MaxCLL) and dynamic

@@ -313,14 +313,13 @@ remain with their owner; do not resolve or commit their dirty state.
      buffer without skipped draws is incomplete; camera culling keeps shadows.
   8. HDR requires OS/backend display colour-space support and compatible output,
      UI paper-white and FG encoding; float intermediates alone are insufficient.
-     Status (branch `feat/render-r9-hdr`): implemented to ready-to-test, off by
-     default. wgpu 30 exposes surface colour spaces and display HDR info, so
+     Status: merged and passed the stage 10 gate (`c0ab566`); off by default. wgpu 30 exposes surface colour spaces and display HDR info, so
      scRGB (`Rgba16Float` + `ExtendedSrgbLinear`) and PQ (`Rgb10a2Unorm` +
      `Bt2100Pq`) are selected from the reported capabilities with an SDR
      fallback and reason; the output transform, paper-white UI and the Frame
      Generation gate are described in `docs/rendering-hdr-output.md`. CPU tests
-     and offscreen GPU readback tests are written but not run; presentation on a
-     real HDR monitor stays a manual check.
+     and offscreen GPU readback tests pass; presentation on a real HDR monitor
+     stays a manual check.
   9. Reuse World's committed tile chunk geometry/Draw contract from `255035b`:
      16x16 chunks, y-up local positions, v-down oriented atlas UVs, stable chunk
      identity/revision and layer opacity. Add real lit sprite/tile shaders and
