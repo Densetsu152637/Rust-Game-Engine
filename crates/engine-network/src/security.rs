@@ -13,9 +13,13 @@ pub(crate) type Authorize = dyn Fn(crate::PeerId, &[CertificateDer<'_>]) -> bool
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TransportSecurity {
     TrustedLanPlaintext,
     MutualTls13,
+    /// The platform encrypts and authenticates the link and supplies the peer identity
+    /// (Steam Networking Sockets); there is no engine-visible certificate.
+    PlatformEncrypted,
 }
 
 /// Trusted configuration. Rate windows reset once per second; a boundary can admit two bursts.

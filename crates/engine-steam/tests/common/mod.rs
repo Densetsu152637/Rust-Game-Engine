@@ -1,0 +1,68 @@
+//! Helpers shared by integration tests.
+
+/// Forwards the networking methods of `SteamBackend` to `self.fake` (an
+/// `Arc<Mutex<FakeBackend>>`), so a wrapper backend can share one fake with a test.
+macro_rules! forward_net {
+    () => {
+        fn net_init_relay(&mut self) -> SteamResult<()> {
+            self.fake.lock().unwrap().net_init_relay()
+        }
+        fn net_relay_status(&self) -> SteamResult<RelayStatus> {
+            self.fake.lock().unwrap().net_relay_status()
+        }
+        fn net_max_message_size(&self) -> SteamResult<usize> {
+            self.fake.lock().unwrap().net_max_message_size()
+        }
+        fn net_listen_p2p(&mut self, virtual_port: i32) -> SteamResult<NetListenId> {
+            self.fake.lock().unwrap().net_listen_p2p(virtual_port)
+        }
+        fn net_listen_ip(&mut self, addr: std::net::SocketAddr) -> SteamResult<NetListenId> {
+            self.fake.lock().unwrap().net_listen_ip(addr)
+        }
+        fn net_close_listen(&mut self, listen: NetListenId) -> SteamResult<()> {
+            self.fake.lock().unwrap().net_close_listen(listen)
+        }
+        fn net_connect_p2p(&mut self, peer: SteamId, virtual_port: i32) -> SteamResult<NetConnId> {
+            self.fake
+                .lock()
+                .unwrap()
+                .net_connect_p2p(peer, virtual_port)
+        }
+        fn net_connect_ip(&mut self, addr: std::net::SocketAddr) -> SteamResult<NetConnId> {
+            self.fake.lock().unwrap().net_connect_ip(addr)
+        }
+        fn net_accept(&mut self, conn: NetConnId) -> SteamResult<()> {
+            self.fake.lock().unwrap().net_accept(conn)
+        }
+        fn net_close(&mut self, conn: NetConnId, reason: &str, linger: bool) -> SteamResult<()> {
+            self.fake.lock().unwrap().net_close(conn, reason, linger)
+        }
+        fn net_send(
+            &mut self,
+            conn: NetConnId,
+            data: &[u8],
+            flags: NetSendFlags,
+        ) -> SteamResult<()> {
+            self.fake.lock().unwrap().net_send(conn, data, flags)
+        }
+        fn net_flush(&mut self, conn: NetConnId) -> SteamResult<()> {
+            self.fake.lock().unwrap().net_flush(conn)
+        }
+        fn net_receive(&mut self, conn: NetConnId, max: usize) -> SteamResult<Vec<Vec<u8>>> {
+            self.fake.lock().unwrap().net_receive(conn, max)
+        }
+        fn net_poll_events(&mut self) -> Vec<NetEvent> {
+            self.fake.lock().unwrap().net_poll_events()
+        }
+        fn net_conn_stats(&self, conn: NetConnId) -> Option<NetConnStats> {
+            self.fake.lock().unwrap().net_conn_stats(conn)
+        }
+        fn net_begin_auth(&mut self, user: SteamId, ticket: &[u8]) -> SteamResult<()> {
+            self.fake.lock().unwrap().net_begin_auth(user, ticket)
+        }
+        fn net_end_auth(&mut self, user: SteamId) -> SteamResult<()> {
+            self.fake.lock().unwrap().net_end_auth(user)
+        }
+    };
+}
+pub(crate) use forward_net;

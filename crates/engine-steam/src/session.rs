@@ -1,6 +1,7 @@
 //! The process-wide Steam session: owns the backend and is also the game-facing
 //! handle, inserted into the game world as a resource.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use bevy_ecs::prelude::Resource;
@@ -8,8 +9,9 @@ use bevy_ecs::prelude::Resource;
 use crate::backend::SteamBackend;
 use crate::cloud::{CloudReport, CloudSync};
 use crate::error::{SteamError, SteamResult};
+use crate::net::{NetConnId, NetEvent, NetListenId};
 use crate::stats::StatsService;
-use crate::types::{StatValue, SteamEvent, SteamStatus};
+use crate::types::{StatValue, SteamEvent, SteamId, SteamStatus};
 
 pub(crate) struct SessionState {
     pub(crate) backend: Box<dyn SteamBackend + Send>,
@@ -19,6 +21,40 @@ pub(crate) struct SessionState {
     /// Events raised outside `run_callbacks`, delivered on the next tick.
     pub(crate) pending: Vec<SteamEvent>,
     pub(crate) cloud_report: Option<CloudReport>,
+    pub(crate) net: NetRouter,
+}
+
+/// What a networking endpoint owns, so one backend event queue can serve several endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum NetKey {
+    Listen(NetListenId),
+    Conn(NetConnId),
+    Auth(SteamId),
+}
+
+/// Splits the backend's single networking event queue between endpoints.
+#[derive(Default)]
+pub(crate) struct NetRouter {
+    next_owner: u32,
+    owners: BTreeMap<NetKey, u32>,
+    inboxes: BTreeMap<u32, VecDeque<NetEvent>>,
+}
+
+impl NetRouter {
+    fn route(&mut self, event: NetEvent) {
+        let key = match &event {
+            NetEvent::ConnectionRequest { listen, .. } => NetKey::Listen(*listen),
+            NetEvent::Connected { conn, .. } | NetEvent::Closed { conn, .. } => NetKey::Conn(*conn),
+            NetEvent::AuthResult { user, .. } => NetKey::Auth(*user),
+        };
+        let Some(&owner) = self.owners.get(&key) else {
+            return; // Released or never claimed: nobody is waiting for it.
+        };
+        if let NetEvent::ConnectionRequest { conn, .. } = &event {
+            self.owners.insert(NetKey::Conn(*conn), owner);
+        }
+        self.inboxes.entry(owner).or_default().push_back(event);
+    }
 }
 
 /// The process-wide owner of the Steam backend. Clone it into every runner
@@ -45,6 +81,7 @@ impl SteamSession {
                 stats: StatsService::default(),
                 pending: Vec::new(),
                 cloud_report: None,
+                net: NetRouter::default(),
             })),
         }
     }
@@ -53,6 +90,56 @@ impl SteamSession {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Runs `f` on the backend. The session lock is held only for the call, and `f` must
+    /// not call back into the session.
+    pub(crate) fn with_backend<R>(&self, f: impl FnOnce(&mut dyn SteamBackend) -> R) -> R {
+        let mut state = self.lock();
+        f(state.backend.as_mut())
+    }
+
+    /// Pumps Steam callbacks and returns their events. A host running `SteamPlugin` never
+    /// calls this (the plugin pumps once per tick); tests and hosts without the plugin do.
+    pub fn run_callbacks(&self) -> Vec<SteamEvent> {
+        self.with_backend(|backend| backend.run_callbacks())
+    }
+
+    pub(crate) fn net_register(&self) -> u32 {
+        let mut state = self.lock();
+        state.net.next_owner += 1;
+        let owner = state.net.next_owner;
+        state.net.inboxes.insert(owner, VecDeque::new());
+        owner
+    }
+
+    pub(crate) fn net_claim(&self, owner: u32, key: NetKey) {
+        self.lock().net.owners.insert(key, owner);
+    }
+
+    pub(crate) fn net_release(&self, key: NetKey) {
+        self.lock().net.owners.remove(&key);
+    }
+
+    pub(crate) fn net_unregister(&self, owner: u32) {
+        let mut state = self.lock();
+        state.net.owners.retain(|_, o| *o != owner);
+        state.net.inboxes.remove(&owner);
+    }
+
+    /// Drains the backend's networking events into per-owner inboxes and returns `owner`'s.
+    pub(crate) fn net_events(&self, owner: u32) -> Vec<NetEvent> {
+        let mut state = self.lock();
+        let events = state.backend.net_poll_events();
+        for event in events {
+            state.net.route(event);
+        }
+        state
+            .net
+            .inboxes
+            .get_mut(&owner)
+            .map(|inbox| inbox.drain(..).collect())
+            .unwrap_or_default()
     }
 
     /// A non-owning handle, for callbacks stored inside the game world.

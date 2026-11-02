@@ -4,7 +4,8 @@ The `engine-steam` crate is the engine's optional Steamworks integration. Steam 
 off by default: a normal build contains no Steam code and no Steam dependency, and
 nothing in a game changes unless it opts in.
 
-Status: the skeleton (S1), the real backend core (S2) and the host integration (S3) of
+Status: the skeleton (S1), the real backend core (S2), the host integration (S3),
+achievements and stats (S4), Cloud saves (S5) and the Networking Sockets transport (S6) of
 `docs/platform-and-steam-plan.md` exist: the backend trait, the null and fake
 backends, the status and error types, the build feature, and a `RealBackend` that
 initialises Steam, reports identity, issues auth tickets, opens the overlay, sets rich
@@ -58,7 +59,7 @@ overrides only what it supports.
 | Backend | When | Behaviour |
 | --- | --- | --- |
 | `NullBackend` | feature off, or an explicit absent status | fixed unavailable status, every call fails with `Unavailable` |
-| `FakeBackend` | always compiled | deterministic in-memory Steam: achievements and stats (persisted by `store_stats`), Cloud files with a quota and name validation, lobbies, Workshop items, controllers and action sets, rich presence, scripted events and a recorded call order (`calls()`) |
+| `FakeBackend` | always compiled | deterministic in-memory Steam: achievements and stats (persisted by `store_stats`), Cloud files with a quota and name validation, an in-process Networking Sockets model (a connected socket pair inside one backend, with injectable relay delay or failure, a full send queue, unreliable reordering and auth rejection), lobbies, Workshop items, controllers and action sets, rich presence, scripted events and a recorded call order (`calls()`) |
 | `RealBackend` | feature `steam` | wraps `steamworks::Client`; core implemented (see [Core](#core-real-backend)) |
 
 Game and engine code should depend on `dyn SteamBackend`, and tests should drive a
@@ -220,6 +221,97 @@ needs no code.)
 The real backend cannot query the remaining quota (the `steamworks` binding has no
 `GetQuota`), so a failed write is reported as `QuotaExceeded`.
 
+## Networking Sockets transport (S6)
+
+`SteamServerEndpoint` and `SteamClientEndpoint` (`crates/engine-steam/src/transport.rs`)
+implement `engine_network::MessageEndpoint` over Steam Networking Sockets, so
+replication, RPC and session layers run on Steam without change. Both take a
+`SteamSession`, so every call reaches Steam through the session's backend on the tick
+thread. The host's `SteamPlugin` pumps Steam callbacks once per tick; the endpoints only
+read what that pump produced, so call `poll` after the plugin has run (a host without
+the plugin calls `SteamSession::run_callbacks` itself).
+
+```rust
+let server = SteamServerEndpoint::listen(session.clone(), SteamServerConfig::p2p(0))?;
+let mut client = SteamClientEndpoint::connect_p2p(session, host_steam_id, 0, SteamClientConfig::default())?;
+```
+
+### Identity and authentication design
+
+Threats and answers (the TLS certificate-binding token flow of `engine-network` and
+`engine-net-quic` does not apply; there is no certificate to bind):
+
+- Spoofed identity. A P2P (`ConnectP2P`) connection is authenticated by Steam: the
+  remote `SteamId` comes from the connection's identity, signed by Steam's certificate
+  authority, and cannot be chosen by the peer. The server records that identity as the
+  peer's SteamID. A connection by IP address carries only an unauthenticated address.
+- Replayed or stolen identity claims. The client sends its SteamID and an auth session
+  ticket (`ISteamUser::GetAuthSessionTicket`) in a `Hello` frame as the first message.
+  The server calls `BeginAuthSession` for that SteamID and ticket and admits the peer
+  only on a successful `ValidateAuthTicketResponse`. Steam rejects a ticket that is
+  invalid, for another game, expired, or already in use. A claimed SteamID that differs
+  from a P2P connection's authenticated identity is refused before the ticket is checked.
+- Policy. `AuthPolicy::Ticket` (default) always requires a valid ticket. `AuthPolicy::
+  IdentityOnly` skips the ticket and is accepted only for P2P listeners, where Steam
+  already authenticated the identity (it exists for single-account loopback tests, where
+  Steam allows one auth session per SteamID in a process). An IP listener refuses
+  `IdentityOnly` at construction.
+- Server identity. P2P: the client dials a SteamID, so Steam authenticates the server.
+  IP: the server is unauthenticated, which makes IP mode suitable for LAN, development
+  and dedicated servers at a known address only. The server's `Accept` frame repeats
+  its SteamID; `SteamClientConfig::expected_server` (set for P2P automatically) turns a
+  mismatch into a refusal.
+- Eavesdropping and tampering. Steam encrypts and authenticates every connection
+  (`TransportSecurity::PlatformEncrypted`). IP connections without Steam certificates
+  have only basic protection, which is another reason not to use them across untrusted
+  networks.
+- Resource exhaustion and malformed input. Pending (unadmitted) connections count against
+  `max_peers`, must finish the handshake within `handshake_timeout`, and a bounded
+  backlog of connection requests is processed `max_accepts` per poll; further requests are
+  rejected. Every received frame is untrusted: an empty frame, reserved header bits, a
+  lane above `Lane::MAX`, a truncated sequence number, an oversize message or any data
+  before admission closes that peer. `poll` is bounded by `PollBudget` for dequeued
+  messages and bytes, and tickets are capped at 1024 bytes.
+- Revocation. A later failed `ValidateAuthTicketResponse` for an admitted peer
+  disconnects it. The auth session ends and the client's ticket is cancelled when the
+  link closes.
+
+The SteamID of a peer is available from `peer_steam_id(peer)` as soon as
+`LinkEvent::Authenticated(peer)` is delivered (the shared `LinkEvent` carries only the
+`PeerId`).
+
+### Lanes and delivery
+
+Every Steam message is `[header][payload]`. The header byte holds the lane in bits 0-3
+and the delivery in bits 4-5 (`ReliableOrdered`, `ReliableUnordered`,
+`UnreliableSequenced`, `Unreliable`); bits 6-7 are zero for data and `0x80`/`0x81` mark
+the `Hello` and `Accept` control frames. `UnreliableSequenced` adds a 4-byte per-lane
+sequence number after the header; the receiver keeps the newest sequence per
+`(peer, lane)` and drops anything not newer (counted in `dropped_unreliable`), as the QUIC
+transport does. Mapping to Steam send flags: reliable deliveries use `Reliable`;
+unreliable ones use `Unreliable | NoNagle`. Reliable sends are flushed at the end of each
+`poll` so Nagle batching adds at most one tick. All reliable lanes share one ordered
+Steam stream (like TCP), so a stalled reliable lane delays the others; Steam's
+connection lanes are not used.
+
+### Limits and backpressure
+
+`max_payload` is Steam's per-message send limit (512 KiB) minus the header and, for
+sequenced delivery, the sequence number. Oversize payloads, lanes above `Lane::MAX` and
+unknown or unadmitted peers return `Error::Invalid`. When Steam reports its send buffer
+full a reliable send returns `Error::QueueFull` and queues nothing; an unreliable send is
+dropped and counted in `dropped_unreliable`.
+
+### Relay readiness
+
+P2P needs the Steam Datagram Relay network, which initialises asynchronously after
+`init_relay_network_access`. Both endpoints request it on creation and expose
+`relay_status()` (`NotStarted`, `Pending`, `Ready`, `Failed`). A client does not dial
+until the relay is `Ready`; it stays in a waiting state, and a relay that is not ready
+within `relay_timeout` or reports `Failed` produces `Disconnected` with the reason. IP
+mode needs no relay. A listener can be created before the relay is ready; clients cannot
+reach it until it is.
+
 ## Live tests
 
 Live tests are `#[ignore]` and use App ID 480 (Spacewar). With the Steam client open:
@@ -227,6 +319,11 @@ Live tests are `#[ignore]` and use App ID 480 (Spacewar). With the Steam client 
 ```text
 cargo test -p engine-steam --features steam -- --ignored core --nocapture
 ```
+
+`-- --ignored net` runs the Networking Sockets loopbacks (`net_ip`: `ConnectByIPAddress` to a
+local listen socket with auth tickets; `net_p2p`: `ConnectP2P` to the signed-in account's own
+SteamID through the relay network): both exchange ordered reliable messages, a 200 KB message and a
+sequenced datagram, then disconnect. Run them with `--test-threads=1`.
 
 With Steam closed the same command passes and prints `skipped: Steam not running`.
 `-- --ignored stats` (read-only; never writes to the account) lists Spacewar stats such as
@@ -272,7 +369,6 @@ advice.
 Everything below is planned in `docs/platform-and-steam-plan.md` and is not implemented
 at this stage.
 
-- S6: Steam Networking Sockets transport for `MessageEndpoint`.
 - S7: lobbies and matchmaking.
 - S8: Steam Input as an input source.
 - S9: Workshop service (create, update, subscribe, query).

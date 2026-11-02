@@ -1,7 +1,10 @@
 //! The backend trait. Every method defaults to "unavailable" for the backend's
 //! current status, so a backend only overrides what it supports.
 
+use std::net::SocketAddr;
+
 use crate::error::{SteamError, SteamResult};
+use crate::net::*;
 use crate::types::*;
 
 /// Abstraction over the Steamworks API.
@@ -140,6 +143,76 @@ pub trait SteamBackend {
         Err(self.unavailable())
     }
     fn activate_action_set(&mut self, _controller: ControllerId, _set: &str) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+
+    // Networking Sockets. Connections and listen sockets are identified by backend-owned
+    // ids; `net_poll_events` reports what happened since the last call.
+
+    /// Starts the asynchronous Steam Datagram Relay initialisation (idempotent).
+    fn net_init_relay(&mut self) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    fn net_relay_status(&self) -> SteamResult<RelayStatus> {
+        Err(self.unavailable())
+    }
+    /// Largest message `net_send` accepts.
+    fn net_max_message_size(&self) -> SteamResult<usize> {
+        Err(self.unavailable())
+    }
+    /// Listens for `ConnectP2P` peers on a virtual port.
+    fn net_listen_p2p(&mut self, _virtual_port: i32) -> SteamResult<NetListenId> {
+        Err(self.unavailable())
+    }
+    /// Listens for `ConnectByIPAddress` clients on a UDP address.
+    fn net_listen_ip(&mut self, _addr: SocketAddr) -> SteamResult<NetListenId> {
+        Err(self.unavailable())
+    }
+    fn net_close_listen(&mut self, _listen: NetListenId) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    fn net_connect_p2p(&mut self, _peer: SteamId, _virtual_port: i32) -> SteamResult<NetConnId> {
+        Err(self.unavailable())
+    }
+    fn net_connect_ip(&mut self, _addr: SocketAddr) -> SteamResult<NetConnId> {
+        Err(self.unavailable())
+    }
+    fn net_accept(&mut self, _conn: NetConnId) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    /// Closes (or rejects) a connection; `linger` tries to flush queued reliable data first.
+    fn net_close(&mut self, _conn: NetConnId, _reason: &str, _linger: bool) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    /// Queues one message. `SendQueueFull` means Steam's send buffer is full.
+    fn net_send(
+        &mut self,
+        _conn: NetConnId,
+        _data: &[u8],
+        _flags: NetSendFlags,
+    ) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    /// Sends anything held back by the Nagle timer.
+    fn net_flush(&mut self, _conn: NetConnId) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    /// Dequeues up to `max` received messages.
+    fn net_receive(&mut self, _conn: NetConnId, _max: usize) -> SteamResult<Vec<Vec<u8>>> {
+        Err(self.unavailable())
+    }
+    fn net_poll_events(&mut self) -> Vec<NetEvent> {
+        Vec::new()
+    }
+    fn net_conn_stats(&self, _conn: NetConnId) -> Option<NetConnStats> {
+        None
+    }
+    /// Starts validating a remote user's auth session ticket; the verdict arrives as
+    /// `NetEvent::AuthResult`.
+    fn net_begin_auth(&mut self, _user: SteamId, _ticket: &[u8]) -> SteamResult<()> {
+        Err(self.unavailable())
+    }
+    fn net_end_auth(&mut self, _user: SteamId) -> SteamResult<()> {
         Err(self.unavailable())
     }
 }

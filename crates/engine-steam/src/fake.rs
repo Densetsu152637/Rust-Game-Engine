@@ -4,9 +4,12 @@
 //! methods and inspect the recorded call order through [`FakeBackend::calls`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 
 use crate::backend::{SteamBackend, valid_cloud_name};
 use crate::error::{SteamError, SteamResult};
+use crate::fake_net::FakeNet;
+use crate::net::*;
 use crate::types::*;
 
 /// In-memory Steam double.
@@ -34,6 +37,8 @@ pub struct FakeBackend {
     installed: BTreeMap<WorkshopItemId, InstalledItem>,
     controllers: Vec<ControllerId>,
     action_sets: BTreeMap<ControllerId, String>,
+    canceled_tickets: BTreeSet<u32>,
+    net: FakeNet,
 }
 
 impl FakeBackend {
@@ -73,6 +78,8 @@ impl FakeBackend {
             installed: BTreeMap::new(),
             controllers: Vec::new(),
             action_sets: BTreeMap::new(),
+            canceled_tickets: BTreeSet::new(),
+            net: FakeNet::default(),
         }
     }
 
@@ -80,6 +87,58 @@ impl FakeBackend {
     pub fn set_status(&mut self, status: SteamStatus) {
         self.events.push(SteamEvent::StatusChanged(status.clone()));
         self.status = status;
+    }
+
+    /// The relay network reports `Pending` for the first `polls` calls to `net_poll_events`.
+    pub fn with_relay_delay(mut self, polls: u32) -> Self {
+        self.net.set_relay_delay(polls);
+        self
+    }
+
+    /// The relay network reports `Failed(message)`.
+    pub fn with_relay_failure(mut self, message: &str) -> Self {
+        self.net.set_relay_failure(Some(message.to_owned()));
+        self
+    }
+
+    /// Caps the bytes a connection may hold unread before `net_send` reports `SendQueueFull`.
+    pub fn with_net_queue_limit(mut self, bytes: usize) -> Self {
+        self.net.set_queue_limit(bytes);
+        self
+    }
+
+    /// Lowers the largest accepted message size.
+    pub fn with_net_max_message(mut self, bytes: usize) -> Self {
+        self.net.set_max_message(bytes);
+        self
+    }
+
+    /// Makes `BeginAuthSession` verdicts negative.
+    pub fn with_auth_rejection(mut self, reject: bool) -> Self {
+        self.net.set_reject_auth(reject);
+        self
+    }
+
+    /// While enabled, unreliable messages are queued ahead of earlier ones (reversed
+    /// order), so receivers can be tested against stale data.
+    pub fn set_net_reorder(&mut self, enabled: bool) {
+        self.net.set_reorder(enabled);
+    }
+
+    /// Queues a revocation verdict for an auth session, as Steam does when a user
+    /// goes offline.
+    pub fn revoke_net_auth(&mut self, user: SteamId) {
+        self.net.revoke_auth(user);
+    }
+
+    /// Number of networking connections currently open in the model.
+    pub fn net_open_connections(&self) -> usize {
+        self.net.open_connections()
+    }
+
+    /// Number of active `BeginAuthSession` sessions.
+    pub fn net_auth_sessions(&self) -> usize {
+        self.net.active_auth_sessions()
     }
 
     /// Makes `restart_app_if_necessary` return `true`.
@@ -242,9 +301,11 @@ impl SteamBackend for FakeBackend {
         })
     }
 
-    fn cancel_auth_ticket(&mut self, _handle: u32) -> SteamResult<()> {
+    fn cancel_auth_ticket(&mut self, handle: u32) -> SteamResult<()> {
         self.record("cancel_auth_ticket");
-        self.require_ready()
+        self.require_ready()?;
+        self.canceled_tickets.insert(handle);
+        Ok(())
     }
 
     fn activate_overlay(&mut self, _dialog: &str) -> SteamResult<()> {
@@ -551,6 +612,111 @@ impl SteamBackend for FakeBackend {
             return Err(SteamError::NotFound(format!("controller {}", controller.0)));
         }
         self.action_sets.insert(controller, set.to_owned());
+        Ok(())
+    }
+
+    fn net_init_relay(&mut self) -> SteamResult<()> {
+        self.record("net_init_relay");
+        self.require_ready()?;
+        self.net.init_relay();
+        Ok(())
+    }
+
+    fn net_relay_status(&self) -> SteamResult<RelayStatus> {
+        self.require_ready()?;
+        Ok(self.net.relay_status())
+    }
+
+    fn net_max_message_size(&self) -> SteamResult<usize> {
+        self.require_ready()?;
+        Ok(self.net.max_message())
+    }
+
+    fn net_listen_p2p(&mut self, virtual_port: i32) -> SteamResult<NetListenId> {
+        self.record("net_listen_p2p");
+        self.require_ready()?;
+        Ok(self.net.listen_p2p(virtual_port))
+    }
+
+    fn net_listen_ip(&mut self, addr: SocketAddr) -> SteamResult<NetListenId> {
+        self.record("net_listen_ip");
+        self.require_ready()?;
+        self.net.listen_ip(addr)
+    }
+
+    fn net_close_listen(&mut self, listen: NetListenId) -> SteamResult<()> {
+        self.record("net_close_listen");
+        self.require_ready()?;
+        self.net.close_listen(listen)
+    }
+
+    fn net_connect_p2p(&mut self, peer: SteamId, virtual_port: i32) -> SteamResult<NetConnId> {
+        self.record("net_connect_p2p");
+        let SteamStatus::Ready { user, .. } = &self.status else {
+            return Err(self.unavailable());
+        };
+        let me = user.id;
+        self.net.connect_p2p(me, peer, virtual_port)
+    }
+
+    fn net_connect_ip(&mut self, addr: SocketAddr) -> SteamResult<NetConnId> {
+        self.record("net_connect_ip");
+        self.require_ready()?;
+        Ok(self.net.connect_ip(addr))
+    }
+
+    fn net_accept(&mut self, conn: NetConnId) -> SteamResult<()> {
+        self.record("net_accept");
+        self.require_ready()?;
+        self.net.accept(conn)
+    }
+
+    fn net_close(&mut self, conn: NetConnId, reason: &str, _linger: bool) -> SteamResult<()> {
+        self.record("net_close");
+        self.require_ready()?;
+        self.net.close(conn, reason)
+    }
+
+    fn net_send(&mut self, conn: NetConnId, data: &[u8], flags: NetSendFlags) -> SteamResult<()> {
+        self.require_ready()?;
+        self.net.send(conn, data, flags)
+    }
+
+    fn net_flush(&mut self, conn: NetConnId) -> SteamResult<()> {
+        self.require_ready()?;
+        if self.net.conn_stats(conn).is_some() {
+            Ok(())
+        } else {
+            Err(SteamError::ConnectionClosed)
+        }
+    }
+
+    fn net_receive(&mut self, conn: NetConnId, max: usize) -> SteamResult<Vec<Vec<u8>>> {
+        self.require_ready()?;
+        self.net.receive(conn, max)
+    }
+
+    fn net_poll_events(&mut self) -> Vec<NetEvent> {
+        self.net.poll_events()
+    }
+
+    fn net_conn_stats(&self, conn: NetConnId) -> Option<NetConnStats> {
+        self.net.conn_stats(conn)
+    }
+
+    fn net_begin_auth(&mut self, user: SteamId, ticket: &[u8]) -> SteamResult<()> {
+        self.record("net_begin_auth");
+        self.require_ready()?;
+        let valid = <[u8; 4]>::try_from(ticket)
+            .map(u32::from_le_bytes)
+            .is_ok_and(|h| h >= 1 && h < self.next_ticket && !self.canceled_tickets.contains(&h));
+        self.net.begin_auth(user, valid)
+    }
+
+    fn net_end_auth(&mut self, user: SteamId) -> SteamResult<()> {
+        self.record("net_end_auth");
+        self.require_ready()?;
+        self.net.end_auth(user);
         Ok(())
     }
 }

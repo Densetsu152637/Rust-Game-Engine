@@ -1,0 +1,75 @@
+//! Backend-level types for Steam Networking Sockets. The transport endpoints in
+//! `transport.rs` are written against these, so they run on the fake or the real backend.
+
+use std::net::SocketAddr;
+
+use crate::types::SteamId;
+
+/// A listen socket owned by a backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NetListenId(pub u32);
+
+/// A connection owned by a backend (the backend's own handle space, not a Steam handle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NetConnId(pub u32);
+
+/// Who is on the other end of a connection, as far as the networking layer knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetRemote {
+    /// A SteamID authenticated by Steam (P2P connections).
+    Steam(SteamId),
+    /// An unauthenticated address (IP connections).
+    Ip(SocketAddr),
+    /// No usable identity.
+    Unknown,
+}
+
+/// State of the Steam Datagram Relay network that P2P connections need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayStatus {
+    /// `net_init_relay` has not been called (or Steam has not started trying).
+    NotStarted,
+    /// Initialising; P2P connections cannot be made yet.
+    Pending,
+    Ready,
+    Failed(String),
+}
+
+/// How to send one message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetSendFlags {
+    pub reliable: bool,
+    /// Send immediately instead of waiting for the Nagle timer.
+    pub no_nagle: bool,
+}
+
+/// Nonsecret per-connection telemetry.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct NetConnStats {
+    pub ping_ms: f32,
+    /// Bytes accepted by `net_send` and not yet delivered to the remote end.
+    pub queued_bytes: u64,
+}
+
+/// What a backend reports from `net_poll_events`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NetEvent {
+    /// A remote asked to connect to a listen socket. The connection must be accepted with
+    /// `net_accept` or closed with `net_close`.
+    ConnectionRequest {
+        listen: NetListenId,
+        conn: NetConnId,
+        remote: NetRemote,
+    },
+    /// The connection is established (outgoing connected, or an accepted request completed).
+    Connected { conn: NetConnId, remote: NetRemote },
+    /// The connection ended or failed. Messages already received can still be read.
+    Closed { conn: NetConnId, reason: String },
+    /// Result of `net_begin_auth`, or a later revocation (`accepted` false).
+    AuthResult {
+        user: SteamId,
+        accepted: bool,
+        reason: String,
+    },
+}

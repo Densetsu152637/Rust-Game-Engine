@@ -61,9 +61,12 @@ impl Lane {
 /// Wire transport behind an endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TransportKind {
     Tcp,
     Quic,
+    /// Steam Networking Sockets (`engine-steam`).
+    Steam,
 }
 
 /// Event produced by [`MessageEndpoint::poll`].

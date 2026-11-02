@@ -2094,6 +2094,7 @@ dependencies = [
  "anyhow",
  "bevy_ecs",
  "engine-desktop",
+ "engine-network",
  "engine-project",
  "serde_json",
  "steamworks",

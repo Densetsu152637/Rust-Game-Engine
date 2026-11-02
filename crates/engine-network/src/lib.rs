@@ -2,6 +2,8 @@
 //! No socket is opened until `Server::bind` or `Client::connect` is called.
 pub mod channel;
 mod conditions;
+#[cfg(feature = "test-support")]
+pub mod contract;
 mod endpoint;
 mod framing;
 mod security;

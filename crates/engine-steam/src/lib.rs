@@ -10,6 +10,8 @@ mod backend;
 mod cloud;
 mod error;
 mod fake;
+mod fake_net;
+mod net;
 mod null;
 mod plugin;
 #[cfg(all(
@@ -17,14 +19,22 @@ mod plugin;
     any(windows, target_os = "linux", target_os = "macos")
 ))]
 mod real;
+#[cfg(all(
+    feature = "steam",
+    any(windows, target_os = "linux", target_os = "macos")
+))]
+mod real_net;
 mod session;
 mod stats;
+mod transport;
 mod types;
+mod wire;
 
 pub use backend::SteamBackend;
 pub use cloud::{CloudReport, CloudSync, SyncAction};
 pub use error::{SteamError, SteamResult, UnavailableReason};
 pub use fake::FakeBackend;
+pub use net::*;
 pub use null::NullBackend;
 pub use plugin::{REQUIRED_EXIT_CODE, SteamPlugin, SteamRuntimeStatus, event_json, status_json};
 #[cfg(all(
@@ -34,6 +44,10 @@ pub use plugin::{REQUIRED_EXIT_CODE, SteamPlugin, SteamRuntimeStatus, event_json
 pub use real::RealBackend;
 pub use session::SteamSession;
 pub use stats::{DEFAULT_STORE_INTERVAL_TICKS, StatsService};
+pub use transport::{
+    AuthPolicy, SteamClientConfig, SteamClientEndpoint, SteamLimits, SteamListen,
+    SteamServerConfig, SteamServerEndpoint,
+};
 pub use types::*;
 
 /// True when this build contains the real Steam backend.
