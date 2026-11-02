@@ -166,6 +166,7 @@ pub struct GpuRenderer {
     rt: rt::RtHost,
     /// A camera cut requested for the next native view (`reset_history`).
     native_reset: bool,
+    skipped_particle_emitters: Vec<String>,
     upscaler: upscale::Upscaler,
     framegen: framegen::FrameGeneration,
     /// HDR display output while enabled ([`Self::enable_hdr_output`]).
@@ -401,6 +402,7 @@ impl GpuRenderer {
             clouds: CloudControls::default(),
             rt: rt::RtHost::default(),
             native_reset: false,
+            skipped_particle_emitters: Vec::new(),
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
             framegen: framegen::FrameGeneration::new(),
             hdr: None,
@@ -604,7 +606,17 @@ impl GpuRenderer {
                 ..Default::default()
             });
         }
-        particles::advance(self.pipeline()?, frame)
+        let (report, skipped) = particles::advance(self.pipeline()?, frame)?;
+        if report.advanced || !skipped.is_empty() {
+            self.skipped_particle_emitters = skipped;
+        }
+        Ok(report)
+    }
+
+    /// Emitters the last simulated tick skipped because their world transform
+    /// made them degenerate (for example a zero-scaled entity).
+    pub fn skipped_particle_emitters(&self) -> &[String] {
+        &self.skipped_particle_emitters
     }
 
     /// The particle clock and live emitters; `None` before the 3D pipeline exists.

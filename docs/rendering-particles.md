@@ -165,5 +165,16 @@ capacity fail extraction with `render.particles.limit`.
 - A multi-tick burst before a frame renders every tick (one compute submission per
   tick); only the pool state after the last tick is drawn.
 - Counters wrap at 2^32 and spawn indices at 2^32 (the random stream repeats).
-- The GPU tests (`gpu_particles`, `gpu_authored_particles`) are written but have not
-  been run; no GPU result and no performance number is recorded.
+- The GPU tests (`gpu_particles`, `gpu_authored_particles`) passed in the stage 10 gate
+  at `c0ab566`; no performance number is recorded.
+
+## Degenerate emitter transforms
+
+An emitter whose world transform makes the native description invalid (a
+zero-scaled entity, the usual way to hide one, gives a zero launch direction) is
+**skipped, not fatal**: `GpuRenderer::advance_particles` validates each native
+emitter, drops the failing ones from the tick's set (freeing their pools) and lists
+their ids in `GpuRenderer::skipped_particle_emitters()`. Every other emitter
+simulates. Skipping was chosen over falling back to the authored direction because a
+hidden emitter should stay hidden. `ScenePipeline::advance_particles` itself stays
+strict for direct callers.

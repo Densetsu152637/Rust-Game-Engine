@@ -44,22 +44,38 @@ pub(super) fn native(instance: &ParticleEmitterInstance) -> ParticleEmitter {
     }
 }
 
-/// Simulate `frame`'s tick on `pipeline`. A frame before the first scene
+/// Simulate `frame`'s tick on `pipeline`. Emitters whose transformed
+/// description fails native validation (a zero-scaled or otherwise degenerate
+/// entity, the usual way to hide one) are skipped, not fatal: their ids are
+/// returned and their pools are freed, while every other emitter simulates.
+/// A frame before the first scene
 /// tick (`dt == 0`) has nothing to simulate, and a repeated `frame.tick` is a
 /// no-op inside the pipeline. Scene steps longer than the renderer accepts
 /// are clamped rather than rejected, so a stalled frame cannot fail the run.
 pub(super) fn advance(
     pipeline: &mut ScenePipeline,
     frame: &ParticleFrame,
-) -> Result<ParticleTickReport> {
+) -> Result<(ParticleTickReport, Vec<String>)> {
     if frame.dt.is_nan() || frame.dt <= 0.0 {
-        return Ok(ParticleTickReport {
-            tick: frame.tick,
-            ..Default::default()
-        });
+        return Ok((
+            ParticleTickReport {
+                tick: frame.tick,
+                ..Default::default()
+            },
+            Vec::new(),
+        ));
     }
-    let emitters: Vec<_> = frame.emitters.iter().map(native).collect();
-    pipeline
+    let mut emitters = Vec::with_capacity(frame.emitters.len());
+    let mut skipped = Vec::new();
+    for instance in &frame.emitters {
+        let emitter = native(instance);
+        if emitter.validate().is_ok() {
+            emitters.push(emitter);
+        } else {
+            skipped.push(instance.id.clone());
+        }
+    }
+    let report = pipeline
         .advance_particles(
             ParticleTick {
                 id: frame.tick,
@@ -67,7 +83,8 @@ pub(super) fn advance(
             },
             &emitters,
         )
-        .context("advancing the particle simulation")
+        .context("advancing the particle simulation")?;
+    Ok((report, skipped))
 }
 
 #[cfg(test)]

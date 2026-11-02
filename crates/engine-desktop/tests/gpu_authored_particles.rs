@@ -176,3 +176,30 @@ fn the_authored_pool_is_bounded_by_its_capacity() -> Result<()> {
     assert_eq!(renderer.particle_report().unwrap().simulated_ticks, 6);
     Ok(())
 }
+
+#[test]
+#[ignore = "requires a real GPU adapter and HDR readback"]
+fn a_zero_scaled_emitter_is_skipped_and_reported_without_stopping_the_tick() -> Result<()> {
+    let dir = project();
+    let mut runtime = Runtime::new(Project::load(dir.path().join("project.json"))?)?;
+    runtime.start()?;
+    let gpu = render_pipeline::GpuContext::headless_with_options(&WgpuOptions::default())?;
+    let target = OffscreenTarget::new(&gpu, 64, 64)?;
+    let mut renderer = GpuRenderer::new(gpu, target.info, RenderLimits::default())?;
+    runtime.tick(DT, ActionFrame::default())?;
+    let mut frame = runtime.extract_particles()?;
+    let mut hidden = frame.emitters[0].clone();
+    hidden.id = "hidden".to_owned();
+    hidden.world = [[0.0; 4]; 4];
+    frame.emitters.push(hidden);
+
+    let report = renderer.advance_particles(&frame)?;
+    assert!(report.advanced);
+    assert_eq!(renderer.skipped_particle_emitters(), ["hidden"]);
+    let live = renderer.particle_report().unwrap();
+    assert_eq!(live.emitters.len(), 1);
+    assert_eq!(live.emitters[0].id, "sparks");
+    assert_eq!(live.emitters[0].spawn_attempts, 1);
+    draw(&mut renderer, &target, &runtime)?;
+    Ok(())
+}

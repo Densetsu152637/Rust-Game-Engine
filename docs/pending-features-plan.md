@@ -889,7 +889,7 @@ fog and clouds are separate slices and are not covered here.
   `DecalReport::dropped_overflow`), 1024 submitted (more is invalid input).
   `Camera3D.decals` accepts at most 64 and rejects more. `DecalTexture::Missing`
   renders flat and is reported. Authored decals are flat and camera-attached.
-- Evidence: CPU tests only so far (validation, overflow, culling, ordering,
+- Evidence: CPU tests (validation, overflow, culling, ordering,
   uniform layout, authoring, desktop mapping). The GPU readback tests in
   `gpu_decals` and `gpu_authored_decals` are written but have not been run; no
   GPU result or performance number is recorded yet.
@@ -1065,8 +1065,8 @@ comparison.
 
 ### GPU particles status (`feat/render-r9-particles`)
 
-Stage 9 dependency item 6 (GPU particles) is implemented to ready-to-test on
-`feat/render-r9-particles`; see [rendering-particles.md](rendering-particles.md). It is
+Stage 9 dependency item 6 (GPU particles) is implemented and merged
+(`feat/render-r9-particles`); see [rendering-particles.md](rendering-particles.md). It is
 independent of fog, clouds, SSR, HDR output and the temporal resolve.
 
 - Once per scene tick, not per view or per presentation: simulation is driven only by
@@ -1090,7 +1090,7 @@ independent of fog, clouds, SSR, HDR output and the temporal resolve.
 - Not done: scene-depth collisions, soft particles, textures, sorting, floating-origin
   translation of live pools, lighting.
 - Evidence: CPU tests only so far (validation, spawn plan, RNG, reference step, authoring,
-  extraction, desktop mapping). `gpu_particles` (reference readback, repeated ticks and
+  extraction, desktop mapping, skipping degenerate emitters) and `gpu_particles` (reference readback, repeated ticks and
   extra views, overflow, invalid input, pixel difference and baseline, occlusion,
-  resize and lifetime) and `gpu_authored_particles` are written but have not been run;
-  no GPU result or performance number is recorded.
+  resize and lifetime) and `gpu_authored_particles` are merged and passed in the
+  stage 10 gate at `c0ab566`; no performance number is recorded.
