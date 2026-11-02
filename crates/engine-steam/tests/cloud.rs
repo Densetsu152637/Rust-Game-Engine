@@ -234,3 +234,34 @@ fn without_steam_the_sync_is_local_only() {
     let mut null = NullBackend::not_compiled();
     assert!(CloudSync::new(store).sync_all(&mut null).local_only);
 }
+
+#[test]
+fn a_corrupt_local_slot_is_healed_from_a_valid_cloud_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path(), 1);
+    store.save("a", data(1), None).unwrap();
+    let path = store.slot_path("a").unwrap();
+    std::fs::write(&path, b"{ not json").unwrap();
+    let mut fake = ready().with_cloud_file("saves/a.json", &bytes(1, 7));
+    let report = CloudSync::new(store.clone()).sync_all(&mut fake);
+    assert_eq!(report.slots, vec![("a".to_owned(), SyncAction::Pulled)]);
+    assert!(report.failures.is_empty());
+    assert_eq!(store.load("a", None).unwrap(), data(7));
+    // The damaged file is kept as the backup.
+    assert_eq!(
+        std::fs::read(path.with_extension("json.bak")).unwrap(),
+        b"{ not json"
+    );
+}
+
+#[test]
+fn a_corrupt_local_slot_is_never_uploaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path(), 1);
+    store.save("a", data(1), None).unwrap();
+    std::fs::write(store.slot_path("a").unwrap(), b"{ not json").unwrap();
+    let mut fake = ready();
+    let report = CloudSync::new(store).sync_all(&mut fake);
+    assert_eq!(report.failures.len(), 1);
+    assert!(fake.cloud_file("saves/a.json").is_none());
+}
