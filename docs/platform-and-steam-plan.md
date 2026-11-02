@@ -163,6 +163,8 @@ Steam S1–S5 implementation-gate critic converged (round 2). Adopted improvemen
 - Outcome: `6d8f614` merged (2a09345) with S6 critic fixes `f2a6a55` and S1-S5 improvements `1738deb`, `47ca68a`, `577f025`. `SteamLobbies` Resource over a `LobbyBackend` (async requests, snapshot reads, raw-callback poll; `real_lobby.rs`): callbacks trigger snapshot diffs so duplicate/late/reordered callbacks give no duplicate or missing events (unknown-lobby changes held, bounded); host publishes `engine.p2p_host`/`engine.p2p_port`, honoured only while the host key names the current owner; `connect_client` builds a `SteamClientEndpoint`; member-limit and owner-only checks local; optional `online` feature `OnlineAdapter` maps to `engine_online::ServerBody` (engine-online unchanged). 14 lobby tests + adapter test; engine-steam/online/network tests and clippy clean. Live on 480 with Steam running: `lobby_create_and_leave`, `net_ip`, `net_p2p` passed. Two-account join/list not live-tested.
 - Handoff notes: normalise asynchronous, out-of-order callbacks.
 
+S6/S7 implementation-gate critic converged (rounds 1-3; fixes `f2a6a55`, `c2711b5`). Open test gap (deferred): `a_stale_verdict_for_a_superseded_ticket_does_not_admit_the_new_peer` does not exercise the stale-verdict guard (use a valid ticket for the second peer plus the fake's scripted auth rejection, with the first peer's accepted verdict still queued, and assert the second peer is never Authenticated). Workspace gate on the S7 merge code: clippy clean, 6004 tests passed, examples OK.
+
 ## Stage S8: Steam Input
 - Objective: `SteamInputSource: InputSource` feeding `ActionMapper`, action sets, glyph lookup, sample `game_actions_<appid>.vdf` in docs.
 - Depends on: S3.
