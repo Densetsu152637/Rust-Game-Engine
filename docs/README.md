@@ -62,6 +62,10 @@
   manual and histogram auto-exposure, bloom, HDR colour grading with a `.cube` 3D LUT,
   vignette and film grain; the `PostProcess` and `PostProcessVolume` components,
   volume blending and post status.
+- [GPU particles](rendering-particles.md): `engine.particles` fixed-capacity GPU
+  emitters simulated once per scene tick (tick contract, seeded CPU reference,
+  bounded overflow), depth-tested billboards in the `Transparent` stage, limits and
+  the authored `ParticleEmitter` component.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Hardware ray tracing core](rendering-raytracing.md): `engine-render-rt` tiers and

@@ -821,3 +821,35 @@ test, so edits to the lit shader must keep those anchors; no performance numbers
   run). Frame generation keeps the filter in the scene segment before late UI.
 - No temporal resolve, jitter change or vendor-named algorithm was added; the
   native temporal resolve/upscaler of dependency item 4 is still pending.
+
+### GPU particles status (`feat/render-r9-particles`)
+
+Stage 9 dependency item 6 (GPU particles) is implemented to ready-to-test on
+`feat/render-r9-particles`; see [rendering-particles.md](rendering-particles.md). It is
+independent of fog, clouds, SSR, HDR output and the temporal resolve.
+
+- Once per scene tick, not per view or per presentation: simulation is driven only by
+  `ScenePipeline::advance_particles(ParticleTick { id, dt }, emitters)`; a repeated tick
+  id is a no-op, rendering (every view, eye, redraw and DLSS Frame Generation
+  presentation) only reads the pools, and `ParticleReport` counts simulated and ignored
+  ticks. `DesktopRunner` calls `GpuRenderer::advance_particles` after each
+  `Runtime::tick` with `Runtime::extract_particles()`.
+- `engine.particles` (`Transparent`, after `engine.transparent`, disabled by default and
+  on while any emitter has spawned): compute integrate/kill and emit passes over
+  fixed-capacity ring pools, deterministic PCG streams shared bit-for-bit with a CPU
+  `ParticleReference`, instanced camera-facing disc billboards drawn from the pool buffer
+  (alpha over in slot order without a depth sort, or additive), depth-tested against scene
+  depth and not writing it. The instance count is the CPU-known high-water slot count,
+  not an indirect draw from the GPU alive count (the ring leaves holes; an
+  order-preserving compaction was not built).
+- Limits: 16 emitters, 65 536 particles per emitter, 262 144 in total, `0 < dt <= 0.25`.
+  Overflow is bounded and counted (per-tick excess and busy ring slots), with ring
+  fragmentation documented. Authored as the `ParticleEmitter` component (entity transform
+  places and aims it; extraction errors `render.particles.*`).
+- Not done: scene-depth collisions, soft particles, textures, sorting, floating-origin
+  translation of live pools, lighting.
+- Evidence: CPU tests only so far (validation, spawn plan, RNG, reference step, authoring,
+  extraction, desktop mapping). `gpu_particles` (reference readback, repeated ticks and
+  extra views, overflow, invalid input, pixel difference and baseline, occlusion,
+  resize and lifetime) and `gpu_authored_particles` are written but have not been run;
+  no GPU result or performance number is recorded.

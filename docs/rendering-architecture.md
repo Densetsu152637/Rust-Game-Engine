@@ -64,7 +64,7 @@ Per view, in order (render size until Upscale, output size after):
 | `Opaque` | `engine.opaque` | instanced opaque engine meshes, or the compacted indirect draws when `Visibility` ran |
 | `Sky` | — | background after opaque geometry |
 | `OpaqueEffects` | — | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination |
-| `Transparent` | `engine.transparent` | blended engine meshes, back to front |
+| `Transparent` | `engine.transparent`; `engine.particles` (disabled by default; on while any emitter has spawned) | blended engine meshes, back to front; then GPU particle billboards, depth-tested and blended into the HDR colour. The particle simulation is not a stage: it runs once per scene tick through `ScenePipeline::advance_particles` ([rendering-particles.md](rendering-particles.md)) |
 | `Upscale` | `engine.upscale` | bilinear when sizes differ; a host (DLSS) may replace the stage |
 | `PostProcess` | `engine.post`; optional `effects.dof`, `effects.motion_blur`, `effects.spatial_aa` | HDR ping-pong at output size; spatial AA is the last HDR filter, before Tonemap and without touching Overlay/Composite ([placement and DLSS rules](rendering-post.md#camera-spatial-antialiasing)) |
 | `Tonemap` | `engine.output` (required) | the output operator into the target viewport |
