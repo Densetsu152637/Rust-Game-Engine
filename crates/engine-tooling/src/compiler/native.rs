@@ -1,7 +1,7 @@
 //! The native compiler: prepares, builds and checks generated workspaces.
 
 use super::diagnostics::build_outcome;
-use super::engine_source::engine_patches;
+use super::engine_source::{engine_patches, engine_source_warning};
 use super::fingerprint::fingerprint;
 use super::process::run_compiler;
 use super::workspace::*;
@@ -32,6 +32,8 @@ pub(super) struct PreparedGeneration {
     pub(super) neutral: PathBuf,
     pub(super) identity: String,
     pub(super) fingerprint: String,
+    /// Non-fatal findings from preparing the generation, reported as diagnostics.
+    pub(super) warnings: Vec<serde_json::Value>,
 }
 
 impl NativeCompiler {
@@ -96,7 +98,7 @@ impl NativeCompiler {
         cancel: &AtomicBool,
     ) -> Result<BuildArtifact, BuildFailure> {
         let output = self.run_cargo(&prepared, request, "build", cancel)?;
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = prepared.warnings.clone();
         let mut executable = None;
         for line in output.stdout.lines() {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
@@ -158,12 +160,18 @@ impl NativeCompiler {
         let prepared = self.prepare(request, cancel, "check-")?;
         let result: Result<CheckReport, BuildFailure> = (|| {
             let output = self.run_cargo(&prepared, request, "check", cancel)?;
-            let diagnostics = output
-                .stdout
-                .lines()
-                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .filter(|value| value["reason"] == "compiler-message")
-                .map(|value| value["message"].clone())
+            let diagnostics = prepared
+                .warnings
+                .iter()
+                .cloned()
+                .chain(
+                    output
+                        .stdout
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                        .filter(|value| value["reason"] == "compiler-message")
+                        .map(|value| value["message"].clone()),
+                )
                 .collect::<Vec<_>>();
             build_outcome(&output, &diagnostics, "compiler.check")?;
             self.verify_unchanged(request, &prepared)?;
@@ -230,6 +238,14 @@ impl NativeCompiler {
             let digest = format!("{:x}", Sha256::digest(generation.as_bytes()));
             let binary_name = format!("runtime-{}", &digest[..12]);
             let patches = engine_patches(&manifest, &engine_root)?;
+            for warning in &patches.warnings {
+                tracing::warn!("{warning}");
+            }
+            let warnings = patches
+                .warnings
+                .iter()
+                .map(|message| engine_source_warning(message))
+                .collect::<Vec<_>>();
             fs::write(
                 directory.join("Cargo.toml"),
                 generated_manifest(
@@ -238,7 +254,7 @@ impl NativeCompiler {
                     &engine_root,
                     &request.features,
                     &binary_name,
-                    &patches,
+                    &patches.patches,
                 )?,
             )
             .map_err(io_error)?;
@@ -294,10 +310,10 @@ impl NativeCompiler {
             fs::write(directory.join("cargo-metadata.json"), &resolved.stdout).map_err(io_error)?;
             let roots = local_package_roots(&metadata, &directory)?;
             let fingerprint = fingerprint(request, &roots, &directory, &identity, &neutral)?;
-            Ok((binary_name, roots, fingerprint))
+            Ok((binary_name, roots, fingerprint, warnings))
         })();
         match prepared {
-            Ok((binary_name, roots, fingerprint)) => Ok(PreparedGeneration {
+            Ok((binary_name, roots, fingerprint, warnings)) => Ok(PreparedGeneration {
                 cache,
                 generation,
                 directory,
@@ -306,6 +322,7 @@ impl NativeCompiler {
                 neutral,
                 identity,
                 fingerprint,
+                warnings,
             }),
             Err(error) => {
                 // An unresolvable candidate leaves no half-written generation.

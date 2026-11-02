@@ -10,7 +10,6 @@ root="$(pwd)"
 if command -v cygpath >/dev/null 2>&1; then
     root="$(cygpath -m "$root")"
 fi
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target/template}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cp -R templates/game/. "$work/"
@@ -21,4 +20,7 @@ if ! grep -q "^engine = { path = " "$work/Cargo.toml"; then
     echo "templates/game/Cargo.toml: engine dependency line not found" >&2
     exit 1
 fi
-cargo check --manifest-path "$work/Cargo.toml" --all-targets
+# Build into the checkout's own target directory (or the caller's CARGO_TARGET_DIR) so
+# the dependency artifacts of the workspace job are reused rather than rebuilt.
+cargo check --manifest-path "$work/Cargo.toml" --all-targets \
+    --target-dir "${CARGO_TARGET_DIR:-$PWD/target}"

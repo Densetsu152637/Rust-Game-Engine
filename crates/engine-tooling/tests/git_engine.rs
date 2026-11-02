@@ -135,11 +135,18 @@ fn compiler() -> NativeCompiler {
 
 const FACADE: &[&str] = &["engine", "engine-project", "engine-core"];
 
+/// `file:///D:/x` on Windows and `file:///tmp/x` elsewhere.
+fn file_url(path: &Path) -> String {
+    let path = slashes(path);
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
+}
+
 fn git_dependency(engine: &Path) -> String {
-    format!(
-        "engine={{git=\"file:///{}\",tag=\"v0.1.0\"}}",
-        slashes(engine)
-    )
+    format!("engine={{git=\"{}\",tag=\"v0.1.0\"}}", file_url(engine))
 }
 
 fn path_dependency(engine: &Path) -> String {
@@ -227,7 +234,7 @@ fn git_dependency_on_the_facade_links_one_engine_copy() {
 #[test]
 fn git_dependencies_on_individual_engine_crates_are_redirected() {
     let fixture = Fixture::new(|engine| {
-        let url = format!("file:///{}", slashes(engine));
+        let url = file_url(engine);
         format!(
             "engine-core={{git=\"{url}\",tag=\"v0.1.0\"}}\nengine-project={{git=\"{url}\",tag=\"v0.1.0\"}}"
         )
@@ -289,4 +296,78 @@ fn git_source_that_is_not_the_running_engine_is_reported() {
         .unwrap_err();
     assert_eq!(error.code, "compiler.engine_source", "{error}");
     assert!(error.message.contains("path"), "{}", error.message);
+}
+
+fn unverified_warnings(artifact: &engine_tooling::compiler::BuildArtifact) -> usize {
+    artifact
+        .diagnostics
+        .iter()
+        .filter(|d| d["code"]["code"] == "compiler.engine_source_unverified")
+        .count()
+}
+
+#[test]
+fn checkout_without_remotes_warns_naming_the_git_source() {
+    let fixture = Fixture::new(git_dependency);
+    let artifact = compiler()
+        .compile(&fixture.request(), &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(unverified_warnings(&artifact), 1);
+    let message = artifact.diagnostics[0]["message"].as_str().unwrap();
+    assert!(message.contains(&file_url(&fixture.engine)), "{message}");
+}
+
+#[test]
+fn checkout_whose_remote_is_the_games_git_source_compiles_without_a_warning() {
+    // The same URL, and the same repository spelled as a plain local path.
+    for remote in [
+        |engine: &Path| file_url(engine),
+        |engine: &Path| slashes(engine),
+    ] {
+        let fixture = Fixture::new(git_dependency);
+        git(
+            &fixture.engine,
+            &["remote", "add", "origin", &remote(&fixture.engine)],
+        );
+        let artifact = compiler()
+            .compile(&fixture.request(), &AtomicBool::new(false))
+            .unwrap();
+        assert_single_engine_copy(&fixture, &artifact.directory, FACADE);
+        assert_eq!(unverified_warnings(&artifact), 0);
+        assert!(
+            Command::new(&artifact.executable)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+}
+
+#[test]
+fn spellings_cargo_treats_as_one_source_share_one_patch() {
+    let fixture = Fixture::new(|engine| {
+        let url = file_url(engine);
+        format!(
+            "engine={{git=\"{url}\",tag=\"v0.1.0\"}}
+engine-core={{git=\"{url}/\",tag=\"v0.1.0\"}}"
+        )
+    });
+    fs::write(
+        fixture.game.join("src/lib.rs"),
+        "pub fn configure(app: &mut engine::core::EngineApp) -> Result<(),String> { app.value=7; Ok(()) }
+",
+    )
+    .unwrap();
+    let artifact = compiler()
+        .compile(&fixture.request(), &AtomicBool::new(false))
+        .unwrap();
+    let manifest = fs::read_to_string(artifact.directory.join("Cargo.toml")).unwrap();
+    let sources: std::collections::BTreeSet<_> = manifest
+        .lines()
+        .filter(|line| line.starts_with("[patch."))
+        .map(|line| line.split('"').nth(1).unwrap_or(line))
+        .collect();
+    assert_eq!(sources.len(), 1, "{manifest}");
+    assert!(manifest.contains("engine-core]"), "{manifest}");
+    assert_single_engine_copy(&fixture, &artifact.directory, FACADE);
 }

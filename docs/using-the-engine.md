@@ -125,9 +125,18 @@ What still applies:
 - The running engine checkout is what gets built, not the tag. Keep it at the version
   your game was written against.
 - If the checkout is a git repository with remotes and your git URL is none of them
-  (compared ignoring `https`/`ssh` spelling, case and a trailing `.git`), the build stops
-  with `compiler.engine_source` instead of linking two copies. Use a `path` dependency or
-  a URL matching the checkout's remote.
+  (compared ignoring `https`/`ssh` spelling, case, a trailing `.git`, and `file://` versus
+  plain local paths), the build stops with `compiler.engine_source` instead of linking two
+  copies. Use a `path` dependency or a URL matching the checkout's remote.
+- If the checkout has no remote to compare (not a git repository, or no remotes), the
+  redirect still happens but the build reports a `compiler.engine_source_unverified`
+  warning diagnostic naming the URL: the source is assumed to be this engine.
+- Each source Cargo distinguishes in your manifests (for example an `https` and an `ssh`
+  spelling of one repository) gets its own `[patch]` entry; spellings Cargo treats as one
+  (trailing `/`, `.git`) share one.
+  `workspace = true` dependencies are resolved in the workspace of the crate that
+  inherits them, including local path dependencies' own workspaces; workspace entries
+  nothing inherits are ignored.
 - Engine crates reached only through a dependency outside your repository (a registry or
   third-party git crate that itself depends on the engine over git) are not redirected.
 
