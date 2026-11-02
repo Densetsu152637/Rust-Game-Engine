@@ -112,8 +112,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: S1.
 - Owned paths: `crates/engine-steam/src/{core,real}.rs`.
 - Acceptance checks: `cargo clippy -p engine-steam --features steam --all-targets -- -D warnings` and `cargo build -p engine-steam --features steam --all-targets` (links, not only type-checks) on Windows and in WSL; live `#[ignore]` core test passes with Steam open and prints "skipped" and passes with Steam closed (`cargo test -p engine-steam --features steam -- --ignored core`); fake status-transition tests pass without the feature.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `c469ded` merged. `RealBackend` over `steamworks::Client`: `init(Option<AppId>)` → `Ready`/`NotRunning`/`InitFailed`, one initialised backend per process (guard), static `restart_app_if_necessary`, auth tickets (empty-ticket-after-init reported as retryable `Rejected`), overlay, rich presence (NUL rejected before steamworks panics), `run_callbacks` drains a queue into events (`PersonaChanged`, `ConnectionChanged` added). `build.rs` copies `steam_api64.dll` next to test/example binaries (rpath on Linux/macOS untested). Clippy both ways, build with feature, 10 tests both ways, fmt clean. Live `core` test PASSED on the dev box with Steam running (App 480: Ready with real SteamID, second init refused, restart check false, ticket issue/cancel, rich presence). Skip path not exercised (Steam was open). steamworks 0.13.1 exposes no shutdown callback, so `ShutdownRequested` is never emitted by the real backend.
 - Handoff notes: the test exe needs `steam_api64.dll` on the loader path (copy in a test helper or build script); `steam_appid.txt` for dev runs only, never packaged.
 
 ## Stage S3: Host integration and manifest
