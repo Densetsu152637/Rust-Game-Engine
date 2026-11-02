@@ -87,6 +87,17 @@ direct radius difference).
   dual-source blending, so it is a ping-pong full-screen pass
   (`opaque_effect_io`) that reads colour and depth. Far-plane pixels pass through
   untouched. It therefore runs after `Sky` and before `Transparent`.
+- **Aerial perspective after decals and SSR.** `engine.atmosphere.aerial` is
+  constrained `.after("engine.ssr")` (and `engine.decals` is `.before("engine.ssr")`),
+  so the `OpaqueEffects` order is `engine.surface_material`, `engine.decals`,
+  `engine.ssr`, `engine.atmosphere.aerial`. Decals therefore change what SSR
+  reflects, and the combined image, reflections included, is then attenuated and
+  tinted by the view distance of each reflecting surface pixel. The reflected
+  ray's own path is not integrated: the reflection is fogged as part of the
+  reflecting surface, not by its own (longer) travelled distance. Pinned by the
+  registration-order unit test and by `aerial_perspective_fogs_the_reflection_after_ssr`
+  in `engine-render-pipeline/tests/gpu_ssr.rs` (transmittance of the reflected
+  radiance below one and bluer light attenuated more, with SSR and aerial both on).
 - **Distance** is the euclidean view-space distance of the depth sample
   (orthographic views: the view-axis depth), times `aerial_perspective_scale`,
   clipped to the atmosphere exit and to the planet.

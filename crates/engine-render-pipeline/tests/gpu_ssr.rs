@@ -976,3 +976,109 @@ fn a_ray_that_exits_the_screen_sideways_keeps_its_step_budget_on_screen() -> Res
     );
     Ok(())
 }
+
+/// Aerial perspective runs after SSR, so the reflection is fogged by the
+/// distance to the reflecting floor pixel (docs/rendering-ssr.md).
+///
+/// With `b` the floor pixel without either effect, `S` the in-scatter of the
+/// aerial pass alone and `R` the SSR result, running aerial after SSR gives
+/// `R * T + S` and so `(A1 - A0) = (R - b) * T` with the floor's per-channel
+/// transmittance `T < 1`. Running it before SSR would leave the reflected wall
+/// unattenuated (ratio 1). Blue is attenuated more than red.
+#[test]
+#[ignore = "requires a real GPU; the reflected wall is read back from the floor"]
+fn aerial_perspective_fogs_the_reflection_after_ssr() -> Result<()> {
+    use engine_render_pipeline::atmosphere::{
+        ATMOSPHERE_AERIAL_FEATURE, AtmosphereControls, AtmosphereFrame, AtmosphereSettings,
+        register_features,
+    };
+    let mut h = Harness::new()?;
+    let controls = AtmosphereControls::default();
+    let mut registry = FeatureRegistry::default();
+    register_features(&mut registry, &controls)?;
+    h.pipeline.add_features(registry)?;
+    let meshes = h.scene(0.0);
+    let view = h.view(ViewId::MAIN, SIZE);
+    let reflected = pixel_of(&view, mirror_point(wall_centre(0.0)));
+
+    // Sun behind the camera, 45 degrees up: its specular lobe on the mirror
+    // floor leaves away from the eye.
+    let toward_sun = Vec3::new(0.0, 1.0, 1.0).normalize();
+    let lights = LightList {
+        lights: vec![Light::directional(-toward_sun, Vec3::ONE, 3.0)],
+    };
+    controls.set(
+        ViewId::MAIN,
+        Some(AtmosphereFrame::new(
+            AtmosphereSettings {
+                aerial_perspective_scale: 1000.0,
+                intensity: 1000.0,
+                ..Default::default()
+            },
+            // The atmosphere altitude is independent of the scene: 1 km keeps the
+            // march from ending at the planet surface a few metres below the floor.
+            1_000.0,
+        )?),
+    )?;
+    let mut draw = |ssr_on: bool, aerial_on: bool| -> Result<HdrImage> {
+        let mut view = h.view(ViewId::MAIN, SIZE);
+        if ssr_on {
+            view.ssr = Some(SsrSettings::default());
+        }
+        view.features.set(ATMOSPHERE_AERIAL_FEATURE, aerial_on);
+        let texture = h.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ssr aerial output"),
+            size: wgpu::Extent3d {
+                width: SIZE[0],
+                height: SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let target = OutputTarget {
+            view: texture.create_view(&Default::default()),
+            format: texture.format(),
+            size: SIZE,
+            viewport: Viewport::full(SIZE),
+        };
+        h.pipeline.render_view(
+            &SceneFrame {
+                view: &view,
+                meshes: &meshes,
+                lights: &lights,
+                world: None,
+            },
+            &target,
+            &mut NoHost,
+        )?;
+        h.gpu.check_errors()?;
+        h.pipeline.read_scene_hdr(ViewId::MAIN)
+    };
+    let base = at(&draw(false, false)?, reflected);
+    let fog_only = at(&draw(false, true)?, reflected);
+    let reflection = at(&draw(true, false)?, reflected);
+    let both = at(&draw(true, true)?, reflected);
+    eprintln!("base {base:?} fog {fog_only:?} ssr {reflection:?} both {both:?}");
+    // The aerial pass fogged the floor on its own and SSR found the wall.
+    assert!(fog_only[2] > base[2] + 0.01, "in-scatter on the floor");
+    close(reflection, RED, 0.1, "the wall in the mirror without fog");
+    // Ratios of the reflected-radiance change that survive the fog.
+    let transmittance = |c: usize| (both[c] - fog_only[c]) / (reflection[c] - base[c]);
+    let (tr, tb) = (transmittance(0), transmittance(2));
+    eprintln!("transmittance red {tr} blue {tb}");
+    assert!(
+        tr < 0.99 && tr > 0.5,
+        "the reflection is attenuated by the floor distance: {tr}"
+    );
+    assert!(tb < tr, "blue is attenuated more than red: {tb} vs {tr}");
+    assert!(
+        both[2] > reflection[2],
+        "the reflected wall carries the in-scatter tint: {both:?}"
+    );
+    Ok(())
+}

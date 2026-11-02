@@ -146,6 +146,13 @@ the view, so SSR stays `superseded` there.
   too; baked diffuse does not change the specular fallback.
 * **Hi-Z.** The surface pass draws the same compacted indirect instances as the
   opaque pass; real-adapter coverage checks identical pixels.
+* **Decals and aerial perspective.** `OpaqueEffects` order is
+  `engine.surface_material`, `engine.decals`, `engine.ssr`,
+  `engine.atmosphere.aerial` (decals are `.before("engine.ssr")`, aerial is
+  `.after("engine.ssr")`). SSR therefore reflects decorated surfaces, and
+  aerial perspective then tints the SSR result, so a reflection is fogged by the
+  view distance of the reflecting pixel (not by the reflected ray's own length).
+  `gpu_ssr.rs::aerial_perspective_fogs_the_reflection_after_ssr` reads this back.
 * **Upscalers, post, DLSS.** SSR runs at render size before `Upscale`;
   `scene_color()` is the SSR destination for everything later.
 * **Resize, views, forget.** Surface targets are per view and follow its render

@@ -52,6 +52,8 @@ impl DecalFeature {
 
 pub(crate) fn descriptor() -> FeatureDescriptor {
     FeatureDescriptor::new(names::DECALS, Stage::OpaqueEffects)
+        // Decals decorate the lit colour before SSR reflects it.
+        .before(names::SSR)
         .disabled_by_default()
         .needs(FeatureNeeds {
             normals: true,

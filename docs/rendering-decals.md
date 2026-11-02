@@ -65,7 +65,10 @@ Transparent), registered disabled by default. It needs the normals prepass
 
 - Only opaque built-in meshes are decorated. Transparent geometry is drawn
   after the pass and is neither decorated nor does it hide or shift decals.
-- Later effects (SSR-style OpaqueEffects after it, upscaling, post-processing) see the decorated colour.
+- `engine.decals` is ordered `.before("engine.ssr")`: SSR reflects decorated
+  surfaces, and `engine.atmosphere.aerial` (`.after("engine.ssr")`) tints them,
+  so the `OpaqueEffects` order is decals, SSR, aerial perspective. Later stages
+  (upscaling, post-processing) see the decorated colour.
 - The pass reads `ScenePipeline` depth at render size, so it works with every
   upscale route (the decorated colour is the scene colour).
 

@@ -530,6 +530,9 @@ impl AerialPerspectiveFeature {
 impl PipelineFeature for AerialPerspectiveFeature {
     fn descriptor(&self) -> FeatureDescriptor {
         FeatureDescriptor::new(ATMOSPHERE_AERIAL_FEATURE, Stage::OpaqueEffects)
+            // Fog the reflected image consistently with the surfaces it shows:
+            // decals, then SSR, then aerial perspective.
+            .after(crate::pipeline::names::SSR)
             .disabled_by_default()
     }
 
@@ -733,6 +736,17 @@ mod tests {
         assert!(at("engine.opaque") < at(ATMOSPHERE_FEATURE));
         assert!(at(ATMOSPHERE_FEATURE) < at(ATMOSPHERE_AERIAL_FEATURE));
         assert!(at(ATMOSPHERE_AERIAL_FEATURE) < at("engine.transparent"));
+    }
+
+    #[test]
+    fn opaque_effects_run_decals_then_ssr_then_aerial_perspective() {
+        let mut registry = crate::builtin_registry().unwrap();
+        register_features(&mut registry, &AtmosphereControls::default()).unwrap();
+        let names = registry.names();
+        let at = |n: &str| names.iter().position(|x| *x == n).unwrap();
+        assert!(at("engine.surface_material") < at("engine.ssr"));
+        assert!(at("engine.decals") < at("engine.ssr"));
+        assert!(at("engine.ssr") < at(ATMOSPHERE_AERIAL_FEATURE));
     }
 
     #[test]
