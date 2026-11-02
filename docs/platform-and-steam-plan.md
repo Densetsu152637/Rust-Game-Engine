@@ -58,8 +58,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: none (needs a push to observe CI).
 - Owned paths: `.github/workflows/ci.yml`, `scripts/ci/`.
 - Acceptance checks: Linux free-disk step and `df -h` diagnostics present in every job that builds the workspace (including "Format and Clippy (Windows)"); CI debuginfo reduced (`CARGO_PROFILE_DEV_DEBUG=0`/`CARGO_PROFILE_TEST_DEBUG=0` or equivalent) and Windows target dir on the larger volume; Linux and macOS run `cargo test --workspace --locked --no-fail-fast`; "Workspace tests (Windows)" and "(Linux)" finish without LNK1318/LNK1140/SIGBUS; "Format and Clippy (Windows)" still passes; runner images pinned (`windows-2025`/`ubuntu-24.04`/`macos-15` or current equivalents) or the choice to float recorded; workflow syntax validated (`actionlint` or `gh workflow view`).
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: PR #2 (`ci/p1-disk`), final run 41442154859 on 5cdb38a; merged into main as a246c66. Linux frees preinstalled toolchains; `df -h` before/after in every building job; `CARGO_PROFILE_{DEV,TEST}_DEBUG=0`; `--no-fail-fast` on all OSes; images pinned (`windows-2025-vs2026`, `ubuntu-24.04`, `macos-26`); Windows TEMP/TMP on D:; no target-dir redirection; `scripts/ci/fmt-check.sh` replaces `cargo fmt --all` (os error 206). No LNK1318/LNK1140/SIGBUS/out-of-disk. Headroom after build: Windows D: 96G, Linux 54G, macOS 49G. Lint (incl. template check), Linux, wasm and all example jobs pass. Remaining real failures: Windows and macOS engine-audio `failure_race` (sources.rs:541); Windows engine-audio `procedural.rs:432` parameter update; macOS engine-audio `acoustic_updates.rs:115` stalled writer (6.5ms); macOS engine-project `physics_destruction.rs:476` (6 vs 10); macOS engine-tooling `mcp_exec.rs:893`/`:476` (ld "__eh_frame section too large" warning surfaces as a diagnostic). Entry-point check steps on Linux/macOS are skipped when tests fail (add `if: !cancelled()`).
 - Handoff notes: the last data point is run 40858178120 on 12de3e2; current main has not run in CI. Linux cause is inferred (no disk warning printed) — confirm with `df -h`.
 
 ## Stage P2: Linux green
@@ -242,4 +242,4 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Outcome:
 - Handoff notes:
 
-Execution order (one implementer at a time): F0 (done) → F1 (done) → P1 → P2 → P3 → P4 → P5 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → P6 → P7 → P8 → P9 → S11 → P10.
+Execution order (one implementer at a time): F0 (done) → F1 (done; critic fixes pending) → P1 (done) → P2 → P3 → P4 → P5 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S8 → S9 → S10 → P6 → P7 → P8 → P9 → S11 → P10.
