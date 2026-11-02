@@ -563,3 +563,57 @@ fn resizing_and_removing_decals_keep_the_output_correct() -> Result<()> {
     rig.gpu.check_errors()?;
     Ok(())
 }
+
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn invalid_decal_lists_are_rejected_before_any_work_and_keep_history() -> Result<()> {
+    let mut rig = Rig::new()?;
+    let mesh = quad(&rig.gpu, 0.5);
+    let (_texture, output) = target(&rig.gpu, 64);
+    let frame = |rig: &mut Rig, x: f32, decals: Vec<Decal>| -> Result<()> {
+        let mut view = top_view(64);
+        view.host_needs.motion = true;
+        view.decals = decals;
+        let mut object = unlit("mover", &mesh, Mat4::IDENTITY, [0.8; 3]);
+        object.world_from_local = Mat4::from_translation(Vec3::new(x, 1.0, 0.0));
+        let meshes = [
+            unlit("floor", &rig.floor, Mat4::IDENTITY, [GREY; 3]),
+            object,
+        ];
+        rig.pipeline.render_view(
+            &SceneFrame {
+                view: &view,
+                meshes: &meshes,
+                lights: &LightList::default(),
+                world: None,
+            },
+            &output,
+            &mut NoHost,
+        )?;
+        Ok(())
+    };
+    frame(&mut rig, 0.0, vec![])?;
+    let nan = Decal {
+        opacity: f32::NAN,
+        ..floor_decal(1.0)
+    };
+    let error = frame(&mut rig, 0.5, vec![floor_decal(1.0), nan]).expect_err("NaN opacity");
+    assert!(format!("{error:#}").contains("decal 1"), "{error:#}");
+    let error = frame(
+        &mut rig,
+        0.5,
+        vec![floor_decal(1.0); MAX_SUBMITTED_DECALS + 1],
+    )
+    .expect_err("too many decals");
+    assert!(format!("{error:#}").contains("at most"), "{error:#}");
+    // History survived: the object moved one metre (8 px) since the last
+    // valid frame; a reset would report camera-only (zero) motion.
+    frame(&mut rig, 1.0, vec![])?;
+    let motion = rig.pipeline.read_motion(ViewId::MAIN)?.pixel(40, 32);
+    assert!(
+        (motion[0] + 8.0).abs() <= 1.5,
+        "history must continue across rejected frames: {motion:?}"
+    );
+    rig.gpu.check_errors()?;
+    Ok(())
+}

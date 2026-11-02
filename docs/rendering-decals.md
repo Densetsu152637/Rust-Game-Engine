@@ -123,7 +123,9 @@ must be finite in 0..=1`). `ScenePipeline::decal_report(view)` returns the last
   in list order are dropped and counted in `DecalReport::dropped_overflow`;
   the frame still renders.
 - A view **accepts at most 1024 submitted decals** (`MAX_SUBMITTED_DECALS`).
-  A longer list is invalid input and fails the frame before any other work.
+  A longer list is invalid input: `ViewData::validate` rejects it (and any
+  invalid decal, naming its index) when the frame starts, before any stage is
+  encoded, so the view's histories are untouched.
 - Authored cameras are stricter: `Camera3D.decals` accepts at most 64 entries,
   and validation rejects more (`camera3d.decals.too_many`), so the dropped path
   only occurs for native callers.

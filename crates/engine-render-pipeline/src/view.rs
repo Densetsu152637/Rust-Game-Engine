@@ -173,6 +173,19 @@ impl ViewData {
         if let Some(ssr) = &self.ssr {
             ssr.validate()?;
         }
+        // Decals fail here, before any stage is encoded, so a bad list never
+        // aborts a half-built frame and resets the view's feature histories.
+        ensure!(
+            self.decals.len() <= crate::decals::MAX_SUBMITTED_DECALS,
+            "{} decals submitted; a view accepts at most {}",
+            self.decals.len(),
+            crate::decals::MAX_SUBMITTED_DECALS
+        );
+        for (index, decal) in self.decals.iter().enumerate() {
+            decal
+                .validate()
+                .map_err(|error| anyhow::anyhow!("decal {index}: {error}"))?;
+        }
         Ok(())
     }
 
@@ -403,5 +416,19 @@ mod tests {
             ViewData::new(ViewId::MAIN, Mat4::IDENTITY, perspective(), [4, 4], [4, 4]).unwrap();
         view.jitter = [2.0, 0.0];
         assert!(view.validate().is_err());
+        view.jitter = [0.0; 2];
+        view.validate().unwrap();
+        view.decals =
+            vec![crate::decals::Decal::default(); crate::decals::MAX_SUBMITTED_DECALS + 1];
+        assert!(view.validate().is_err(), "too many decals");
+        view.decals = vec![
+            crate::decals::Decal::default(),
+            crate::decals::Decal {
+                opacity: f32::NAN,
+                ..Default::default()
+            },
+        ];
+        let error = view.validate().unwrap_err();
+        assert!(error.to_string().contains("decal 1"), "{error}");
     }
 }

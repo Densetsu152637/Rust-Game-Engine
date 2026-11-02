@@ -871,8 +871,8 @@ opaque pass (as the existing normal prepass does).
 
 ### Decal status (`feat/render-r9-decals`)
 
-Stage 9 dependency item 5 (decals) is implemented to ready-to-test on
-`feat/render-r9-decals`; see [rendering-decals.md](rendering-decals.md). Atmosphere,
+Stage 9 dependency item 5 (decals) is implemented and merged (was
+`feat/render-r9-decals`); see [rendering-decals.md](rendering-decals.md). Atmosphere,
 fog and clouds are separate slices and are not covered here.
 
 - `engine.decals` (`OpaqueEffects`, disabled by default, needs the normals
@@ -891,8 +891,8 @@ fog and clouds are separate slices and are not covered here.
   renders flat and is reported. Authored decals are flat and camera-attached.
 - Evidence: CPU tests (validation, overflow, culling, ordering,
   uniform layout, authoring, desktop mapping). The GPU readback tests in
-  `gpu_decals` and `gpu_authored_decals` are written but have not been run; no
-  GPU result or performance number is recorded yet.
+  `gpu_decals` and `gpu_authored_decals` passed in the stage 10 gate at
+  `c0ab566`; no performance number is recorded.
 
 ### Spatial AA completion status (`feat/render-r9-spatial-aa`)
 
