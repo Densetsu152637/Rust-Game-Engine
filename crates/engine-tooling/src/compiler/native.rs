@@ -1,6 +1,7 @@
 //! The native compiler: prepares, builds and checks generated workspaces.
 
 use super::diagnostics::build_outcome;
+use super::engine_source::engine_patches;
 use super::fingerprint::fingerprint;
 use super::process::run_compiler;
 use super::workspace::*;
@@ -228,6 +229,7 @@ impl NativeCompiler {
             // the MSVC linker reports as LNK1181. A short digest keeps it unique.
             let digest = format!("{:x}", Sha256::digest(generation.as_bytes()));
             let binary_name = format!("runtime-{}", &digest[..12]);
+            let patches = engine_patches(&manifest, &engine_root)?;
             fs::write(
                 directory.join("Cargo.toml"),
                 generated_manifest(
@@ -236,6 +238,7 @@ impl NativeCompiler {
                     &engine_root,
                     &request.features,
                     &binary_name,
+                    &patches,
                 )?,
             )
             .map_err(io_error)?;

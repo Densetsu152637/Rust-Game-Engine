@@ -3,6 +3,7 @@
 
 mod cargo;
 mod diagnostics;
+mod engine_source;
 mod fingerprint;
 mod generation;
 mod native;

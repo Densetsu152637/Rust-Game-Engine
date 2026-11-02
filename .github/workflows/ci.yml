@@ -68,6 +68,9 @@ jobs:
           for crate in examples/desktop-2d examples/first-project examples/native-extension examples/programmable-world assets/scripts/moving_entity; do
             cargo clippy --manifest-path "$crate/Cargo.toml" --all-targets -- -D warnings
           done
+      # Compiles the whole template, including src/main.rs, against this checkout.
+      - name: cargo check (game template)
+        run: bash scripts/ci/check-template.sh
 
   # This job deliberately does not set RUSTFLAGS: engine-tooling tests spawn real
   # Cargo builds that inherit the environment (RUSTFLAGS is part of a generation's

@@ -107,13 +107,29 @@ engine checkout at the tag you want, rename the package, and keep the tag equal 
 engine version you copied from. A test in `crates/engine` fails if the template's tag
 and the workspace version diverge.
 
-Limitation: the `engine run` / editor play compiler builds a generation by linking
-`engine-core` and `engine-project` from the engine checkout **by path** together with
-your crate. A game that depends on `engine` by git tag resolves a second copy of those
-crates, so use plain `cargo run` and `cargo test` with the game's own `main` for such
-projects, or depend on `engine` by `path` to the same checkout `engine run` uses. A
-`[patch]` in the game's manifest does not help here, because the generated workspace is
-the root and ignores it.
+`engine run` and editor play work for games that depend on `engine` by `path` or by
+`git` (tag, rev or branch), and for games that name individual `engine-*` crates. The
+native compiler builds a generated workspace that links `engine-core`, `engine-project`
+and `engine-desktop` from the engine checkout that is running. For a git dependency it
+adds a `[patch."<git url>"]` section to that generated root manifest, redirecting every
+`engine` or `engine-*` crate your game (and the local crates it depends on) takes from
+that URL to the same checkout, so the build holds one copy of the engine and your types
+match the host's. The patch has to live in the generated root because Cargo ignores a
+`[patch]` in a dependency's own manifest. Your game's files are never modified.
+
+What still applies:
+
+- The git source must still be reachable (or already in Cargo's git cache), as for any
+  `cargo build`; Cargo fetches it even though the checkout replaces it. Pass `--offline`
+  once it is cached.
+- The running engine checkout is what gets built, not the tag. Keep it at the version
+  your game was written against.
+- If the checkout is a git repository with remotes and your git URL is none of them
+  (compared ignoring `https`/`ssh` spelling, case and a trailing `.git`), the build stops
+  with `compiler.engine_source` instead of linking two copies. Use a `path` dependency or
+  a URL matching the checkout's remote.
+- Engine crates reached only through a dependency outside your repository (a registry or
+  third-party git crate that itself depends on the engine over git) are not redirected.
 
 ## Versioning
 

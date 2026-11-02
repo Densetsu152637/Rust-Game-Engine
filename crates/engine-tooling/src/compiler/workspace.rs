@@ -1,5 +1,6 @@
 //! Generated workspace contents: startup wrapper, manifest and local package roots.
 
+use super::engine_source::GitPatch;
 use super::{BuildFailure, failure, io_error};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,6 +44,7 @@ pub(super) fn generated_manifest(
     engine: &Path,
     features: &[String],
     binary_name: &str,
+    patches: &[GitPatch],
 ) -> Result<String, BuildFailure> {
     let mut dependencies = toml::map::Map::new();
     let mut game = toml::map::Map::new();
@@ -81,6 +83,22 @@ pub(super) fn generated_manifest(
     );
     manifest.insert("workspace".into(), toml::Value::Table(Default::default()));
     manifest.insert("dependencies".into(), toml::Value::Table(dependencies));
+    if !patches.is_empty() {
+        // The game's own `[patch]` is ignored under this root, so the redirect of
+        // its git engine dependency to the running checkout lives here.
+        let mut sources = toml::map::Map::new();
+        for patch in patches {
+            let mut crates = toml::map::Map::new();
+            for name in &patch.crates {
+                let mut entry = toml::map::Map::new();
+                let path = engine.join("crates").join(name);
+                entry.insert("path".into(), path.to_string_lossy().as_ref().into());
+                crates.insert(name.clone(), toml::Value::Table(entry));
+            }
+            sources.insert(patch.url.clone(), toml::Value::Table(crates));
+        }
+        manifest.insert("patch".into(), toml::Value::Table(sources));
+    }
     toml::to_string(&manifest).map_err(|e| failure("compiler.manifest", e))
 }
 
