@@ -25,6 +25,10 @@ pub const SUN_STEPS: u32 = 10;
 pub const BLOCKED_DEPTH: f64 = 1.0e6;
 /// Largest radiance written (`Rgba16Float` holds 65504).
 pub const MAX_RADIANCE: f64 = 60_000.0;
+/// Fraction of the full disk's solid angle covered by the soft-limb coverage
+/// `1 - smoothstep(0.8 r, r, angle)`: `0.64 + 2 * 0.2 * (0.8 * 0.5 + 0.2 * 0.15)`.
+/// The disk radiance divides by it, so the disk carries the full sun irradiance.
+pub const SUN_DISK_NORMALISATION: f64 = 0.812;
 
 pub type Rgb = [f64; 3];
 
@@ -256,7 +260,8 @@ pub fn sky_radiance(
         if coverage > 0.0 {
             let solid = 4.0 * PI * (0.5 * sun_radius).sin().powi(2);
             for k in 0..3 {
-                radiance[k] += coverage * transmittance[k] * irradiance[k] / solid;
+                radiance[k] +=
+                    coverage * transmittance[k] * irradiance[k] / (solid * SUN_DISK_NORMALISATION);
             }
         }
     }
@@ -528,10 +533,29 @@ mod tests {
             radius,
         );
         assert!(luma(disk) > 100.0 * luma(beside));
-        // Radiance times solid angle returns the attenuated irradiance.
-        let solid = 4.0 * PI * (0.5f64 * radius).sin().powi(2);
-        let t = path_transmittance(&m, 2.0, sun, m.thickness * 2.0, 20_000);
-        assert!(disk[0] * solid <= 3.0 + 1e-6 && disk[0] * solid > 3.0 * t[0] * 0.5);
+        // Integrating the disk radiance over its solid angle returns the
+        // attenuated irradiance (the soft limb is normalised).
+        let sky_only = sky_radiance(&m, 2.0, sun, sun, e, 0.0);
+        let exit = interval(&m, 2.0, sun[1]).1;
+        let t = path_transmittance(&m, 2.0, sun, exit, 20_000);
+        let steps = 4000;
+        let mut flux = 0.0;
+        for i in 0..steps {
+            let angle = (f64::from(i) + 0.5) / f64::from(steps) * radius * 1.2;
+            // A direction `angle` away from the sun, in the sun/up plane.
+            let (s, c) = angle.sin_cos();
+            let up = [-sun[1], sun[0], 0.0];
+            let dir = [sun[0] * c + up[0] * s, sun[1] * c + up[1] * s, 0.0];
+            let l = sky_radiance(&m, 2.0, dir, sun, e, radius)[0]
+                - sky_radiance(&m, 2.0, dir, sun, e, 0.0)[0];
+            flux += l * 2.0 * PI * angle.sin() * (radius * 1.2 / f64::from(steps));
+        }
+        assert!(
+            (flux - 3.0 * t[0]).abs() < 0.04 * 3.0 * t[0],
+            "disk flux {flux} vs attenuated irradiance {}",
+            3.0 * t[0]
+        );
+        assert!(sky_only[0] < disk[0] * 0.01);
         // Without a disk radius there is no disk.
         let none = sky_radiance(&m, 2.0, sun, sun, e, 0.0);
         assert!(luma(none) < luma(disk) * 0.01);

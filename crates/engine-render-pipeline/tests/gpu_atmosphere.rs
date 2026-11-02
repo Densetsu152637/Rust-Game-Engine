@@ -154,6 +154,8 @@ struct Shot {
     aerial: bool,
     sun: bool,
     ortho: bool,
+    /// Sub-pixel projection jitter in render pixels (x right, y down).
+    jitter: [f32; 2],
 }
 
 impl Shot {
@@ -172,6 +174,7 @@ impl Shot {
             aerial: true,
             sun: true,
             ortho: false,
+            jitter: [0.0; 2],
         }
     }
 
@@ -213,18 +216,31 @@ impl Shot {
 
     /// World direction of the centre of pixel (x, y), as the CPU reference sees it.
     fn dir(&self, x: u32, y: u32) -> [f64; 3] {
-        let aspect = f64::from(self.size[0]) / f64::from(self.size[1]);
-        let tan = (f64::from(FOV) * 0.5).tan();
-        let nx = (f64::from(x) + 0.5) / f64::from(self.size[0]) * 2.0 - 1.0;
-        let ny = 1.0 - (f64::from(y) + 0.5) / f64::from(self.size[1]) * 2.0;
-        let local = DVec3::new(nx * tan * aspect, ny * tan, -1.0).normalize();
         let q = DQuat::from_euler(
             EulerRot::YXZ,
             f64::from(self.yaw),
             f64::from(self.pitch),
             0.0,
         );
-        (q * local).to_array()
+        (q * self.local_dir(x, y)).to_array()
+    }
+
+    /// View-space unit direction of pixel (x, y). Jitter translates the
+    /// rasterized image by `jitter` pixels, so the pixel shows the ray through
+    /// the unjittered position `(x + 0.5 - jx, y + 0.5 - jy)`.
+    fn local_dir(&self, x: u32, y: u32) -> DVec3 {
+        let aspect = f64::from(self.size[0]) / f64::from(self.size[1]);
+        let tan = (f64::from(FOV) * 0.5).tan();
+        let px = f64::from(x) + 0.5 - f64::from(self.jitter[0]);
+        let py = f64::from(y) + 0.5 - f64::from(self.jitter[1]);
+        let nx = px / f64::from(self.size[0]) * 2.0 - 1.0;
+        let ny = 1.0 - py / f64::from(self.size[1]) * 2.0;
+        DVec3::new(nx * tan * aspect, ny * tan, -1.0).normalize()
+    }
+
+    /// Euclidean distance to a wall at view depth `z` along pixel (x, y)'s ray.
+    fn wall_distance(&self, x: u32, y: u32, z: f32) -> f64 {
+        f64::from(z) / -self.local_dir(x, y).z
     }
 
     fn irradiance(&self) -> [f64; 3] {
@@ -299,6 +315,7 @@ impl Rig {
             shot.size,
             shot.size,
         )?;
+        view.jitter = shot.jitter;
         if self.atmosphere {
             self.controls.set(
                 shot.id,
@@ -856,5 +873,59 @@ fn orthographic_views_are_finite_and_use_the_view_axis() -> Result<()> {
     let first = image.pixel(1, 1);
     assert!(all_pixels(&image).all(|p| (0..3).all(|k| (p[k] - first[k]).abs() < 1e-3)));
     assert!(first[2] > 1e-3);
+    Ok(())
+}
+
+/// A jittered projection moves the rasterized image and the reconstructed rays
+/// together: sky pixels and an aerial-perspective wall still match the
+/// reference evaluated at the shifted direction.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn jittered_views_use_the_shifted_ray_for_sky_and_aerial_perspective() -> Result<()> {
+    let mut rig = Rig::new(true)?;
+    let mut shot = Shot::new(40);
+    shot.sun_elevation = 35.0;
+    shot.sun_azimuth = 60.0;
+    shot.pitch = 0.3;
+    shot.jitter = [0.75, -0.5];
+    let plain = rig.render(&Shot {
+        jitter: [0.0; 2],
+        ..shot.clone()
+    })?;
+    let jittered = rig.render(&shot)?;
+    assert_ne!(plain.pixels, jittered.pixels, "jitter moves the sky");
+    for (x, y) in [(3, 3), (32, 10), (60, 20), (20, 33)] {
+        assert_close(
+            rgb(jittered.pixel(x, y)),
+            shot.expected_sky(x, y),
+            0.04,
+            &format!("jittered sky pixel ({x},{y})"),
+        );
+    }
+
+    // An opaque wall: distance follows the jittered ray, not the pixel centre.
+    shot.pitch = 0.0;
+    shot.sun_azimuth = 90.0;
+    let distance = 4_000.0f32;
+    rig.set_wall(Some(([0.2; 3], shot.wall_depth(distance))));
+    let image = rig.render(&shot)?;
+    for (x, y) in [(32, 18), (6, 4), (58, 30)] {
+        let reach = shot.wall_distance(x, y, distance);
+        let (inscatter, transmittance) = aerial(
+            &shot.medium(),
+            shot.altitude,
+            shot.dir(x, y),
+            shot.sun(),
+            shot.irradiance(),
+            reach,
+        );
+        let expected: [f64; 3] = std::array::from_fn(|k| 0.2 * transmittance[k] + inscatter[k]);
+        assert_close(
+            rgb(image.pixel(x, y)),
+            expected,
+            0.05,
+            &format!("jittered wall pixel ({x},{y}) at {reach:.0} m"),
+        );
+    }
     Ok(())
 }

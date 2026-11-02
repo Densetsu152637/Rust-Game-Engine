@@ -26,6 +26,8 @@ struct Atmosphere {
 const ATM_PI: f32 = 3.14159265358979;
 const ATM_MAX_RADIANCE: f32 = 60000.0;
 const ATM_BLOCKED: f32 = 1.0e6;
+// Solid-angle fraction covered by the soft limb (SUN_DISK_NORMALISATION in model.rs).
+const ATM_DISK_NORMALISATION: f32 = 0.812;
 
 struct AtmMarch {
     inscatter: vec3<f32>,
@@ -183,7 +185,7 @@ fn atm_sky(dir: vec3<f32>, sun: vec3<f32>, irradiance: vec3<f32>) -> vec3<f32> {
         if coverage > 0.0 {
             let half_sine = sin(0.5 * radius);
             let solid = 4.0 * ATM_PI * half_sine * half_sine;
-            radiance += transmittance * irradiance * (coverage / solid);
+            radiance += transmittance * irradiance * (coverage / (solid * ATM_DISK_NORMALISATION));
         }
     }
     return clamp(radiance, vec3<f32>(0.0), vec3<f32>(ATM_MAX_RADIANCE));

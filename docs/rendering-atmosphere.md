@@ -56,9 +56,11 @@ integration (no precomputed tables):
 - Ground: a ray that reaches the planet adds `T * albedo / pi * E_sun * N.L *
   T_sun` (Lambertian, sun-lit side only; no ground-reflected light re-enters the
   atmosphere).
-- Sun disk: radiance `E_sun / solid_angle * T` inside the angular radius with a
-  soft 20 % limb, only for rays that do not hit the planet. Clamped to 60 000 so
-  `Rgba16Float` never receives infinity.
+- Sun disk: radiance `E_sun / solid_angle * T` inside the angular radius, only
+  for rays that do not hit the planet. The soft 20 % limb's coverage is divided
+  by 0.812 (the fraction of the full disk's solid angle it covers), so the disk
+  carries the full attenuated sun irradiance (a unit test integrates it). Clamped
+  to 60 000 so `Rgba16Float` never receives infinity.
 
 ### Precision
 
@@ -74,8 +76,11 @@ direct radius difference).
 
 - **Sky in the Sky stage, additive.** The pass rasterizes at depth 1.0 with a
   `LessEqual` test, so only pixels still at the far plane are touched, and adds
-  into the HDR colour (background is not attenuated, so a custom Sky feature such
-  as stars can run before it). Depth is not written.
+  into the HDR colour. The background is not attenuated, so a custom Sky feature
+  such as stars shows through only if it is registered **earlier** (features of one
+  stage run in registration order unless constrained) and itself writes or adds;
+  a non-additive sky registered later overwrites the atmosphere. Depth is not
+  written.
 - **Aerial perspective in `OpaqueEffects`.** It needs a per-channel transmittance
   multiply of existing colour, which fixed-function blending cannot do without
   dual-source blending, so it is a ping-pong full-screen pass

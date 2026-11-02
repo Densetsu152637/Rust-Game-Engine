@@ -134,6 +134,8 @@ struct Renderer {
     gpu: GpuContext,
     pipeline: ScenePipeline,
     status: water::WaterRenderStatusHandle,
+    /// Present when the atmosphere features are registered.
+    aerial: Option<atmosphere::AtmosphereControls>,
 }
 impl Renderer {
     fn new() -> Result<Self> {
@@ -146,7 +148,45 @@ impl Renderer {
             gpu,
             pipeline,
             status,
+            aerial: None,
         })
+    }
+    /// A renderer that also has `engine.atmosphere.aerial` registered.
+    fn with_aerial() -> Result<Self> {
+        let mut renderer = Self::new()?;
+        let controls = atmosphere::AtmosphereControls::default();
+        let mut registry = FeatureRegistry::default();
+        atmosphere::register_features(&mut registry, &controls)?;
+        renderer.pipeline.add_features(registry)?;
+        renderer.aerial = Some(controls);
+        Ok(renderer)
+    }
+    /// Render with aerial perspective on (stretched 1000x so a few metres read as
+    /// kilometres) or off. The sky pass stays off, so only geometry changes.
+    fn render_aerial(
+        &mut self,
+        view: &ViewData,
+        meshes: &[SceneMesh<'_>],
+        world: Option<&World>,
+        on: bool,
+    ) -> Result<Vec<u8>> {
+        let controls = self.aerial.clone().expect("built with_aerial");
+        let mut view = view.clone();
+        let frame = on
+            .then(|| {
+                atmosphere::AtmosphereFrame::new(
+                    atmosphere::AtmosphereSettings {
+                        aerial_perspective_scale: 1000.0,
+                        ..Default::default()
+                    },
+                    f64::from(view.camera_position().y),
+                )
+            })
+            .transpose()?;
+        controls.set(view.id, frame)?;
+        view.features.set(atmosphere::ATMOSPHERE_FEATURE, false);
+        view.features.set(atmosphere::ATMOSPHERE_AERIAL_FEATURE, on);
+        Ok(self.render(&view, meshes, world)?.0)
     }
     fn render(
         &mut self,
@@ -546,6 +586,122 @@ fn opted_in_water_casts_animated_opaque_depth() -> Result<()> {
     assert!(
         animated > 0,
         "water shadow did not follow the animated pose"
+    );
+    Ok(())
+}
+
+/// Aerial perspective swaps the scene colour into the scratch target. The water
+/// refraction copy and the underwater fog must follow that current scene colour
+/// instead of the primary HDR target.
+#[test]
+#[ignore = "requires a native GPU adapter"]
+fn water_follows_the_scene_colour_after_aerial_perspective() -> Result<()> {
+    let mut r = Renderer::with_aerial()?;
+    let (cx, cy) = (SIZE[0] / 2, SIZE[1] / 2);
+
+    // Refraction source: a white floor 3 m under a lake, seen from above.
+    let floor = quad(
+        &r.gpu,
+        [
+            Vec3::new(-40.0, -3.0, -40.0),
+            Vec3::new(40.0, -3.0, -40.0),
+            Vec3::new(40.0, -3.0, 40.0),
+            Vec3::new(-40.0, -3.0, 40.0),
+        ],
+    )?;
+    let floor_meshes = [unlit("floor", &floor, [1.0, 1.0, 1.0, 1.0])];
+    let lake_world = world_with(surface(lake(60.0), Waves::Flat, 0.0), 60.0, 16);
+    let above = view(Vec3::new(0.0, 3.0, 6.0), Vec3::new(0.0, -3.0, -6.0))?;
+    let with_water_on = r.render_aerial(&above, &floor_meshes, Some(&lake_world), true)?;
+    let with_water_off = r.render_aerial(&above, &floor_meshes, Some(&lake_world), false)?;
+    let floor_on = r.render_aerial(&above, &floor_meshes, None, true)?;
+    let floor_off = r.render_aerial(&above, &floor_meshes, None, false)?;
+    let (water_on, water_off) = (
+        pixel(&with_water_on, cx, cy),
+        pixel(&with_water_off, cx, cy),
+    );
+    let (bare_on, bare_off) = (pixel(&floor_on, cx, cy), pixel(&floor_off, cx, cy));
+    eprintln!("floor {bare_off:?} -> {bare_on:?}; water over floor {water_off:?} -> {water_on:?}");
+    // Aerial perspective visibly tints the bare floor (about 17 km after scaling).
+    let (channel, tint) = (0..3)
+        .map(|c| (c, bare_on[c] as i32 - bare_off[c] as i32))
+        .max_by_key(|(_, d)| d.abs())
+        .unwrap();
+    assert!(
+        tint.abs() >= 6,
+        "the floor is tinted: {bare_off:?} {bare_on:?}"
+    );
+    // The water refracts that tinted floor: its pixel moves the same way. With the
+    // refraction copy taken from the primary HDR target it would not move at all.
+    let moved = water_on[channel] as i32 - water_off[channel] as i32;
+    assert!(
+        moved != 0 && moved.signum() == tint.signum(),
+        "refraction source follows aerial perspective: bare {tint}, water {moved}"
+    );
+
+    // Underwater fog: a white wall 4 m away is tinted by aerial perspective first
+    // and fogged afterwards. With the underwater pass writing the primary target,
+    // the aerial image would reach the output without any fog.
+    let wall = quad(
+        &r.gpu,
+        [
+            Vec3::new(-10.0, -12.0, -4.0),
+            Vec3::new(10.0, -12.0, -4.0),
+            Vec3::new(10.0, 12.0, -4.0),
+            Vec3::new(-10.0, 12.0, -4.0),
+        ],
+    )?;
+    let wall_meshes = [unlit("wall", &wall, [1.0, 1.0, 1.0, 1.0])];
+    let below = view(Vec3::new(0.0, -2.0, 0.0), Vec3::new(0.0, -2.0, -4.0))?;
+    let plain = pixel(
+        &r.render_aerial(&below, &wall_meshes, Some(&lake_world), false)?,
+        cx,
+        cy,
+    );
+    let tinted = pixel(
+        &r.render_aerial(&below, &wall_meshes, Some(&lake_world), true)?,
+        cx,
+        cy,
+    );
+    let sun_toward = (-sun().lights[0].direction).normalize();
+    let settings = atmosphere::AtmosphereSettings {
+        aerial_perspective_scale: 1000.0,
+        ..Default::default()
+    };
+    let (inscatter, transmittance) = atmosphere::aerial(
+        &atmosphere::Medium::new(&settings),
+        0.0,
+        [0.0, 0.0, -1.0],
+        sun_toward.as_dvec3().to_array(),
+        [1.0; 3],
+        4_000.0,
+    );
+    let optics = WaterOptics::default();
+    let fogged = |scene: [f64; 3]| {
+        let clear = (-optics.fog_density * 4.0).exp();
+        [0, 1, 2].map(|c| {
+            let absorbed = scene[c] as f32 * (-optics.absorption[c] * 4.0).exp();
+            srgb(optics.fog_color[c] + (absorbed - optics.fog_color[c]) * clear)
+        })
+    };
+    let want_plain = fogged([1.0; 3]);
+    let want_tinted = fogged(std::array::from_fn(|c| transmittance[c] + inscatter[c]));
+    eprintln!(
+        "underwater wall plain {plain:?} want {want_plain:?}; tinted {tinted:?} want {want_tinted:?}"
+    );
+    for c in 0..3 {
+        assert!(
+            (plain[c] as f32 - want_plain[c]).abs() <= 3.0,
+            "plain channel {c}: {plain:?} vs {want_plain:?}"
+        );
+        assert!(
+            (tinted[c] as f32 - want_tinted[c]).abs() <= 5.0,
+            "tinted channel {c}: {tinted:?} vs {want_tinted:?}"
+        );
+    }
+    assert!(
+        (0..3).any(|c| (tinted[c] as i32 - plain[c] as i32).abs() >= 8),
+        "aerial perspective is visible through the underwater fog: {plain:?} {tinted:?}"
     );
     Ok(())
 }

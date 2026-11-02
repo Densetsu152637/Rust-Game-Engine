@@ -61,6 +61,8 @@
   manual and histogram auto-exposure, bloom, HDR colour grading with a `.cube` 3D LUT,
   vignette and film grain; the `PostProcess` and `PostProcessVolume` components,
   volume blending and post status.
+- [Atmosphere](rendering-atmosphere.md): physically based single-scattering sky, planet,
+  sun disk and aerial perspective (`Camera3D.atmosphere`), model, placement and limits.
 - [DLSS](dlss.md): the optional standalone `engine-dlss` NVIDIA Super Resolution
   crate, SDK setup and feature scope.
 - [Hardware ray tracing core](rendering-raytracing.md): `engine-render-rt` tiers and
