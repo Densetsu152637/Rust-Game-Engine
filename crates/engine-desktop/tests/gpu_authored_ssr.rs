@@ -242,10 +242,8 @@ fn authored_screen_space_reflections_reach_pixels_end_to_end() -> Result<()> {
         0.05,
         "SSR without an RT device",
     );
-    assert_eq!(
-        with_rt.pixels,
-        hdr(&mut renderer, &target, &defaults)?.pixels
-    );
+    // The report describes the last camera view, so read it before rendering
+    // another frame.
     let status = renderer
         .ray_tracing_status()
         .expect("the RT request is reported");
@@ -256,6 +254,10 @@ fn authored_screen_space_reflections_reach_pixels_end_to_end() -> Result<()> {
         .unwrap();
     assert_eq!(reflections.mode, "fallback", "{reflections:?}");
     assert_eq!(reflections.fallback.as_deref(), Some("ssr"));
+    assert_eq!(
+        with_rt.pixels,
+        hdr(&mut renderer, &target, &defaults)?.pixels
+    );
 
     // Resize keeps the reflection on the new pixel grid.
     renderer.resize(128, 96)?;

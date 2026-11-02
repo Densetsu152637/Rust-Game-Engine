@@ -823,8 +823,9 @@ motion blur were already on existing post I/O; this entry covers SSR only.
 - RT versus SSR: an enabled `engine.rt.reflections` supersedes `engine.ssr` for
   that view (`Activity::Superseded`, reported as `superseded`), resolved in the
   feature registry. The desktop host only enables `engine.rt.reflections` when
-  its RT device exists (without one the request is withdrawn for views that have
-  SSR settings and the RT report shows `fallback: "ssr"`), so hardware without
+  its RT device exists (without one the request is withdrawn only for views where SSR will
+  run, and the RT report shows `fallback: "ssr"` with the SSR note first in its
+  reason), so hardware without
   ray tracing still gets screen-space reflections.
 - Evidence (RTX 5080, Vulkan, ignored tests): `gpu_ssr` and `gpu_authored_ssr`
   (see the document's validation section); CPU tests cover settings bounds,

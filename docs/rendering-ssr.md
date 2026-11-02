@@ -125,10 +125,13 @@ requests no surface material, allocates nothing and leaves the frame untouched.
 Other views are unaffected. The registry keys on the *enabled* RT feature, so
 the desktop host (`RtHost::prepare`) only leaves it enabled when RT can run:
 when the RT device is unavailable (the adapter lacks ray query, the device
-request failed or `note_ray_tracing_request` reported an error) and the view has
-SSR settings, the host withdraws the `engine.rt.reflections` request for that
-view. SSR then runs, and the ray-tracing report shows reflections as `fallback`
-with `fallback: "ssr"` and the unavailability reason. With an RT device, an RT
+request failed or `note_ray_tracing_request` reported an error) and SSR will
+actually run for the view (settings present with a positive `intensity` and no
+explicit `render_features["engine.ssr"] = false`), the host withdraws the
+`engine.rt.reflections` request for that view. SSR then runs, and the
+ray-tracing report shows reflections as `fallback` with `fallback: "ssr"`; its
+`reason` starts with the SSR note, followed by the unavailability reason. If
+SSR would not run, the request stays and reflections fall back to nothing. With an RT device, an RT
 request that falls back for a frame (for example an empty scene) still keeps
 the view, so SSR stays `superseded` there.
 

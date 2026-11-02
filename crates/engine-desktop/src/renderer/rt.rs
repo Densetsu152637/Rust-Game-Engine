@@ -25,8 +25,8 @@ use engine_project::raytracing::{RayTracing, RayTracingReport, RtEffectReport};
 use engine_project::rendering3d::{RenderPipelineState, SceneRenderFrame};
 use engine_render_pipeline::{
     FeatureContext, FeatureDescriptor, FeatureNeeds, FeatureRegistry, FeatureSetup, GpuContext,
-    LightList, LightShape, PipelineFeature, ScenePipeline, Stage, ViewData, ViewId, ViewReport,
-    names,
+    LightList, LightShape, PipelineFeature, ScenePipeline, SsrSettings, Stage, ViewData, ViewId,
+    ViewReport, names,
 };
 use engine_render_rt::{
     AmbientOcclusionKernel, AoInputs, Denoiser, DenoiserInputs, DenoiserSignal, DiffuseGiKernel,
@@ -993,6 +993,23 @@ impl PipelineFeature for RtFeature {
     }
 }
 
+/// Whether an `engine.rt.reflections` request is withdrawn from a view so
+/// screen-space reflections can run in its place: the request exists, the RT
+/// device is unavailable, and `engine.ssr` will actually run for the view
+/// (settings present with a positive intensity and no explicit
+/// `render_features["engine.ssr"] = false`). Anything weaker would leave the
+/// view with neither effect.
+fn withdraws_reflections(
+    ssr: Option<&SsrSettings>,
+    ssr_feature: Option<bool>,
+    reflections_requested: bool,
+    rt_unavailable: bool,
+) -> bool {
+    let ssr_runs =
+        ssr.is_some_and(|settings| settings.intensity > 0.0) && ssr_feature != Some(false);
+    reflections_requested && rt_unavailable && ssr_runs
+}
+
 /// The renderer's RT tier: device, scene sync, features and status.
 pub(crate) struct RtHost {
     shared: Arc<Mutex<Shared>>,
@@ -1002,8 +1019,7 @@ pub(crate) struct RtHost {
     /// Authored settings of the frame being rendered.
     authored: Option<RtEffectsSettings>,
     /// The frame's reflections request was withdrawn because the RT device is
-    /// unavailable and the view has `engine.ssr` settings, so screen-space
-    /// reflections run instead of an RT feature that could only fall back.
+    /// unavailable and screen-space reflections will run in the view, instead of an RT feature that could only fall back.
     ssr_instead: bool,
     report: Option<RayTracingReport>,
 }
@@ -1096,11 +1112,12 @@ impl RtHost {
         // An RT reflection request supersedes `engine.ssr` in the registry, but
         // without a device the effect can only fall back to nothing. Hand the
         // view to screen-space reflections instead of losing both.
-        if view.ssr.is_some()
-            && wanted.contains(&Effect::Reflections)
-            && self.attempted
-            && shared.rt.is_none()
-        {
+        if withdraws_reflections(
+            view.ssr.as_ref(),
+            view.features.get(names::SSR),
+            wanted.contains(&Effect::Reflections),
+            self.attempted && shared.rt.is_none(),
+        ) {
             wanted.retain(|e| *e != Effect::Reflections);
             view.features.set(Effect::Reflections.feature(), false);
             self.ssr_instead = true;
@@ -1165,7 +1182,7 @@ impl RtHost {
                     RtEffectMode::Fallback,
                     false,
                     Some(format!(
-                        "{why}; screen-space reflections are used instead (engine.ssr)"
+                        "screen-space reflections (engine.ssr) are used instead; {why}"
                     )),
                 )
             } else if outcome.traced {
@@ -1284,6 +1301,31 @@ impl RtHost {
 
 #[cfg(test)]
 mod tests {
+    use super::withdraws_reflections;
+    use engine_render_pipeline::SsrSettings;
+
+    #[test]
+    fn reflections_are_withdrawn_only_when_ssr_will_run() {
+        let ssr = SsrSettings::default();
+        assert!(ssr.intensity > 0.0);
+        // No device, requested, SSR runs: hand the view to SSR.
+        assert!(withdraws_reflections(Some(&ssr), None, true, true));
+        assert!(withdraws_reflections(Some(&ssr), Some(true), true, true));
+        // An RT device keeps the request (SSR is superseded there).
+        assert!(!withdraws_reflections(Some(&ssr), None, true, false));
+        // Nothing requested, nothing to withdraw.
+        assert!(!withdraws_reflections(Some(&ssr), None, false, true));
+        // No SSR settings, or SSR switched off, or zero intensity: SSR will
+        // not run, so the request stays.
+        assert!(!withdraws_reflections(None, None, true, true));
+        assert!(!withdraws_reflections(Some(&ssr), Some(false), true, true));
+        let silent = SsrSettings {
+            intensity: 0.0,
+            ..ssr
+        };
+        assert!(!withdraws_reflections(Some(&silent), None, true, true));
+    }
+
     use super::*;
 
     #[test]
