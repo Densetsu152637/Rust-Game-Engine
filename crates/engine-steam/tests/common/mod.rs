@@ -162,3 +162,53 @@ macro_rules! forward_input {
 }
 #[allow(unused_imports)]
 pub(crate) use forward_input;
+
+/// Forwards the Workshop methods of `SteamBackend` to `self.fake`.
+#[allow(unused_macros)]
+macro_rules! forward_ugc {
+    () => {
+        fn subscribed_items(&self) -> SteamResult<Vec<WorkshopItemId>> {
+            self.fake.lock().unwrap().subscribed_items()
+        }
+        fn installed_item(&self, item: WorkshopItemId) -> SteamResult<Option<InstalledItem>> {
+            self.fake.lock().unwrap().installed_item(item)
+        }
+        fn ugc_create_item(&mut self) -> SteamResult<RequestId> {
+            self.fake.lock().unwrap().ugc_create_item()
+        }
+        fn ugc_submit_item(
+            &mut self,
+            item: WorkshopItemId,
+            update: &ItemUpdate,
+        ) -> SteamResult<RequestId> {
+            self.fake.lock().unwrap().ugc_submit_item(item, update)
+        }
+        fn ugc_update_progress(&self, request: RequestId) -> Option<UpdateProgress> {
+            self.fake.lock().unwrap().ugc_update_progress(request)
+        }
+        fn ugc_subscribe(
+            &mut self,
+            item: WorkshopItemId,
+            subscribe: bool,
+        ) -> SteamResult<RequestId> {
+            self.fake.lock().unwrap().ugc_subscribe(item, subscribe)
+        }
+        fn ugc_query(&mut self, query: &UgcQuery) -> SteamResult<RequestId> {
+            self.fake.lock().unwrap().ugc_query(query)
+        }
+        fn ugc_item_state(&self, item: WorkshopItemId) -> SteamResult<ItemState> {
+            self.fake.lock().unwrap().ugc_item_state(item)
+        }
+        fn ugc_download(&mut self, item: WorkshopItemId, high_priority: bool) -> SteamResult<()> {
+            self.fake.lock().unwrap().ugc_download(item, high_priority)
+        }
+        fn ugc_download_progress(&self, item: WorkshopItemId) -> Option<(u64, u64)> {
+            self.fake.lock().unwrap().ugc_download_progress(item)
+        }
+        fn ugc_poll(&mut self) -> Vec<UgcRaw> {
+            self.fake.lock().unwrap().ugc_poll()
+        }
+    };
+}
+#[allow(unused_imports)]
+pub(crate) use forward_ugc;

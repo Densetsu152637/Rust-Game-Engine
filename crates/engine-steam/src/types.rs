@@ -108,6 +108,10 @@ pub struct InstalledItem {
     pub id: WorkshopItemId,
     pub path: PathBuf,
     pub size_bytes: u64,
+    /// Install time in Unix seconds, as Steam reports it.
+    pub timestamp: u32,
+    /// Steam has a newer version waiting to be downloaded.
+    pub needs_update: bool,
 }
 
 /// Steam Input controller handle.

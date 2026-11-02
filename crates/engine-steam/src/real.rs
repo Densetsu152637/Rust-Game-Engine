@@ -23,8 +23,10 @@ use crate::net::*;
 use crate::real_net::{AuthEvents, RealNet};
 use crate::types::{
     ActionGlyph, AnalogActionState, AppId, AuthTicket, ControllerId, DigitalActionState,
-    InputActionKind, StatValue, SteamEvent, SteamId, SteamStatus, SteamUser,
+    InputActionKind, InstalledItem, StatValue, SteamEvent, SteamId, SteamStatus, SteamUser,
+    WorkshopItemId,
 };
+use crate::workshop::{ItemState, ItemUpdate, RequestId, UgcQuery, UgcRaw, UpdateProgress};
 
 /// `SteamAPI_Init` may only be paired with one `SteamAPI_Shutdown` per process.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
@@ -69,6 +71,7 @@ pub struct RealBackend {
     stats_received: Arc<AtomicBool>,
     net: RealNet,
     input_ready: bool,
+    pub(crate) ugc: crate::real_ugc::RealUgc,
     pub(crate) lobby_events: crate::real_lobby::LobbyEvents,
 }
 
@@ -85,6 +88,7 @@ impl RealBackend {
             stats_received: Arc::new(AtomicBool::new(false)),
             net: RealNet::default(),
             input_ready: false,
+            ugc: Default::default(),
             lobby_events: Arc::default(),
         }
     }
@@ -234,6 +238,54 @@ impl SteamBackend for RealBackend {
         Some(self)
     }
 
+    fn subscribed_items(&self) -> SteamResult<Vec<WorkshopItemId>> {
+        crate::real_ugc::subscribed(self)
+    }
+
+    fn installed_item(&self, item: WorkshopItemId) -> SteamResult<Option<InstalledItem>> {
+        crate::real_ugc::installed(self, item)
+    }
+
+    fn ugc_create_item(&mut self) -> SteamResult<RequestId> {
+        crate::real_ugc::create_item(self)
+    }
+
+    fn ugc_submit_item(
+        &mut self,
+        item: WorkshopItemId,
+        update: &ItemUpdate,
+    ) -> SteamResult<RequestId> {
+        crate::real_ugc::submit_item(self, item, update)
+    }
+
+    fn ugc_update_progress(&self, request: RequestId) -> Option<UpdateProgress> {
+        crate::real_ugc::update_progress(self, request)
+    }
+
+    fn ugc_subscribe(&mut self, item: WorkshopItemId, subscribe: bool) -> SteamResult<RequestId> {
+        crate::real_ugc::subscribe(self, item, subscribe)
+    }
+
+    fn ugc_query(&mut self, query: &UgcQuery) -> SteamResult<RequestId> {
+        crate::real_ugc::query(self, query)
+    }
+
+    fn ugc_item_state(&self, item: WorkshopItemId) -> SteamResult<ItemState> {
+        crate::real_ugc::item_state(self, item)
+    }
+
+    fn ugc_download(&mut self, item: WorkshopItemId, high_priority: bool) -> SteamResult<()> {
+        crate::real_ugc::download(self, item, high_priority)
+    }
+
+    fn ugc_download_progress(&self, item: WorkshopItemId) -> Option<(u64, u64)> {
+        crate::real_ugc::download_progress(self, item)
+    }
+
+    fn ugc_poll(&mut self) -> Vec<UgcRaw> {
+        crate::real_ugc::poll(self)
+    }
+
     fn controllers(&self) -> SteamResult<Vec<ControllerId>> {
         crate::real_input::controllers(self.input_client()?)
     }
@@ -316,6 +368,7 @@ impl SteamBackend for RealBackend {
                     &self.stats_received,
                 );
                 handles.extend(crate::real_lobby::register(&client, &self.lobby_events));
+                handles.extend(crate::real_ugc::register(&client, &self.ugc));
                 self.live = Some(Live {
                     _handles: handles,
                     client,

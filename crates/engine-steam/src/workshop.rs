@@ -1,0 +1,480 @@
+//! Steam Workshop (user generated content).
+//!
+//! [`UgcService`] is the game-facing handle. Steam's Workshop calls are asynchronous, so
+//! requests return a [`RequestId`] at once and the outcome arrives from
+//! [`UgcService::poll`] as [`UgcEvent`]s, in whatever order Steam finishes them. The raw,
+//! backend-facing surface is the defaulted `ugc_*` methods on `SteamBackend` plus
+//! [`UgcRaw`]; a backend reports finished requests through `ugc_poll`, and the service adds
+//! the progress events it derives from `ugc_update_progress` / `ugc_download_progress`.
+//!
+//! Uploading (`submit_item`) publishes content on the Steam Workshop. Nothing in this
+//! crate's automated tests does it; see `docs/steam.md` for the manual procedure.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use bevy_ecs::prelude::Resource;
+
+use crate::error::{SteamError, SteamResult};
+use crate::session::SteamSession;
+use crate::types::{InstalledItem, SteamEvent, SteamId, SteamStatus, WorkshopItemId};
+
+/// Most ids one by-id query may name (Steam's page size).
+pub const MAX_QUERY_IDS: usize = 50;
+/// Concurrent submissions or downloads the service tracks.
+pub const MAX_TRACKED: usize = 64;
+const MAX_TITLE_BYTES: usize = 128;
+const MAX_DESCRIPTION_BYTES: usize = 8000;
+const MAX_TAGS: usize = 100;
+const MAX_TAG_BYTES: usize = 255;
+const MAX_NOTE_BYTES: usize = 8000;
+
+/// Identifies one asynchronous request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RequestId(pub u64);
+
+/// Who can see a Workshop item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemVisibility {
+    Public,
+    FriendsOnly,
+    Private,
+    Unlisted,
+}
+
+/// A change to a Workshop item; unset fields are left as they are.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ItemUpdate {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub visibility: Option<ItemVisibility>,
+    /// Replaces all tags.
+    pub tags: Option<Vec<String>>,
+    /// Folder uploaded as the item content.
+    pub content_folder: Option<PathBuf>,
+    /// Preview image file.
+    pub preview: Option<PathBuf>,
+    pub change_note: Option<String>,
+}
+
+impl ItemUpdate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn title(mut self, title: &str) -> Self {
+        self.title = Some(title.to_owned());
+        self
+    }
+    pub fn description(mut self, description: &str) -> Self {
+        self.description = Some(description.to_owned());
+        self
+    }
+    pub fn visibility(mut self, visibility: ItemVisibility) -> Self {
+        self.visibility = Some(visibility);
+        self
+    }
+    pub fn tags(mut self, tags: &[&str]) -> Self {
+        self.tags = Some(tags.iter().map(|t| (*t).to_owned()).collect());
+        self
+    }
+    pub fn content_folder(mut self, folder: impl Into<PathBuf>) -> Self {
+        self.content_folder = Some(folder.into());
+        self
+    }
+    pub fn preview(mut self, file: impl Into<PathBuf>) -> Self {
+        self.preview = Some(file.into());
+        self
+    }
+    pub fn change_note(mut self, note: &str) -> Self {
+        self.change_note = Some(note.to_owned());
+        self
+    }
+
+    fn validate(&self) -> SteamResult<()> {
+        let bad = |what: &str| Err(SteamError::Rejected(what.to_owned()));
+        let text = |s: &str| !s.contains('\0');
+        if let Some(title) = &self.title
+            && (title.is_empty() || title.len() > MAX_TITLE_BYTES || !text(title))
+        {
+            return bad("a title needs 1..=128 bytes and no NUL");
+        }
+        if let Some(d) = &self.description
+            && (d.len() > MAX_DESCRIPTION_BYTES || !text(d))
+        {
+            return bad("a description holds at most 8000 bytes and no NUL");
+        }
+        if let Some(note) = &self.change_note
+            && (note.len() > MAX_NOTE_BYTES || !text(note))
+        {
+            return bad("a change note holds at most 8000 bytes and no NUL");
+        }
+        if let Some(tags) = &self.tags {
+            if tags.len() > MAX_TAGS {
+                return bad("at most 100 tags");
+            }
+            if tags
+                .iter()
+                .any(|t| t.is_empty() || t.len() > MAX_TAG_BYTES || t.contains([',', '\0']))
+            {
+                return bad("a tag needs 1..=255 bytes without commas or NUL");
+            }
+        }
+        if let Some(folder) = &self.content_folder
+            && !folder.is_dir()
+        {
+            return bad("the content folder does not exist");
+        }
+        if let Some(file) = &self.preview
+            && !file.is_file()
+        {
+            return bad("the preview file does not exist");
+        }
+        for path in [&self.content_folder, &self.preview].into_iter().flatten() {
+            if path.to_str().is_none_or(|p| p.contains('\0')) {
+                return bad("paths must be UTF-8 without NUL");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Which phase of a submission Steam is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateStage {
+    Invalid,
+    PreparingConfig,
+    PreparingContent,
+    UploadingContent,
+    UploadingPreview,
+    CommittingChanges,
+}
+
+/// Progress of a submission: `done` of `total` bytes in the current stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateProgress {
+    pub stage: UpdateStage,
+    pub done: u64,
+    pub total: u64,
+}
+
+/// A Workshop item as reported by a query.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkshopItem {
+    pub id: WorkshopItemId,
+    pub title: String,
+    pub description: String,
+    pub owner: SteamId,
+    pub visibility: ItemVisibility,
+    pub tags: Vec<String>,
+    pub time_created: u32,
+    pub time_updated: u32,
+    pub file_size: u32,
+    pub votes_up: u32,
+    pub votes_down: u32,
+    pub subscriptions: u64,
+    pub banned: bool,
+}
+
+/// Ordering of a public query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicSort {
+    MostVoted,
+    Newest,
+    MostSubscribed,
+    Trending,
+    /// Needs [`PublicQuery::search`].
+    TextSearch,
+}
+
+/// A basic query of the app's public Workshop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicQuery {
+    pub sort: PublicSort,
+    pub search: Option<String>,
+    /// Items must carry every one of these tags.
+    pub required_tags: Vec<String>,
+    /// 1-based page; Steam returns up to 50 items per page.
+    pub page: u32,
+}
+
+impl Default for PublicQuery {
+    fn default() -> Self {
+        Self {
+            sort: PublicSort::MostVoted,
+            search: None,
+            required_tags: Vec::new(),
+            page: 1,
+        }
+    }
+}
+
+/// What a query asks the backend for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UgcQuery {
+    ById(Vec<WorkshopItemId>),
+    Public(PublicQuery),
+}
+
+/// One page of query results.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct QueryPage {
+    pub items: Vec<WorkshopItem>,
+    /// Matches across all pages.
+    pub total: u32,
+}
+
+/// Local state of an item.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ItemState {
+    pub subscribed: bool,
+    pub installed: bool,
+    pub needs_update: bool,
+    pub downloading: bool,
+    pub download_pending: bool,
+}
+
+/// A finished request, as a backend reports it.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum UgcRaw {
+    /// `(item, user must accept the Workshop legal agreement)`.
+    Created {
+        request: RequestId,
+        result: Result<(WorkshopItemId, bool), String>,
+    },
+    Submitted {
+        request: RequestId,
+        result: Result<(WorkshopItemId, bool), String>,
+    },
+    Subscription {
+        request: RequestId,
+        item: WorkshopItemId,
+        subscribed: bool,
+        result: Result<(), String>,
+    },
+    Queried {
+        request: RequestId,
+        result: Result<QueryPage, String>,
+    },
+    /// Steam finished (or failed) downloading an item.
+    Downloaded {
+        item: WorkshopItemId,
+        result: Result<(), String>,
+    },
+}
+
+/// Something the Workshop service reports from [`UgcService::poll`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum UgcEvent {
+    /// A request finished.
+    Reply(UgcRaw),
+    /// A submission moved to a new stage or byte count.
+    UpdateProgress {
+        request: RequestId,
+        item: WorkshopItemId,
+        progress: UpdateProgress,
+    },
+    /// A download moved forward (bytes).
+    DownloadProgress {
+        item: WorkshopItemId,
+        done: u64,
+        total: u64,
+    },
+}
+
+/// Game-facing Workshop handle.
+#[derive(Resource)]
+pub struct UgcService {
+    session: SteamSession,
+    submits: BTreeMap<RequestId, (WorkshopItemId, Option<UpdateProgress>)>,
+    downloads: BTreeMap<WorkshopItemId, Option<(u64, u64)>>,
+}
+
+impl UgcService {
+    /// A service over a ready session.
+    pub fn new(session: SteamSession) -> SteamResult<Self> {
+        match session.status() {
+            SteamStatus::Ready { .. } => Ok(Self {
+                session,
+                submits: BTreeMap::new(),
+                downloads: BTreeMap::new(),
+            }),
+            other => Err(SteamError::Unavailable(
+                other
+                    .unavailable_reason()
+                    .unwrap_or(crate::UnavailableReason::NotRunning),
+            )),
+        }
+    }
+
+    /// Creates an empty (private) Workshop item for this app. Reply: [`UgcRaw::Created`].
+    /// The item is invisible to others until a submission makes it public.
+    pub fn create_item(&mut self) -> SteamResult<RequestId> {
+        self.session.with_backend(|b| b.ugc_create_item())
+    }
+
+    /// Updates an existing item and uploads it. **This publishes to the Steam Workshop**
+    /// (according to the item's visibility); only call it from a deliberate, manual flow.
+    /// Progress arrives as [`UgcEvent::UpdateProgress`], the result as [`UgcRaw::Submitted`].
+    pub fn submit_item(
+        &mut self,
+        item: WorkshopItemId,
+        update: &ItemUpdate,
+    ) -> SteamResult<RequestId> {
+        update.validate()?;
+        if self.submits.len() >= MAX_TRACKED {
+            return Err(SteamError::Rejected(
+                "too many submissions in flight".into(),
+            ));
+        }
+        let request = self
+            .session
+            .with_backend(|b| b.ugc_submit_item(item, update))?;
+        self.submits.insert(request, (item, None));
+        Ok(request)
+    }
+
+    pub fn subscribe(&mut self, item: WorkshopItemId) -> SteamResult<RequestId> {
+        self.session.with_backend(|b| b.ugc_subscribe(item, true))
+    }
+
+    pub fn unsubscribe(&mut self, item: WorkshopItemId) -> SteamResult<RequestId> {
+        self.session.with_backend(|b| b.ugc_subscribe(item, false))
+    }
+
+    /// Queries the given items (at most [`MAX_QUERY_IDS`]). Reply: [`UgcRaw::Queried`].
+    pub fn query_items(&mut self, ids: &[WorkshopItemId]) -> SteamResult<RequestId> {
+        if ids.is_empty() || ids.len() > MAX_QUERY_IDS {
+            return Err(SteamError::Rejected(format!(
+                "a by-id query needs 1..={MAX_QUERY_IDS} ids"
+            )));
+        }
+        self.session
+            .with_backend(|b| b.ugc_query(&UgcQuery::ById(ids.to_vec())))
+    }
+
+    /// Queries the player's subscribed items (the first [`MAX_QUERY_IDS`]). When there are
+    /// none, the reply is an empty page delivered by the next `poll`.
+    pub fn query_subscribed(&mut self) -> SteamResult<RequestId> {
+        let mut ids = self.subscribed()?;
+        ids.truncate(MAX_QUERY_IDS);
+        // An empty list is answered with an empty page, without asking Steam.
+        self.session
+            .with_backend(|b| b.ugc_query(&UgcQuery::ById(ids)))
+    }
+
+    /// Queries the app's public Workshop.
+    pub fn query_public(&mut self, query: &PublicQuery) -> SteamResult<RequestId> {
+        let search_ok = query
+            .search
+            .as_ref()
+            .is_none_or(|s| s.len() <= 255 && !s.contains('\0'));
+        if query.page == 0
+            || !search_ok
+            || query.required_tags.len() > MAX_TAGS
+            || query
+                .required_tags
+                .iter()
+                .any(|t| t.is_empty() || t.len() > MAX_TAG_BYTES || t.contains('\0'))
+            || (query.sort == PublicSort::TextSearch && query.search.is_none())
+        {
+            return Err(SteamError::Rejected("invalid public query".into()));
+        }
+        self.session
+            .with_backend(|b| b.ugc_query(&UgcQuery::Public(query.clone())))
+    }
+
+    /// Ids of the subscribed items.
+    pub fn subscribed(&self) -> SteamResult<Vec<WorkshopItemId>> {
+        self.session.with_backend(|b| b.subscribed_items())
+    }
+
+    /// Install details of an item, or `None` when it is not subscribed or not installed.
+    pub fn installed(&self, item: WorkshopItemId) -> SteamResult<Option<InstalledItem>> {
+        self.session.with_backend(|b| b.installed_item(item))
+    }
+
+    pub fn item_state(&self, item: WorkshopItemId) -> SteamResult<ItemState> {
+        self.session.with_backend(|b| b.ugc_item_state(item))
+    }
+
+    /// Asks Steam to download (or update) a subscribed item. Progress arrives as
+    /// [`UgcEvent::DownloadProgress`], completion as [`UgcRaw::Downloaded`] (and a
+    /// `SteamEvent::WorkshopItemInstalled` from the session on success).
+    pub fn download_item(&mut self, item: WorkshopItemId, high_priority: bool) -> SteamResult<()> {
+        if self.downloads.len() >= MAX_TRACKED && !self.downloads.contains_key(&item) {
+            return Err(SteamError::Rejected("too many downloads in flight".into()));
+        }
+        self.session
+            .with_backend(|b| b.ugc_download(item, high_priority))?;
+        self.downloads.entry(item).or_insert(None);
+        Ok(())
+    }
+
+    /// Collects finished requests and progress changes. Call once per tick, after the
+    /// session pumped Steam callbacks.
+    pub fn poll(&mut self) -> Vec<UgcEvent> {
+        let mut events = Vec::new();
+        let mut installed = Vec::new();
+        {
+            let mut state = self.session.lock();
+            let backend = state.backend.as_mut();
+            let raws = backend.ugc_poll();
+            for (request, (item, last)) in &mut self.submits {
+                if raws.iter().any(
+                    |r| matches!(r, UgcRaw::Submitted { request: done, .. } if done == request),
+                ) {
+                    continue;
+                }
+                if let Some(progress) = backend.ugc_update_progress(*request)
+                    && *last != Some(progress)
+                {
+                    *last = Some(progress);
+                    events.push(UgcEvent::UpdateProgress {
+                        request: *request,
+                        item: *item,
+                        progress,
+                    });
+                }
+            }
+            for (item, last) in &mut self.downloads {
+                if raws
+                    .iter()
+                    .any(|r| matches!(r, UgcRaw::Downloaded { item: done, .. } if done == item))
+                {
+                    continue;
+                }
+                if let Some(now) = backend.ugc_download_progress(*item)
+                    && *last != Some(now)
+                {
+                    *last = Some(now);
+                    events.push(UgcEvent::DownloadProgress {
+                        item: *item,
+                        done: now.0,
+                        total: now.1,
+                    });
+                }
+            }
+            for raw in raws {
+                match &raw {
+                    UgcRaw::Submitted { request, .. } => {
+                        self.submits.remove(request);
+                    }
+                    UgcRaw::Downloaded { item, result } => {
+                        self.downloads.remove(item);
+                        if result.is_ok() {
+                            installed.push(*item);
+                        }
+                    }
+                    _ => {}
+                }
+                events.push(UgcEvent::Reply(raw));
+            }
+            state
+                .pending
+                .extend(installed.into_iter().map(SteamEvent::WorkshopItemInstalled));
+        }
+        events
+    }
+}

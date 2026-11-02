@@ -28,6 +28,7 @@ impl SteamBackend for Shared {
     }
     common::forward_net!();
     common::forward_input!();
+    common::forward_ugc!();
 }
 
 fn me() -> SteamId {

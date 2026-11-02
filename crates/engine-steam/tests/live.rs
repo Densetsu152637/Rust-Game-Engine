@@ -446,3 +446,66 @@ fn input_enumeration() {
         Err(SteamError::NotFound(_))
     ));
 }
+
+/// Read-only Workshop check on Spacewar: a public query, the subscribed list and the
+/// install info of subscribed items. It never creates, updates, subscribes or downloads.
+#[test]
+#[ignore = "needs a running Steam client"]
+fn workshop_query() {
+    let Some((_guard, backend)) = steam_live() else {
+        return;
+    };
+    let session = SteamSession::new(Box::new(backend));
+    let mut service = UgcService::new(session.clone()).expect("service");
+    let request = service
+        .query_public(&PublicQuery::default())
+        .expect("query_public");
+    let mut page = None;
+    for _ in 0..100 {
+        let _ = session.run_callbacks();
+        for event in service.poll() {
+            if let UgcEvent::Reply(UgcRaw::Queried {
+                request: done,
+                result,
+            }) = event
+                && done == request
+            {
+                page = Some(result);
+            }
+        }
+        if page.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let page = page.expect("the query was never answered");
+    match page {
+        Ok(page) => {
+            println!(
+                "public Workshop of App 480: {} total, {} on page 1",
+                page.total,
+                page.items.len()
+            );
+            for item in page.items.iter().take(3) {
+                println!("  {} {:?} by {}", item.id.0, item.title, item.owner.0);
+            }
+            assert!(page.items.len() <= 50);
+        }
+        // An offline or throttled account still proves the round trip works.
+        Err(why) => println!("query failed softly: {why}"),
+    }
+    let subscribed = service.subscribed().expect("subscribed");
+    println!("subscribed items: {subscribed:?}");
+    for id in subscribed.iter().take(5) {
+        println!(
+            "  {} state {:?}",
+            id.0,
+            service.item_state(*id).expect("state")
+        );
+        println!(
+            "  {} install {:?}",
+            id.0,
+            service.installed(*id).expect("installed")
+        );
+    }
+}

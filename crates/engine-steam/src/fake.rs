@@ -10,9 +10,13 @@ use crate::backend::{SteamBackend, valid_cloud_name};
 use crate::error::{SteamError, SteamResult};
 use crate::fake_lobby::FakeLobbies;
 use crate::fake_net::FakeNet;
+use crate::fake_ugc::FakeUgc;
 use crate::lobby::{LobbyBackend, LobbyRaw};
 use crate::net::*;
 use crate::types::*;
+use crate::workshop::{
+    ItemState, ItemUpdate, RequestId, UgcQuery, UgcRaw, UpdateProgress, WorkshopItem,
+};
 
 /// In-memory Steam double.
 #[derive(Debug, Clone)]
@@ -41,6 +45,7 @@ pub struct FakeBackend {
     installed: BTreeMap<WorkshopItemId, InstalledItem>,
     controllers: Vec<ControllerId>,
     action_sets: BTreeMap<ControllerId, String>,
+    ugc: FakeUgc,
     input_ready: bool,
     digital: BTreeMap<(ControllerId, String), bool>,
     analog: BTreeMap<(ControllerId, String), (f32, f32)>,
@@ -90,6 +95,7 @@ impl FakeBackend {
             installed: BTreeMap::new(),
             controllers: Vec::new(),
             action_sets: BTreeMap::new(),
+            ugc: FakeUgc::default(),
             input_ready: false,
             digital: BTreeMap::new(),
             analog: BTreeMap::new(),
@@ -303,6 +309,28 @@ impl FakeBackend {
         self
     }
 
+    /// Adds an item to the fake Workshop catalog (what queries can find).
+    pub fn with_workshop_item(mut self, item: WorkshopItem) -> Self {
+        self.ugc.catalog.insert(item.id, item);
+        self
+    }
+
+    /// Polls a download needs before it completes (default 2).
+    pub fn with_download_polls(mut self, polls: u32) -> Self {
+        self.ugc.download_polls = polls.max(1);
+        self
+    }
+
+    /// A catalog item as the fake currently holds it.
+    pub fn workshop_item(&self, id: WorkshopItemId) -> Option<&WorkshopItem> {
+        self.ugc.catalog.get(&id)
+    }
+
+    /// Updates the fake applied, in order (a completed submission records its update).
+    pub fn applied_updates(&self) -> &[(WorkshopItemId, ItemUpdate)] {
+        &self.ugc.applied
+    }
+
     /// Plugs a controller in while running (idempotent).
     pub fn plug_controller(&mut self, controller: ControllerId) {
         if !self.controllers.contains(&controller) {
@@ -392,6 +420,13 @@ impl FakeBackend {
     /// Active action set of a controller.
     pub fn action_set(&self, controller: ControllerId) -> Option<&str> {
         self.action_sets.get(&controller).map(String::as_str)
+    }
+
+    fn user_id(&self) -> SteamResult<SteamId> {
+        match &self.status {
+            SteamStatus::Ready { user, .. } => Ok(user.id),
+            _ => Err(self.unavailable()),
+        }
     }
 
     fn record(&mut self, name: &str) {
@@ -828,6 +863,138 @@ impl SteamBackend for FakeBackend {
         }
         self.action_sets.insert(controller, set.to_owned());
         Ok(())
+    }
+
+    fn ugc_create_item(&mut self) -> SteamResult<RequestId> {
+        self.record("ugc_create_item");
+        let owner = self.user_id()?;
+        let request = self.ugc.request();
+        let id = self.ugc.create(owner);
+        self.ugc.replies.push(UgcRaw::Created {
+            request,
+            result: Ok((id, false)),
+        });
+        Ok(request)
+    }
+
+    fn ugc_submit_item(
+        &mut self,
+        item: WorkshopItemId,
+        update: &ItemUpdate,
+    ) -> SteamResult<RequestId> {
+        self.record("ugc_submit_item");
+        let owner = self.user_id()?;
+        let request = self.ugc.request();
+        match self.ugc.catalog.get(&item) {
+            Some(entry) if entry.owner == owner => {
+                self.ugc.updates.insert(request, (item, update.clone(), 0));
+            }
+            Some(_) => self.ugc.replies.push(UgcRaw::Submitted {
+                request,
+                result: Err("only the owner can update an item".into()),
+            }),
+            None => self.ugc.replies.push(UgcRaw::Submitted {
+                request,
+                result: Err("no such item".into()),
+            }),
+        }
+        Ok(request)
+    }
+
+    fn ugc_update_progress(&self, request: RequestId) -> Option<UpdateProgress> {
+        self.ugc.progress(request)
+    }
+
+    fn ugc_subscribe(&mut self, item: WorkshopItemId, subscribe: bool) -> SteamResult<RequestId> {
+        self.record(if subscribe {
+            "ugc_subscribe"
+        } else {
+            "ugc_unsubscribe"
+        });
+        self.require_ready()?;
+        let request = self.ugc.request();
+        let known = self.ugc.catalog.contains_key(&item) || self.installed.contains_key(&item);
+        let result = if known {
+            if subscribe {
+                self.subscribed.insert(item);
+            } else {
+                self.subscribed.remove(&item);
+            }
+            Ok(())
+        } else {
+            Err("no such item".to_owned())
+        };
+        self.ugc.replies.push(UgcRaw::Subscription {
+            request,
+            item,
+            subscribed: subscribe,
+            result,
+        });
+        Ok(request)
+    }
+
+    fn ugc_query(&mut self, query: &UgcQuery) -> SteamResult<RequestId> {
+        self.record("ugc_query");
+        let me = self.user_id()?;
+        let request = self.ugc.request();
+        let page = self.ugc.query(query, me);
+        self.ugc.replies.push(UgcRaw::Queried {
+            request,
+            result: Ok(page),
+        });
+        Ok(request)
+    }
+
+    fn ugc_item_state(&self, item: WorkshopItemId) -> SteamResult<ItemState> {
+        self.require_ready()?;
+        let installed = self.installed.get(&item);
+        Ok(ItemState {
+            subscribed: self.subscribed.contains(&item),
+            installed: installed.is_some(),
+            needs_update: installed.is_some_and(|i| i.needs_update),
+            downloading: self.ugc.downloads.contains_key(&item),
+            download_pending: false,
+        })
+    }
+
+    fn ugc_download(&mut self, item: WorkshopItemId, _high_priority: bool) -> SteamResult<()> {
+        self.record("ugc_download");
+        self.require_ready()?;
+        if !self.subscribed.contains(&item) {
+            return Err(SteamError::Rejected("the item is not subscribed".into()));
+        }
+        let polls = self.ugc.download_polls;
+        self.ugc.downloads.insert(item, (polls, polls));
+        Ok(())
+    }
+
+    fn ugc_download_progress(&self, item: WorkshopItemId) -> Option<(u64, u64)> {
+        let (left, polls) = *self.ugc.downloads.get(&item)?;
+        let total = self.installed.get(&item).map_or(100, |i| i.size_bytes);
+        Some((total * u64::from(polls - left) / u64::from(polls), total))
+    }
+
+    fn ugc_poll(&mut self) -> Vec<UgcRaw> {
+        self.ugc.step_updates();
+        let mut done = Vec::new();
+        for (item, (left, _)) in &mut self.ugc.downloads {
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                done.push(*item);
+            }
+        }
+        for item in done {
+            self.ugc.downloads.remove(&item);
+            let result = match self.installed.get_mut(&item) {
+                Some(installed) => {
+                    installed.needs_update = false;
+                    Ok(())
+                }
+                None => Err("the item has no downloadable content".to_owned()),
+            };
+            self.ugc.replies.push(UgcRaw::Downloaded { item, result });
+        }
+        std::mem::take(&mut self.ugc.replies)
     }
 
     fn input_init(&mut self, _manifest: Option<&std::path::Path>) -> SteamResult<()> {

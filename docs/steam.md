@@ -526,6 +526,82 @@ for the app; without a configuration for the manifest's actions, Steam Input rep
 actions as inactive. App 480 (Spacewar) has no manifest of ours, so the live test only
 enumerates controllers.
 
+## Workshop (S9)
+
+`UgcService` (`crates/engine-steam/src/workshop.rs`) is the game-facing Workshop handle:
+create, update and submit items, subscribe and unsubscribe, query, read install details and
+download. Steam's Workshop calls are asynchronous, so a request returns a `RequestId` and its
+outcome arrives from `UgcService::poll()` (call it once per tick, after the session pumped
+callbacks) as a `UgcEvent`: `Reply(UgcRaw::...)` for finished requests, `UpdateProgress` for
+a submission and `DownloadProgress` for a download. The same pattern as lobbies applies: the
+backend side is the defaulted `ugc_*` methods on `SteamBackend` plus `ugc_poll`, with a
+scriptable fake (`FakeBackend::with_workshop_item`, `with_installed_item`,
+`with_download_polls`) and `RealBackend`. The old synchronous `subscribe_item` /
+`unsubscribe_item` on `SteamBackend` are the S1 sketch; `subscribed_items` and
+`installed_item` are shared with the service.
+
+### `steamworks` 0.13.1 UGC surface relied on (`UGC`, from `client.ugc()`)
+
+`create_item(app, FileType, cb)`; `start_item_update(app, id)` returning an `UpdateHandle`
+(`title`, `description`, `visibility`, `tags(Vec, allow_admin_tags)`, `content_path`,
+`preview_path`, `submit(note, cb)` returning an `UpdateWatchHandle` whose `progress()` gives
+`(UpdateStatus, bytes_done, bytes_total)`); `subscribe_item` / `unsubscribe_item` (call results);
+`subscribed_items(include_locally_disabled)`; `item_state` (bit flags `SUBSCRIBED`, `INSTALLED`,
+`NEEDS_UPDATE`, `DOWNLOADING`, `DOWNLOAD_PENDING`); `item_install_info` (folder, size on disk,
+timestamp); `item_download_info` (bytes); `download_item(id, high_priority)`;
+`query_all(kind, UGCType, AppIDs, page)` and `query_items(ids)` returning a `QueryHandle`
+(`add_required_tag`, `set_search_text`, `fetch(cb)`), whose `QueryResults` give `get(i)`,
+`total_results`, `statistic(i, ..)`; and the `DownloadItemResult` callback. Quirks:
+`QueryResults` borrow Steam memory only inside the `fetch` callback (the service copies them
+into `WorkshopItem`); an unknown visibility value would panic inside the binding (Steam only
+sends the four documented ones); `query_items` must not be empty (the service answers an
+empty by-id query itself);
+`delete_item`, playtime tracking and key/value tags are not exposed by the service.
+
+### Using it
+
+```rust
+let mut ugc = UgcService::new(session.clone())?;
+let request = ugc.query_public(&PublicQuery { required_tags: vec!["map".into()], ..Default::default() })?;
+let sub = ugc.subscribe(item)?;                 // reply: UgcRaw::Subscription
+ugc.download_item(item, true)?;                 // DownloadProgress ... Reply(Downloaded)
+if let Some(installed) = ugc.installed(item)? { /* installed.path, size_bytes, timestamp, needs_update */ }
+for event in ugc.poll() { /* UgcEvent */ }
+```
+
+- Queries: `query_public(PublicQuery { sort, search, required_tags, page })` (up to 50 items per
+  1-based page; `TextSearch` needs `search`), `query_items(ids)` (1 to 50 ids) and
+  `query_subscribed()` (the first 50 subscribed items). Replies carry a `QueryPage { items, total }`.
+- `installed(id)` returns `InstalledItem { id, path, size_bytes, timestamp, needs_update }`, or
+  `None` when Steam has no install for it. `path` is the item's content folder on disk and is
+  what Workshop content loading (S10) mounts as a read-only root. Treat it as untrusted
+  content from other players.
+- `download_item` completes with `Reply(Downloaded { item, result })`; on success the session
+  also raises `SteamEvent::WorkshopItemInstalled(item)` (`steam.workshop_item_installed`).
+  Steam normally downloads subscribed items by itself; `download_item` forces or prioritises it.
+- `item_state(id)` reports subscribed, installed, needs-update, downloading and pending flags.
+- `ItemUpdate` is validated before reaching Steam: title 1 to 128 bytes, description at most
+  8000, at most 100 tags of 1 to 255 bytes without commas, no NUL, and the content folder and
+  preview file must exist.
+
+### Uploading is manual only
+
+`create_item` and `submit_item` change the Steam Workshop for the app. A new item is private
+until its visibility is changed, but a submission to a **Public** item publishes the content to
+everyone. No automated test or live test in this crate creates, updates or submits an item
+(the fake world is used for those flows), and none should. To do an upload by hand:
+
+1. Use the Steam account and App ID you own and accept the Workshop legal agreement for the app
+   (the `UgcRaw::Created` reply says if it still needs accepting; accept it on the item page).
+2. Run a small throwaway program (not a test) with Steam running that calls `create_item`,
+   polls until `Created`, then `submit_item(id, &ItemUpdate::new().title(..).content_folder(..)
+   .visibility(ItemVisibility::Private))`. Start with `Private` and look at the item on the
+   Workshop page while it is hidden.
+3. Watch `UpdateProgress` events until `Submitted`; change visibility with another
+   `submit_item` only when the content is final.
+4. Delete test items from the Steam Workshop page afterwards. Spacewar (480) is shared by every
+   developer, so do not publish public test content there.
+
 ## Live tests
 
 Live tests are `#[ignore]` and use App ID 480 (Spacewar). With the Steam client open:
@@ -543,6 +619,10 @@ sequenced datagram, then disconnect. Run them with `--test-threads=1`.
 
 `-- --ignored input` initialises Steam Input, runs frames and lists controllers; it prints
 `skipped: no Steam Input controller connected` when none is plugged in.
+
+`-- --ignored workshop` is read-only: it queries Spacewar's public Workshop (first page), then
+lists the subscribed items and their state and install info. It never creates, subscribes,
+downloads or uploads.
 
 With Steam closed the same command passes and prints `skipped: Steam not running`.
 `-- --ignored stats` (read-only; never writes to the account) lists Spacewar stats such as
@@ -588,6 +668,5 @@ advice.
 Everything below is planned in `docs/platform-and-steam-plan.md` and is not implemented
 at this stage.
 
-- S9: Workshop service (create, update, subscribe, query).
 - S10: Workshop content loading through extra read-only asset roots.
 - S11: Steam packaging (depot layout), `engine` facade feature, tooling and CI.
