@@ -34,6 +34,8 @@ struct Scene {
     /// 1: the motion producer reports no motion for the object (an object the
     /// motion prepass does not cover, such as custom vertex displacement).
     blind: f32,
+    /// Mode 3 (sky): horizontal scroll of the sky pattern in output pixels.
+    pan: f32,
 }
 
 type Scenes = Arc<Mutex<HashMap<ViewId, Scene>>>;
@@ -59,6 +61,7 @@ fn background(q: vec2<f32>) -> f32 {
         return v;
     }
     if u.scene.x < 1.5 { return 0.1 + 0.4 * q.x / 96.0; }
+    if u.scene.x > 2.5 { return 0.3 + 0.2 * sin((q.x + u.extra.z) * 0.2618) + 0.1 * q.y / 64.0; }
     let c = (i32(floor(q.x / 2.0)) + i32(floor(q.y / 2.0))) & 1;
     return select(0.2, 0.8, c == 1);
 }
@@ -66,7 +69,12 @@ struct Pixel { @location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32 }
 @fragment fn fs_scene(@builtin(position) p: vec4<f32>) -> Pixel {
     var out: Pixel;
     let q = unjittered(p.xy);
-    if in_object(q) {
+    if u.scene.x > 2.5 {
+        // Sky: far depth, no motion. The quad is additive and writes no nearer depth.
+        let v = background(q) + select(0.0, 0.5, in_object(q));
+        out.color = vec4<f32>(v, v, v, 1.0);
+        out.depth = 1.0;
+    } else if in_object(q) {
         out.color = select(vec4<f32>(0.9, 0.2, 0.1, 1.0), vec4<f32>(0.5, 0.5, 0.5, 1.0), u.scene.x > 1.5);
         out.depth = 0.5;
     } else {
@@ -155,7 +163,7 @@ fn bind_uniform(
         0.0,
         scene.width,
         scene.blind,
-        0.0,
+        scene.pan,
         0.0,
     ];
     let buffer = ctx.gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -654,6 +662,7 @@ fn a_one_pixel_feature_does_not_inherit_the_background_history() -> Result<()> {
         velocity: 6.0,
         width: 1.0,
         blind: 1.0,
+        pan: 0.0,
     };
     let mut rig = Rig::new()?;
     let size = OUTPUT;
@@ -729,6 +738,81 @@ fn non_finite_history_is_dropped_and_the_output_stays_finite() -> Result<()> {
     }
     eprintln!("poisoned history: worst difference from the settled image {worst:.4}");
     assert!(worst < 0.15, "poisoned pixels did not recover: {worst}");
+    Ok(())
+}
+
+/// Truth of scene mode 3 at a pixel centre (sky pattern plus the additive quad).
+fn sky_truth(x: u32, y: u32, scene: Scene) -> f32 {
+    let (qx, qy) = (x as f32 + 0.5, y as f32 + 0.5);
+    let sky = 0.3 + 0.2 * ((qx + scene.pan) * 0.2618).sin() + 0.1 * qy / 64.0;
+    let quad =
+        qx >= scene.object_x && qx < scene.object_x + scene.width && (20.0..36.0).contains(&qy);
+    sky + if quad { 0.5 } else { 0.0 }
+}
+
+fn sky_scene(k: u32) -> Scene {
+    Scene {
+        mode: 3.0,
+        object_x: 10.0 + 4.0 * k as f32,
+        velocity: 4.0,
+        width: 8.0,
+        blind: 1.0,
+        pan: 2.0 * k as f32,
+    }
+}
+
+/// Mean absolute error against the analytic sky over the interior.
+fn sky_error(image: &HdrImage, scene: Scene) -> f64 {
+    let mut sum = 0.0;
+    let mut count = 0.0;
+    for y in 2..image.size[1] - 2 {
+        for x in 2..image.size[0] - 2 {
+            sum += f64::from((image.pixel(x, y)[0] - sky_truth(x, y, scene)).abs());
+            count += 1.0;
+        }
+    }
+    sum / count
+}
+
+/// Content with far depth and no motion vectors (sky, clouds, fog over sky,
+/// additive particles) cannot be rejected by the distance test, so a pan or a
+/// moving particle must not smear: the accumulated resolve must stay as close
+/// to the analytic frame as a no-history resolve, at 1:1 and at half scale.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn motionless_sky_and_particles_do_not_smear_when_panning() -> Result<()> {
+    let mut results = Vec::new();
+    for (label, render) in [("1:1", OUTPUT), ("0.5", [OUTPUT[0] / 2, OUTPUT[1] / 2])] {
+        let mut rig = Rig::new()?;
+        let (mut moved_sum, mut fresh_sum, mut frames) = (0.0, 0.0, 0.0);
+        for k in 0..24u32 {
+            rig.set_scene(1, sky_scene(k));
+            rig.set_scene(2, sky_scene(k));
+            let moved = rig.frame(Frame::new(1, render, OUTPUT, u64::from(k)))?;
+            let mut fresh_frame = Frame::new(2, render, OUTPUT, u64::from(k));
+            fresh_frame.reset = true;
+            let fresh = rig.frame(fresh_frame)?;
+            if k >= 8 {
+                moved_sum += sky_error(&moved, sky_scene(k));
+                fresh_sum += sky_error(&fresh, sky_scene(k));
+                frames += 1.0;
+            }
+        }
+        eprintln!(
+            "{label} sky pan: mean abs error accumulated {:.4}, no-history {:.4}",
+            moved_sum / frames,
+            fresh_sum / frames
+        );
+        results.push((moved_sum / frames, fresh_sum / frames));
+    }
+    let ((full, full_fresh), (half, half_fresh)) = (results[0], results[1]);
+    // Smear relative to a no-history resolve of the same frame (half scale has a
+    // larger floor of its own): not worse than at 1:1. Measured 7.3x at 1:1 and
+    // 6.6x at 0.5 with the clip kept for far-depth texels; 13.7x at 0.5 without.
+    assert!(
+        half / half_fresh < 1.25 * (full / full_fresh),
+        "half scale smears motionless content: {half} (no history {half_fresh}) vs {full} (no history {full_fresh}) at 1:1"
+    );
     Ok(())
 }
 

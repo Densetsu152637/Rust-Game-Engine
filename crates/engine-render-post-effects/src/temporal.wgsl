@@ -254,7 +254,11 @@ struct Resolved {
             // Below render scale 1 a feature narrower than a render pixel is
             // missed by some jitter phases; clipping to those frames' box would
             // erase it, so the clip is relaxed fully at half scale and below.
-            let relax = clamp(2.0 * (1.0 - ratio.x), 0.0, 1.0);
+            // Far-depth texels (sky, clouds and fog over it, additive particles)
+            // carry no motion, so the distance test cannot reject their history:
+            // they keep the full clip.
+            let has_surface = select(0.0, 1.0, closest_depth < 0.99999);
+            let relax = has_surface * clamp(2.0 * (1.0 - ratio.x), 0.0, 1.0);
             let clipped = clip_to_box(lo, hi, to_ycocg(sampled.rgb));
             let relaxed = mix(clipped, to_ycocg(sampled.rgb), relax);
             let history_color = vec4<f32>(max(from_ycocg(relaxed), vec3<f32>(0.0)), sampled.a);

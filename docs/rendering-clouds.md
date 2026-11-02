@@ -1,6 +1,6 @@
 # Clouds: ray-marched volumetric cloud layer
 
-Status: implemented to ready-to-test on branch `feat/render-r9-clouds`; GPU
+Status: implemented, merged to main and passed the stage 10 gate (c0ab566); GPU
 readback tests written and run on Windows / RTX 5080 (Vulkan). Third and last of
 the stage 9 "atmosphere, fog, clouds" slices (`pending-features-plan.md`,
 dependency item 5), built on the merged [atmosphere](rendering-atmosphere.md)

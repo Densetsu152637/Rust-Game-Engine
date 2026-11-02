@@ -76,7 +76,10 @@ registered the feature; the desktop test compares mode on/off/on).
 4. **Clipping.** History is clipped toward the box of the 3x3 neighbourhood in
    YCoCg: mean +/- 1.25 sigma intersected with the min/max box. Below render
    scale 1 the clip is blended away with `clamp(2 (1 - render/output), 0, 1)`
-   (none at 1:1, full at 0.5 and below): a feature narrower than a render pixel
+   (none at 1:1, full at 0.5 and below) for texels that have a surface (closest
+   depth below far); far-depth texels (sky, clouds and fog over it, additive
+   particles) keep the full clip, because they carry no motion and the distance
+   test cannot reject their history. A feature narrower than a render pixel
    is missed by some jitter phases, and clipping to those frames' box erases it.
    Geometry changes are still rejected by the distance test; the cost is that a
    pure shading change at reduced scale is followed by the history window
@@ -168,10 +171,18 @@ coverage-integrated truth:
 
 * Transparent geometry has no motion vectors or depth; sky has no motion (a
   moving camera smears only as far as clipping allows). Custom vertex
-  displacement is not in the motion prepass.
+  displacement is not in the motion prepass. Measured by
+  `motionless_sky_and_particles_do_not_smear_when_panning` (a panning sky pattern
+  and an additive quad, far depth, no motion; mean absolute error against the
+  analytic frame, accumulated / no-history): 1:1 0.0321 / 0.0044 (7.3x), 0.5
+  0.0645 / 0.0098 (6.6x). With the relaxed clip applied to far depth too the 0.5
+  figure was 0.1342 (13.7x, 4x worse than 1:1). Particles or transparents drawn
+  over geometry (nearer than far, no motion of their own) are not covered by this
+  exemption and still follow the relaxed history at reduced scale.
 * Sub-render-pixel features are kept at reduced scale only because the colour
-  clip is relaxed there; the price is no colour anti-ghosting for fast lighting
-  changes at reduced scale (the 1:1 clip is unchanged). There is no sharpening
+  clip is relaxed there for texels with a surface; the price is no colour
+  anti-ghosting for fast lighting changes on surfaces at reduced scale (the 1:1
+  clip is unchanged). There is no sharpening
   and no history-length adaptation to luminance change.
 * Camera motion over a striped grazing ground plane and a wall is covered by
   `camera_motion_keeps_history_on_a_grazing_ground_plane_and_leaves_no_ghost` in
