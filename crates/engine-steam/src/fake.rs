@@ -193,6 +193,11 @@ impl SteamBackend for FakeBackend {
         self.status.clone()
     }
 
+    fn init(&mut self, _app_id: Option<AppId>) -> SteamStatus {
+        self.record("init");
+        self.status.clone()
+    }
+
     fn run_callbacks(&mut self) -> Vec<SteamEvent> {
         self.record("run_callbacks");
         std::mem::take(&mut self.events)

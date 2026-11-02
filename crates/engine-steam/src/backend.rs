@@ -20,6 +20,15 @@ pub trait SteamBackend {
         }
     }
 
+    /// Initialises the backend (idempotent) and returns the resulting status.
+    ///
+    /// `app_id` forces an App ID; `None` uses the launch environment
+    /// (`steam_appid.txt` for development runs). Backends that need no setup
+    /// keep the default, which only reports the current status.
+    fn init(&mut self, _app_id: Option<AppId>) -> SteamStatus {
+        self.status()
+    }
+
     /// Pumps Steam callbacks and returns new events.
     fn run_callbacks(&mut self) -> Vec<SteamEvent> {
         Vec::new()

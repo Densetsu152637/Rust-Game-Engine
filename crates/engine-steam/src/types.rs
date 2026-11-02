@@ -119,13 +119,27 @@ pub enum SteamEvent {
     StatusChanged(SteamStatus),
     ShutdownRequested,
     OverlayToggled(bool),
+    /// A user's persona (name, avatar, state) changed; the signed-in user only.
+    PersonaChanged(SteamId),
+    /// Connection to the Steam servers was gained (`true`) or lost (`false`).
+    ConnectionChanged {
+        connected: bool,
+    },
     AchievementUnlocked(String),
     StatsStored,
-    CloudConflict { name: String },
+    CloudConflict {
+        name: String,
+    },
     LobbyCreated(LobbyId),
     LobbyJoined(LobbyId),
-    LobbyMemberJoined { lobby: LobbyId, user: SteamId },
-    LobbyMemberLeft { lobby: LobbyId, user: SteamId },
+    LobbyMemberJoined {
+        lobby: LobbyId,
+        user: SteamId,
+    },
+    LobbyMemberLeft {
+        lobby: LobbyId,
+        user: SteamId,
+    },
     WorkshopItemInstalled(WorkshopItemId),
     ControllerConnected(ControllerId),
     ControllerDisconnected(ControllerId),

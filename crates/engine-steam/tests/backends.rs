@@ -158,3 +158,24 @@ fn fake_workshop_and_input() {
     assert_eq!(fake.action_set(ControllerId(1)), Some("menu"));
     assert!(fake.activate_action_set(ControllerId(2), "menu").is_err());
 }
+
+#[test]
+fn fake_status_transitions_and_init_are_recorded() {
+    let mut fake = FakeBackend::with_status(SteamStatus::NotRunning);
+    assert_eq!(fake.init(Some(AppId(480))), SteamStatus::NotRunning);
+    assert_eq!(
+        fake.set_rich_presence("k", Some("v")).unwrap_err(),
+        fake.unavailable()
+    );
+    fake.set_status(ready().status());
+    assert!(fake.status().is_ready());
+    fake.set_rich_presence("k", Some("v")).unwrap();
+    fake.set_rich_presence("k", None).unwrap();
+    assert!(fake.rich_presence().is_empty());
+    fake.set_status(SteamStatus::InitFailed("lost".into()));
+    let events = fake.run_callbacks();
+    assert_eq!(events.len(), 2);
+    assert_eq!(fake.call_count("init"), 1);
+    // The default `init` only reports the status.
+    assert_eq!(NullBackend::default().init(None), SteamStatus::NotCompiled);
+}
