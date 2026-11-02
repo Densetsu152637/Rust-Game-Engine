@@ -68,7 +68,7 @@ jobs:
         if: ${{ always() }}
         run: df -h
       - name: cargo fmt (workspace)
-        run: cargo fmt --all --check
+        run: bash scripts/ci/fmt-check.sh
       - name: cargo fmt (standalone example crates)
         run: |
           for crate in examples/desktop-2d examples/first-project examples/native-extension examples/programmable-world assets/scripts/moving_entity; do
