@@ -65,15 +65,35 @@ fn depth_distance(depth: f32) -> f32 {
     return abs(h.z / h.w);
 }
 
-// Depth slope of the surface at `texel` in view distance per render pixel:
-// the smaller one-sided difference per axis, so a silhouette (one side is a
-// different surface) does not widen the tolerance across the edge.
+// Depth slope of the surface at `texel` in view distance per render pixel, per
+// axis the smaller one-sided difference, gated by local curvature: a ramp has
+// one-sided differences of opposite sign, a one-pixel ridge or valley (a thin
+// feature or a creased edge) has the same sign on both sides, so its second
+// difference exceeds the first and it contributes no slope. Without the gate a
+// thin object's large step to its background would widen the tolerance to
+// cover the background and accept history from the wrong surface. A silhouette
+// (one side another surface) keeps the smaller, planar side.
+fn axis_slope(before: f32, centre: f32, after: f32) -> f32 {
+    let d0 = before - centre;
+    let d1 = after - centre;
+    if abs(d0 + d1) > abs(d0 - d1) {
+        return 0.0;
+    }
+    return min(abs(d0), abs(d1));
+}
+
 fn distance_slope(texel: vec2<i32>, centre: f32, last: vec2<i32>) -> f32 {
     let left = depth_distance(textureLoad(scene_depth, clamp(texel + vec2<i32>(-1, 0), vec2<i32>(0), last), 0));
     let right = depth_distance(textureLoad(scene_depth, clamp(texel + vec2<i32>(1, 0), vec2<i32>(0), last), 0));
     let up = depth_distance(textureLoad(scene_depth, clamp(texel + vec2<i32>(0, -1), vec2<i32>(0), last), 0));
     let down = depth_distance(textureLoad(scene_depth, clamp(texel + vec2<i32>(0, 1), vec2<i32>(0), last), 0));
-    return min(abs(right - centre), abs(left - centre)) + min(abs(down - centre), abs(up - centre));
+    return axis_slope(left, centre, right) + axis_slope(up, centre, down);
+}
+
+// Exact finiteness test on the bits (comparisons on NaN are not reliable).
+fn all_finite(c: vec4<f32>) -> bool {
+    let bits = bitcast<vec4<u32>>(c) & vec4<u32>(0x7f800000u);
+    return all(bits != vec4<u32>(0x7f800000u));
 }
 
 fn compress(c: vec4<f32>) -> vec4<f32> {
@@ -135,7 +155,7 @@ fn sample_history(position: vec2<f32>) -> vec4<f32> {
     sum += textureSampleLevel(history, history_sampler, vec2<f32>(t3.x, t12.y), 0.0) * (w3.x * w12.y);
     sum += textureSampleLevel(history, history_sampler, vec2<f32>(t12.x, t3.y), 0.0) * (w12.x * w3.y);
     let total = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
-    return max(sum / total, vec4<f32>(0.0));
+    return sum / total;
 }
 
 struct Resolved {
@@ -201,6 +221,11 @@ struct Resolved {
         if valid {
             let aux_pixel = clamp(vec2<i32>(floor(history_position)), vec2<i32>(0), vec2<i32>(output) - vec2<i32>(1));
             let aux = textureLoad(history_aux, aux_pixel, 0);
+            // A non-finite stored distance or count must not pass a comparison
+            // (NaN compares false) or seed the next count.
+            if !all_finite(aux) {
+                valid = false;
+            }
             let previous_view = p.previous_view_from_view * vec4<f32>(view_position, 1.0);
             let expected = abs(previous_view.z);
             // Relative tolerance plus slack for the local slope: the history is
@@ -212,7 +237,7 @@ struct Resolved {
             if aux.y < 0.5 || abs(aux.x - expected) > tolerance {
                 valid = false;
             }
-            count = aux.y;
+            count = select(0.0, aux.y, valid);
         }
         if valid {
             let mean = moment1 / 9.0;
@@ -220,15 +245,26 @@ struct Resolved {
             let gamma = p.tuning.x;
             let lo = max(box_min, mean - gamma * sigma);
             let hi = min(box_max, mean + gamma * sigma);
-            let sampled = sample_history(history_position);
+            let raw = sample_history(history_position);
+            // A non-finite history sample (NaN or infinity in a tap, which
+            // filtering spreads) is dropped: this pixel restarts from the current
+            // frame and the next frame's history is finite again.
+            let usable = all_finite(raw);
+            let sampled = max(select(vec4<f32>(0.0), raw, usable), vec4<f32>(0.0));
+            // Below render scale 1 a feature narrower than a render pixel is
+            // missed by some jitter phases; clipping to those frames' box would
+            // erase it, so the clip is relaxed fully at half scale and below.
+            let relax = clamp(2.0 * (1.0 - ratio.x), 0.0, 1.0);
             let clipped = clip_to_box(lo, hi, to_ycocg(sampled.rgb));
-            let history_color = vec4<f32>(max(from_ycocg(clipped), vec3<f32>(0.0)), sampled.a);
+            let relaxed = mix(clipped, to_ycocg(sampled.rgb), relax);
+            let history_color = vec4<f32>(max(from_ycocg(relaxed), vec3<f32>(0.0)), sampled.a);
             // Long histories blur moving content: shorten them with speed.
             let speed = length(speed_vector);
             let cap = mix(p.jitter.w, min(p.jitter.w, 3.0), clamp(speed / p.tuning.z, 0.0, 1.0));
             count = min(count, cap);
             let alpha = 1.0 / (count + 1.0);
-            blended = mix(history_color, current, alpha);
+            blended = select(current, mix(history_color, current, alpha), usable);
+            count = select(0.0, count, usable);
         } else {
             count = 0.0;
         }

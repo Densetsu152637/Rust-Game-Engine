@@ -99,13 +99,14 @@ pub struct TemporalStatus {
 }
 
 struct Slot {
+    color_texture: wgpu::Texture,
     color_view: wgpu::TextureView,
     aux_view: wgpu::TextureView,
 }
 
 impl Slot {
     fn new(device: &wgpu::Device, size: [u32; 2]) -> Self {
-        let make = |label, format| {
+        let make = |label, format| -> (wgpu::Texture, wgpu::TextureView) {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -119,14 +120,17 @@ impl Slot {
                 format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            texture.create_view(&Default::default())
+            let view = texture.create_view(&Default::default());
+            (texture, view)
         };
-        let color_view = make("temporal history colour", HDR_FORMAT);
-        let aux_view = make("temporal history distance", HISTORY_AUX_FORMAT);
+        let (color_texture, color_view) = make("temporal history colour", HDR_FORMAT);
+        let (_, aux_view) = make("temporal history distance", HISTORY_AUX_FORMAT);
         Self {
+            color_texture,
             color_view,
             aux_view,
         }
@@ -220,6 +224,57 @@ impl TemporalControls {
 
     pub fn settings(&self, view: ViewId) -> Result<Option<TemporalResolveSettings>> {
         Ok(self.lock()?.views.get(&view).and_then(|e| e.settings))
+    }
+
+    /// Test hook: overwrite one pixel of the committed history colour with raw
+    /// `Rgba16Float` bits (for example NaN `0x7e00` or infinity `0x7c00`) to
+    /// show that non-finite history never reaches the output. Does nothing when
+    /// the view has no committed history; errors when `pixel` is outside it.
+    #[doc(hidden)]
+    pub fn poison_history_pixel(
+        &self,
+        queue: &wgpu::Queue,
+        view: ViewId,
+        pixel: [u32; 2],
+        bits: [u16; 4],
+    ) -> Result<()> {
+        let store = self.lock()?;
+        let Some(history) = store
+            .views
+            .get(&view)
+            .and_then(|entry| entry.history.as_ref())
+            .filter(|history| history.valid)
+        else {
+            return Ok(());
+        };
+        ensure!(
+            pixel[0] < history.size[0] && pixel[1] < history.size[1],
+            "poisoned pixel {pixel:?} is outside the history"
+        );
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &history.slots[history.committed].color_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: pixel[0],
+                    y: pixel[1],
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&bits),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(8),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        Ok(())
     }
 
     pub fn status(&self, view: ViewId) -> Result<TemporalStatus> {

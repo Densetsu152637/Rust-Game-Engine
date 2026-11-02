@@ -29,12 +29,17 @@ struct Scene {
     object_x: f32,
     /// Object velocity in output pixels per frame (+x).
     velocity: f32,
+    /// Object width in output pixels; 0 means 16.
+    width: f32,
+    /// 1: the motion producer reports no motion for the object (an object the
+    /// motion prepass does not cover, such as custom vertex displacement).
+    blind: f32,
 }
 
 type Scenes = Arc<Mutex<HashMap<ViewId, Scene>>>;
 
 const SCENE_SHADER: &str = r#"
-struct Params { sizes: vec4<f32>, jitter: vec4<f32>, scene: vec4<f32> }
+struct Params { sizes: vec4<f32>, jitter: vec4<f32>, scene: vec4<f32>, extra: vec4<f32> }
 @group(0) @binding(0) var<uniform> u: Params;
 @vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
@@ -44,7 +49,7 @@ fn unjittered(p: vec2<f32>) -> vec2<f32> {
     return (p - u.jitter.xy) * (u.sizes.zw / u.sizes.xy);
 }
 fn in_object(q: vec2<f32>) -> bool {
-    return u.scene.x > 0.5 && q.x >= u.scene.y && q.x < u.scene.y + 16.0 && q.y >= 20.0 && q.y < 36.0;
+    return u.scene.x > 0.5 && q.x >= u.scene.y && q.x < u.scene.y + select(16.0, u.extra.x, u.extra.x > 0.0) && q.y >= 20.0 && q.y < 36.0;
 }
 fn background(q: vec2<f32>) -> f32 {
     if u.scene.x < 0.5 {
@@ -73,7 +78,7 @@ struct Pixel { @location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32 }
 }
 @fragment fn fs_motion(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let q = unjittered(p.xy);
-    if in_object(q) {
+    if in_object(q) && u.extra.y < 0.5 {
         return vec4<f32>(-u.scene.z * u.sizes.x / u.sizes.z, 0.0, 0.0, 1.0);
     }
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
@@ -148,10 +153,14 @@ fn bind_uniform(
         scene.object_x,
         scene.velocity,
         0.0,
+        scene.width,
+        scene.blind,
+        0.0,
+        0.0,
     ];
     let buffer = ctx.gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("temporal test scene"),
-        size: 48,
+        size: 64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -599,23 +608,127 @@ fn half_scale_temporal_upscale_beats_bilinear_against_coverage_truth() -> Result
     let bilinear_error = error_against_truth(&bilinear);
     let temporal_error = error_against_truth(&converged);
     eprintln!(
-        "0.5 scale error vs truth: bilinear {bilinear_error:.4} (stripe {:.4}, edge {:.4}),          temporal {temporal_error:.4} (stripe {:.4}, edge {:.4})",
+        "0.5 scale error vs truth: bilinear {bilinear_error:.4} (stripe {:.4}, edge {:.4}), temporal {temporal_error:.4} (stripe {:.4}, edge {:.4})",
         error_in(&bilinear, 2..12),
         error_in(&bilinear, 12..94),
         error_in(&converged, 2..12),
         error_in(&converged, 12..94),
     );
     assert_eq!(converged.size, OUTPUT);
-    // Features narrower than a render pixel (the 1.5 output-pixel stripe is 0.75
-    // render pixels) are eroded by neighbourhood clipping; the edge region is
-    // the claim.
+    // The 1.5 output-pixel stripe is 0.75 render pixels wide: some jitter phases
+    // miss it, so a neighbourhood clip against those frames' box erases it (the
+    // temporal total once measured 46.9 against bilinear 35.4 because of that).
+    // The printed total and both components are asserted.
+    let (stripe_temporal, stripe_bilinear) =
+        (error_in(&converged, 2..12), error_in(&bilinear, 2..12));
     let (edge_temporal, edge_bilinear) =
         (error_in(&converged, 12..94), error_in(&bilinear, 12..94));
     assert!(
         edge_temporal < 0.85 * edge_bilinear,
         "temporal upscale edge error {edge_temporal} vs bilinear {edge_bilinear}"
     );
+    assert!(
+        stripe_temporal < 0.6 * stripe_bilinear,
+        "temporal upscale stripe error {stripe_temporal} vs bilinear {stripe_bilinear}"
+    );
+    assert!(
+        temporal_error < 0.6 * bilinear_error,
+        "temporal upscale total error {temporal_error} vs bilinear {bilinear_error}"
+    );
     assert!(rig.controls.status(ViewId(2))?.history_valid);
+    Ok(())
+}
+
+/// A one-pixel-wide object the motion prepass does not report: its step to the
+/// background is the largest depth difference in the scene, so a slope term
+/// that is not gated by curvature would widen the tolerance over the whole
+/// step and accept the background's history for the object. The checker
+/// background (0.2 / 0.8) contains the object's grey (0.5), so colour clipping
+/// cannot reject it; only the distance test can.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_one_pixel_feature_does_not_inherit_the_background_history() -> Result<()> {
+    let thin = |k: u32| Scene {
+        mode: 2.0,
+        object_x: 20.0 + 6.0 * k as f32,
+        velocity: 6.0,
+        width: 1.0,
+        blind: 1.0,
+    };
+    let mut rig = Rig::new()?;
+    let size = OUTPUT;
+    let mut worst: f32 = 0.0;
+    for k in 0..10u32 {
+        rig.set_scene(1, thin(k));
+        rig.set_scene(2, thin(k));
+        let moved = rig.frame(Frame::new(1, size, size, u64::from(k)))?;
+        let mut fresh_frame = Frame::new(2, size, size, u64::from(k));
+        fresh_frame.reset = true;
+        let fresh = rig.frame(fresh_frame)?;
+        if k >= 4 {
+            let x = thin(k).object_x as u32;
+            for y in 24..32 {
+                for column in x - 1..x + 2 {
+                    worst =
+                        worst.max((moved.pixel(column, y)[0] - fresh.pixel(column, y)[0]).abs());
+                }
+            }
+        }
+    }
+    eprintln!("one-pixel feature: worst difference from a no-history resolve {worst:.4}");
+    assert!(
+        worst < 0.01,
+        "the one-pixel feature blended in background history: {worst}"
+    );
+    Ok(())
+}
+
+/// A non-finite history value must not reach the output or spread.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn non_finite_history_is_dropped_and_the_output_stays_finite() -> Result<()> {
+    let mut rig = Rig::new()?;
+    rig.set_scene(1, Scene::default());
+    let size = OUTPUT;
+    let mut settled = None;
+    for index in 0..40u64 {
+        settled = Some(rig.frame(Frame::new(1, size, size, index))?);
+    }
+    let settled = settled.unwrap();
+    // NaN, +infinity and -infinity in the committed history, on a flat region,
+    // an edge pixel and next to each other so filtering would spread them.
+    let poison: [([u32; 2], [u16; 4]); 5] = [
+        ([70, 30], [0x7e00; 4]),
+        ([71, 30], [0x7c00; 4]),
+        ([40, 40], [0xfc00; 4]),
+        ([41, 40], [0x7e00, 0x3c00, 0x3c00, 0x3c00]),
+        ([60, 17], [0x7c00, 0x3c00, 0x0000, 0x3c00]),
+    ];
+    for (pixel, bits) in poison {
+        rig.controls
+            .poison_history_pixel(&rig.gpu.queue, ViewId(1), pixel, bits)?;
+    }
+    let mut image = None;
+    for index in 40..44u64 {
+        let frame = rig.frame(Frame::new(1, size, size, index))?;
+        assert!(
+            frame.pixels.iter().all(|p| p.iter().all(|c| c.is_finite())),
+            "non-finite pixel in the output at frame {index}"
+        );
+        image = Some(frame);
+    }
+    let image = image.unwrap();
+    let mut worst: f32 = 0.0;
+    for (pixel, _) in poison {
+        for dy in 0..3u32 {
+            for dx in 0..3u32 {
+                let (x, y) = (pixel[0] + dx - 1, pixel[1] + dy - 1);
+                worst = worst.max((image.pixel(x, y)[0] - settled.pixel(x, y)[0]).abs());
+            }
+        }
+    }
+    eprintln!("poisoned history: worst difference from the settled image {worst:.4}");
+    assert!(worst < 0.15, "poisoned pixels did not recover: {worst}");
     Ok(())
 }
 
@@ -633,6 +746,7 @@ fn moving(mode: f32, k: u32) -> Scene {
         mode,
         object_x: 8.0 + 6.0 * k as f32,
         velocity: 6.0,
+        ..Scene::default()
     }
 }
 
@@ -667,7 +781,7 @@ fn a_moving_object_leaves_no_ghost_in_the_disoccluded_strip() -> Result<()> {
                     }
                 }
                 eprintln!(
-                    "mode {mode} frame {k}: strip {xs:?} worst difference {worst:.4} at {at:?}                      (moved {:?}, fresh {:?})",
+                    "mode {mode} frame {k}: strip {xs:?} worst difference {worst:.4} at {at:?} (moved {:?}, fresh {:?})",
                     moved.pixel(at.0, at.1),
                     fresh.pixel(at.0, at.1)
                 );

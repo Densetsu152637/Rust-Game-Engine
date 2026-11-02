@@ -851,7 +851,14 @@ test, so edits to the lit shader must keep those anchors; no performance numbers
   settings validation, render sizes, jitter sequence, restart, status JSON,
   schema.
 
-Residual risks: sub-render-pixel features erode or flicker; transparent geometry
+Review follow-ups applied: the slope tolerance is gated by curvature (a
+one-pixel feature cannot widen it), non-finite history is dropped, and below
+render scale 1 the colour clip is relaxed because it erased sub-render-pixel
+features (0.5-scale stripe error 40.9 -> 10.6 against 27.0 for bilinear; the
+test now asserts edge, stripe and total).
+
+Residual risks: at reduced scale the colour clip is relaxed (no colour
+anti-ghosting for pure shading changes there); transparent geometry
 and sky have no motion vectors; distance-based disocclusion ignores an object's
 own view-axis motion; constants are test-derived, not tuned on content; XR eyes
 and Frame Generation do not use the resolve; no performance numbers and no DLSS
