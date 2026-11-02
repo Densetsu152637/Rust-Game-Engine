@@ -37,20 +37,21 @@ use engine_project::lights::LightingStatus;
 use engine_project::post::PostStatus;
 use engine_project::rendering3d::{
     FrameGenerationMode, FrameGenerationSettings, FrameGenerationStatus, RenderFeatureView,
-    RenderPipelineState, RenderPipelineStatus, SceneRenderFrame, TextureStreamMode, UpscalerMode,
-    UpscalerSettings, UpscalerStatus,
+    RenderPipelineState, RenderPipelineStatus, SceneRenderFrame, TextureStreamMode,
+    UpscalerBackend, UpscalerMode, UpscalerSettings, UpscalerStatus,
 };
 use engine_project::runtime::RenderFrame;
 use engine_render::{DrawCommand, RenderCommandBuffer, RenderTarget};
 #[cfg(any(feature = "dlss", test))]
 use engine_render_pipeline::Presentation;
 use engine_render_pipeline::{
-    FeatureOverrides, GpuTexture, HostStages, HostUpscale, LightingReport, OutputTarget,
+    Activity, FeatureOverrides, GpuTexture, HostStages, HostUpscale, LightingReport, OutputTarget,
     OverlayBatch, OverlayItem, PipelineFeatures, PresentationInput, SceneFrame, ScenePipeline,
     SceneTextures, Stage, ViewData, ViewId, ViewKind, ViewReport, Viewport, names,
 };
 use engine_render_post_effects::{
     DepthOfFieldFeature, MotionBlurFeature, PostEffects, SpatialAaFeature,
+    TEMPORAL_RESOLVE_FEATURE, TemporalControls, TemporalResolveFeature, TemporalResolveSettings,
 };
 use engine_render_wgpu::{WgpuBackend, WgpuOptions};
 use glam::Mat4;
@@ -145,6 +146,8 @@ pub struct GpuRenderer {
     post: PostStatus,
     post_host: post::PostHost,
     post_effects: PostEffects,
+    /// Per-view settings and history of the native temporal resolve.
+    temporal: TemporalControls,
     rt: rt::RtHost,
     /// A camera cut requested for the next native view (`reset_history`).
     native_reset: bool,
@@ -366,6 +369,7 @@ impl GpuRenderer {
             post: PostStatus::default(),
             post_host: post::PostHost::default(),
             post_effects: PostEffects::default(),
+            temporal: TemporalControls::default(),
             rt: rt::RtHost::default(),
             native_reset: false,
             upscaler: upscale::Upscaler::new(UpscalerDevice::default()),
@@ -460,6 +464,7 @@ impl GpuRenderer {
             scene.register(DepthOfFieldFeature::new(self.post_effects.clone()))?;
             scene.register(MotionBlurFeature::new(self.post_effects.clone()))?;
             scene.register(SpatialAaFeature::new(self.post_effects.clone()))?;
+            scene.register(TemporalResolveFeature::new(self.temporal.clone()))?;
             self.scene = Some(scene);
         }
         Ok(self.scene.as_mut().expect("created above"))
@@ -470,6 +475,7 @@ impl GpuRenderer {
         if let Some(scene) = &mut self.scene {
             scene.forget_view(view);
         }
+        let _ = self.temporal.set(view, None);
         self.indirect.forget_view(view);
     }
 
@@ -662,11 +668,20 @@ impl GpuRenderer {
                 self.upscaler.native(UpscalerSettings::default());
                 stats
             }
-            Some(request) if request.mode == UpscalerMode::DlssSr => {
+            Some(request) if request.mode.requests_dlss() => {
                 match self.render_upscaled(frame, target, world, request)? {
                     Some(stats) => stats,
+                    None if request.mode.allows_native_temporal() => {
+                        // DLSS could not run: the status holds why. The native
+                        // resolve then owns the jitter and the Upscale stage.
+                        let reason = self.upscaler.status().fallback_reason.clone();
+                        self.render_temporal(frame, target, world, request, reason)?
+                    }
                     None => self.render_native(frame, target, world)?,
                 }
+            }
+            Some(request) if request.mode == UpscalerMode::NativeTemporal => {
+                self.render_temporal(frame, target, world, request, None)?
             }
             Some(request) => {
                 let stats = self.render_native(frame, target, world)?;
@@ -706,6 +721,7 @@ impl GpuRenderer {
         self.post_effects.set_dof(ViewId::MAIN, None)?;
         self.post_effects.set_motion_blur(ViewId::MAIN, None)?;
         self.post_effects.set_spatial_aa(ViewId::MAIN, None)?;
+        self.temporal.set(ViewId::MAIN, None)?;
         let size = (self.info.width, self.info.height);
         self.sprites.validate_scene(frame, size)?;
         let built = self.sprites.build_overlay(frame, size)?;
@@ -769,12 +785,16 @@ impl GpuRenderer {
         // (motion, RT denoisers).
         view.reset_history = std::mem::take(&mut self.native_reset);
         let output = self.output_target(target, viewport);
-        let (_, stats) = self.draw_3d(frame, view, &output, world, true, None)?;
+        let (_, stats) = self.draw_3d(frame, view, &output, world, true, None, None)?;
         Ok(stats)
     }
 
     /// Validate, upload and render one 3D view into `output`; the sprites
-    /// overlay too when `sprites`. `upscale` is the host upscale hook.
+    /// overlay too when `sprites`. `upscale` is the host upscale hook;
+    /// `temporal` is `Some` when the native temporal resolve owns this view's
+    /// Upscale stage (the caller then supplies the jitter). Every other draw
+    /// clears the view's temporal controls, which releases its history.
+    #[allow(clippy::too_many_arguments)]
     fn draw_3d<'h>(
         &mut self,
         frame: &SceneRenderFrame,
@@ -783,6 +803,7 @@ impl GpuRenderer {
         world: Option<&World>,
         sprites: bool,
         upscale: Option<&'h mut UpscaleHook<'h>>,
+        temporal: Option<TemporalResolveSettings>,
     ) -> Result<(ViewReport, RenderStats)> {
         let size = (output.size[0], output.size[1]);
         // Every check runs before any upload or submission.
@@ -796,7 +817,17 @@ impl GpuRenderer {
         self.pipeline()?;
         let mut view = view;
         let post_status = self.post_host.prepare(frame, &mut view)?;
-        post_effects::prepare(&self.post_effects, frame, &mut view, upscale.is_some())?;
+        post_effects::prepare(
+            &self.post_effects,
+            frame,
+            &mut view,
+            upscale.is_some() || temporal.is_some(),
+        )?;
+        // The upscaler mode alone drives the resolve: an authored
+        // `render_features` entry for it is ignored.
+        view.features
+            .set(TEMPORAL_RESOLVE_FEATURE, temporal.is_some());
+        self.temporal.set(view.id, temporal)?;
         self.rt.prepare(
             &self.gpu,
             self.scene.as_mut().expect("created above"),
@@ -910,11 +941,127 @@ impl GpuRenderer {
                 size: eye.size,
                 viewport: Viewport::full(eye.size),
             };
-            let (_, eye_stats) = self.draw_3d(frame, view, &output, world, false, None)?;
+            let (_, eye_stats) = self.draw_3d(frame, view, &output, world, false, None, None)?;
             stats.push(eye_stats);
         }
         self.gpu.check_errors()?;
         Ok(stats)
+    }
+
+    /// The native temporal resolve: the scene renders at the preset's render
+    /// size with the host's Halton jitter, and `effects.temporal_resolve` owns
+    /// the Upscale stage (consuming colour, depth and motion, reprojecting its
+    /// per-view history) before post-processing, the output operator and the
+    /// 2D overlay. `dlss_reason` is why DLSS did not run for `auto_temporal`.
+    fn render_temporal(
+        &mut self,
+        frame: &SceneRenderFrame,
+        target: &wgpu::TextureView,
+        world: Option<&World>,
+        request: UpscalerSettings,
+        dlss_reason: Option<String>,
+    ) -> Result<RenderStats> {
+        let camera = frame
+            .camera3d
+            .as_ref()
+            .context("a temporal frame needs a Camera3D")?;
+        let viewport = self
+            .sprites
+            .scene_viewport(frame, (self.info.width, self.info.height))?;
+        let output = [viewport.width, viewport.height];
+        let render = request.quality.native_render_size(output);
+        let sizes = Some((render, output));
+        // Cuts, projection changes and any size or render-scale change break
+        // the history; the pipeline and the resolve also guard sizes themselves.
+        let reset = self.upscaler.history.needs_reset(camera)
+            | std::mem::take(&mut self.native_reset)
+            | (self.upscaler.native_sizes != sizes);
+        if reset {
+            self.upscaler.history.restart_sequence();
+        }
+        let mut view = scene3d::camera_view(camera, ViewId::MAIN, render, output)?;
+        view.jitter = jitter_offset(
+            self.upscaler.history.frame(),
+            jitter_phase_count(render, output),
+        );
+        view.reset_history = reset;
+        view.host_needs.motion = true;
+        let output_target = self.output_target(target, viewport);
+        let prior_scene_id = self
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.committed_scene_id(ViewId::MAIN));
+        let drawn = self.draw_3d(
+            frame,
+            view,
+            &output_target,
+            world,
+            true,
+            None,
+            Some(TemporalResolveSettings::for_sizes(render, output)),
+        );
+        let committed = self
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.committed_scene_id(ViewId::MAIN))
+            != prior_scene_id;
+        let (report, stats) = match drawn {
+            Ok(drawn) => drawn,
+            Err(error) => {
+                if committed {
+                    self.finish_temporal(camera, sizes, reset);
+                } else {
+                    // The pipeline discarded the attempt and resets the next one.
+                    self.upscaler.history.request_reset();
+                    self.upscaler.native_sizes = None;
+                }
+                return Err(error);
+            }
+        };
+        let ran = report
+            .features
+            .states
+            .iter()
+            .any(|f| f.name == TEMPORAL_RESOLVE_FEATURE && f.activity == Activity::Ran);
+        if !ran || report.aborted {
+            self.upscaler.history.request_reset();
+            self.upscaler.fallback(
+                request,
+                "the native temporal resolve did not run for this frame",
+            );
+            // The draw still switched spatial AA off for the resolve.
+            self.upscaler
+                .set_spatial_aa_skipped(post_effects::spatial_aa_requested(&camera.camera));
+            return Ok(stats);
+        }
+        self.finish_temporal(camera, sizes, reset);
+        self.upscaler.active(
+            request,
+            upscale::ActiveFrame {
+                backend: UpscalerBackend::NativeTemporal,
+                render_size: render,
+                output_size: output,
+                adapter: self.gpu.adapter.get_info().name,
+                spatial_aa_skipped: post_effects::spatial_aa_requested(&camera.camera),
+                note: dlss_reason,
+            },
+        );
+        Ok(stats)
+    }
+
+    /// Record a committed native temporal frame in the host bookkeeping.
+    fn finish_temporal(
+        &mut self,
+        camera: &engine_project::rendering3d::CameraInstance3D,
+        sizes: Option<([u32; 2], [u32; 2])>,
+        reset: bool,
+    ) {
+        self.upscaler.evaluated += 1;
+        if reset {
+            self.upscaler.resets += 1;
+        }
+        self.upscaler.history.commit(camera);
+        self.upscaler.native_sizes = sizes;
     }
 
     /// `Ok(None)`: the request could not run; the status holds the fallback
@@ -1014,6 +1161,7 @@ impl GpuRenderer {
             .as_ref()
             .context("an upscaled frame requires a Camera3D")?;
         let output = output_target.viewport.size();
+        let camera_spatial_aa = post_effects::spatial_aa_requested(&camera.camera);
         let new_session = match stage.ensure_session(
             &self.gpu.device,
             &self.gpu.queue,
@@ -1030,6 +1178,7 @@ impl GpuRenderer {
         if new_session {
             self.upscaler.history.request_reset();
         }
+        self.upscaler.begin_dlss_frame();
         let (key, mut session) = stage.session.take().expect("session ensured above");
         let render = session.status().render_size;
         let reset = self.upscaler.history.needs_reset(camera);
@@ -1093,7 +1242,15 @@ impl GpuRenderer {
             .scene
             .as_ref()
             .and_then(|scene| scene.committed_scene_id(ViewId::MAIN));
-        let drawn = self.draw_3d(frame, view, output_target, world, sprites, Some(&mut hook));
+        let drawn = self.draw_3d(
+            frame,
+            view,
+            output_target,
+            world,
+            sprites,
+            Some(&mut hook),
+            None,
+        );
         let (report, stats) = match drawn {
             Ok(drawn) => drawn,
             Err(error) => {
@@ -1111,9 +1268,14 @@ impl GpuRenderer {
                     self.upscaler.history.commit(camera);
                     self.upscaler.active(
                         request,
-                        render,
-                        output,
-                        session.status().device_name.clone(),
+                        upscale::ActiveFrame {
+                            backend: UpscalerBackend::DlssSr,
+                            render_size: render,
+                            output_size: output,
+                            adapter: session.status().device_name.clone(),
+                            spatial_aa_skipped: camera_spatial_aa,
+                            note: None,
+                        },
                     );
                 } else {
                     self.upscaler.history.request_reset();
@@ -1141,7 +1303,17 @@ impl GpuRenderer {
             self.upscaler.resets += 1;
         }
         self.upscaler.history.commit(camera);
-        self.upscaler.active(request, render, output, adapter);
+        self.upscaler.active(
+            request,
+            upscale::ActiveFrame {
+                backend: UpscalerBackend::DlssSr,
+                render_size: render,
+                output_size: output,
+                adapter,
+                spatial_aa_skipped: camera_spatial_aa,
+                note: None,
+            },
+        );
         Ok(Some(SrScene { stats, jitter }))
     }
 
@@ -1283,7 +1455,7 @@ impl GpuRenderer {
             };
         // Super Resolution first: it decides the render size of depth/motion.
         let upscale = camera.camera.upscaler;
-        let sr_ready = upscale.mode == UpscalerMode::DlssSr
+        let sr_ready = upscale.mode.requests_dlss()
             && match self.upscaler.precheck(upscale, output) {
                 Some(reason) => {
                     self.upscaler.fallback(upscale, &reason);
@@ -1299,6 +1471,7 @@ impl GpuRenderer {
                         if new {
                             self.upscaler.history.request_reset();
                         }
+                        self.upscaler.begin_dlss_frame();
                         true
                     }
                     Err(reason) => {
@@ -1397,8 +1570,22 @@ impl GpuRenderer {
             };
             (scene.stats, scene.jitter)
         } else {
-            if upscale.mode != UpscalerMode::DlssSr {
-                self.upscaler.native(upscale);
+            if !upscale.mode.requests_dlss() {
+                if upscale.mode == UpscalerMode::NativeTemporal {
+                    self.upscaler.fallback(
+                        upscale,
+                        "the native temporal resolve does not run under DLSS Frame Generation; \
+                         the scene rendered natively",
+                    );
+                } else {
+                    self.upscaler.native(upscale);
+                }
+            } else if upscale.mode == UpscalerMode::AutoTemporal {
+                // Keep the specific reason Super Resolution could not run.
+                let reason = auto_temporal_framegen_reason(
+                    self.upscaler.status().fallback_reason.as_deref(),
+                );
+                self.upscaler.fallback(upscale, &reason);
             }
             let mut view = scene3d::camera_view(camera, ViewId::MAIN, output, output)?;
             view.reset_history = reset;
@@ -1421,7 +1608,7 @@ impl GpuRenderer {
                 Ok(HostUpscale::NotHandled)
             };
             let (_, stats) =
-                match self.draw_3d(frame, view, &hudless, world, false, Some(&mut hook)) {
+                match self.draw_3d(frame, view, &hudless, world, false, Some(&mut hook), None) {
                     Ok(rendered) => rendered,
                     Err(error) => {
                         self.framegen.request_reset();
@@ -1779,6 +1966,7 @@ pub fn preview_pipeline_status(
     registry.register(DepthOfFieldFeature::new(PostEffects::default()))?;
     registry.register(MotionBlurFeature::new(PostEffects::default()))?;
     registry.register(SpatialAaFeature::new(PostEffects::default()))?;
+    registry.register(TemporalResolveFeature::new(TemporalControls::default()))?;
     if let Some(features) = features {
         registry.absorb(features.0.descriptor_copy()?)?;
     }
@@ -1811,9 +1999,39 @@ fn submit_to(
     result.map(drop)
 }
 
+/// Why `AutoTemporal` rendered natively under DLSS Frame Generation, keeping
+/// the specific reason Super Resolution could not run when there is one.
+#[cfg(any(feature = "dlss", test))]
+fn auto_temporal_framegen_reason(prior: Option<&str>) -> String {
+    const NOTE: &str = concat!(
+        "the native temporal resolve does not run under DLSS Frame ",
+        "Generation, so the scene rendered natively"
+    );
+    match prior {
+        Some(prior) => format!("{prior}; {NOTE}"),
+        None => format!("Super Resolution was unavailable and {NOTE}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_temporal_framegen_reason_is_one_line_with_single_spaces() {
+        let bare = auto_temporal_framegen_reason(None);
+        assert_eq!(
+            bare,
+            concat!(
+                "Super Resolution was unavailable and the native temporal resolve ",
+                "does not run under DLSS Frame Generation, so the scene rendered natively"
+            )
+        );
+        assert!(!bare.contains("  "));
+        let kept = auto_temporal_framegen_reason(Some("no driver"));
+        assert!(kept.starts_with("no driver; the native temporal resolve"));
+        assert!(!kept.contains("  "));
+    }
 
     #[test]
     fn render_limits_default_to_documented_bounds() {
@@ -2017,7 +2235,7 @@ mod tests {
                         height: 64,
                     },
                 );
-                let result = renderer.draw_3d(&frame, view, &output, None, false, None);
+                let result = renderer.draw_3d(&frame, view, &output, None, false, None, None);
                 renderer.pipeline()?.end_presentation_sequence();
                 result?;
                 assert_eq!(
@@ -2151,7 +2369,7 @@ mod tests {
         renderer
             .pipeline()?
             .begin_presentation_sequence(&view.features)?;
-        let drawn = renderer.draw_3d(&frame, view, &source, None, false, None);
+        let drawn = renderer.draw_3d(&frame, view, &source, None, false, None, None);
         if let Err(error) = drawn {
             renderer.pipeline()?.end_presentation_sequence();
             return Err(error);

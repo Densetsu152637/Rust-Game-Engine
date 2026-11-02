@@ -826,3 +826,45 @@ test, so edits to the lit shader must keep those anchors; no performance numbers
   run). Frame generation keeps the filter in the scene segment before late UI.
 - No temporal resolve, jitter change or vendor-named algorithm was added; the
   native temporal resolve/upscaler of dependency item 4 is still pending.
+
+### Native temporal resolve status (`feat/render-r9-temporal`)
+
+- Dependency item 4 is implemented as `effects.temporal_resolve`
+  (`engine-render-post-effects`, `temporal.rs`/`temporal.wgsl`), an `Upscale`-stage
+  owned feature that supersedes `engine.upscale`. Authored as
+  `Camera3D.upscaler.mode = native_temporal` (temporal anti-aliasing at `dlaa`,
+  temporal upscaling at the other presets' render scales 1/3, 0.5, 0.58, 2/3) or
+  `auto_temporal` (DLSS when it can run, else native). It is not FSR, XeSS or DLSS
+  and no quality parity is claimed. Design and limits: `rendering-temporal.md`.
+- One jitter owner, one Upscale winner: the host renderer supplies the Halton(2,3)
+  sequence (now `engine_render_pipeline::jitter`, shared with DLSS) and enables
+  the feature from the effective upscaler mode alone; `dlss_sr` never becomes the
+  native resolve (only `auto_temporal` does, reporting the DLSS reason); the native
+  resolve does not run under DLSS Frame Generation (reported `fallback`); spatial
+  AA yields to it (`UpscalerStatus.spatial_aa_skipped`). `UpscalerStatus` gained
+  `backend` and `spatial_aa_skipped` (absent when default, so absent/disabled
+  output is unchanged).
+- History lifecycle uses the shared-seam hooks: committed in `finish_scene`,
+  discarded in `reset_history` (cuts, resize, aborted attempts), released in
+  `forget_view` and on every non-temporal host draw; per-view entries.
+- Evidence (RTX 5080, Vulkan, ignored tests): `gpu_temporal` in
+  `engine-render-post-effects` (static edge convergence and stability, 0.5-scale
+  upscale vs bilinear, disocclusion strip identical to a no-history resolve,
+  cut/abort/retry, resize, off/on, two views, forget, feature off bit-identical)
+  and in `engine-desktop` (authored project through `Runtime` and `GpuRenderer`,
+  real motion prepass, mode switching, DLSS fallback, spatial AA yield). CPU tests:
+  settings validation, render sizes, jitter sequence, restart, status JSON,
+  schema.
+
+Review follow-ups applied: the slope tolerance is gated by curvature (a
+one-pixel feature cannot widen it), non-finite history is dropped, and below
+render scale 1 the colour clip is relaxed because it erased sub-render-pixel
+features (0.5-scale stripe error 40.9 -> 10.6 against 27.0 for bilinear; the
+test now asserts edge, stripe and total).
+
+Residual risks: at reduced scale the colour clip is relaxed (no colour
+anti-ghosting for pure shading changes there); transparent geometry
+and sky have no motion vectors; distance-based disocclusion ignores an object's
+own view-axis motion; constants are test-derived, not tuned on content; XR eyes
+and Frame Generation do not use the resolve; no performance numbers and no DLSS
+comparison.

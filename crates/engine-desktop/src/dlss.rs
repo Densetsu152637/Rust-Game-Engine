@@ -118,13 +118,13 @@ impl DlssRequest {
         frame: &engine_project::rendering3d::SceneRenderFrame,
         config: &DlssConfig,
     ) -> Self {
-        use engine_project::rendering3d::{FrameGenerationMode, UpscalerMode};
+        use engine_project::rendering3d::FrameGenerationMode;
         if config.prepare_device {
             return Self::ALL;
         }
         let camera = frame.camera3d.as_ref().map(|c| &c.camera);
         Self {
-            super_resolution: camera.is_some_and(|c| c.upscaler.mode == UpscalerMode::DlssSr),
+            super_resolution: camera.is_some_and(|c| c.upscaler.mode.requests_dlss()),
             frame_generation: camera
                 .is_some_and(|c| c.frame_generation.mode == FrameGenerationMode::DlssFg),
         }

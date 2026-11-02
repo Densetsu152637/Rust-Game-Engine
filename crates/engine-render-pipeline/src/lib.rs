@@ -31,6 +31,7 @@ mod context;
 mod feature;
 pub mod indirect;
 mod instancing;
+pub mod jitter;
 mod lighting;
 mod lights;
 mod overlay;

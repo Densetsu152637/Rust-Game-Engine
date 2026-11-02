@@ -1222,7 +1222,7 @@ fn component_set_edits_the_camera_upscaler_request() {
     let upscaler = &schema["components"][0]["schema"]["properties"]["upscaler"];
     assert_eq!(
         upscaler["properties"]["mode"]["enum"],
-        json!(["none", "dlss_sr"])
+        json!(["none", "dlss_sr", "native_temporal", "auto_temporal"])
     );
     assert_eq!(
         upscaler["properties"]["quality"]["enum"],

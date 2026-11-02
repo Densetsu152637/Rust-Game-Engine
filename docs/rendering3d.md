@@ -112,7 +112,7 @@ opt out of casting or provide a native render feature. Transparent draws do not
 cast shadows. Overlay-stage render features run after the output operator and the
 2D overlay, also in an upscaled frame.
 
-## Temporal upscaling (DLSS Super Resolution)
+## Temporal upscaling (DLSS Super Resolution and the native temporal resolve)
 
 `Camera3D.upscaler` requests a temporal upscaler for the 3D scene:
 
@@ -120,10 +120,17 @@ cast shadows. Overlay-stage render features run after the output operator and th
 {"Camera3D":{"upscaler":{"mode":"dlss_sr","quality":"quality"}}}
 ```
 
-`mode` is `none` (default) or `dlss_sr`; `quality` is `ultra_performance`,
-`performance`, `balanced`, `quality` (default) or `dlaa`. DLAA keeps the render
-size equal to the output size; the other presets use the render size NGX
-chooses. Unknown values and fields are rejected. `component_schema` documents
+`mode` is `none` (default), `dlss_sr`, `native_temporal` or `auto_temporal`;
+`quality` is `ultra_performance`, `performance`, `balanced`, `quality` (default)
+or `dlaa`. DLAA keeps the render size equal to the output size; the DLSS presets
+use the render size NGX chooses. `native_temporal` is the engine's own
+vendor-neutral WGSL resolve ([rendering-temporal.md](rendering-temporal.md)): at
+`dlaa` it is temporal anti-aliasing, below it a temporal upscaler with per-axis
+render scales 1/3, 0.5, 0.58 and 2/3. `auto_temporal` runs DLSS when it can and
+the native resolve otherwise (the status then carries the DLSS reason). The mode
+names the single jitter owner and Upscale winner; DLSS never silently becomes the
+native resolve except under `auto_temporal`. A running temporal resolve skips
+`spatial_aa` for that frame (`spatial_aa_skipped` in the status). Unknown values and fields are rejected. `component_schema` documents
 the object and `component_set` edits it like any other `Camera3D` field. A
 request is never a claim: the scene renders natively unless an evaluation
 succeeds.
@@ -139,12 +146,14 @@ presented frame the host writes `status`:
 | Field | Meaning |
 | --- | --- |
 | `requested` | Effective mode/quality of that frame |
-| `state` | `not_rendered` (no renderer presented a 3D frame, for example headless runs), `native`, `active` (this frame's DLSS evaluation succeeded) or `fallback` |
-| `fallback_reason` | Why a request rendered natively; at most 512 bytes |
-| `render_size`, `output_size` | NGX input and 3D viewport sizes of an active frame |
+| `state` | `not_rendered` (no renderer presented a 3D frame, for example headless runs), `native`, `active` (this frame's DLSS evaluation or native temporal resolve succeeded) or `fallback` |
+| `fallback_reason` | Why a request rendered natively (or, for an `active` `auto_temporal` frame, why DLSS did not run); at most 512 bytes |
+| `render_size`, `output_size` | Upscaler input and 3D viewport sizes of an active frame |
 | `evaluated_frames` | Successful evaluations by this renderer |
 | `history_resets` | Evaluations submitted with reset |
-| `adapter` | GPU name reported by the NGX context |
+| `adapter` | GPU name reported by the NGX context (DLSS) or the wgpu adapter (native) |
+| `backend` | `dlss_sr` or `native_temporal` on an active frame |
+| `spatial_aa_skipped` | Present and true when `spatial_aa` was requested but yielded to the resolve |
 
 `Runtime::upscaler_status()` and `RuntimeSnapshot.upscaler` report it (absent
 without an active `Camera3D`); before any presented frame the state is

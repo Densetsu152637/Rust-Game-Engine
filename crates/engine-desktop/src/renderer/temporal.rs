@@ -6,31 +6,7 @@
 use engine_project::rendering3d::{CameraInstance3D, Projection3D};
 use glam::{Mat4, Vec3, Vec4};
 
-/// Radical inverse of `index` (>= 1) in `base`: the Halton sequence in (0, 1).
-pub fn halton(mut index: u32, base: u32) -> f32 {
-    let mut fraction = 1.0;
-    let mut result = 0.0;
-    while index > 0 {
-        fraction /= base as f32;
-        result += fraction * (index % base) as f32;
-        index /= base;
-    }
-    result
-}
-
-/// Jitter phases for a render/output ratio: NVIDIA's DLSS guidance of eight
-/// phases times the squared per-axis scale, clamped to 8..=256.
-pub fn jitter_phase_count(render: [u32; 2], output: [u32; 2]) -> u32 {
-    let scale = output[0] as f32 / render[0].max(1) as f32;
-    ((8.0 * scale * scale).ceil() as u32).clamp(8, 256)
-}
-
-/// Halton(2,3) sub-pixel jitter in render pixels, each axis in (-0.5, 0.5),
-/// for 0-based `frame` within `phases`.
-pub fn jitter_offset(frame: u64, phases: u32) -> [f32; 2] {
-    let index = (frame % u64::from(phases.max(1))) as u32 + 1;
-    [halton(index, 2) - 0.5, halton(index, 3) - 0.5]
-}
+pub use engine_render_pipeline::jitter::{halton, jitter_offset, jitter_phase_count};
 
 /// Clip-space translation that moves rasterization by `jitter` render pixels
 /// (pixel x right, y down). Premultiply onto a view-projection matrix; it
@@ -80,6 +56,12 @@ impl TemporalHistory {
 
     pub fn frame(&self) -> u64 {
         self.frame
+    }
+
+    /// Start the jitter sequence over: a reset frame always uses phase 0, so a
+    /// cut or re-enable renders exactly what a first frame renders.
+    pub fn restart_sequence(&mut self) {
+        self.frame = 0;
     }
 
     /// Record the frame just evaluated as the next frame's history.
@@ -193,5 +175,15 @@ mod tests {
         history.clear();
         assert!(history.needs_reset(&camera));
         assert_eq!(history.frame(), 0);
+        history.commit(&camera);
+        history.commit(&camera);
+        assert_eq!(history.frame(), 2);
+        history.restart_sequence();
+        assert_eq!(history.frame(), 0);
+        assert_eq!(
+            jitter_offset(history.frame(), 8),
+            jitter_offset(0, 8),
+            "a restarted sequence repeats the first phase"
+        );
     }
 }

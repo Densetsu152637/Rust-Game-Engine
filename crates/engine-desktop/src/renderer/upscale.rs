@@ -12,12 +12,25 @@
 use super::temporal::TemporalHistory;
 use crate::dlss::UpscalerDevice;
 use engine_project::rendering3d::{
-    UpscalerQuality, UpscalerSettings, UpscalerState, UpscalerStatus, bounded_upscaler_reason,
+    UpscalerBackend, UpscalerQuality, UpscalerSettings, UpscalerState, UpscalerStatus,
+    bounded_upscaler_reason,
 };
 
 /// Request key that a sticky failure applies to: retried only after the
 /// quality or output size changes.
 type FailureKey = (UpscalerQuality, [u32; 2]);
+
+/// A frame an upscaler resolved, for [`Upscaler::active`].
+pub(super) struct ActiveFrame {
+    pub backend: UpscalerBackend,
+    pub render_size: [u32; 2],
+    pub output_size: [u32; 2],
+    pub adapter: String,
+    /// Spatial AA was requested and yielded to this resolve.
+    pub spatial_aa_skipped: bool,
+    /// Why a different upscaler than the preferred one ran (`auto_temporal`).
+    pub note: Option<String>,
+}
 
 pub(crate) struct Upscaler {
     pub(super) device: UpscalerDevice,
@@ -26,6 +39,9 @@ pub(crate) struct Upscaler {
     pub(super) evaluated: u64,
     pub(super) resets: u64,
     pub(super) failure: Option<(FailureKey, String)>,
+    /// Render and output size of the last native temporal frame; a change is
+    /// a history break the host requests explicitly.
+    pub(super) native_sizes: Option<([u32; 2], [u32; 2])>,
     #[cfg(feature = "dlss")]
     pub(super) dlss: Option<dlss_stage::DlssStage>,
 }
@@ -39,6 +55,7 @@ impl Upscaler {
             evaluated: 0,
             resets: 0,
             failure: None,
+            native_sizes: None,
             #[cfg(feature = "dlss")]
             dlss: None,
         }
@@ -56,6 +73,7 @@ impl Upscaler {
         }
         self.device = device;
         self.failure = None;
+        self.native_sizes = None;
         self.history.clear();
     }
 
@@ -88,24 +106,35 @@ impl Upscaler {
         };
     }
 
-    /// A frame whose DLSS evaluation succeeded.
+    /// Call before a DLSS frame: NGX history is only valid when the previous
+    /// presented 3D frame was itself resolved by DLSS. After a native temporal
+    /// frame (which commits the camera and clears the pending reset), a plain
+    /// native frame, a fallback or no frame, the next DLSS frame must reset.
     #[cfg_attr(not(feature = "dlss"), allow(dead_code))]
-    pub fn active(
-        &mut self,
-        requested: UpscalerSettings,
-        render_size: [u32; 2],
-        output_size: [u32; 2],
-        adapter: String,
-    ) {
+    pub fn begin_dlss_frame(&mut self) {
+        if self.status.backend != Some(UpscalerBackend::DlssSr) {
+            self.history.request_reset();
+        }
+    }
+
+    /// Record that spatial AA yielded to a resolve that did not run after all.
+    pub fn set_spatial_aa_skipped(&mut self, skipped: bool) {
+        self.status.spatial_aa_skipped = skipped;
+    }
+
+    /// A frame an upscaler resolved successfully.
+    pub fn active(&mut self, requested: UpscalerSettings, frame: ActiveFrame) {
         self.status = UpscalerStatus {
             requested,
             state: UpscalerState::Active,
-            fallback_reason: None,
-            render_size: Some(render_size),
-            output_size: Some(output_size),
+            fallback_reason: frame.note.as_deref().map(bounded_upscaler_reason),
+            render_size: Some(frame.render_size),
+            output_size: Some(frame.output_size),
             evaluated_frames: self.evaluated,
             history_resets: self.resets,
-            adapter: Some(adapter),
+            adapter: Some(frame.adapter),
+            backend: Some(frame.backend),
+            spatial_aa_skipped: frame.spatial_aa_skipped,
         };
     }
 
@@ -483,20 +512,91 @@ mod tests {
         assert!(reason.chars().all(|c| c == 'é'));
     }
 
+    fn resolved(backend: UpscalerBackend) -> ActiveFrame {
+        ActiveFrame {
+            backend,
+            render_size: [8, 8],
+            output_size: [8, 8],
+            adapter: "GPU".into(),
+            spatial_aa_skipped: false,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn dlss_resets_after_any_period_without_a_dlss_frame() {
+        let camera = engine_project::rendering3d::CameraInstance3D {
+            camera: Default::default(),
+            world: glam::Mat4::IDENTITY.to_cols_array_2d(),
+        };
+        let native = UpscalerSettings {
+            mode: UpscalerMode::NativeTemporal,
+            quality: UpscalerQuality::Dlaa,
+        };
+        let mut upscaler = Upscaler::new(UpscalerDevice::default());
+        // First DLSS frame: no history at all.
+        upscaler.begin_dlss_frame();
+        assert!(upscaler.history.needs_reset(&camera));
+        upscaler.active(
+            dlss(UpscalerQuality::Dlaa),
+            resolved(UpscalerBackend::DlssSr),
+        );
+        upscaler.history.commit(&camera);
+        // DLSS after DLSS keeps its history.
+        upscaler.begin_dlss_frame();
+        assert!(!upscaler.history.needs_reset(&camera));
+        // A native temporal period commits the camera and clears the pending
+        // reset; DLSS resuming afterwards must still reset.
+        upscaler.active(native, resolved(UpscalerBackend::NativeTemporal));
+        upscaler.history.commit(&camera);
+        assert!(!upscaler.history.needs_reset(&camera));
+        upscaler.begin_dlss_frame();
+        assert!(upscaler.history.needs_reset(&camera), "stale NGX history");
+        upscaler.history.commit(&camera);
+        upscaler.active(
+            dlss(UpscalerQuality::Dlaa),
+            resolved(UpscalerBackend::DlssSr),
+        );
+        upscaler.history.commit(&camera);
+        upscaler.begin_dlss_frame();
+        assert!(!upscaler.history.needs_reset(&camera));
+        // A native fallback in between also breaks the chain.
+        upscaler.fallback(dlss(UpscalerQuality::Dlaa), "no");
+        upscaler.history.commit(&camera);
+        upscaler.begin_dlss_frame();
+        assert!(upscaler.history.needs_reset(&camera));
+    }
+
+    #[test]
+    fn a_skipped_spatial_filter_is_recorded_on_a_fallback() {
+        let mut upscaler = Upscaler::new(UpscalerDevice::default());
+        upscaler.fallback(dlss(UpscalerQuality::Dlaa), "did not run");
+        assert!(!upscaler.status().spatial_aa_skipped);
+        upscaler.set_spatial_aa_skipped(true);
+        assert!(upscaler.status().spatial_aa_skipped);
+    }
+
     #[test]
     fn active_is_reported_only_with_render_and_output_sizes() {
         let mut upscaler = Upscaler::new(UpscalerDevice::default());
         upscaler.evaluated = 3;
         upscaler.active(
             dlss(UpscalerQuality::Quality),
-            [427, 240],
-            [640, 360],
-            "GPU".into(),
+            ActiveFrame {
+                backend: UpscalerBackend::DlssSr,
+                render_size: [427, 240],
+                output_size: [640, 360],
+                adapter: "GPU".into(),
+                spatial_aa_skipped: true,
+                note: None,
+            },
         );
         let status = upscaler.status();
         assert_eq!(status.state, UpscalerState::Active);
         assert_eq!(status.render_size, Some([427, 240]));
         assert_eq!(status.output_size, Some([640, 360]));
         assert_eq!(status.evaluated_frames, 3);
+        assert_eq!(status.backend, Some(UpscalerBackend::DlssSr));
+        assert!(status.spatial_aa_skipped);
     }
 }

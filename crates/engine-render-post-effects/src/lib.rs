@@ -1,4 +1,5 @@
-//! Bounded HDR depth of field and motion blur passes.
+//! Bounded HDR depth of field, motion blur, spatial AA and the native temporal
+//! resolve (see [`temporal`]).
 //!
 //! Register [`DepthOfFieldFeature`] and [`MotionBlurFeature`] on a
 //! [`engine_render_pipeline::ScenePipeline`], then enable their names through
@@ -11,6 +12,12 @@ use engine_render_pipeline::{
 };
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+
+pub mod temporal;
+pub use temporal::{
+    MAX_HISTORY_FRAMES, TEMPORAL_RESOLVE_FEATURE, TemporalControls, TemporalResolveFeature,
+    TemporalResolveSettings, TemporalStatus,
+};
 
 fn inverse_projection(view: &engine_render_pipeline::ViewData) -> Result<[[f32; 4]; 4]> {
     let inverse = view.clip_from_view.inverse();

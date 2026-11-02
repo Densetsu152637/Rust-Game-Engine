@@ -18,8 +18,11 @@ either name wins). A view without settings runs exactly the old linear-clamp
 blur are separate optional HDR features documented in
 [rendering-depth-motion.md](rendering-depth-motion.md); a native spatial
 (single-frame) anti-aliasing filter is described under
-[Camera spatial antialiasing](#camera-spatial-antialiasing). Not in this
-release: SSAO, SSR and temporal anti-aliasing (TAA).
+[Camera spatial antialiasing](#camera-spatial-antialiasing); the native
+temporal resolve (temporal anti-aliasing at render scale 1 and temporal
+upscaling below it) is an `Upscale`-stage feature described in
+[rendering-temporal.md](rendering-temporal.md). Not in this release: SSAO and
+SSR.
 
 ## Order of operations
 
@@ -216,6 +219,11 @@ Upscalers and frame generation:
   `effects.spatial_aa` off for that draw (the pipeline report lists it as
   `disabled`) and restores the authored setting when the draw falls back to
   native rendering. This rule is unit-tested; live DLSS was not run (no NGX SDK).
+- The same rule holds for the native temporal resolve
+  (`Camera3D.upscaler.mode = native_temporal`, or `auto_temporal` when it
+  runs): spatial AA is switched off for that draw and `UpscalerStatus.
+  spatial_aa_skipped` says so. The authored setting is restored exactly when the
+  temporal request ends (desktop GPU test).
 - DLSS Frame Generation renders the scene without overlays and late-composes UI;
   the filter is part of the scene segment, so generated and real frames share the
   same filtered scene and an unblurred UI.
@@ -228,7 +236,8 @@ before the tonemap, a very bright (above 1.0) edge cannot be fully anti-aliased
 as the tonemapped image will show it: on an 8.0 edge the display-space error was
 3.4 against 2.1 unfiltered (linear HDR blending gave 4.7). A truly display-referred
 variant needs a new stage between `Tonemap` and `Overlay` and is not implemented.
-It is not FSR, XeSS or temporal anti-aliasing.
+It is not FSR, XeSS or temporal anti-aliasing (see
+[rendering-temporal.md](rendering-temporal.md) for the temporal resolve).
 
 ## Measured results
 

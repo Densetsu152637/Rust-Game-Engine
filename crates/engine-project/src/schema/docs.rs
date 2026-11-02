@@ -78,10 +78,10 @@ fn lighting_schema() -> Value {
 fn upscaler_schema() -> Value {
     closed(
         json!({
-            "mode":{"type":"string","enum":["none","dlss_sr"],"default":"none",
-                "description":"Temporal upscaler for the 3D scene. dlss_sr requests NVIDIA DLSS Super Resolution (Vulkan, desktop `dlss` build feature, official NGX runtime, supported NVIDIA GPU); otherwise the scene renders natively and the run report states the fallback reason."},
+            "mode":{"type":"string","enum":["none","dlss_sr","native_temporal","auto_temporal"],"default":"none",
+                "description":"Temporal upscaler for the 3D scene; one owner supplies the jitter and one Upscale winner runs per view. dlss_sr requests NVIDIA DLSS Super Resolution (Vulkan, desktop `dlss` build feature, official NGX runtime, supported NVIDIA GPU); otherwise the scene renders natively and the run report states the fallback reason (it never becomes the native resolve). native_temporal requests the engine's own vendor-neutral WGSL temporal resolve (jitter, motion vectors, history, neighbourhood clipping, disocclusion rejection; not FSR, XeSS or DLSS). auto_temporal runs DLSS when it can and the native resolve otherwise. A running temporal resolve skips spatial_aa for that frame and the run report says so."},
             "quality":{"type":"string","enum":["ultra_performance","performance","balanced","quality","dlaa"],"default":"quality",
-                "description":"DLSS preset. dlaa renders at output resolution (anti-aliasing only); the others let NGX choose a smaller render size."}
+                "description":"Preset. dlaa renders at output resolution (anti-aliasing only); the others render smaller: NGX chooses the DLSS size, the native resolve uses per-axis scales 1/3, 0.5, 0.58 and 2/3 for ultra_performance, performance, balanced and quality."}
         }),
         &[],
     )
@@ -136,7 +136,7 @@ fn builtin_docs() -> Vec<ComponentDoc> {
     vec![
         ComponentDoc {
             name: "Camera3D",
-            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them.",
+            description: "Perspective or orthographic camera, right-handed Y-up and negative-Z forward. Active camera selection uses stable entity ID order. `upscaler` requests DLSS Super Resolution or the native temporal resolve and `frame_generation` DLSS Frame Generation; unsupported requests render natively with a reported reason. Optional `depth_of_field`, `motion_blur` and `spatial_aa` enable bounded native post effects unless `render_features` explicitly disables them.",
             requires: &["Transform"],
             schema: closed(
                 json!({"version":version(),"active":{"type":"boolean","default":true},"lighting":lighting_schema(),"upscaler":upscaler_schema(),"frame_generation":frame_generation_schema(),"depth_of_field":depth_of_field_schema(),"motion_blur":motion_blur_schema(),"spatial_aa":spatial_aa_schema(),"render_features":{"type":"object","maxProperties":64,"propertyNames":{"pattern":"^[a-z0-9._-]{1,64}$"},"additionalProperties":{"type":"boolean"},"default":{},

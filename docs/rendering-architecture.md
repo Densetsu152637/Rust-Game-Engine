@@ -65,7 +65,7 @@ Per view, in order (render size until Upscale, output size after):
 | `Sky` | — | background after opaque geometry |
 | `OpaqueEffects` | — | full-image render-size HDR effects; each reads the current scene colour and writes a distinct destination |
 | `Transparent` | `engine.transparent` | blended engine meshes, back to front |
-| `Upscale` | `engine.upscale` | bilinear when sizes differ; a host (DLSS) may replace the stage |
+| `Upscale` | `engine.upscale`; optional `effects.temporal_resolve` | bilinear when sizes differ; a host (DLSS) may replace the stage; the native temporal resolve (single winner, supersedes `engine.upscale`) reprojects a per-view history ([rendering-temporal.md](rendering-temporal.md)) |
 | `PostProcess` | `engine.post`; optional `effects.dof`, `effects.motion_blur`, `effects.spatial_aa` | HDR ping-pong at output size; spatial AA is the last HDR filter, before Tonemap and without touching Overlay/Composite ([placement and DLSS rules](rendering-post.md#camera-spatial-antialiasing)) |
 | `Tonemap` | `engine.output` (required) | the output operator into the target viewport |
 | `Overlay` | `engine.sprites` (host node), ordered producers | after tonemapping: UI, gizmos, debug draw |
@@ -463,6 +463,14 @@ the sprite texture before the sprites draw). At most 64 streams, 8192 px edges.
   returns the display-size output, which then goes through PostProcess,
   Tonemap and Overlay. A failed evaluation aborts the view and the frame is
   re-rendered natively with the reason recorded.
+- **Native temporal resolve** (`Camera3D.upscaler.mode = native_temporal`): the
+  host supplies the Halton jitter (`engine_render_pipeline::jitter`), the view
+  renders at the preset's render size with `host_needs.motion`, and
+  `effects.temporal_resolve` (an `Upscale`-stage owned feature, enabled only by
+  the host) supersedes `engine.upscale`. History commits in `finish_scene`,
+  discards in `reset_history` (cuts, resize, aborted attempts) and releases in
+  `forget_view`; the host releases it on every non-temporal draw. See
+  [rendering-temporal.md](rendering-temporal.md).
 - **DLSS Frame Generation**: render the scene with Overlay/Composite suppressed;
   export depth/motion; feed UI-free SDR colour to NGX without a separate
   HUD-less input. Then late-compose the same ordered UI/final-filter snapshot
