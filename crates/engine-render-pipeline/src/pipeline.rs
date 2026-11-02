@@ -14,6 +14,10 @@ use crate::instancing::DrawStats;
 use crate::lighting::{LightingFrame, LightingRenderer, LightingReport, ViewLighting};
 use crate::lights::LightList;
 use crate::overlay::run_presentation;
+use crate::particles::{
+    ParticleEmitter, ParticleReadback, ParticleReport, ParticleTick, ParticleTickReport,
+    ParticleViewReport,
+};
 use crate::shader::ShaderComposer;
 use crate::shadows::ShadowAtlasConfig;
 use crate::targets::{CompositeTargets, FrameTargets, Target};
@@ -46,6 +50,10 @@ pub mod names {
     pub const OPAQUE: &str = "engine.opaque";
     /// Transparent stage: blended engine meshes, back to front.
     pub const TRANSPARENT: &str = "engine.transparent";
+    /// Transparent stage, after `engine.transparent`: GPU particle billboards
+    /// (docs/rendering-particles.md). Turns itself on for views while any
+    /// emitter holds spawned particles, unless the view disables it.
+    pub const PARTICLES: &str = "engine.particles";
     /// Upscale stage: bilinear resample when render and output sizes differ.
     pub const UPSCALE: &str = "engine.upscale";
     /// Tonemap stage: the default output operator (linear clamp). Required.
@@ -325,6 +333,7 @@ pub fn builtin_registry() -> Result<FeatureRegistry> {
         FeatureDescriptor::new(names::HIZ_VISIBILITY, Stage::Visibility).disabled_by_default(),
         FeatureDescriptor::new(names::OPAQUE, Stage::Opaque),
         FeatureDescriptor::new(names::TRANSPARENT, Stage::Transparent),
+        crate::particles::descriptor(),
         FeatureDescriptor::new(names::UPSCALE, Stage::Upscale),
         FeatureDescriptor::new(names::POST, Stage::PostProcess).disabled_by_default(),
         FeatureDescriptor::new(names::OUTPUT, Stage::Tonemap).required(),
@@ -352,6 +361,7 @@ pub struct ScenePipeline {
     composer: ShaderComposer,
     registry: FeatureRegistry,
     post: std::sync::Arc<crate::post::PostShared>,
+    particles: std::sync::Arc<crate::particles::ParticleShared>,
     mesh: MeshRenderer,
     hiz: Option<(HiZKernel, HiZIndirect)>,
     output: OutputPass,
@@ -394,6 +404,18 @@ impl ScenePipeline {
             post.clone(),
         )
         .context("creating the post-processing stack")?;
+        let particles = std::sync::Arc::new(
+            crate::scoped(&gpu.device, || {
+                crate::particles::ParticleShared::new(&FeatureSetup {
+                    gpu: &gpu,
+                    layouts: &layouts,
+                    composer: &composer,
+                })
+            })
+            .context("creating the particle passes")?,
+        );
+        crate::particles::install(&mut registry, particles.clone())
+            .context("registering the particle pass")?;
         let lighting = LightingRenderer::new(&gpu).context("creating the lighting passes")?;
         let shadow_alignment = device.limits().min_uniform_buffer_offset_alignment.max(16);
         Ok(Self {
@@ -402,6 +424,7 @@ impl ScenePipeline {
             composer,
             registry,
             post,
+            particles,
             mesh,
             hiz,
             output,
@@ -485,6 +508,43 @@ impl ScenePipeline {
             }
         }
         self.registry.absorb(features)
+    }
+
+    /// Advance the GPU particle simulation by one scene tick.
+    ///
+    /// This is the only call that simulates. It records and submits its own
+    /// compute work and is independent of rendering: rendering any number of
+    /// views, eyes or presentations of the same tick (including DLSS Frame
+    /// Generation presentations) reads the pools without advancing them. A
+    /// `tick.id` equal to the last simulated one is a no-op (the report says
+    /// `advanced: false`); any other id advances by `tick.dt`. `emitters` is
+    /// the complete live set: emitters missing from it are freed. All input is
+    /// validated first, so an error changes nothing. See
+    /// docs/rendering-particles.md.
+    pub fn advance_particles(
+        &mut self,
+        tick: ParticleTick,
+        emitters: &[ParticleEmitter],
+    ) -> Result<ParticleTickReport> {
+        self.particles.advance(&tick, emitters)
+    }
+
+    /// Simulated and repeated tick counts, and the live emitters.
+    pub fn particle_report(&self) -> ParticleReport {
+        self.particles.report()
+    }
+
+    /// What `engine.particles` drew for `view` in its last encoded frame;
+    /// absent until it has run for the view, and after the view closes or the
+    /// feature is off for it.
+    pub fn particle_view_report(&self, view: ViewId) -> Option<ParticleViewReport> {
+        self.particles.view_report(view)
+    }
+
+    /// Blocking readback of one emitter's pool and counters, for tests and
+    /// tools. `None` when no live emitter has `id`.
+    pub fn read_particles(&self, id: &str) -> Result<Option<ParticleReadback>> {
+        self.particles.read_back(id)
     }
 
     /// The report of the last frame of `view`.
@@ -691,7 +751,17 @@ impl ScenePipeline {
                 overrides.0.entry(name.to_owned()).or_insert(true);
             }
         }
+        // Particles draw while any emitter has spawned, unless the view says otherwise.
+        if self.particles.has_particles() {
+            overrides
+                .0
+                .entry(names::PARTICLES.to_owned())
+                .or_insert(true);
+        }
         let mut resolved = self.registry.resolve(&overrides);
+        if !resolved.is_enabled(names::PARTICLES) {
+            self.particles.forget_view(view.id);
+        }
         let needs = self.registry.needs(&resolved).union(view.host_needs);
         let device = self.gpu.device.clone();
         let queue = self.gpu.queue.clone();
