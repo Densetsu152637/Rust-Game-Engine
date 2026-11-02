@@ -14,6 +14,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Runner images are pinned to what the *-latest labels resolved to on
+# 2026-11-02 (run 40858178120) so image changes cannot silently alter disk or
+# toolchain headroom. Bump them deliberately.
 defaults:
   run:
     # Explicit bash enables pipefail, so a failing cargo test cannot be hidden
@@ -25,6 +28,10 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
   RUST_BACKTRACE: "1"
+  # Hosted runners have limited disk. CI never debugs, so drop debug info
+  # (overrides the workspace dev line tables); test inherits dev.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
   # Aggregate number of passed tests required across the workspace and the
   # standalone example crates. Ignored tests (real GPU, audio device and
   # interactive native UI) never count as passed.
@@ -33,7 +40,7 @@ env:
 jobs:
   lint:
     name: Format and Clippy (Windows)
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     # Each standalone example crate compiles its own dependency graph.
     timeout-minutes: 60
     env:
@@ -44,6 +51,12 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: bash scripts/ci/install-toolchain.sh
+      - name: Move temporary files to the D drive
+        # C has about 30 GB free and D about 147 GB. The target directory is already on D;
+        # tests that spawn Cargo builds write into TEMP, which defaults to C.
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
@@ -54,8 +67,11 @@ jobs:
             examples/programmable-world
             assets/scripts/moving_entity
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
       - name: cargo fmt (workspace)
-        run: cargo fmt --all --check
+        run: bash scripts/ci/fmt-check.sh
       - name: cargo fmt (standalone example crates)
         run: |
           for crate in examples/desktop-2d examples/first-project examples/native-extension examples/programmable-world assets/scripts/moving_entity; do
@@ -71,6 +87,9 @@ jobs:
       # Compiles the whole template, including src/main.rs, against this checkout.
       - name: cargo check (game template)
         run: bash scripts/ci/check-template.sh
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
 
   # This job deliberately does not set RUSTFLAGS: engine-tooling tests spawn real
   # Cargo builds that inherit the environment (RUSTFLAGS is part of a generation's
@@ -78,7 +97,7 @@ jobs:
   # warnings. The lint job already denies warnings for every workspace target.
   workspace-tests:
     name: Workspace tests (Windows)
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -86,13 +105,22 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: bash scripts/ci/install-toolchain.sh
+      - name: Move temporary files to the D drive
+        # C has about 30 GB free and D about 147 GB. The target directory is already on D;
+        # tests that spawn Cargo builds write into TEMP, which defaults to C.
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
       # Tests marked #[ignore] (real GPU, audio device, interactive native UI)
       # are deliberately not run: hosted runners have no such devices.
       - name: cargo test --workspace
-        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/workspace.log"
       # examples/pbr-shadows is a data project (no Cargo crate) rendered by the
       # workspace engine-desktop example, which cargo test --workspace builds.
       - name: Validate PBR shadows example project
@@ -100,6 +128,9 @@ jobs:
       # examples/acoustics-showcase is a data project too: a 3D room and a 2D proxy scene.
       - name: Validate acoustics showcase example project
         run: cargo run --locked -p engine-tooling --bin engine -- project validate examples/acoustics-showcase/project.json --no-rust
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
       - name: Count passed tests
         if: ${{ !cancelled() }}
         run: |
@@ -125,7 +156,7 @@ jobs:
   # Cargo.lock, so these jobs resolve dependencies without --locked.
   example-tests:
     name: Example tests (${{ matrix.name }})
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -187,7 +218,7 @@ jobs:
   test-count-gate:
     name: Test count gate
     needs: [workspace-tests, example-tests]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -210,12 +241,19 @@ jobs:
   # (udev) and window-system development libraries the desktop crates link.
   linux-tests:
     name: Workspace tests (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
       - name: Install system packages
         run: |
           sudo apt-get update
@@ -228,9 +266,12 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo test --workspace
-        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/workspace.log"
       - name: Check standalone desktop entry points
         run: bash scripts/ci/check-desktop-examples.sh
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
       - name: Report passed tests
         if: ${{ !cancelled() }}
         run: |
@@ -242,7 +283,7 @@ jobs:
 
   macos-tests:
     name: Workspace tests (macOS)
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -253,10 +294,16 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
       - name: cargo test --workspace
-        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/workspace.log"
       - name: Check standalone desktop entry points
         run: bash scripts/ci/check-desktop-examples.sh
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
       - name: Report passed tests
         if: ${{ !cancelled() }}
         run: |
@@ -268,7 +315,7 @@ jobs:
 
   wasm-portable-check:
     name: Portable library compile (WebAssembly)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
