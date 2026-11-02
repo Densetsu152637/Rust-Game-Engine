@@ -130,6 +130,35 @@ impl HdrOutputSettings {
     }
 }
 
+/// The `engine::hdr` WGSL module: `wgsl/hdr.wgsl` with its `{{NAME}}`
+/// placeholders filled from the constants and matrix above, so the shader and
+/// the CPU reference cannot disagree on them.
+pub fn wgsl_source() -> String {
+    let mut source = include_str!("wgsl/hdr.wgsl").replace(
+        "
+", "
+",
+    );
+    let mut fill = |name: &str, value: f32| {
+        source = source.replace(&format!("{{{{{name}}}}}"), &format!("{value:?}"));
+    };
+    fill("SCRGB_UNIT_NITS", SCRGB_UNIT_NITS);
+    fill("PQ_MAX_NITS", PQ_MAX_NITS);
+    fill("PQ_M1", PQ_M1);
+    fill("PQ_M2", PQ_M2);
+    fill("PQ_C1", PQ_C1);
+    fill("PQ_C2", PQ_C2);
+    fill("PQ_C3", PQ_C3);
+    fill("MAX_INPUT", MAX_INPUT);
+    let matrix = crate::post::tonemap::SRGB_TO_REC2020;
+    for (row, prefix) in matrix.iter().zip(["R", "G", "B"]) {
+        for (column, value) in row.iter().enumerate() {
+            fill(&format!("REC2020_{prefix}{column}"), *value);
+        }
+    }
+    source
+}
+
 /// Shared validation of a paper-white / peak pair.
 pub fn validate_nits(paper_white_nits: f32, peak_nits: f32) -> Result<()> {
     ensure!(
@@ -210,7 +239,7 @@ pub fn rolloff(rgb: [f32; 3], headroom: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shader::{HDR_OUTPUT_WGSL, HDR_WGSL};
+    use crate::shader::HDR_OUTPUT_WGSL;
 
     fn close(a: f32, b: f32, tolerance: f32) -> bool {
         (a - b).abs() <= tolerance
@@ -373,29 +402,30 @@ mod tests {
         assert!(with(203.0, 203.0).validate().is_ok(), "peak = paper white");
     }
 
-    /// The WGSL constants are the Rust constants (shared values).
+    /// The WGSL module is generated from the Rust constants (one source).
     #[test]
-    fn wgsl_constants_match_the_cpu_reference() {
-        let wgsl = HDR_WGSL.replace("\r\n", "\n");
-        let constant = |name: &str| -> f32 {
+    fn the_wgsl_module_is_generated_from_the_rust_constants() {
+        let wgsl = wgsl_source();
+        assert!(!wgsl.contains("{{"), "unfilled placeholder in hdr.wgsl");
+        for (name, value) in [
+            ("ENGINE_SCRGB_UNIT_NITS", SCRGB_UNIT_NITS),
+            ("ENGINE_PQ_MAX_NITS", PQ_MAX_NITS),
+            ("ENGINE_PQ_M1", PQ_M1),
+            ("ENGINE_PQ_M2", PQ_M2),
+            ("ENGINE_PQ_C1", PQ_C1),
+            ("ENGINE_PQ_C2", PQ_C2),
+            ("ENGINE_PQ_C3", PQ_C3),
+            ("ENGINE_MAX_INPUT", MAX_INPUT),
+        ] {
             let line = wgsl
                 .lines()
                 .find(|l| l.trim_start().starts_with(&format!("const {name}:")))
                 .unwrap_or_else(|| panic!("hdr.wgsl declares {name}"));
-            let value = line.split('=').nth(1).unwrap().trim().trim_end_matches(';');
-            value.parse().unwrap()
-        };
-        assert_eq!(constant("ENGINE_SCRGB_UNIT_NITS"), SCRGB_UNIT_NITS);
-        assert_eq!(constant("ENGINE_PQ_MAX_NITS"), PQ_MAX_NITS);
-        assert_eq!(constant("ENGINE_PQ_M1"), PQ_M1);
-        assert_eq!(constant("ENGINE_PQ_M2"), PQ_M2);
-        assert_eq!(constant("ENGINE_PQ_C1"), PQ_C1);
-        assert_eq!(constant("ENGINE_PQ_C2"), PQ_C2);
-        assert_eq!(constant("ENGINE_PQ_C3"), PQ_C3);
-        assert_eq!(constant("ENGINE_MAX_INPUT"), MAX_INPUT);
-        // The Rec.709 -> Rec.2020 rows are the ones tonemap.rs uses.
+            let text = line.split('=').nth(1).unwrap().trim().trim_end_matches(';');
+            assert_eq!(text.parse::<f32>().unwrap(), value, "{name}");
+        }
         for row in crate::post::tonemap::SRGB_TO_REC2020 {
-            let text = format!("vec3<f32>({}, {}, {})", row[0], row[1], row[2]);
+            let text = format!("vec3<f32>({:?}, {:?}, {:?})", row[0], row[1], row[2]);
             assert!(wgsl.contains(&text), "hdr.wgsl lacks the row {text}");
         }
     }

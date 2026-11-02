@@ -1,17 +1,18 @@
-// engine::hdr - HDR display output transform. Mirrors src/hdr.rs.
+// engine::hdr - HDR display output transform. Mirrors src/hdr.rs; the double-brace NAME
+// placeholders are filled from the Rust constants by hdr::wgsl_source().
 // Input is display-linear Rec.709 relative to paper white (1.0 = paper
 // white). engine_hdr_encode rolls the colour off to the display peak, then
 // returns the surface signal: encoding 0 is scRGB (linear Rec.709, 1.0 = 80
 // nits, Rgba16Float), encoding 1 is PQ (ST 2084 on Rec.2020, Rgb10a2Unorm).
 
-const ENGINE_SCRGB_UNIT_NITS: f32 = 80.0;
-const ENGINE_PQ_MAX_NITS: f32 = 10000.0;
-const ENGINE_PQ_M1: f32 = 0.1593017578125;
-const ENGINE_PQ_M2: f32 = 78.84375;
-const ENGINE_PQ_C1: f32 = 0.8359375;
-const ENGINE_PQ_C2: f32 = 18.8515625;
-const ENGINE_PQ_C3: f32 = 18.6875;
-const ENGINE_MAX_INPUT: f32 = 65504.0;
+const ENGINE_SCRGB_UNIT_NITS: f32 = {{SCRGB_UNIT_NITS}};
+const ENGINE_PQ_MAX_NITS: f32 = {{PQ_MAX_NITS}};
+const ENGINE_PQ_M1: f32 = {{PQ_M1}};
+const ENGINE_PQ_M2: f32 = {{PQ_M2}};
+const ENGINE_PQ_C1: f32 = {{PQ_C1}};
+const ENGINE_PQ_C2: f32 = {{PQ_C2}};
+const ENGINE_PQ_C3: f32 = {{PQ_C3}};
+const ENGINE_MAX_INPUT: f32 = {{MAX_INPUT}};
 
 fn engine_pq_oetf(nits: vec3<f32>) -> vec3<f32> {
     let y = pow(clamp(nits / ENGINE_PQ_MAX_NITS, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(ENGINE_PQ_M1));
@@ -20,9 +21,9 @@ fn engine_pq_oetf(nits: vec3<f32>) -> vec3<f32> {
 
 fn engine_rec709_to_rec2020(c: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(
-        dot(vec3<f32>(0.6274, 0.3293, 0.0433), c),
-        dot(vec3<f32>(0.0691, 0.9195, 0.0114), c),
-        dot(vec3<f32>(0.0164, 0.0880, 0.8956), c));
+        dot(vec3<f32>({{REC2020_R0}}, {{REC2020_R1}}, {{REC2020_R2}}), c),
+        dot(vec3<f32>({{REC2020_G0}}, {{REC2020_G1}}, {{REC2020_G2}}), c),
+        dot(vec3<f32>({{REC2020_B0}}, {{REC2020_B1}}, {{REC2020_B2}}), c));
 }
 
 fn engine_hdr_rolloff_start(headroom: f32) -> f32 {

@@ -24,7 +24,8 @@ With HDR active (`GpuRenderer::enable_hdr_output`):
 1. The frame renders into an engine-owned `Rgba16Float` *display-linear* image
    instead of the surface. `ViewData::linear_output` is set, so `engine.output`
    and `engine.tonemap` write the colour unclamped: no 0..1 clamp, no SDR
-   tonemap operator, no sRGB encode. Exposure, bloom, grading, vignette and
+   tonemap operator, no sRGB encode, including the final copy from the
+   UI-free display base to the target. Exposure, bloom, grading, vignette and
    grain still run.
 2. Sprites and screen-space UI draw into the same image as ordinary linear
    colour. `1.0` is paper white, so a white UI element is exactly paper white.
@@ -122,8 +123,9 @@ recreated at the new size on the next frame.
 
 Input to the transform is display-linear Rec.709 relative to paper white
 (`rgb`, `1.0` = paper white). `HdrOutputSettings::encode` is the CPU reference;
-`wgsl/hdr.wgsl` mirrors it and a unit test checks that the constants and the
-Rec.709 to Rec.2020 matrix rows in the WGSL are the Rust ones.
+`wgsl/hdr.wgsl` mirrors it, and its constants and Rec.709 to Rec.2020 matrix
+are generated from the Rust ones (`hdr::wgsl_source` fills the placeholders when
+the `engine::hdr` module is composed), so they cannot disagree.
 
 1. Clean: NaN to 0, clamp to `0..=65504`.
 2. Roll-off with `headroom = peak / paper_white`: the brightest channel `m` is
@@ -203,7 +205,7 @@ Nothing reports HDR active unless the configured surface is `Rgba16Float` +
 CPU unit tests (`engine-render-pipeline` `hdr::tests`, `engine-desktop`
 `hdr::tests`): PQ known code values and round trip, scRGB scale, paper-white
 mapping, Rec.709 to Rec.2020, roll-off monotonic and capped at the peak, config
-validation, WGSL constant agreement and naga validation, capability selection
+validation, generated-WGSL constants and naga validation, capability selection
 over HDR-capable, SDR-only, float-only and SDR-display lists, environment
 parsing and status.
 

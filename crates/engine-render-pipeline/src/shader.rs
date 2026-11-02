@@ -23,9 +23,6 @@ pub const MATERIAL_WGSL: &str = include_str!("wgsl/material.wgsl");
 pub const SPRITE_MATERIAL_WGSL: &str = include_str!("wgsl/material_sprite.wgsl");
 pub const FULLSCREEN_WGSL: &str = include_str!("wgsl/fullscreen.wgsl");
 pub const TONEMAP_WGSL: &str = include_str!("wgsl/tonemap.wgsl");
-/// `engine::hdr`: PQ / scRGB encoding, Rec.709 to Rec.2020 and the roll-off to
-/// the display peak. Mirrors `src/hdr.rs`.
-pub const HDR_WGSL: &str = include_str!("wgsl/hdr.wgsl");
 /// The built-in metallic-roughness material (selected when a material has no
 /// custom shader). Also a reference implementation of the contract.
 pub const LIT_WGSL: &str = include_str!("wgsl/lit.wgsl");
@@ -85,7 +82,9 @@ impl ShaderComposer {
         modules.insert("engine::lighting".to_owned(), LIGHTING_WGSL.to_owned());
         modules.insert("engine::fullscreen".to_owned(), FULLSCREEN_WGSL.to_owned());
         modules.insert("engine::tonemap".to_owned(), TONEMAP_WGSL.to_owned());
-        modules.insert("engine::hdr".to_owned(), HDR_WGSL.to_owned());
+        // PQ / scRGB encoding, Rec.709 to Rec.2020 and the roll-off to the display
+        // peak, generated from the constants of `crate::hdr`.
+        modules.insert("engine::hdr".to_owned(), crate::hdr::wgsl_source());
         let material = match target {
             MaterialTarget::Mesh => MATERIAL_WGSL,
             MaterialTarget::Sprite => SPRITE_MATERIAL_WGSL,

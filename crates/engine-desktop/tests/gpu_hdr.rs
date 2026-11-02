@@ -14,6 +14,7 @@ use engine_desktop::*;
 use engine_project::{
     Camera2D,
     content::{Mesh, Vertex},
+    post::*,
     rendering3d::*,
     runtime::{Draw, DrawSpace, RenderFrame},
 };
@@ -88,12 +89,24 @@ fn frame_of(size: u32, scene_value: f32, generation: FrameGenerationSettings) ->
         normal_texture: None,
         model: Mat4::from_translation(Vec3::new(0.0, 0.0, -2.0)).to_cols_array_2d(),
         material: MeshMaterial {
-            tint: [scene_value, scene_value, scene_value, 1.0],
+            tint: [1.0; 4],
             unlit: true,
             ..Default::default()
         },
         shader: None,
     });
+    // Material colours are limited to 0..1, so radiance above paper white
+    // comes from the post stack's manual exposure: 2^-ev100 = scene_value.
+    if scene_value != 1.0 {
+        frame.post.camera = Some(PostProcess {
+            exposure: Exposure {
+                mode: ExposureMode::Manual,
+                ev100: -scene_value.log2(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    }
     frame
 }
 
