@@ -18,6 +18,7 @@ mod physics;
 mod project;
 mod scene;
 mod script;
+mod steam;
 mod streaming;
 mod terrain;
 mod tilemap;
@@ -103,6 +104,7 @@ pub(crate) fn builtin() -> Vec<Box<dyn Tool>> {
     tools.extend(foliage::tools());
     tools.extend(water::tools());
     tools.extend(script::tools());
+    tools.extend(steam::tools());
     tools
 }
 

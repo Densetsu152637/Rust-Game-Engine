@@ -21,6 +21,10 @@ pub fn available(world: &World) -> bool {
     world.contains_resource::<MlService>()
 }
 /// Resolve a project asset through the same path policy used by native scripts.
+///
+/// No asset kind is checked, so a mod's `@mount/id` of any allowed kind is parsed as a model
+/// if the caller passes it. Game code that takes ids from data should check the kind first
+/// with `Project::resolve_asset_kind` (see the asset pipeline docs).
 pub fn load_asset(world: &World, asset: &str, options: LoadOptions) -> Result<Arc<Model>> {
     let path = crate::services::resolve_asset(world, asset)?;
     Model::load_path(path, options)

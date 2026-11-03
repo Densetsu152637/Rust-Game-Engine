@@ -405,6 +405,29 @@ impl ContentRoots {
         Self::check(&self.snapshot(full_id)?)
     }
 
+    /// Resolves a full id like [`resolve`](Self::resolve), but only when the asset's declared
+    /// kind is one of `kinds` (error `content_root.kind` otherwise).
+    ///
+    /// A mounted asset's kind is whatever its `content.json` declares. Loaders that read a
+    /// path without checking the kind (`services::resolve_asset`, `engine_ml::load_asset`)
+    /// would parse a texture declared by a mod as a model, so game code that accepts a mod id
+    /// from data should resolve it here, or through [`Project::resolve_asset_kind`], with the
+    /// kinds it can use.
+    pub fn resolve_kind(&self, full_id: &str, kinds: &[&str]) -> Result<PathBuf> {
+        let snapshot = self.snapshot(full_id)?;
+        if !kinds.contains(&snapshot.kind.as_str()) {
+            return Err(err(
+                "content_root.kind",
+                format!(
+                    "{full_id} is a {} asset; expected one of: {}",
+                    snapshot.kind,
+                    kinds.join(", ")
+                ),
+            ));
+        }
+        Self::check(&snapshot)
+    }
+
     /// The full id of the texture a mounted bitmap font draws with: `@<mount>/<texture>`.
     ///
     /// A font file names its texture by local id, and consumers that resolve

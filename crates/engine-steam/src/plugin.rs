@@ -11,7 +11,7 @@ use engine_project::{
 };
 use serde_json::{Value, json};
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use engine_project::runtime::Persistence;
 
@@ -25,6 +25,20 @@ pub const REQUIRED_EXIT_CODE: i32 = 4;
 /// The Steam status, published to the game world as a resource.
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct SteamRuntimeStatus(pub SteamStatus);
+
+/// The status the most recent [`SteamPlugin`] tick in this process observed.
+static PUBLISHED: Mutex<Option<SteamStatus>> = Mutex::new(None);
+
+fn publish_status(status: &SteamStatus) {
+    *PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()) = Some(status.clone());
+}
+
+/// The Steam status a [`SteamPlugin`] last observed in this process, or `None` when no
+/// plugin has started here. Read-only diagnostics (the `steam_status` MCP tool) use it so
+/// they never initialise or call Steam themselves.
+pub fn published_status() -> Option<SteamStatus> {
+    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
 
 /// Steam as a [`HostService`], configured from the manifest `steam` block.
 pub struct SteamPlugin {
@@ -80,6 +94,7 @@ impl HostService for SteamPlugin {
             });
         }
         let status = state.backend.status();
+        publish_status(&status);
         if self.manifest.required && !status.is_ready() {
             return Err(HostServiceExit {
                 code: REQUIRED_EXIT_CODE,

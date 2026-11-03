@@ -345,3 +345,29 @@ fn reconcile_picks_up_an_unsubscribe_made_outside_the_game() {
     ));
     assert!(rig.resolve(GOOD, "tex").is_err());
 }
+
+#[test]
+fn a_transiently_empty_subscription_list_unmounts_everything_until_the_next_startup_pass() {
+    let mut rig = Rig::new();
+    rig.subscribe(GOOD);
+    rig.download(GOOD);
+    assert!(rig.resolve(GOOD, "tex").is_ok());
+    // Steam reports no subscriptions for a moment (documented behaviour): reconcile
+    // trusts the list and unmounts the item.
+    rig.fake.lock().unwrap().ugc_subscribe(GOOD, false).unwrap();
+    let events = rig.mods.reconcile(&rig.service);
+    assert!(matches!(
+        events.as_slice(),
+        [WorkshopContentEvent::Unmounted { item, .. }] if *item == GOOD
+    ));
+    assert!(rig.resolve(GOOD, "tex").is_err());
+    // The list recovers; the installed folder is mounted again by mount_subscribed.
+    rig.fake.lock().unwrap().ugc_subscribe(GOOD, true).unwrap();
+    let events = rig.mods.mount_subscribed(&rig.service);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, WorkshopContentEvent::Mounted { item, .. } if *item == GOOD))
+    );
+    assert!(rig.resolve(GOOD, "tex").is_ok());
+}

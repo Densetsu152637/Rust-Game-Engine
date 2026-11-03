@@ -42,6 +42,7 @@ pub fn configure(app: &mut EngineApp) -> Result<()> {
 | `text-scripting` | yes | Rhai text scripts (`engine.TextScript`). Always on while `desktop` is, because the desktop host depends on `engine-project` with default features |
 | `dlss` | no | NVIDIA DLSS Super Resolution through NGX on Vulkan; implies `desktop`. Without `NGX_SDK_DIR`/`VULKAN_HEADERS_DIR` at build time it still builds and DLSS reports the SDK as missing, see [DLSS](dlss.md) |
 | `system-clipboard` | no | OS clipboard for game text inputs; implies `desktop` |
+| `steam` | no | Real Steamworks backend in `engine::steam` (`default_backend()` returns it). Needs `steam_api64.dll`/`libsteam_api.so`/`libsteam_api.dylib` next to the executable; `engine::steam` itself is always present with the null and fake backends. See [Steam](steam.md#using-steam-from-a-facade-game) |
 | `deterministic-physics` | no | Bit-identical cross-platform physics maths, slower; see [physics queries](physics-queries.md#determinism) |
 
 A GPU-free game (servers, tools, tests) uses

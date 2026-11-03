@@ -265,6 +265,24 @@ assets by id and need per-root id resolution). Composite kinds can be admitted i
 stage by resolving local ids against the owning root. An unknown or refused kind fails the
 whole registration with `content_root.kind`.
 
+### Checking the kind before loading
+
+The kind of a mounted asset is whatever its `content.json` declares, and a mod author controls
+it. `Project::resolve_asset`, `services::resolve_asset` and `ml::load_asset` return or load
+the file without looking at the kind, so a mod id handed to them can name a texture where the
+game expects a model, and the loader then parses that file as the wrong format (it fails or
+reads unintended bytes; the loaders are bounded, so the cost is an error, not code
+execution). Game code that accepts an asset id from data, a save file or a mod must check the
+kind first:
+
+```rust
+// Project ids and mod ids alike; Err(content_root.kind | project.asset.kind) on a mismatch.
+let path = project.resolve_asset_kind(id, &["mesh"])?;
+// Mounted ids only, or to read the declared kind without touching the disk:
+let path = project.content_roots.resolve_kind("@workshop-1/rock", &["mesh", "texture"])?;
+let kind = project.content_roots.asset("@workshop-1/rock").map(|a| a.kind);
+```
+
 ### Confinement and validation
 
 1. `register(mount, root, declared_parent)`: both must be absolute. The root's path relative

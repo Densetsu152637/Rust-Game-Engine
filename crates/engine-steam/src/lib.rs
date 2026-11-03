@@ -65,7 +65,9 @@ pub use net::*;
 pub use null::NullBackend;
 #[cfg(feature = "online")]
 pub use online::OnlineAdapter;
-pub use plugin::{REQUIRED_EXIT_CODE, SteamPlugin, SteamRuntimeStatus, event_json, status_json};
+pub use plugin::{
+    REQUIRED_EXIT_CODE, SteamPlugin, SteamRuntimeStatus, event_json, published_status, status_json,
+};
 #[cfg(all(
     feature = "steam",
     any(windows, target_os = "linux", target_os = "macos")

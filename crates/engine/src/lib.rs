@@ -47,6 +47,7 @@
 //! | [`physics`] | Rapier 2D/3D bodies, contacts, queries and joints. |
 //! | [`script`] | Shared script core: host functions, capabilities and budgets. |
 //! | [`sequencer`] | Cinematic sequencer. |
+//! | [`steam`] | Steamworks seam: backend trait, null and fake backends, `SteamPlugin`; real backend with feature `steam`. |
 //! | [`streaming`] | World streaming. |
 //! | [`text`] | Text shaping, layout and glyph atlases. |
 //! | [`terrain`] | Heightfield terrain. |
@@ -69,6 +70,7 @@
 //! | `dlss` | no | NVIDIA DLSS Super Resolution; implies `desktop`, builds without the NGX SDK, which DLSS then reports as missing |
 //! | `system-clipboard` | no | OS clipboard for game text inputs; implies `desktop` |
 //! | `deterministic-physics` | no | Bit-identical cross-platform physics maths |
+//! | `steam` | no | Real Steamworks backend behind [`steam`]; the module itself is always available |
 //!
 //! The desktop host depends on `engine-project` with its default features, so
 //! `text-scripting` is effectively on whenever `desktop` is.
@@ -124,6 +126,7 @@ pub use engine_physics as physics;
 pub use engine_project as project;
 pub use engine_script as script;
 pub use engine_sequencer as sequencer;
+pub use engine_steam as steam;
 pub use engine_streaming as streaming;
 pub use engine_terrain as terrain;
 pub use engine_text as text;

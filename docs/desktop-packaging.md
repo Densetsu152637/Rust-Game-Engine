@@ -44,6 +44,12 @@ my-package/
   trusted host directories, not a sandbox against another process racing file system
   entries.
 
+## Steam variant
+
+A package built by a tooling binary with `--features steam` links the real Steam backend,
+and then needs `steam_api64.dll` (Windows) next to `runtime.exe` and no `steam_appid.txt`.
+See [Steam](steam.md#shipping-the-steam-variant-on-windows). Depot layout is not packaged yet.
+
 ## Verification status
 
 Package tests build and run real external fixture crates, and launch the packaged
