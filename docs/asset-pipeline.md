@@ -324,6 +324,30 @@ registers on download completion, its texture/audio/mesh loads through
 folder is skipped with an event. A manual live check on App 480 (subscribe, install, load an
 asset) is recorded in the plan Outcome, or recorded as not possible with the reason.
 
+### Fonts, residual limits and lifetime
+
+- **Mounted fonts.** A font file names its texture by local id. Anything that resolves
+  `font.texture` as-is would look it up in the project namespace and could draw a project
+  texture of the same id. `ContentRoots::font_texture_id("@mount/font")` re-reads the font
+  through the same checks, requires a texture asset of the same root and returns
+  `@mount/<texture>`; use it wherever a mounted font's texture is resolved. The built-in
+  consumers (runtime rendering, UI preview, MCP asset inspection) iterate `project.assets`
+  only, so they never see a mounted font in v1 and needed no change. At most 16 fonts per
+  root, because each one is parsed at registration.
+- **Check-then-open race.** Resolution validates a path and the caller opens it afterwards;
+  a replacement of the file between the two is not prevented (no OS sandbox or directory
+  capability). This is accepted because mounted folders are written by the mod source
+  (Steam), not by untrusted code running on the machine. Reads of a file that vanished fail
+  with the ordinary missing-file error.
+- **Trusted ancestors.** The link walk covers the path from `declared_parent` down to the
+  root. The ancestors of `declared_parent` itself, and the parent, are trusted: choose the
+  parent so that it is a directory the mod source controls.
+- **Reloaded projects start empty.** `Project::load` creates an empty `ContentRoots`. After
+  a project reload the host must mount the roots again (for Workshop items call
+  `WorkshopContent::mount_subscribed` with the new project's `content_roots`).
+- **Locking.** `resolve` copies what it needs under the read lock and validates the
+  filesystem afterwards, so slow disk access never blocks a registration.
+
 ### Scope: v1 and the planned v2
 
 v1 mounts leaf data only and resolves it by full id through `Project::resolve_asset` and

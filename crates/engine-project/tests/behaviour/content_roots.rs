@@ -561,3 +561,65 @@ fn the_total_asset_budget_spans_all_roots() {
     mods.register(&roots, "b0", "one").unwrap();
     assert!(mods.register(&roots, "one", "one").is_ok());
 }
+
+#[test]
+fn a_mounted_font_draws_with_its_own_roots_texture_not_a_project_one() {
+    let proj = Proj::new();
+    // The project has its own texture asset named "fonttex" as well.
+    let project = proj.project();
+    assert!(project.assets.contains_key("fonttex"));
+    let mods = Mods::new();
+    mods.good("item1");
+    mods.register(&project.content_roots, "m", "item1").unwrap();
+    let texture = project.content_roots.font_texture_id("@m/font").unwrap();
+    assert_eq!(texture, "@m/fonttex");
+    assert_eq!(
+        project.resolve_asset(&texture).unwrap(),
+        fs::canonicalize(mods.path("item1/data/fonttex.ppm")).unwrap()
+    );
+    // Only fonts qualify, and unknown ids fail like any other.
+    expect_code(
+        project.content_roots.font_texture_id("@m/tex"),
+        "content_root.font",
+    );
+    expect_code(
+        project.content_roots.font_texture_id("@m/ghost"),
+        "project.asset.unknown",
+    );
+    // The font file is re-read: if it now names a texture the root does not declare, the
+    // lookup fails instead of falling back to the project namespace.
+    let mut font = font_json();
+    font["texture"] = json!("sheet");
+    fs::write(
+        mods.path("item1/data/font.json"),
+        serde_json::to_vec(&font).unwrap(),
+    )
+    .unwrap();
+    expect_code(
+        project.content_roots.font_texture_id("@m/font"),
+        "content_root.font",
+    );
+}
+
+#[test]
+fn a_root_may_declare_only_a_few_fonts() {
+    let mods = Mods::new();
+    mods.good("item1");
+    let roots = ContentRoots::default();
+    let mut assets = vec![json!({"id": "fonttex", "kind": "texture", "path": "data/fonttex.ppm"})];
+    for n in 0..17 {
+        fs::copy(
+            mods.path("item1/data/font.json"),
+            mods.path(&format!("item1/data/font{n}.json")),
+        )
+        .unwrap();
+        assets.push(
+            json!({"id": format!("font{n}"), "kind": "font", "path": format!("data/font{n}.json")}),
+        );
+    }
+    mods.manifest("item1", Value::Array(assets.clone()));
+    expect_code(mods.register(&roots, "m", "item1"), "content_root.limit");
+    assets.pop();
+    mods.manifest("item1", Value::Array(assets));
+    assert!(mods.register(&roots, "m", "item1").is_ok());
+}

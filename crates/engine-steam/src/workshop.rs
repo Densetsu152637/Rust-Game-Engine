@@ -564,8 +564,13 @@ pub enum WorkshopContentEvent {
         item: WorkshopItemId,
         revision: RootRevision,
     },
-    /// The item was unsubscribed and its mount removed.
-    Unmounted { item: WorkshopItemId },
+    /// The mount was removed. `reason` is `None` for a completed unsubscribe; otherwise the
+    /// item is no longer subscribed, or an update failed validation and the stale mount was
+    /// dropped instead of serving the old version against the new files.
+    Unmounted {
+        item: WorkshopItemId,
+        reason: Option<String>,
+    },
     /// The item folder was not mounted (it failed validation); the game carries on.
     Skipped {
         item: WorkshopItemId,
@@ -604,12 +609,38 @@ impl WorkshopContent {
         format!("@{}/{id}", Self::mount_name(item))
     }
 
-    /// Mounts every subscribed item that Steam reports installed.
+    /// Mounts every subscribed item that Steam reports installed, after dropping mounts of
+    /// items that are no longer subscribed (see [`WorkshopContent::reconcile`]).
     pub fn mount_subscribed(&mut self, ugc: &UgcService) -> Vec<WorkshopContentEvent> {
+        let mut out = self.reconcile(ugc);
         let items = ugc.subscribed().unwrap_or_default();
-        items
-            .into_iter()
-            .filter_map(|item| self.mount(ugc, item))
+        out.extend(items.into_iter().filter_map(|item| self.mount(ugc, item)));
+        out
+    }
+
+    /// Unmounts items that are mounted but no longer subscribed, so an unsubscribe made
+    /// outside the game (the Steam client, another machine) is picked up. Call it
+    /// occasionally, for instance at startup or when the game regains focus. It does
+    /// nothing when Steam cannot list the subscriptions.
+    pub fn reconcile(&mut self, ugc: &UgcService) -> Vec<WorkshopContentEvent> {
+        let Ok(subscribed) = ugc.subscribed() else {
+            return Vec::new();
+        };
+        let gone: Vec<_> = self
+            .mounted
+            .iter()
+            .copied()
+            .filter(|item| !subscribed.contains(item))
+            .collect();
+        gone.into_iter()
+            .map(|item| {
+                self.mounted.remove(&item);
+                self.roots.unregister(&Self::mount_name(item));
+                WorkshopContentEvent::Unmounted {
+                    item,
+                    reason: Some("the item is no longer subscribed".into()),
+                }
+            })
             .collect()
     }
 
@@ -630,7 +661,10 @@ impl WorkshopContent {
                 }) => {
                     self.mounted.remove(item);
                     if self.roots.unregister(&Self::mount_name(*item)) {
-                        out.push(WorkshopContentEvent::Unmounted { item: *item });
+                        out.push(WorkshopContentEvent::Unmounted {
+                            item: *item,
+                            reason: None,
+                        });
                     }
                 }
                 _ => {}
@@ -645,9 +679,20 @@ impl WorkshopContent {
         if info.needs_update && self.mounted.contains(&item) {
             return None;
         }
-        let skipped = |reason: String| Some(WorkshopContentEvent::Skipped { item, reason });
+        // A folder that fails validation is skipped; if the item was mounted, its stale mount
+        // is dropped too so the old manifest is never served against the new files.
+        let skipped = |this: &mut Self, reason: String| {
+            if this.mounted.remove(&item) {
+                this.roots.unregister(&Self::mount_name(item));
+                return Some(WorkshopContentEvent::Unmounted {
+                    item,
+                    reason: Some(format!("the updated item failed validation: {reason}")),
+                });
+            }
+            Some(WorkshopContentEvent::Skipped { item, reason })
+        };
         let Some(parent) = info.path.parent() else {
-            return skipped("the install folder has no parent".into());
+            return skipped(self, "the install folder has no parent".into());
         };
         match self
             .roots
@@ -667,7 +712,7 @@ impl WorkshopContent {
                     .first()
                     .map(|d| format!("{}: {}", d.code, d.message))
                     .unwrap_or_else(|| "registration failed".into());
-                skipped(reason)
+                skipped(self, reason)
             }
         }
     }

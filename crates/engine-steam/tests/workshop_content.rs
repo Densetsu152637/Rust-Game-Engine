@@ -223,7 +223,13 @@ fn unsubscribing_unmounts() {
     assert!(rig.resolve(GOOD, "tex").is_ok());
     rig.service.unsubscribe(GOOD).unwrap();
     let events = rig.pump(|e| matches!(e, UgcEvent::Reply(UgcRaw::Subscription { .. })));
-    assert_eq!(events, vec![WorkshopContentEvent::Unmounted { item: GOOD }]);
+    assert_eq!(
+        events,
+        vec![WorkshopContentEvent::Unmounted {
+            item: GOOD,
+            reason: None
+        }]
+    );
     assert!(rig.resolve(GOOD, "tex").is_err());
     assert!(rig.project.content_roots.mounts().is_empty());
 }
@@ -284,4 +290,58 @@ fn subscribed_installed_items_are_mounted_at_startup() {
     );
     assert!(rig.resolve(GOOD, "tex").is_ok());
     let _ = &rig.session;
+}
+
+#[test]
+fn an_update_that_fails_validation_unmounts_the_stale_version() {
+    let mut rig = Rig::new();
+    rig.subscribe(GOOD);
+    rig.download(GOOD);
+    assert!(rig.resolve(GOOD, "tex").is_ok());
+    // The new version ships a script: it is refused, and the old mount must not stay.
+    write_item(
+        &rig.content,
+        GOOD,
+        r#"[{"id":"tex","kind":"texture","path":"tex.ppm"},{"id":"s","kind":"script","path":"tex2.ppm"}]"#,
+    );
+    let events = rig.download(GOOD);
+    let [WorkshopContentEvent::Unmounted { item, reason }] = events.as_slice() else {
+        panic!("not unmounted: {events:?}");
+    };
+    assert_eq!(*item, GOOD);
+    assert!(reason.as_deref().unwrap().contains("content_root.kind"));
+    assert!(rig.resolve(GOOD, "tex").is_err());
+    assert!(rig.project.content_roots.mounts().is_empty());
+}
+
+#[test]
+fn reconcile_picks_up_an_unsubscribe_made_outside_the_game() {
+    let mut rig = Rig::new();
+    rig.subscribe(GOOD);
+    rig.download(GOOD);
+    assert!(
+        rig.mods.reconcile(&rig.service).is_empty(),
+        "still subscribed"
+    );
+    // The Steam client unsubscribes behind the game's back.
+    rig.fake.lock().unwrap().ugc_subscribe(GOOD, false).unwrap();
+    let events = rig.mods.reconcile(&rig.service);
+    assert!(matches!(
+        events.as_slice(),
+        [WorkshopContentEvent::Unmounted { item, reason: Some(_) }] if *item == GOOD
+    ));
+    assert!(rig.resolve(GOOD, "tex").is_err());
+
+    // mount_subscribed reconciles first: subscribe again, mount, drop the subscription,
+    // and a fresh startup pass removes the stale mount.
+    rig.fake.lock().unwrap().ugc_subscribe(GOOD, true).unwrap();
+    rig.mods.mount_subscribed(&rig.service);
+    assert!(rig.resolve(GOOD, "tex").is_ok());
+    rig.fake.lock().unwrap().ugc_subscribe(GOOD, false).unwrap();
+    let events = rig.mods.mount_subscribed(&rig.service);
+    assert!(matches!(
+        events.as_slice(),
+        [WorkshopContentEvent::Unmounted { .. }]
+    ));
+    assert!(rig.resolve(GOOD, "tex").is_err());
 }

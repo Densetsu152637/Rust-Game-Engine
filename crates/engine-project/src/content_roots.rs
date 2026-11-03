@@ -21,6 +21,8 @@ pub const MAX_MOUNTS: usize = 64;
 pub const MAX_ROOT_ASSETS: usize = 4096;
 /// Most assets across all mounted roots.
 pub const MAX_MOUNTED_ASSETS: usize = 16384;
+/// Most `font` assets one root may declare (each is parsed at registration).
+pub const MAX_ROOT_FONTS: usize = 16;
 /// The manifest file name inside a root.
 pub const MANIFEST_NAME: &str = "content.json";
 const MANIFEST_LIMIT: u64 = 1024 * 1024;
@@ -229,6 +231,12 @@ fn load_assets(root: &Path) -> Result<BTreeMap<String, Asset>> {
         assets.insert(asset.id.clone(), asset);
     }
     // A bitmap font may only name a texture of its own root.
+    if assets.values().filter(|a| a.kind == "font").count() > MAX_ROOT_FONTS {
+        return Err(err(
+            "content_root.limit",
+            format!("At most {MAX_ROOT_FONTS} fonts per root"),
+        ));
+    }
     for asset in assets.values().filter(|a| a.kind == "font") {
         let font = crate::content::load_font(&root_file(root, &asset.path)?)?;
         if assets
@@ -358,22 +366,87 @@ impl ContentRoots {
         self.read().mounts.get(mount)?.assets.get(id).cloned()
     }
 
-    /// Resolves a full id to a canonical file, re-validating the root path and the file.
-    pub fn resolve(&self, full_id: &str) -> Result<PathBuf> {
+    /// Copies what a resolution needs, so the lock is not held across filesystem access.
+    fn snapshot(&self, full_id: &str) -> Result<Snapshot> {
         let unknown = || err("project.asset.unknown", format!("Unknown asset {full_id}"));
         let (mount, id) = split_id(full_id).ok_or_else(unknown)?;
         let state = self.read();
-        let mount = state.mounts.get(mount).ok_or_else(unknown)?;
-        let asset = mount.assets.get(id).ok_or_else(unknown)?;
-        let canonical = validate_root(&mount.declared_root, &mount.declared_parent)?;
-        if canonical != mount.root {
+        let entry = state.mounts.get(mount).ok_or_else(unknown)?;
+        let asset = entry.assets.get(id).ok_or_else(unknown)?;
+        Ok(Snapshot {
+            mount: mount.to_owned(),
+            revision: entry.revision,
+            declared_root: entry.declared_root.clone(),
+            declared_parent: entry.declared_parent.clone(),
+            root: entry.root.clone(),
+            path: asset.path.clone(),
+            kind: asset.kind.clone(),
+        })
+    }
+
+    /// Re-validates the root path and the file named by a snapshot (no lock held).
+    fn check(snapshot: &Snapshot) -> Result<PathBuf> {
+        let canonical = validate_root(&snapshot.declared_root, &snapshot.declared_parent)?;
+        if canonical != snapshot.root {
             return Err(err(
                 "content_root.escape",
                 "The root no longer resolves to where it was registered",
             ));
         }
-        root_file(&mount.root, &asset.path)
+        root_file(&snapshot.root, &snapshot.path)
     }
+
+    /// Resolves a full id to a canonical file, re-validating the root path and the file.
+    ///
+    /// The check and the caller's later open are separate steps, so a hostile replacement
+    /// racing between them is not prevented (see the design note); mounted folders are
+    /// written by Steam, not by untrusted code running on the machine.
+    pub fn resolve(&self, full_id: &str) -> Result<PathBuf> {
+        Self::check(&self.snapshot(full_id)?)
+    }
+
+    /// The full id of the texture a mounted bitmap font draws with: `@<mount>/<texture>`.
+    ///
+    /// A font file names its texture by local id, and consumers that resolve
+    /// `font.texture` as-is would look it up in the project namespace, where a project
+    /// asset of the same id would be drawn instead. This re-reads the font (through the
+    /// same link and confinement checks), requires the texture to be a texture asset of the
+    /// same root, and returns the namespaced id to resolve.
+    pub fn font_texture_id(&self, full_font_id: &str) -> Result<String> {
+        let snapshot = self.snapshot(full_font_id)?;
+        if snapshot.kind != "font" {
+            return Err(err(
+                "content_root.font",
+                format!("{full_font_id} is not a font asset"),
+            ));
+        }
+        let font = crate::content::load_font(&Self::check(&snapshot)?)?;
+        let state = self.read();
+        let entry = state.mounts.get(&snapshot.mount);
+        let same_root = entry.is_some_and(|m| {
+            m.revision == snapshot.revision
+                && m.assets
+                    .get(&font.texture)
+                    .is_some_and(|t| t.kind == "texture")
+        });
+        if !same_root {
+            return Err(err(
+                "content_root.font",
+                format!("Font {full_font_id} must name a texture asset of the same root"),
+            ));
+        }
+        Ok(format!("@{}/{}", snapshot.mount, font.texture))
+    }
+}
+
+struct Snapshot {
+    mount: String,
+    revision: RootRevision,
+    declared_root: PathBuf,
+    declared_parent: PathBuf,
+    root: PathBuf,
+    path: PathBuf,
+    kind: String,
 }
 
 fn split_id(full_id: &str) -> Option<(&str, &str)> {

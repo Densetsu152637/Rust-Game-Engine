@@ -616,8 +616,15 @@ once at startup:
 - a finished download mounts the item's install folder as mount `workshop-<id>`, or replaces
   the previous mount when the item updated (`WorkshopContentEvent::Mounted` / `Replaced`);
   while `needs_update` is true and the item is mounted, the old version stays;
-- a completed unsubscribe removes the mount (`Unmounted`);
-- a folder that fails validation is skipped with `Skipped { reason }` and nothing else stops.
+- a completed unsubscribe removes the mount (`Unmounted { reason: None }`);
+- a folder that fails validation is skipped with `Skipped { reason }` and nothing else stops;
+  if that item was already mounted (an update that broke it), the stale mount is removed
+  as well and the event is `Unmounted { reason: Some(..) }`, so the old manifest is never
+  served against the new files;
+- `reconcile(&service)` unmounts items that are mounted but no longer subscribed (an
+  unsubscribe made in the Steam client or on another machine); `mount_subscribed` calls it
+  first. A reloaded project has empty content roots, so call `mount_subscribed` again with
+  the new project's `content_roots`.
 
 Mounted assets are addressed `@workshop-<id>/<id>` (`WorkshopContent::asset_id`) and resolve
 through `Project::resolve_asset` / `services::resolve_asset`. An item folder needs a
