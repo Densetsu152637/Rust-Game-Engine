@@ -5,8 +5,10 @@ off by default: a normal build contains no Steam code and no Steam dependency, a
 nothing in a game changes unless it opts in.
 
 Status: the skeleton (S1), the real backend core (S2), the host integration (S3),
-achievements and stats (S4), Cloud saves (S5), the Networking Sockets transport (S6) and
-lobbies (S7) of
+achievements and stats (S4), Cloud saves (S5), the Networking Sockets transport (S6),
+lobbies (S7), Steam Input (S8), Workshop (S9), Workshop content roots (S10) and the
+Windows parts of S11 (the `engine::steam` facade feature, the `steam_status` MCP tool,
+CI checks and the Windows Steam-variant procedure) of
 `docs/platform-and-steam-plan.md` exist: the backend trait, the null and fake
 backends, the status and error types, the build feature, and a `RealBackend` that
 initialises Steam, reports identity, issues auth tickets, opens the overlay, sets rich
@@ -100,13 +102,60 @@ only) and `ConnectionChanged`. The callback handles are owned by the backend and
 long as it. Steam's "shutdown requested" notification is not exposed by `steamworks`
 0.13.1, so `ShutdownRequested` is not produced by the real backend yet.
 
+## Using Steam from a facade game
+
+A game that depends on the `engine` facade gets the Steam API as `engine::steam`
+(`engine-steam`) in every build: the backend trait, `NullBackend`, `FakeBackend`,
+`SteamSession`, `SteamPlugin`, `status_json` and the rest. Without a feature
+`default_backend()` returns a `NullBackend` (status `not_compiled`). The real backend is
+the facade's `steam` feature, which a game forwards as its own opt-in:
+
+```toml
+[features]
+steam = ["engine/steam"]
+[dependencies]
+engine = { git = "...", tag = "v0.1.0" }
+```
+
+`cargo build --features steam` then links `steamworks` (`engine::steam::STEAM_COMPILED`
+is true). The default `cargo tree -p engine -e normal` has no `steamworks`.
+
+A game that calls `engine::desktop::run` itself wires the host service the way
+`engine_tooling::runtime_entry` does:
+
+```rust
+use engine::steam::{SteamPlugin, SteamSession, default_backend};
+
+let project = Project::load("project.json")?;
+let steam = project.steam.clone();
+let runtime = Runtime::new(project)?;
+let session = steam.as_ref().map(|_| SteamSession::new(default_backend()));
+let services: Vec<Box<dyn engine::desktop::HostService>> = match (&session, steam) {
+    (Some(session), Some(manifest)) => vec![Box::new(SteamPlugin::new(session.clone(), manifest))],
+    _ => Vec::new(),
+};
+engine::desktop::run_with_services(runtime, options, None, services)?;
+```
+
+`crates/engine/tests/steam.rs` runs this wiring through the facade with a `FakeBackend`.
+Games that go through generated runtimes (`engine project package`) need no code: the
+runtime entry does it for any project with a `steam` block when the tooling is built with
+`--features steam`.
+
 ## Host integration (`steam` manifest block)
 
 A project with a `steam` block (see [Project format](project-format.md)) gets the Steam
 host service when it runs through `engine_tooling::runtime_entry::run` (the entry point
-of generated game binaries). The block is plain data in every build; to link the real
-backend build `engine-tooling` with `--features steam`, otherwise the status is
-`not_compiled`.
+of generated game binaries) or when a facade game's `main` wires it itself (see
+[Using Steam from a facade game](#using-steam-from-a-facade-game)). The block is plain
+data in every build; to link the real backend build `engine-tooling` with
+`--features steam` (generated runtimes then depend on `engine-tooling/steam`), otherwise
+the status is `not_compiled`.
+
+Runs started by the editor or by `engine run` never touch Steam: both start the generation
+with a readiness handshake (`ENGINE_GENERATION_READY_FILE`), and such generations skip the
+Steam service. Run the Steam variant by launching the compiled runtime directly or from a
+package, see [Shipping the Steam variant on Windows](#shipping-the-steam-variant-on-windows).
 
 The desktop runner knows nothing about Steam. `engine_desktop::run_with_services` takes
 `Vec<Box<dyn HostService>>` (trait in `engine_project::host_service`; `run` and
@@ -624,7 +673,17 @@ once at startup:
 - `reconcile(&service)` unmounts items that are mounted but no longer subscribed (an
   unsubscribe made in the Steam client or on another machine); `mount_subscribed` calls it
   first. A reloaded project has empty content roots, so call `mount_subscribed` again with
-  the new project's `content_roots`.
+  the new project's `content_roots`. `reconcile` trusts the subscription list: if Steam
+  transiently reports no subscriptions (an empty list while the client is still syncing),
+  it unmounts every mounted item, and the next `mount_subscribed` remounts them from the
+  installed folders. It does nothing when the list cannot be read at all. Do not run it in
+  the middle of a frame that is loading mod assets; the unmount is immediate.
+
+Mounted ids are only as trustworthy as the item that declared them: the item chooses each
+asset's kind. Before passing a mod id to a loader that does not check kinds
+(`services::resolve_asset`, `ml::load_asset`), resolve it with
+`Project::resolve_asset_kind(id, &["mesh"])` (or `ContentRoots::resolve_kind`), see
+[Checking the kind before loading](asset-pipeline.md#checking-the-kind-before-loading).
 
 Mounted assets are addressed `@workshop-<id>/<id>` (`WorkshopContent::asset_id`) and resolve
 through `Project::resolve_asset` / `services::resolve_asset`. An item folder needs a
@@ -692,6 +751,51 @@ example binaries (not yet exercised on those systems). This helper is for develo
 only; a shipped game must place the library next to its executable. `steam_appid.txt` is
 not needed because the tests pass the App ID to `init`.
 
+## Shipping the Steam variant on Windows
+
+The Steam variant is a separate build (see [Build variants](#build-variants)). On Windows:
+
+1. Build the tooling with the feature: `cargo build -p engine-tooling --features steam
+   --bin engine`. Generations it compiles depend on `engine-tooling/steam`, so their
+   `runtime_entry` links the real backend. (A facade game that runs itself builds with its
+   own `steam` feature instead.)
+2. Add a `steam` block to `project.json` (`app_id`, optionally `required`, `cloud`).
+3. Package: `engine project package project.json <new-dir>`. The package has `runtime.exe`
+   and `game/`.
+4. Copy `steam_api64.dll` (the redistributable, from the Steamworks SDK you are licensed
+   for, or from the pinned `steamworks-sys` crate for development) **next to `runtime.exe`**.
+   Without it the process cannot start at all (loader error `0xC0000135`, whether or not
+   Steam is running).
+5. Never ship `steam_appid.txt`; the app id comes from the manifest and, for a release,
+   Steam launches the game.
+
+Depot layout, `app_build.vdf` and uploading (SteamCMD with partner credentials) are not
+automated yet (`--format steam-depot` is deferred, see the [Roadmap](#roadmap-not-yet-implemented)).
+
+Windows run recorded on 2026-11-03 with Steam running, App ID 480, using the first-project
+example with `"steam": {"app_id": 480}` added and a package built by the Steam-feature
+tooling:
+
+```text
+runtime.exe game/project.json --headless --ticks 3        (no steam_api64.dll)  -> does not start
+runtime.exe game/project.json --headless --ticks 3        (dll next to the exe) -> exit 0
+  "steam": {"app_id": 480, "state": "ready", "user": {"id": "<SteamID64>", "name": "<persona>"}}
+```
+
+The run report's `steam` object carries the status; with Steam closed the same command
+is expected to report `"state": "not_running"` and exit 0 (unless `required` is set); that
+case was not run here because Steam must stay open.
+
+## MCP `steam_status`
+
+The read-only MCP tool `steam_status` ([MCP](mcp.md)) reports whether the build has the real
+backend, the project's `steam` block (`declared`, `app_id`, `required`, `cloud`) and the
+state this process has established (`initialized`, `status`, `user_name`). It never starts
+Steam or calls the Steam API and returns no tickets or secrets; a server that only
+inspects a project reports `not_started`. `engine_steam::published_status()` is the
+process-wide value it reads: the status last observed by a `SteamPlugin` in the same
+process.
+
 ## Redistribution terms for the bundled Steam libraries
 
 `steamworks = "=0.13.1"` and its `steamworks-sys` crate are MIT/Apache-2.0 licensed
@@ -720,5 +824,5 @@ advice.
 Everything below is planned in `docs/platform-and-steam-plan.md` and is not implemented
 at this stage.
 
-- S10: Workshop content loading through extra read-only asset roots.
-- S11: Steam packaging (depot layout), `engine` facade feature, tooling and CI.
+- S11 (remaining): `--format steam-depot` packaging (per-platform depot directories,
+  `app_build.vdf` templates), and the Linux and macOS CI rows and release smoke runs.

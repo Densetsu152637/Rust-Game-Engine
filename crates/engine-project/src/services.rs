@@ -36,6 +36,8 @@ pub fn find_entity(world: &World, id: &str) -> Option<Entity> {
         .get(id)
         .filter(|e| world.get_entity(*e).is_ok())
 }
+/// Resolves a project asset or a mounted `@mount/id` to a canonical file. It does not check
+/// the asset's kind; use `Project::resolve_asset_kind` first when the id comes from data.
 pub fn resolve_asset(world: &World, id: &str) -> Result<PathBuf> {
     world
         .get_resource::<ProjectResource>()

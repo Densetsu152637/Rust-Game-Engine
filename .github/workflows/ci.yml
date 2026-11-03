@@ -87,6 +87,21 @@ jobs:
       # Compiles the whole template, including src/main.rs, against this checkout.
       - name: cargo check (game template)
         run: bash scripts/ci/check-template.sh
+      # The Steam variant is opt-in (docs/steam.md). The Linux and macOS rows join after the
+      # platform stages.
+      - name: cargo clippy (Steam feature)
+        run: cargo clippy -p engine-steam --features steam,online --all-targets --locked -- -D warnings
+      - name: cargo build (Steam feature)
+        run: cargo build -p engine-steam --features steam --all-targets --locked
+      - name: cargo check (facade Steam feature)
+        run: cargo check -p engine --features steam --locked
+      # A default build must not contain steamworks. `grep -c` exits 1 on zero matches, so
+      # the count is captured separately instead of letting pipefail fail the step.
+      - name: Default features exclude steamworks
+        run: |
+          count=$(cargo tree -p engine -p engine-desktop -e normal --locked | grep -c steamworks || true)
+          echo "steamworks entries in the default dependency tree: $count"
+          test "$count" = "0"
       - name: Disk space (after build)
         if: ${{ always() }}
         run: df -h

@@ -65,6 +65,13 @@ pub(super) fn generated_manifest(
         if path.join("Cargo.toml").is_file() {
             let mut dependency = toml::map::Map::new();
             dependency.insert("path".into(), path.to_string_lossy().as_ref().into());
+            if name == "engine-tooling" && cfg!(feature = "steam") {
+                // A tooling binary built with `steam` produces Steam-variant generations.
+                dependency.insert(
+                    "features".into(),
+                    toml::Value::Array(vec![toml::Value::String("steam".into())]),
+                );
+            }
             dependencies.insert(name.into(), toml::Value::Table(dependency));
         }
     }

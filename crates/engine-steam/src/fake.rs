@@ -143,6 +143,13 @@ impl FakeBackend {
         self
     }
 
+    /// Accepts the first `verdicts` `BeginAuthSession` verdicts, then rejects every later
+    /// one (for scripting "the first login is fine, the second is refused").
+    pub fn with_auth_rejection_after(mut self, verdicts: usize) -> Self {
+        self.net.set_accept_budget(Some(verdicts));
+        self
+    }
+
     /// While enabled, unreliable messages are queued ahead of earlier ones (reversed
     /// order), so receivers can be tested against stale data.
     pub fn set_net_reorder(&mut self, enabled: bool) {

@@ -563,6 +563,37 @@ fn the_total_asset_budget_spans_all_roots() {
 }
 
 #[test]
+fn resolve_kind_only_resolves_declared_kinds() {
+    let proj = Proj::new();
+    let project = proj.project();
+    let mods = Mods::new();
+    mods.good("item1");
+    mods.register(&project.content_roots, "m", "item1").unwrap();
+    let roots = &project.content_roots;
+    assert_eq!(
+        roots.resolve_kind("@m/mesh", &["mesh", "texture"]).unwrap(),
+        roots.resolve("@m/mesh").unwrap()
+    );
+    // A texture declared by the mod is not a mesh, even though the loader would try.
+    expect_code(roots.resolve_kind("@m/tex", &["mesh"]), "content_root.kind");
+    expect_code(
+        roots.resolve_kind("@m/ghost", &["mesh"]),
+        "project.asset.unknown",
+    );
+    // The project facade applies the same rule to mounted and project ids.
+    expect_code(
+        project.resolve_asset_kind("@m/sfx", &["mesh"]),
+        "content_root.kind",
+    );
+    assert!(project.resolve_asset_kind("@m/sfx", &["audio"]).is_ok());
+    expect_code(
+        project.resolve_asset_kind("fonttex", &["mesh"]),
+        "project.asset.kind",
+    );
+    assert!(project.resolve_asset_kind("fonttex", &["texture"]).is_ok());
+}
+
+#[test]
 fn a_mounted_font_draws_with_its_own_roots_texture_not_a_project_one() {
     let proj = Proj::new();
     // The project has its own texture asset named "fonttex" as well.

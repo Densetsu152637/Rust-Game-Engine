@@ -763,7 +763,8 @@ fn an_unauthenticated_peer_cannot_evict_a_pending_validation() {
 
 #[test]
 fn a_stale_verdict_for_a_superseded_ticket_does_not_admit_the_new_peer() {
-    let (session, fake) = session_for(ready());
+    // Steam accepts the first login's ticket and rejects the second's.
+    let (session, fake) = session_for(ready().with_auth_rejection_after(1));
     let mut server =
         SteamServerEndpoint::listen(session.clone(), SteamServerConfig::p2p(0)).unwrap();
     let hello = |ticket: u32| {
@@ -779,16 +780,24 @@ fn a_stale_verdict_for_a_superseded_ticket_does_not_admit_the_new_peer() {
             f.auth_session_ticket().unwrap().handle,
         )
     };
-    // The second ticket is rejected by Steam; the first one's (accepted) verdict is still
-    // queued when the second claim supersedes it, and must not admit the second peer.
-    fake.lock().unwrap().cancel_auth_ticket(t2).unwrap();
     let a = Raw::open(&session, &fake, &mut server);
     let b = Raw::open(&session, &fake, &mut server);
+    // Both tickets are valid and both hellos are read in one poll, so the first login's
+    // accepted verdict is still queued in the backend when the second claim supersedes it.
+    // The endpoint must discard that verdict instead of routing it to the new claim, whose
+    // own verdict is the rejection: the second peer is never authenticated.
     a.send(&hello(t1));
     b.send(&hello(t2));
+    let mut events = Vec::new();
     for _ in 0..4 {
-        server.poll(full()).unwrap();
+        events.extend(server.poll(full()).unwrap());
     }
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, LinkEvent::Authenticated(_) | LinkEvent::Connected(_))),
+        "no peer may be authenticated: {events:?}"
+    );
     assert!(server.connected_peers().is_empty());
     assert_eq!(server.pending_peers(), 0);
 }

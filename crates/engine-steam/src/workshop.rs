@@ -621,7 +621,9 @@ impl WorkshopContent {
     /// Unmounts items that are mounted but no longer subscribed, so an unsubscribe made
     /// outside the game (the Steam client, another machine) is picked up. Call it
     /// occasionally, for instance at startup or when the game regains focus. It does
-    /// nothing when Steam cannot list the subscriptions.
+    /// nothing when Steam cannot list the subscriptions. A successful but transiently
+    /// empty list unmounts every item; the next [`mount_subscribed`](Self::mount_subscribed)
+    /// remounts the installed ones.
     pub fn reconcile(&mut self, ugc: &UgcService) -> Vec<WorkshopContentEvent> {
         let Ok(subscribed) = ugc.subscribed() else {
             return Vec::new();

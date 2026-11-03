@@ -69,8 +69,12 @@ pub(super) fn fingerprint(
     field(
         &mut hash,
         format!(
-            "{:?}{:?}{}{}",
-            request.features, request.target, request.release, request.offline
+            "{:?}{:?}{}{}steam={}",
+            request.features,
+            request.target,
+            request.release,
+            request.offline,
+            cfg!(feature = "steam")
         )
         .as_bytes(),
     );

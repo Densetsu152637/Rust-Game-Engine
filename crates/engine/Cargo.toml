@@ -20,6 +20,10 @@ dlss = ["desktop", "engine-desktop/dlss"]
 system-clipboard = ["desktop", "engine-desktop/system-clipboard"]
 # Bit-identical cross-platform physics maths (slower). See docs/physics-queries.md#determinism.
 deterministic-physics = ["engine-physics/deterministic"]
+# The real Steamworks backend in `engine::steam` (needs the steam_api library next to the
+# executable at run time). `engine::steam` itself is always present with the null and fake
+# backends. See docs/steam.md.
+steam = ["engine-steam/steam"]
 
 [dependencies]
 engine-desktop = { path = "../engine-desktop", optional = true }
@@ -50,6 +54,7 @@ engine-pcg = { path = "../engine-pcg" }
 engine-physics = { path = "../engine-physics" }
 engine-script = { path = "../engine-script", default-features = false }
 engine-sequencer = { path = "../engine-sequencer" }
+engine-steam = { path = "../engine-steam" }
 engine-streaming = { path = "../engine-streaming" }
 engine-text = { path = "../engine-text" }
 engine-terrain = { path = "../engine-terrain" }

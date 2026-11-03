@@ -178,6 +178,30 @@ impl Project {
             .ok_or_else(|| Error::new("project.asset.unknown", format!("Unknown asset {id}")))?;
         confined_file(&self.root, &asset.path)
     }
+    /// Like [`resolve_asset`](Self::resolve_asset) but only for assets whose declared kind is
+    /// one of `kinds` (`project.asset.kind` for project ids, `content_root.kind` for mounted
+    /// ones). Use it before handing a data-supplied id, which may be a mod's `@mount/id`, to a
+    /// loader that does not check the kind.
+    pub fn resolve_asset_kind(&self, id: &str, kinds: &[&str]) -> Result<PathBuf> {
+        if id.starts_with('@') {
+            return self.content_roots.resolve_kind(id, kinds);
+        }
+        let asset = self
+            .assets
+            .get(id)
+            .ok_or_else(|| Error::new("project.asset.unknown", format!("Unknown asset {id}")))?;
+        if !kinds.contains(&asset.kind.as_str()) {
+            return Err(Error::new(
+                "project.asset.kind",
+                format!(
+                    "Asset {id} is a {} asset; expected one of: {}",
+                    asset.kind,
+                    kinds.join(", ")
+                ),
+            ));
+        }
+        confined_file(&self.root, &asset.path)
+    }
     pub fn require_asset(&self, id: &str, kind: &str) -> Result<&Asset> {
         let asset = self
             .assets

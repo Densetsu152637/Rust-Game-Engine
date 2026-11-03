@@ -53,6 +53,8 @@ pub(crate) struct FakeNet {
     queue_limit: usize,
     reorder: bool,
     reject_auth: bool,
+    /// Verdicts still to accept before every later one is rejected (`None`: no limit).
+    accept_budget: Option<usize>,
     next_id: u32,
     listens: BTreeMap<u32, ListenKind>,
     conns: BTreeMap<u32, Conn>,
@@ -71,6 +73,7 @@ impl Default for FakeNet {
             queue_limit: 1024 * 1024,
             reorder: false,
             reject_auth: false,
+            accept_budget: None,
             next_id: 1,
             listens: BTreeMap::new(),
             conns: BTreeMap::new(),
@@ -98,6 +101,9 @@ impl FakeNet {
     }
     pub(crate) fn set_reject_auth(&mut self, on: bool) {
         self.reject_auth = on;
+    }
+    pub(crate) fn set_accept_budget(&mut self, verdicts: Option<usize>) {
+        self.accept_budget = verdicts;
     }
     pub(crate) fn open_connections(&self) -> usize {
         self.conns.len()
@@ -336,7 +342,14 @@ impl FakeNet {
         if !self.auth_sessions.insert(user) {
             return Err(SteamError::Rejected("duplicate ticket request".into()));
         }
-        let accepted = !self.reject_auth;
+        let mut accepted = !self.reject_auth;
+        if let Some(left) = &mut self.accept_budget {
+            if *left == 0 {
+                accepted = false;
+            } else {
+                *left -= 1;
+            }
+        }
         self.events.push_back(NetEvent::AuthResult {
             user,
             accepted,
