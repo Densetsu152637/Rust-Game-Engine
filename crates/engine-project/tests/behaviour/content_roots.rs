@@ -269,7 +269,7 @@ fn duplicate_ids_paths_and_bad_manifests_are_refused() {
         "item1",
         json!([
             {"id": "a", "kind": "texture", "path": "data/white.ppm"},
-            {"id": "b", "kind": "texture", "path": "data/WHITE.ppm"}
+            {"id": "b", "kind": "texture", "path": "data/white.ppm"}
         ]),
     );
     expect_code(
