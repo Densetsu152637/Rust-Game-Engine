@@ -95,12 +95,14 @@ jobs:
         run: cargo build -p engine-steam --features steam --all-targets --locked
       - name: cargo check (facade Steam feature)
         run: cargo check -p engine --features steam --locked
-      # A default build must not contain steamworks. `grep -c` exits 1 on zero matches, so
-      # the count is captured separately instead of letting pipefail fail the step.
+      # A default build must not contain steamworks. The tree is captured first so a
+      # cargo failure fails the step; only grep's exit 1 on zero matches is tolerated.
       - name: Default features exclude steamworks
         run: |
-          count=$(cargo tree -p engine -p engine-desktop -e normal --locked | grep -c steamworks || true)
+          tree=$(cargo tree -p engine -p engine-desktop -p engine-mcp -p engine-tooling -e normal --locked)
+          count=$(printf '%s\n' "$tree" | grep -c steamworks || true)
           echo "steamworks entries in the default dependency tree: $count"
+          test -n "$tree"
           test "$count" = "0"
       - name: Disk space (after build)
         if: ${{ always() }}
