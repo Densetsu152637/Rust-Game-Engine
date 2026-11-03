@@ -7,6 +7,7 @@ pub mod audio;
 pub mod captions;
 pub mod catalog;
 pub mod content;
+pub mod content_roots;
 pub mod document;
 pub mod events;
 pub mod gameplay;

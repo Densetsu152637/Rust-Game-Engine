@@ -580,9 +580,54 @@ for event in ugc.poll() { /* UgcEvent */ }
   also raises `SteamEvent::WorkshopItemInstalled(item)` (`steam.workshop_item_installed`).
   Steam normally downloads subscribed items by itself; `download_item` forces or prioritises it.
 - `item_state(id)` reports subscribed, installed, needs-update, downloading and pending flags.
-- `ItemUpdate` is validated before reaching Steam: title 1 to 128 bytes, description at most
-  8000, at most 100 tags of 1 to 255 bytes without commas, no NUL, and the content folder and
+- `ItemUpdate` is validated before reaching Steam, against the buffers in the Steamworks
+  headers (each limit counts Steam's terminating NUL): title 1 to 128 bytes, description and
+  change note at most 7999 bytes, at most 100 tags of 1 to 255 bytes without commas, the
+  comma-joined tag list at most 1024 bytes, no NUL anywhere, and the content folder and
   preview file must exist.
+- Tracking is bounded. A download also ends (reply `Downloaded Ok` plus the installed event)
+  when Steam reports the item installed, current and no longer downloading, because Steam
+  sends no callback for an item that is already up to date. A submission or download Steam
+  never answers ends with an error reply after the tracking timeout (default two hours,
+  `set_tracking_timeout`). The real backend refuses new requests while 128 replies wait
+  unpolled and never evicts a request's reply; only unsolicited download notifications are
+  dropped when 256 replies pile up.
+
+### Binding panics, contained
+
+The `steamworks` 0.13.1 binding panics in places: the `UpdateHandle` setters `assert!` on
+Steam's boolean answer and `unwrap` the path canonicalisation, and `QueryResults::get`
+reaches `unreachable!()` for a visibility or file type it does not know. The real backend
+builds update handles under `catch_unwind` (returning `Rejected`, on the calling thread) and
+converts query results under `catch_unwind` inside the Steam callback (answering with an error
+reply), so a panic never unwinds across Steam's C callback boundary. On Windows the binding
+canonicalises the content and preview paths and so hands Steam a `\\?\`-prefixed path; the
+binding gives no way to change that, and an upload was not run to confirm Steam accepts it
+(see the manual procedure below). Two conversions remain in the binding: visibility maps to
+`ItemVisibility` and the file type is read but not exposed.
+
+### Mounting installed items as content roots (S10)
+
+`WorkshopContent::new(project.content_roots.clone())` mounts installed items as read-only
+content roots (generic mechanism: `engine_project::content_roots`). Feed it the events of each
+`UgcService::poll()` with `process(&service, &events)`, and call `mount_subscribed(&service)`
+once at startup:
+
+- a finished download mounts the item's install folder as mount `workshop-<id>`, or replaces
+  the previous mount when the item updated (`WorkshopContentEvent::Mounted` / `Replaced`);
+  while `needs_update` is true and the item is mounted, the old version stays;
+- a completed unsubscribe removes the mount (`Unmounted`);
+- a folder that fails validation is skipped with `Skipped { reason }` and nothing else stops.
+
+Mounted assets are addressed `@workshop-<id>/<id>` (`WorkshopContent::asset_id`) and resolve
+through `Project::resolve_asset` / `services::resolve_asset`. An item folder needs a
+`content.json` (same asset records as `project.json`) listing leaf data only: `mesh`,
+`texture`, `audio`, `lut`, `string_table` and a bitmap `font` whose texture is in the same
+item. Scripts, shaders, graphs and scene-like kinds are refused, as is any link anywhere in the
+item; the folder must lie directly below the directory Steam reports as its parent. The
+full rules are in [Additional read-only content roots](asset-pipeline.md#additional-read-only-content-roots).
+Not yet supported (planned v2): scenes, prefabs and other composite kinds, and mod ids in
+scene component fields.
 
 ### Uploading is manual only
 

@@ -321,6 +321,24 @@ impl FakeBackend {
         self
     }
 
+    /// Changes where an installed item lives (an existing `with_installed_item` entry).
+    pub fn set_installed_path(&mut self, id: WorkshopItemId, path: std::path::PathBuf) {
+        if let Some(item) = self.installed.get_mut(&id) {
+            item.path = path;
+        }
+    }
+
+    /// Switches the silent-download behaviour while running.
+    pub fn set_silent_downloads(&mut self, silent: bool) {
+        self.ugc.silent_downloads = silent;
+    }
+
+    /// Finished downloads send no completion reply, only the changed item state.
+    pub fn with_silent_downloads(mut self) -> Self {
+        self.ugc.silent_downloads = true;
+        self
+    }
+
     /// A catalog item as the fake currently holds it.
     pub fn workshop_item(&self, id: WorkshopItemId) -> Option<&WorkshopItem> {
         self.ugc.catalog.get(&id)
@@ -849,6 +867,12 @@ impl SteamBackend for FakeBackend {
 
     fn controllers(&self) -> SteamResult<Vec<ControllerId>> {
         self.require_ready()?;
+        if !self.input_ready {
+            // Like the real backend: no controller list before Steam Input starts.
+            return Err(SteamError::Rejected(
+                "Steam Input is not initialised".into(),
+            ));
+        }
         Ok(self.controllers.clone())
     }
 
@@ -974,6 +998,10 @@ impl SteamBackend for FakeBackend {
         Some((total * u64::from(polls - left) / u64::from(polls), total))
     }
 
+    fn ugc_forget_update(&mut self, request: RequestId) {
+        self.ugc.updates.remove(&request);
+    }
+
     fn ugc_poll(&mut self) -> Vec<UgcRaw> {
         self.ugc.step_updates();
         let mut done = Vec::new();
@@ -992,7 +1020,9 @@ impl SteamBackend for FakeBackend {
                 }
                 None => Err("the item has no downloadable content".to_owned()),
             };
-            self.ugc.replies.push(UgcRaw::Downloaded { item, result });
+            if !self.ugc.silent_downloads {
+                self.ugc.replies.push(UgcRaw::Downloaded { item, result });
+            }
         }
         std::mem::take(&mut self.ugc.replies)
     }

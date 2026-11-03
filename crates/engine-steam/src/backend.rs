@@ -173,6 +173,8 @@ pub trait SteamBackend {
     fn ugc_download_progress(&self, _item: WorkshopItemId) -> Option<(u64, u64)> {
         None
     }
+    /// Stops watching a submission whose reply never came.
+    fn ugc_forget_update(&mut self, _request: RequestId) {}
     /// Drains finished requests.
     fn ugc_poll(&mut self) -> Vec<UgcRaw> {
         Vec::new()

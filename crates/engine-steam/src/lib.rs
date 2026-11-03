@@ -80,7 +80,8 @@ pub use transport::{
 pub use types::*;
 pub use workshop::{
     ItemState, ItemUpdate, ItemVisibility, MAX_QUERY_IDS, PublicQuery, PublicSort, QueryPage,
-    RequestId, UgcEvent, UgcQuery, UgcRaw, UgcService, UpdateProgress, UpdateStage, WorkshopItem,
+    RequestId, UgcEvent, UgcQuery, UgcRaw, UgcService, UpdateProgress, UpdateStage,
+    WorkshopContent, WorkshopContentEvent, WorkshopItem,
 };
 
 /// True when this build contains the real Steam backend.

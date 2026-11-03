@@ -205,6 +205,9 @@ macro_rules! forward_ugc {
         fn ugc_download_progress(&self, item: WorkshopItemId) -> Option<(u64, u64)> {
             self.fake.lock().unwrap().ugc_download_progress(item)
         }
+        fn ugc_forget_update(&mut self, request: RequestId) {
+            self.fake.lock().unwrap().ugc_forget_update(request)
+        }
         fn ugc_poll(&mut self) -> Vec<UgcRaw> {
             self.fake.lock().unwrap().ugc_poll()
         }

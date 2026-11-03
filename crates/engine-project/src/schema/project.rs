@@ -32,6 +32,12 @@ impl Project {
         let mut assets = BTreeMap::new();
         let mut paths = BTreeSet::new();
         for asset in raw.assets {
+            if asset.id.starts_with('@') {
+                return Err(Error::new(
+                    "project.asset.id.reserved",
+                    "Asset IDs starting with '@' are reserved for content roots",
+                ));
+            }
             if !identifier(&asset.id) || assets.contains_key(&asset.id) {
                 return Err(Error::new(
                     "project.asset.id.duplicate",
@@ -153,6 +159,7 @@ impl Project {
             input_bindings: bindings,
             scene,
             steam: raw.steam,
+            content_roots: Default::default(),
         };
         Ok(project)
     }
@@ -160,6 +167,11 @@ impl Project {
         confined_file(&self.root, &self.rust_manifest)
     }
     pub fn resolve_asset(&self, id: &str) -> Result<PathBuf> {
+        // `@mount/id` names an asset of a mounted content root; project ids never start
+        // with '@', so the project root cannot be shadowed.
+        if id.starts_with('@') {
+            return self.content_roots.resolve(id);
+        }
         let asset = self
             .assets
             .get(id)

@@ -26,6 +26,8 @@ pub(crate) struct FakeUgc {
     /// Item to `(polls left, polls total)`.
     pub(crate) downloads: BTreeMap<WorkshopItemId, (u32, u32)>,
     pub(crate) download_polls: u32,
+    /// Finished downloads send no `Downloaded` reply (Steam does this for current items).
+    pub(crate) silent_downloads: bool,
     pub(crate) applied: Vec<(WorkshopItemId, ItemUpdate)>,
 }
 
@@ -39,6 +41,7 @@ impl Default for FakeUgc {
             replies: Vec::new(),
             downloads: BTreeMap::new(),
             download_polls: 2,
+            silent_downloads: false,
             applied: Vec::new(),
         }
     }

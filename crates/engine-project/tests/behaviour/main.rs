@@ -16,6 +16,7 @@ mod common;
 mod assets;
 mod audio;
 mod collision;
+mod content_roots;
 mod document;
 mod input;
 mod persistence;

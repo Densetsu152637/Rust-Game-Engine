@@ -10,10 +10,12 @@
 //! Uploading (`submit_item`) publishes content on the Steam Workshop. Nothing in this
 //! crate's automated tests does it; see `docs/steam.md` for the manual procedure.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use bevy_ecs::prelude::Resource;
+use engine_project::content_roots::{ContentRoots, RootRevision};
 
 use crate::error::{SteamError, SteamResult};
 use crate::session::SteamSession;
@@ -23,11 +25,18 @@ use crate::types::{InstalledItem, SteamEvent, SteamId, SteamStatus, WorkshopItem
 pub const MAX_QUERY_IDS: usize = 50;
 /// Concurrent submissions or downloads the service tracks.
 pub const MAX_TRACKED: usize = 64;
+// Steam's limits (steamworks-sys `k_cchPublishedDocumentTitleMax` = 129,
+// `k_cchPublishedDocumentDescriptionMax` = 8000, `..ChangeDescriptionMax` = 8000 and
+// `k_cchTagListMax` = 1025), each counting the terminating NUL.
 const MAX_TITLE_BYTES: usize = 128;
-const MAX_DESCRIPTION_BYTES: usize = 8000;
+const MAX_DESCRIPTION_BYTES: usize = 7999;
 const MAX_TAGS: usize = 100;
 const MAX_TAG_BYTES: usize = 255;
-const MAX_NOTE_BYTES: usize = 8000;
+/// The comma-joined tag list, without the NUL.
+const MAX_TAG_LIST_BYTES: usize = 1024;
+const MAX_NOTE_BYTES: usize = 7999;
+/// How long a submission or download may stay tracked without Steam answering.
+const DEFAULT_TRACKING_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Identifies one asynchronous request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -101,12 +110,12 @@ impl ItemUpdate {
         if let Some(d) = &self.description
             && (d.len() > MAX_DESCRIPTION_BYTES || !text(d))
         {
-            return bad("a description holds at most 8000 bytes and no NUL");
+            return bad("a description holds at most 7999 bytes and no NUL");
         }
         if let Some(note) = &self.change_note
             && (note.len() > MAX_NOTE_BYTES || !text(note))
         {
-            return bad("a change note holds at most 8000 bytes and no NUL");
+            return bad("a change note holds at most 7999 bytes and no NUL");
         }
         if let Some(tags) = &self.tags {
             if tags.len() > MAX_TAGS {
@@ -117,6 +126,10 @@ impl ItemUpdate {
                 .any(|t| t.is_empty() || t.len() > MAX_TAG_BYTES || t.contains([',', '\0']))
             {
                 return bad("a tag needs 1..=255 bytes without commas or NUL");
+            }
+            let joined = tags.iter().map(String::len).sum::<usize>() + tags.len().saturating_sub(1);
+            if joined > MAX_TAG_LIST_BYTES {
+                return bad("the tags together (with separators) hold at most 1024 bytes");
             }
         }
         if let Some(folder) = &self.content_folder
@@ -287,8 +300,11 @@ pub enum UgcEvent {
 #[derive(Resource)]
 pub struct UgcService {
     session: SteamSession,
-    submits: BTreeMap<RequestId, (WorkshopItemId, Option<UpdateProgress>)>,
-    downloads: BTreeMap<WorkshopItemId, Option<(u64, u64)>>,
+    submits: BTreeMap<RequestId, (WorkshopItemId, Option<UpdateProgress>, Instant)>,
+    downloads: BTreeMap<WorkshopItemId, (Option<(u64, u64)>, Instant)>,
+    /// Items whose install was announced from their state; swallows the late callback.
+    retired: BTreeSet<WorkshopItemId>,
+    timeout: Duration,
 }
 
 impl UgcService {
@@ -299,6 +315,8 @@ impl UgcService {
                 session,
                 submits: BTreeMap::new(),
                 downloads: BTreeMap::new(),
+                retired: BTreeSet::new(),
+                timeout: DEFAULT_TRACKING_TIMEOUT,
             }),
             other => Err(SteamError::Unavailable(
                 other
@@ -306,6 +324,11 @@ impl UgcService {
                     .unwrap_or(crate::UnavailableReason::NotRunning),
             )),
         }
+    }
+
+    /// How long a submission or download may stay unanswered before it ends with an error.
+    pub fn set_tracking_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
     }
 
     /// Creates an empty (private) Workshop item for this app. Reply: [`UgcRaw::Created`].
@@ -331,7 +354,7 @@ impl UgcService {
         let request = self
             .session
             .with_backend(|b| b.ugc_submit_item(item, update))?;
-        self.submits.insert(request, (item, None));
+        self.submits.insert(request, (item, None, Instant::now()));
         Ok(request)
     }
 
@@ -408,12 +431,20 @@ impl UgcService {
         }
         self.session
             .with_backend(|b| b.ugc_download(item, high_priority))?;
-        self.downloads.entry(item).or_insert(None);
+        // A new download supersedes an earlier state-based retirement: the callback that
+        // may follow belongs to this one and must announce the install.
+        self.retired.remove(&item);
+        self.downloads.entry(item).or_insert((None, Instant::now()));
         Ok(())
     }
 
     /// Collects finished requests and progress changes. Call once per tick, after the
     /// session pumped Steam callbacks.
+    ///
+    /// A tracked download also ends when Steam reports the item installed, up to date and
+    /// no longer downloading (Steam sends no callback for an already current item), and a
+    /// submission or download that Steam has not answered within the tracking timeout
+    /// (default two hours) ends with an error reply, so nothing is tracked forever.
     pub fn poll(&mut self) -> Vec<UgcEvent> {
         let mut events = Vec::new();
         let mut installed = Vec::new();
@@ -421,10 +452,15 @@ impl UgcService {
             let mut state = self.session.lock();
             let backend = state.backend.as_mut();
             let raws = backend.ugc_poll();
-            for (request, (item, last)) in &mut self.submits {
+            let mut timed_out = Vec::new();
+            for (request, (item, last, started)) in &mut self.submits {
                 if raws.iter().any(
                     |r| matches!(r, UgcRaw::Submitted { request: done, .. } if done == request),
                 ) {
+                    continue;
+                }
+                if started.elapsed() >= self.timeout {
+                    timed_out.push(*request);
                     continue;
                 }
                 if let Some(progress) = backend.ugc_update_progress(*request)
@@ -438,14 +474,36 @@ impl UgcService {
                     });
                 }
             }
-            for (item, last) in &mut self.downloads {
+            for request in timed_out {
+                self.submits.remove(&request);
+                backend.ugc_forget_update(request);
+                events.push(UgcEvent::Reply(UgcRaw::Submitted {
+                    request,
+                    result: Err("Steam did not answer the submission in time".into()),
+                }));
+            }
+            let mut finished = Vec::new();
+            for (item, (last, started)) in &mut self.downloads {
                 if raws
                     .iter()
                     .any(|r| matches!(r, UgcRaw::Downloaded { item: done, .. } if done == item))
                 {
                     continue;
                 }
-                if let Some(now) = backend.ugc_download_progress(*item)
+                let state_now = backend.ugc_item_state(*item).ok();
+                if let Some(s) = state_now
+                    && s.installed
+                    && !s.needs_update
+                    && !s.downloading
+                    && !s.download_pending
+                {
+                    finished.push((*item, Ok(())));
+                } else if started.elapsed() >= self.timeout {
+                    finished.push((
+                        *item,
+                        Err("Steam did not finish the download in time".into()),
+                    ));
+                } else if let Some(now) = backend.ugc_download_progress(*item)
                     && *last != Some(now)
                 {
                     *last = Some(now);
@@ -456,6 +514,19 @@ impl UgcService {
                     });
                 }
             }
+            for (item, result) in finished {
+                self.downloads.remove(&item);
+                if result.is_ok() {
+                    installed.push(item);
+                    if self.retired.len() >= MAX_TRACKED {
+                        self.retired.clear();
+                    }
+                    // A callback for the same download may still arrive; do not announce
+                    // the install twice.
+                    self.retired.insert(item);
+                }
+                events.push(UgcEvent::Reply(UgcRaw::Downloaded { item, result }));
+            }
             for raw in raws {
                 match &raw {
                     UgcRaw::Submitted { request, .. } => {
@@ -463,7 +534,7 @@ impl UgcService {
                     }
                     UgcRaw::Downloaded { item, result } => {
                         self.downloads.remove(item);
-                        if result.is_ok() {
+                        if result.is_ok() && !self.retired.remove(item) {
                             installed.push(*item);
                         }
                     }
@@ -476,5 +547,128 @@ impl UgcService {
                 .extend(installed.into_iter().map(SteamEvent::WorkshopItemInstalled));
         }
         events
+    }
+}
+
+/// What [`WorkshopContent`] did with a Workshop item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WorkshopContentEvent {
+    /// The item folder was mounted as `@workshop-<id>/...`.
+    Mounted {
+        item: WorkshopItemId,
+        revision: RootRevision,
+    },
+    /// An updated item folder replaced the previous mount.
+    Replaced {
+        item: WorkshopItemId,
+        revision: RootRevision,
+    },
+    /// The item was unsubscribed and its mount removed.
+    Unmounted { item: WorkshopItemId },
+    /// The item folder was not mounted (it failed validation); the game carries on.
+    Skipped {
+        item: WorkshopItemId,
+        reason: String,
+    },
+}
+
+/// Mounts installed Workshop items as read-only content roots.
+///
+/// Feed it the events of [`UgcService::poll`]: a finished download mounts (or replaces) the
+/// item as mount `workshop-<id>`, an unsubscribe removes it, and an item whose folder fails
+/// validation is skipped and reported. At startup call [`WorkshopContent::mount_subscribed`].
+/// Item content is other players' data: it is mounted under the content-root rules (leaf
+/// kinds only, no links, confined below the folder Steam installs items into).
+pub struct WorkshopContent {
+    roots: ContentRoots,
+    mounted: BTreeSet<WorkshopItemId>,
+}
+
+impl WorkshopContent {
+    /// Mounts into `roots` (usually `project.content_roots`).
+    pub fn new(roots: ContentRoots) -> Self {
+        Self {
+            roots,
+            mounted: BTreeSet::new(),
+        }
+    }
+
+    /// The mount name of an item.
+    pub fn mount_name(item: WorkshopItemId) -> String {
+        format!("workshop-{}", item.0)
+    }
+
+    /// The full asset id of `id` inside an item's content root.
+    pub fn asset_id(item: WorkshopItemId, id: &str) -> String {
+        format!("@{}/{id}", Self::mount_name(item))
+    }
+
+    /// Mounts every subscribed item that Steam reports installed.
+    pub fn mount_subscribed(&mut self, ugc: &UgcService) -> Vec<WorkshopContentEvent> {
+        let items = ugc.subscribed().unwrap_or_default();
+        items
+            .into_iter()
+            .filter_map(|item| self.mount(ugc, item))
+            .collect()
+    }
+
+    /// Reacts to the events of one [`UgcService::poll`].
+    pub fn process(&mut self, ugc: &UgcService, events: &[UgcEvent]) -> Vec<WorkshopContentEvent> {
+        let mut out = Vec::new();
+        for event in events {
+            match event {
+                UgcEvent::Reply(UgcRaw::Downloaded {
+                    item,
+                    result: Ok(()),
+                }) => out.extend(self.mount(ugc, *item)),
+                UgcEvent::Reply(UgcRaw::Subscription {
+                    item,
+                    subscribed: false,
+                    result: Ok(()),
+                    ..
+                }) => {
+                    self.mounted.remove(item);
+                    if self.roots.unregister(&Self::mount_name(*item)) {
+                        out.push(WorkshopContentEvent::Unmounted { item: *item });
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn mount(&mut self, ugc: &UgcService, item: WorkshopItemId) -> Option<WorkshopContentEvent> {
+        let info = ugc.installed(item).ok()??;
+        // An update is still downloading: keep the mounted version until it finishes.
+        if info.needs_update && self.mounted.contains(&item) {
+            return None;
+        }
+        let skipped = |reason: String| Some(WorkshopContentEvent::Skipped { item, reason });
+        let Some(parent) = info.path.parent() else {
+            return skipped("the install folder has no parent".into());
+        };
+        match self
+            .roots
+            .register(&Self::mount_name(item), &info.path, parent)
+        {
+            Ok(revision) => {
+                let replaced = !self.mounted.insert(item);
+                Some(if replaced {
+                    WorkshopContentEvent::Replaced { item, revision }
+                } else {
+                    WorkshopContentEvent::Mounted { item, revision }
+                })
+            }
+            Err(error) => {
+                let reason = error
+                    .diagnostics
+                    .first()
+                    .map(|d| format!("{}: {}", d.code, d.message))
+                    .unwrap_or_else(|| "registration failed".into());
+                skipped(reason)
+            }
+        }
     }
 }
