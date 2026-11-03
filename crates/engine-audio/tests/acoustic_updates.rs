@@ -114,9 +114,9 @@ fn stalled_writer_never_blocks_the_mix() {
     println!("slowest stalled mix {slowest:?}, try-lock misses {misses}");
     // "Never blocks" is proven structurally: the writer's lock is held by this very thread, so a
     // blocking acquire in `mix` would deadlock, and every mix must record a try-lock miss. The
-    // wall-clock bound below is only a generous hang guard; a tight bound measured scheduler
-    // preemption on shared single-core runners (6.5 ms on macOS CI), not the mixer.
-    assert!(slowest < Duration::from_millis(250), "{slowest:?}");
+    // wall-clock bound below is only a hang guard; tighter bounds measured scheduler preemption
+    // on shared runners (6.5 ms, then a 752 ms single mix on macOS CI), not the mixer.
+    assert!(slowest < Duration::from_secs(10), "{slowest:?}");
     assert!(misses >= 200);
     assert_eq!(
         control.acoustic_stats().unwrap().frames_adopted,
