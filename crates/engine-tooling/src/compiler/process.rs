@@ -155,7 +155,21 @@ pub(super) fn spawn_owned(command: Command) -> Result<Box<dyn ChildWrapper>, Bui
     command.wrap(process_wrap::std::JobObject);
     #[cfg(unix)]
     command.wrap(process_wrap::std::ProcessGroup::leader());
-    command.spawn().map_err(io_error)
+    // A child forked by another thread can briefly inherit the write handle of a
+    // freshly copied executable; Unix then refuses to exec it (ETXTBSY) until
+    // that child execs and drops the handle. Retry briefly, as Cargo does.
+    let mut attempts = 0;
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 =>
+            {
+                attempts += 1;
+                thread::sleep(Duration::from_millis(20));
+            }
+            result => return result.map_err(io_error),
+        }
+    }
 }
 
 /// Waits for the leader after termination by polling. process_wrap's Windows
