@@ -4,26 +4,32 @@
 #   test-count.sh count <log>...          print the total "passed" count
 #   test-count.sh summary <log>...        print "passed failed ignored" totals
 #   test-count.sh breakdown <log>...      print passed tests per test binary
-#   test-count.sh gate <minimum> <file>...  sum count files, fail below <minimum>
+#   test-count.sh gate <minimum> <file>[:<min>]...
+#                                         sum count files; fail below <minimum>, or
+#                                         when a file is below its own <min>
 #
 # libtest ends every test binary with a line such as
 #   test result: ok. 12 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out
 # Ignored tests (GPU, audio device, native UI) are never counted as passed.
+# A per-file minimum keeps one platform from regressing behind the others,
+# which a sum alone would hide.
 set -euo pipefail
 
-strip_ansi() { sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g'; }
+# Regexes stay POSIX: macOS runs BSD sed, which has no \x1b or \b escapes.
+escape=$(printf '\033')
+strip_ansi() { sed -E "s/${escape}\[[0-9;]*[A-Za-z]//g"; }
 
 # Sum the number captured before the given label on libtest result lines.
 total() {
     local label=$1
     shift
     cat "$@" | strip_ansi | tr -d '\r' \
-        | sed -nE "s/^test result: .* ([0-9]+) ${label}\b.*/\1/p" \
+        | sed -nE "s/^test result: .* ([0-9]+) ${label}(;.*)?$/\1/p" \
         | awk '{ sum += $1 } END { print sum + 0 }'
 }
 
 usage() {
-    sed -n '2,11p' "$0" >&2
+    sed -n '2,15p' "$0" >&2
     exit 2
 }
 
@@ -58,7 +64,20 @@ gate)
     minimum=$1
     shift
     sum=0
-    for file in "$@"; do
+    short=0
+    for argument in "$@"; do
+        file=$argument
+        file_minimum=
+        # Split at the last colon only when a number follows it.
+        suffix=${argument##*:}
+        if [ "$suffix" != "$argument" ] && [ -n "$suffix" ] && [ -z "${suffix//[0-9]/}" ]; then
+            file=${argument%:*}
+            file_minimum=$suffix
+        fi
+        if [ ! -f "$file" ]; then
+            echo "error: $file is missing" >&2
+            exit 1
+        fi
         value=$(tr -d '[:space:]' <"$file")
         case "$value" in
         '' | *[!0-9]*)
@@ -66,7 +85,15 @@ gate)
             exit 1
             ;;
         esac
-        echo "$file: $value passed"
+        if [ -n "$file_minimum" ]; then
+            echo "$file: $value passed (minimum $file_minimum)"
+            if [ "$value" -lt "$file_minimum" ]; then
+                echo "error: $file has fewer than $file_minimum passed tests" >&2
+                short=1
+            fi
+        else
+            echo "$file: $value passed"
+        fi
         sum=$((sum + value))
     done
     echo "total passed: $sum (minimum $minimum)"
@@ -74,6 +101,7 @@ gate)
         echo "error: fewer than $minimum tests passed" >&2
         exit 1
     fi
+    [ "$short" -eq 0 ] || exit 1
     ;;
 *)
     usage

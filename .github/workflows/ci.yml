@@ -32,10 +32,15 @@ env:
   # (overrides the workspace dev line tables); test inherits dev.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
-  # Aggregate number of passed tests required across the workspace and the
-  # standalone example crates. Ignored tests (real GPU, audio device and
-  # interactive native UI) never count as passed.
-  MINIMUM_PASSED_TESTS: "1000"
+  # Aggregate number of passed tests required across the three workspace test
+  # jobs and the standalone example crates, plus a minimum for each OS so one
+  # platform cannot regress behind the others. Calibrated from run 42337639780
+  # (Windows 6066, Linux 6060, macOS 6055, examples 102). Ignored tests (real
+  # GPU, audio device and interactive native UI) never count as passed.
+  MINIMUM_PASSED_TESTS: "18000"
+  MINIMUM_PASSED_TESTS_WINDOWS: "6000"
+  MINIMUM_PASSED_TESTS_LINUX: "6000"
+  MINIMUM_PASSED_TESTS_MACOS: "6000"
 
 jobs:
   lint:
@@ -152,11 +157,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           mkdir counts
-          bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log" > counts/workspace.count
+          bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log" > counts/workspace-windows.count
           {
-            echo "### Workspace tests"
+            echo "### Workspace tests (Windows)"
             echo
-            echo "Passed: $(cat counts/workspace.count)"
+            echo "Passed: $(cat counts/workspace-windows.count)"
             echo
             echo '```text'
             bash scripts/ci/test-count.sh breakdown "$RUNNER_TEMP/workspace.log"
@@ -165,8 +170,8 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
-          name: test-count-workspace
-          path: counts/workspace.count
+          name: test-count-windows
+          path: counts/workspace-windows.count
           if-no-files-found: error
 
   # Each example is its own Cargo workspace root with a local, uncommitted
@@ -234,7 +239,7 @@ jobs:
 
   test-count-gate:
     name: Test count gate
-    needs: [workspace-tests, example-tests]
+    needs: [workspace-tests, example-tests, linux-tests, macos-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -247,10 +252,13 @@ jobs:
           pattern: test-count-*
           merge-multiple: true
           path: counts
+      # Each OS file is named explicitly with its own minimum, so a missing
+      # artifact fails the gate instead of shrinking the sum.
       - name: Require the minimum number of passed tests
         run: |
+          set -o pipefail
           ls -l counts
-          bash scripts/ci/test-count.sh gate "$MINIMUM_PASSED_TESTS" counts/*.count | tee -a "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/test-count.sh gate "$MINIMUM_PASSED_TESTS"             "counts/workspace-windows.count:$MINIMUM_PASSED_TESTS_WINDOWS"             "counts/workspace-linux.count:$MINIMUM_PASSED_TESTS_LINUX"             "counts/workspace-macos.count:$MINIMUM_PASSED_TESTS_MACOS"             counts/example-*.count | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Portable crates and editor logic on Linux. CI does not open the interactive
   # editor; legacy Win32 controls and their tests remain cfg(windows).
@@ -290,14 +298,26 @@ jobs:
       - name: Disk space (after build)
         if: ${{ always() }}
         run: df -h
-      - name: Report passed tests
+      - name: Count passed tests
         if: ${{ !cancelled() }}
         run: |
+          mkdir counts
+          bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log" > counts/workspace-linux.count
           {
             echo "### Workspace tests (Linux)"
             echo
-            echo "Passed: $(bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log")"
+            echo "Passed: $(cat counts/workspace-linux.count)"
+            echo
+            echo '```text'
+            bash scripts/ci/test-count.sh breakdown "$RUNNER_TEMP/workspace.log"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: test-count-linux
+          path: counts/workspace-linux.count
+          if-no-files-found: error
 
   macos-tests:
     name: Workspace tests (macOS)
@@ -323,14 +343,26 @@ jobs:
       - name: Disk space (after build)
         if: ${{ always() }}
         run: df -h
-      - name: Report passed tests
+      - name: Count passed tests
         if: ${{ !cancelled() }}
         run: |
+          mkdir counts
+          bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log" > counts/workspace-macos.count
           {
             echo "### Workspace tests (macOS)"
             echo
-            echo "Passed: $(bash scripts/ci/test-count.sh count "$RUNNER_TEMP/workspace.log")"
+            echo "Passed: $(cat counts/workspace-macos.count)"
+            echo
+            echo '```text'
+            bash scripts/ci/test-count.sh breakdown "$RUNNER_TEMP/workspace.log"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: test-count-macos
+          path: counts/workspace-macos.count
+          if-no-files-found: error
 
   wasm-portable-check:
     name: Portable library compile (WebAssembly)
