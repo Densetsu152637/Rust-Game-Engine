@@ -199,8 +199,8 @@ Steam S8-S10 implementation-gate critic converged (round 4; fixes `5304192`, `dc
 - Depends on: P4.
 - Owned paths: `crates/engine-tooling/src/{artifacts.rs,packaging/,cli/project.rs}`, `crates/engine-tooling/tests/artifacts.rs`, `docs/desktop-packaging.md`.
 - Acceptance checks: Windows zip extracts and the launcher runs `--headless --ticks 3`; same for `tar.gz` in WSL (exec bit preserved); new tests pass on all three OSes in CI.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `c0c579e` + `6775255` + `2a032a0` + `44ae8ec` (PR #7, run 42410663297 green on all three OSes incl. the test-count gate), merged as `4721062`. `packaging/` module (`PackageFormat`, one `stage()` layout, `archive.rs` zip/tar.gz writers); the destination is the archive path, top-level folder = file name minus `.zip`/`.tar.gz` (`.`/`..` refused with `tooling.destination.invalid`); sorted entries, fixed 2020-01-01 mtimes, byte-reproducible; dirs/runtime/run.sh 0755, other files 0644 (zip Unix attributes); published archives 0644 and dir packages 0755 on Unix; zip64 for large files; non-UTF-8 names refused. `zip` 9.4.1 (MIT) + `typed-path` 0.13.0 (MIT/Apache-2.0). WSL check replaced (root decision) by a `linux-tests` step that packages first-project as tar.gz and zip, extracts with system `tar`/`unzip`, checks exec bits and runs it headless with no arguments and via `run.sh`; Windows zip/tar.gz round trip done manually. Also: spawn retry on ETXTBSY for generations (flaky Linux play_host test), P4 gate tidy-ups (line continuations, per-example minimums, `LC_ALL=C`).
 - Handoff notes: check licence of any archive crate added.
 
 ## Stage P7: Linux AppImage
