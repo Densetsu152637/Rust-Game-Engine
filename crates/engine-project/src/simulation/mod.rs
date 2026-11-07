@@ -90,7 +90,21 @@ pub fn reset(world: &mut World) -> Result<()> {
 fn validate(world: &World) -> Result<()> {
     let enabled = world.contains_resource::<Services>();
     let mut animated = BTreeSet::new();
-    for e in world.iter_entities() {
+    for e in crate::walk::with_any!(
+        world,
+        CrowdAgent,
+        NavigationObstacle,
+        OffMeshLink,
+        Formation,
+        PhysicsBody2D,
+        PhysicsBody3D,
+        NavigationAgent,
+        AnimationPlayer,
+        AnimationGraphPlayer,
+        SkinBinding,
+        MorphWeights,
+        MorphPlayer
+    ) {
         let body2 = e.get::<PhysicsBody2D>();
         let body3 = e.get::<PhysicsBody3D>();
         let nav = e.get::<NavigationAgent>();

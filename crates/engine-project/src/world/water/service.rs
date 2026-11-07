@@ -218,8 +218,7 @@ fn matrix(world: &World, entity: Entity) -> Result<Mat4> {
 }
 
 fn snapshot_ground(world: &mut World) -> Arc<Ground> {
-    let mut terrains: Vec<(String, Entity)> = world
-        .iter_entities()
+    let mut terrains: Vec<(String, Entity)> = crate::walk::with::<TerrainComponent>(world)
         .filter(|e| e.contains::<TerrainComponent>())
         .map(|e| (authored_id(world, e.id()), e.id()))
         .collect();
@@ -391,8 +390,7 @@ pub fn step_water(world: &mut World, dt: f32) -> Result<()> {
         clock.ticks += 1;
     }
     let clock = *world.resource::<WaterClock>();
-    let mut owners: Vec<(String, Entity)> = world
-        .iter_entities()
+    let mut owners: Vec<(String, Entity)> = crate::walk::with::<WaterBodyComponent>(world)
         .filter(|e| e.contains::<WaterBodyComponent>())
         .map(|e| (authored_id(world, e.id()), e.id()))
         .collect();
@@ -627,8 +625,7 @@ fn sample_layout(
 }
 
 fn apply_buoyancy(world: &mut World, dt: f32) -> Result<()> {
-    let mut bodies: Vec<(String, Entity)> = world
-        .iter_entities()
+    let mut bodies: Vec<(String, Entity)> = crate::walk::with::<BuoyancyComponent>(world)
         .filter(|e| e.contains::<BuoyancyComponent>())
         .map(|e| (authored_id(world, e.id()), e.id()))
         .collect();
@@ -756,8 +753,7 @@ fn apply_buoyancy(world: &mut World, dt: f32) -> Result<()> {
 // ---- rendering ----------------------------------------------------------------------------
 
 fn active_camera_position(world: &World) -> Option<Vec3> {
-    let mut cameras: Vec<(String, Entity)> = world
-        .iter_entities()
+    let mut cameras: Vec<(String, Entity)> = crate::walk::with::<Camera3D>(world)
         .filter(|e| e.get::<Camera3D>().is_some_and(|c| c.active))
         .map(|e| (authored_id(world, e.id()), e.id()))
         .collect();

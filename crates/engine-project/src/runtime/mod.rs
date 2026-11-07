@@ -54,6 +54,9 @@ pub struct Runtime {
     elapsed: f64,
     scene_revision: u64,
     geometry: RefCell<BTreeMap<String, (blake3::Hash, Arc<Mesh>)>>,
+    /// Shader sources read from `shader` and compiled from `graph` assets, by asset ID and
+    /// whether it is the lit 2D variant. See [`Runtime::cached_shader`].
+    shaders: RefCell<BTreeMap<(String, bool), Arc<str>>>,
     /// Localization generation last applied to the text engine, and its locale.
     localized_generation: u64,
     localized_locale: String,
@@ -169,6 +172,7 @@ impl Runtime {
             elapsed: 0.0,
             scene_revision: 0,
             geometry: RefCell::new(BTreeMap::new()),
+            shaders: RefCell::new(BTreeMap::new()),
             localized_generation: u64::MAX,
             localized_locale,
         };
@@ -452,10 +456,7 @@ impl Runtime {
             .0
             .clear();
         self.app.world_mut().resource_mut::<PendingScene>().0 = None;
-        let remaining: Vec<_> = self
-            .app
-            .world()
-            .iter_entities()
+        let remaining: Vec<_> = crate::walk::with::<OwnedBy>(self.app.world())
             .filter(|e| e.contains::<OwnedBy>())
             .map(|e| e.id())
             .collect();

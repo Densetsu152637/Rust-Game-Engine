@@ -211,7 +211,7 @@ pub fn register(app: &mut engine_core::EngineApp) -> Result<()> {
 /// The single enabled `XrSettings` and its rig entity, if any.
 pub fn active_settings(world: &World) -> Result<Option<(Entity, XrSettings)>> {
     let mut found = None;
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with::<XrSettings>(world) {
         if let Some(settings) = entity.get::<XrSettings>().filter(|s| s.enabled) {
             if found.is_some() {
                 return Err(invalid(

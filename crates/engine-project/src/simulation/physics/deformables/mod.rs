@@ -398,7 +398,7 @@ impl Feature for Deformables {
     }
     fn validate(&self, world: &World, _settings: &Resolved) -> Result<()> {
         let (mut cloths, mut softs, mut fluids) = (0, 0, 0);
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with_any!(world, Cloth, SoftBody, FluidVolume) {
             if let Some(cloth) = entity.get::<Cloth>() {
                 cloths += 1;
                 cloth.validate()?;
@@ -440,7 +440,7 @@ impl Feature for Deformables {
         let gravity = Vec3::from(cx.settings.gravity_3d);
         let (mut cloths, mut softs, mut fluids) =
             (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with_any!(world, Cloth, SoftBody, FluidVolume) {
             let id = entity.id();
             if let Some(config) = entity.get::<Cloth>() {
                 self.sync_cloth(id, config, world, gravity)?;

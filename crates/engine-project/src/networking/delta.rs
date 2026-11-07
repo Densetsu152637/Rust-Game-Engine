@@ -522,7 +522,7 @@ impl ServerSide {
         self.last_tick = tick;
         let tick32 = tick as u32;
         let mut live: BTreeMap<String, Live> = BTreeMap::new();
-        for entity in cx.world.iter_entities() {
+        for entity in crate::walk::with::<NetworkReplica>(cx.world) {
             let Some(replica) = entity.get::<NetworkReplica>() else {
                 continue;
             };
@@ -646,7 +646,7 @@ impl ServerSide {
 
     fn sync_voice_and_views(&mut self, world: &World, live: &BTreeMap<String, Live>) {
         if let Some(voice) = self.voice.as_mut() {
-            for entity in world.iter_entities() {
+            for entity in crate::walk::with::<NetworkVoice>(world) {
                 let (Some(spec), Some(id)) =
                     (entity.get::<NetworkVoice>(), entity.get::<AuthoredId>())
                 else {

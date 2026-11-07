@@ -251,8 +251,7 @@ fn authored_key(world: &World, entity: Entity) -> (String, Entity) {
 }
 
 fn sync(world: &mut World, state: &mut ScriptState, fuel: &mut u64) -> Result<()> {
-    let configs: BTreeMap<(String, Entity), ScriptGraph> = world
-        .iter_entities()
+    let configs: BTreeMap<(String, Entity), ScriptGraph> = crate::walk::with::<ScriptGraph>(world)
         .filter_map(|e| {
             e.get::<ScriptGraph>()
                 .cloned()

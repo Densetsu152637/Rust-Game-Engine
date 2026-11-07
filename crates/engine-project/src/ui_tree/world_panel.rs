@@ -282,8 +282,7 @@ pub fn camera2d_ray(
 
 /// First active `Camera3D` in authored-ID order, as the runtime picks it.
 fn active_camera3d(world: &World) -> Option<(Entity, &Camera3D)> {
-    world
-        .iter_entities()
+    crate::walk::with::<Camera3D>(world)
         .filter_map(|e| {
             let camera = e.get::<Camera3D>().filter(|c| c.active)?;
             Some((world::root_key(&e), e.id(), camera))
@@ -293,8 +292,7 @@ fn active_camera3d(world: &World) -> Option<(Entity, &Camera3D)> {
 }
 
 fn camera2d(world: &World) -> (Camera2D, [f32; 2]) {
-    let camera = world
-        .iter_entities()
+    let camera = crate::walk::with::<Camera2D>(world)
         .find_map(|e| e.get::<Camera2D>().cloned())
         .unwrap_or_default();
     let mut center = camera.center;
@@ -351,7 +349,7 @@ struct Panel {
 fn panels(world: &World) -> Result<Vec<Panel>> {
     let camera = camera_position(world);
     let mut out = vec![];
-    for e in world.iter_entities() {
+    for e in crate::walk::with_both::<UiRoot, UiWorldPanel>(world) {
         let (Some(root), Some(panel)) = (e.get::<UiRoot>(), e.get::<UiWorldPanel>()) else {
             continue;
         };

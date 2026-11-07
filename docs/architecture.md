@@ -167,6 +167,23 @@ process-local; project asset IDs remain stable authored identity. Import support
 does not imply that every retained glTF property is drawn by the renderer.
 See [Asset pipeline](asset-pipeline.md).
 
+### Cost of entities the engine does not know
+
+A game keeps entities that carry no engine component (a factory's idle buildings, a crowd
+of distant agents). The authored runtime does not pay for them: the per-tick and
+per-frame passes of `engine-project` are typed queries over the components they consume
+(`crate::walk`, built on `With<..>` filters), so Bevy skips whole archetypes that lack
+them and the cost of a pass follows the number of entities it works on, not the size of
+the world. Only diagnostics count all entities (`Runtime::try_snapshot`). `refresh_world_transforms` is change driven: it recomputes the entities whose
+`Transform` or `Parent` changed since the previous refresh and their descendants, so an
+entity that does not move costs one change check per tick and no `WorldTransform` write.
+Shader sources of `MeshMaterial`s are read or compiled once per runtime
+(`Runtime::reload_shader_asset` drops one). `Runtime::extract_scene_sprites` extracts only
+the sprite layer, which a presenter keeping a history of past frames needs for every tick;
+`extract_scene_frame` builds the full 3D frame once per presented frame. The
+`runtime_entity_walk` test measures 200,000 such entities against `Runtime::tick` and
+`extract_scene_frame` (see [Testing](testing.md)).
+
 ## Desktop host
 
 `engine-desktop` runs a `Runtime` on the process main thread with winit and wgpu.

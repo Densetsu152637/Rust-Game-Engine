@@ -324,15 +324,14 @@ impl QueryHost for WorldQueryHost<'_> {
                     .world
                     .get::<PerceptionSensor>(self.querier)
                     .map_or(0, |s| s.team);
-                let mut found: Vec<(Entity, u32)> = self
-                    .world
-                    .iter_entities()
-                    .filter_map(|e| {
-                        let s = e.get::<PerceptionStimulus>()?;
-                        (s.enabled && e.id() != self.querier).then_some((e.id(), s.team))
-                    })
-                    .filter(|(_, other)| filter.contains(perceptions.affiliation(team, *other)))
-                    .collect();
+                let mut found: Vec<(Entity, u32)> =
+                    crate::walk::with::<PerceptionStimulus>(self.world)
+                        .filter_map(|e| {
+                            let s = e.get::<PerceptionStimulus>()?;
+                            (s.enabled && e.id() != self.querier).then_some((e.id(), s.team))
+                        })
+                        .filter(|(_, other)| filter.contains(perceptions.affiliation(team, *other)))
+                        .collect();
                 found.sort_by_key(|(e, _)| *e);
                 found
                     .into_iter()
@@ -590,8 +589,7 @@ pub struct EnvQueryStatus {
 /// Bounded telemetry; `None` without templates or queries.
 pub fn status(world: &World) -> Option<EnvQueryStatus> {
     let service = world.get_resource::<EnvQueries>()?;
-    let templates: usize = world
-        .iter_entities()
+    let templates: usize = crate::walk::with::<EnvironmentQueries>(world)
         .filter_map(|e| e.get::<EnvironmentQueries>().map(|c| c.queries.len()))
         .sum();
     if templates == 0 && service.completed == 0 && service.jobs.is_empty() {

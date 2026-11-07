@@ -209,8 +209,7 @@ fn shape(spec: &ShapeSpec, dimension: Dimension) -> Result<QueryShape> {
     })
 }
 fn entity_by_authored_id(world: &World, id: &str) -> Result<Entity> {
-    world
-        .iter_entities()
+    crate::walk::with::<AuthoredId>(world)
         .find(|e| e.get::<AuthoredId>().is_some_and(|a| a.id == id))
         .map(|e| e.id())
         .ok_or_else(|| invalid(format!("filter.exclude names unknown entity {id}")))

@@ -28,8 +28,7 @@ impl Navigation {
     pub fn sync(&mut self, world: &mut World) -> Result<()> {
         self.followers
             .retain(|e, _| world.get::<NavigationAgent>(*e).is_some());
-        let configs: Vec<_> = world
-            .iter_entities()
+        let configs: Vec<_> = crate::walk::with::<NavigationAgent>(world)
             .filter_map(|e| e.get::<NavigationAgent>().cloned().map(|c| (e.id(), c)))
             .collect();
         if configs.len() > 1024 {

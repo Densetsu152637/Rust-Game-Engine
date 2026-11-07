@@ -81,6 +81,51 @@ fn authored_3d_extracts_hierarchy_material_and_camera_and_snapshots_them() {
     );
 }
 #[test]
+fn the_sprite_layer_alone_matches_the_sprite_layer_of_the_scene_frame() {
+    let dir = fixture();
+    let mut runtime =
+        Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    // With the 3D camera the mesh draws in 3D and leaves the sprite layer.
+    let full = runtime.extract_scene_frame().unwrap();
+    let sprites = runtime.extract_scene_sprites().unwrap();
+    assert!(sprites.draws.is_empty());
+    assert_eq!(format!("{sprites:?}"), format!("{:?}", full.sprites));
+    // Without it the mesh is a 2D draw with its material.
+    let camera = runtime.entity("camera").unwrap();
+    runtime
+        .app_mut()
+        .world_mut()
+        .entity_mut(camera)
+        .remove::<Camera3D>();
+    let full = runtime.extract_scene_frame().unwrap();
+    let sprites = runtime.extract_scene_sprites().unwrap();
+    assert_eq!(sprites.draws.len(), 1);
+    assert_eq!(format!("{sprites:?}"), format!("{:?}", full.sprites));
+}
+#[test]
+fn shader_sources_are_read_once_until_the_asset_is_reloaded() {
+    let dir = fixture();
+    let runtime = Runtime::new(Project::load(dir.path().join("project.json")).unwrap()).unwrap();
+    let shader = |runtime: &Runtime| {
+        runtime.extract_scene_frame().unwrap().meshes[0]
+            .shader
+            .as_deref()
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        shader(&runtime).as_deref(),
+        Some("custom shader source snapshot")
+    );
+    fs::write(dir.path().join("material.wgsl"), "edited").unwrap();
+    assert_eq!(
+        shader(&runtime).as_deref(),
+        Some("custom shader source snapshot"),
+        "the source is cached, not re-read at every extraction"
+    );
+    runtime.reload_shader_asset("shader-asset");
+    assert_eq!(shader(&runtime).as_deref(), Some("edited"));
+}
+#[test]
 fn invalid_camera_and_material_asset_kinds_fail_before_runtime() {
     let dir = fixture();
     let mut project = Project::load(dir.path().join("project.json")).unwrap();

@@ -207,10 +207,7 @@ impl Runtime {
     }
     /// The camera [`Self::extract_frame`] would use, without building draws.
     pub fn extract_camera(&self) -> Camera2D {
-        let mut camera = self
-            .app
-            .world()
-            .iter_entities()
+        let mut camera = crate::walk::with::<Camera2D>(self.app.world())
             .find_map(|e| e.get::<Camera2D>().cloned())
             .unwrap_or_default();
         if let Some(position) = camera.follow.as_ref().and_then(|id| self.position(id)) {
@@ -224,7 +221,7 @@ impl Runtime {
         let mut draws = Vec::new();
         let fragments_drawn =
             world.contains_resource::<crate::simulation::physics::FragmentRenderer>();
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with_any!(world, SpriteRenderer, MeshRenderer) {
             let Some(_) = entity.get::<Transform>() else {
                 continue;
             };

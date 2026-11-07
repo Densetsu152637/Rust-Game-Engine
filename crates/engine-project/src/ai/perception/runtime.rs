@@ -709,8 +709,7 @@ fn known_status(world: &World, known: Known) -> KnownStatus {
 /// Bounded telemetry; `None` when the world has no perception sensors.
 pub fn status(world: &World) -> Option<PerceptionStatus> {
     let state = world.get_resource::<Perceptions>()?;
-    let mut sensors: Vec<(String, Entity, u32)> = world
-        .iter_entities()
+    let mut sensors: Vec<(String, Entity, u32)> = crate::walk::with::<PerceptionSensor>(world)
         .filter_map(|e| {
             let sensor = e.get::<PerceptionSensor>()?;
             let id = e
@@ -747,8 +746,7 @@ pub fn status(world: &World) -> Option<PerceptionStatus> {
         .collect();
     Some(PerceptionStatus {
         total,
-        stimuli: world
-            .iter_entities()
+        stimuli: crate::walk::with::<PerceptionStimulus>(world)
             .filter(|e| e.get::<PerceptionStimulus>().is_some_and(|s| s.enabled))
             .count(),
         perceivers,

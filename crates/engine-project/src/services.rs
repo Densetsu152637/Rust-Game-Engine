@@ -47,8 +47,7 @@ pub fn resolve_asset(world: &World, id: &str) -> Result<PathBuf> {
 }
 pub fn sync_collision(world: &mut World) -> Result<()> {
     crate::refresh_world_transforms(world)?;
-    let bodies: Vec<_> = world
-        .iter_entities()
+    let bodies: Vec<_> = crate::walk::with::<Collider2D>(world)
         .filter_map(|e| {
             Some((
                 e.get::<AuthoredId>()?.id.clone(),

@@ -566,9 +566,11 @@ impl DesktopRunner {
         Ok(())
     }
 
-    /// Extract the frame for the tick just run into the presentation history.
+    /// Extract the frame for the tick just run into the presentation history. The history
+    /// keeps only the sprite layer, so only that layer is extracted; the full scene frame
+    /// (3D draws, lights, post-processing) is built once per presented frame.
     fn record_frame(&mut self) -> Result<()> {
-        let frame = self.runtime.extract_scene_frame()?.sprites;
+        let frame = self.runtime.extract_scene_sprites()?;
         self.history.push(frame, self.runtime.scene_revision());
         Ok(())
     }

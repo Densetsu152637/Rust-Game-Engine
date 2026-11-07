@@ -33,7 +33,7 @@ impl TextState {
         _graph_count: usize,
         _fuel: &mut u64,
     ) -> Result<()> {
-        if world.iter_entities().any(|e| e.contains::<TextScript>()) {
+        if crate::walk::with::<TextScript>(world).any(|e| e.contains::<TextScript>()) {
             return Err(disabled());
         }
         Ok(())

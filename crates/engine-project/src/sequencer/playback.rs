@@ -36,8 +36,7 @@ pub(super) struct Sequences {
 }
 impl Sequences {
     fn sync(&mut self, world: &mut World) -> Result<()> {
-        let configs: Vec<_> = world
-            .iter_entities()
+        let configs: Vec<_> = crate::walk::with::<SequencePlayer>(world)
             .filter_map(|e| e.get::<SequencePlayer>().map(|c| (e.id(), c.clone())))
             .collect();
         if configs.len() > MAX_PLAYERS {

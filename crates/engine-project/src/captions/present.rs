@@ -222,13 +222,13 @@ pub fn build_root(
 
 /// Start, restart and stop playbacks for the `CaptionPlayer` components.
 fn sync_players(world: &mut World, captions: &mut Captions) {
-    let found: std::collections::BTreeMap<u64, CaptionPlayer> = world
-        .iter_entities()
-        .filter_map(|e| {
-            e.get::<CaptionPlayer>()
-                .map(|p| (e.id().to_bits(), p.clone()))
-        })
-        .collect();
+    let found: std::collections::BTreeMap<u64, CaptionPlayer> =
+        crate::walk::with::<CaptionPlayer>(world)
+            .filter_map(|e| {
+                e.get::<CaptionPlayer>()
+                    .map(|p| (e.id().to_bits(), p.clone()))
+            })
+            .collect();
     let gone: Vec<u64> = captions
         .players
         .keys()

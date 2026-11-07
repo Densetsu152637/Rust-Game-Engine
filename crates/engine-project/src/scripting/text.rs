@@ -127,15 +127,15 @@ impl TextState {
         graph_count: usize,
         fuel: &mut u64,
     ) -> Result<()> {
-        let configs: BTreeMap<(String, Entity), TextScript> = world
-            .iter_entities()
-            .filter_map(|entity| {
-                entity
-                    .get::<TextScript>()
-                    .cloned()
-                    .map(|config| ((authored_id(world, entity.id()), entity.id()), config))
-            })
-            .collect();
+        let configs: BTreeMap<(String, Entity), TextScript> =
+            crate::walk::with::<TextScript>(world)
+                .filter_map(|entity| {
+                    entity
+                        .get::<TextScript>()
+                        .cloned()
+                        .map(|config| ((authored_id(world, entity.id()), entity.id()), config))
+                })
+                .collect();
         if configs.len() + graph_count > MAX_INSTANCES {
             return Err(Error::new(
                 "script.capacity",

@@ -452,8 +452,7 @@ pub fn sync_tilemaps(world: &mut World) -> Result<()> {
     if !world.contains_resource::<Tilemaps>() {
         return Ok(());
     }
-    let mut named: Vec<(String, Entity)> = world
-        .iter_entities()
+    let mut named: Vec<(String, Entity)> = crate::walk::with::<TilemapComponent>(world)
         .filter(|e| e.contains::<TilemapComponent>())
         .map(|e| {
             (
@@ -480,8 +479,7 @@ pub fn sync_tilemaps(world: &mut World) -> Result<()> {
     }
     let orphans: Vec<Entity> = {
         let service = world.resource::<Tilemaps>();
-        world
-            .iter_entities()
+        crate::walk::with::<TilemapGenerated>(world)
             .filter(|e| {
                 e.get::<TilemapGenerated>()
                     .is_some_and(|g| !service.states.contains_key(&g.owner))

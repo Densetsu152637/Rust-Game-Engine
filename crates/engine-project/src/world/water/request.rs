@@ -97,8 +97,7 @@ pub fn sample_scene(
             runtime.tick(dt, InputSnapshot::default())?;
         }
         let world = runtime.app().world();
-        let mut bodies: Vec<(String, Entity)> = world
-            .iter_entities()
+        let mut bodies: Vec<(String, Entity)> = crate::walk::with::<WaterBodyComponent>(world)
             .filter(|e| e.contains::<WaterBodyComponent>())
             .filter_map(|e| {
                 world
