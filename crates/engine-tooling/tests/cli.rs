@@ -476,6 +476,31 @@ fn package_destination_is_checked_before_compilation() {
     assert!(!root.join(".derived/native").exists());
 }
 
+// A Linux host with `appimagetool` would get past this check, so it is asserted only
+// where the host cannot build an AppImage.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn package_appimage_fails_on_an_unsupported_host_before_compilation() {
+    let (temp, manifest) = fixture();
+    let root = manifest.parent().unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    let output = engine(
+        &[
+            OsStr::new("project"),
+            "package".as_ref(),
+            manifest.as_os_str(),
+            root.join("dist/game.AppImage").as_os_str(),
+            "--format".as_ref(),
+            "appimage".as_ref(),
+        ],
+        temp.path(),
+    );
+    assert_eq!(output.code, 1, "{}", output.json);
+    assert_eq!(failure_code(&output), "tooling.appimage.unsupported_host");
+    assert!(!root.join("dist/game.AppImage").exists());
+    assert!(!root.join(".derived/native").exists());
+}
+
 #[test]
 fn package_rejects_unknown_profiles() {
     let (temp, manifest) = fixture();
@@ -497,7 +522,7 @@ fn package_rejects_unknown_profiles() {
 #[test]
 fn package_rejects_unknown_formats_and_keeps_json_output_format() {
     let (temp, manifest) = fixture();
-    for format in ["tgz", "appimage", ""] {
+    for format in ["tgz", "AppImage", "app", ""] {
         let output = engine(
             &[
                 OsStr::new("project"),

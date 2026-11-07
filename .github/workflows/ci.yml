@@ -371,6 +371,95 @@ jobs:
           path: counts/workspace-linux.count
           if-no-files-found: error
 
+  # Builds a real AppImage on the oldest supported glibc (ubuntu-22.04) and runs it.
+  # The packaging tests and AppDir generation run on every OS in the workspace test
+  # jobs; this job adds the real appimagetool run. appimagetool and the type2
+  # runtime are pinned to tagged releases (never `continuous`) and checked against
+  # recorded checksums, so the runtime is never downloaded at package time. Nothing
+  # is uploaded (release publishing is a separate workflow).
+  # appimagetool 1.9.1:
+  #   https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+  # type2 runtime 20251108:
+  #   https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+  appimage:
+    name: AppImage (Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev \
+            desktop-file-utils
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Download pinned appimagetool and type2 runtime
+        run: |
+          tools="$RUNNER_TEMP/appimage-tools"
+          mkdir -p "$tools"
+          cd "$tools"
+          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+            --output appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+            --output runtime-x86_64 \
+            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          sha256sum -c <<'SUMS'
+          ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool-x86_64.AppImage
+          2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  runtime-x86_64
+          SUMS
+          chmod +x appimagetool-x86_64.AppImage
+          echo "ENGINE_APPIMAGETOOL=$tools/appimagetool-x86_64.AppImage" >> "$GITHUB_ENV"
+          echo "ENGINE_APPIMAGE_RUNTIME=$tools/runtime-x86_64" >> "$GITHUB_ENV"
+      - name: Package examples/first-project as an AppImage
+        run: |
+          out="$RUNNER_TEMP/appimage-smoke"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cargo run --locked -q -p engine-tooling --bin engine -- \
+            project package examples/first-project/project.json "$out/first-project.AppImage" \
+            --profile dev --format appimage
+          ls -l "$out"
+      # The runners have no FUSE: the file is run by extracting it, from an
+      # unrelated working directory. The runtime finds game/project.json inside the
+      # image through AppRun, with no project argument.
+      - name: Run the AppImage headless
+        run: |
+          cd "$RUNNER_TEMP/appimage-smoke"
+          ./first-project.AppImage --appimage-extract-and-run --headless --ticks 3
+      - name: Check the extracted AppDir
+        run: |
+          cd "$RUNNER_TEMP/appimage-smoke"
+          ./first-project.AppImage --appimage-extract
+          ls -la squashfs-root
+          test -x squashfs-root/AppRun
+          test -x squashfs-root/runtime
+          test -f squashfs-root/first-project.png
+          test -f squashfs-root/.DirIcon
+          test -f squashfs-root/game/project.json
+          desktop-file-validate squashfs-root/first-project.desktop
+      - name: Clean up
+        if: ${{ always() }}
+        run: rm -rf "$RUNNER_TEMP/appimage-smoke" "$RUNNER_TEMP/appimage-tools"
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
+
   macos-tests:
     name: Workspace tests (macOS)
     runs-on: macos-26

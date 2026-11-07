@@ -28,7 +28,7 @@ engine project init <template-manifest> <new-directory>
 engine project validate <manifest> [--no-rust]
 engine project assets <manifest>
 engine project shaders <manifest>
-engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz]
+engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage]
 engine scene inspect <scene> --project-root <project-directory>
 engine run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--render-backend api] [--acoustics-backend tier] [--screenshot file.png [--screenshot-size WxH]]
 engine editor <manifest>
@@ -71,7 +71,9 @@ directory.
   `runtime-Cargo.lock` and per-dependency notices with `dependencies.json`), `generation.json`, `PACKAGE.txt`, and the launchers
   `run.cmd` and `run.sh`. The destination must be new: a directory by default, or
   with `--format zip` / `--format tar.gz` the archive file to create (one top-level
-  folder, executable bit preserved). See [Desktop packages](desktop-packaging.md).
+  folder, executable bit preserved), or with `--format appimage` a Linux AppImage file
+  (needs a Linux host and `appimagetool`, found through `ENGINE_APPIMAGETOOL` or
+  `PATH`; optional `ENGINE_APPIMAGE_RUNTIME` pins the type2 runtime). See [Desktop packages](desktop-packaging.md).
 - **`scene inspect`** loads a scene, validates it against the project's asset
   catalog and returns its revision, entity count and contents.
 - **`run`** compiles and launches the native generation. `--headless` runs fixed

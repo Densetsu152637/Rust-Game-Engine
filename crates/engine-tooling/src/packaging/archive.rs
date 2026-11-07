@@ -58,10 +58,10 @@ pub fn export_new_archive(
         match format {
             PackageFormat::Zip => write_zip(writer, folder, &entries)?,
             PackageFormat::TarGz => write_tar_gz(writer, folder, &entries)?,
-            PackageFormat::Dir => {
+            PackageFormat::Dir | PackageFormat::AppImage => {
                 return Err(Error::new(
                     "package.format",
-                    "A directory is not an archive format",
+                    "Only zip and tar.gz are archive formats",
                 ));
             }
         }

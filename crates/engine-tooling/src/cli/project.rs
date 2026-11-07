@@ -100,7 +100,7 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             let (args, flags) = options(&arguments, &["--profile"])?;
             if args.len() != 2 {
                 return Err(usage(
-                    "Usage: engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz]",
+                    "Usage: engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage]",
                 ));
             }
             let release = match flags.get("--profile").map(String::as_str) {
@@ -112,6 +112,7 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             let destination = Path::new(&args[1]);
             // Reject unusable destinations before spending time compiling.
             artifacts::check_package_destination(&project, destination)?;
+            packaging::check_format_available(format)?;
             if rust_crate(&project)?.is_none() {
                 return Err(engine_project::Error::new(
                     "project.rust.missing",
@@ -144,10 +145,10 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
                 "launchers": ["run.cmd", "run.sh"],
             });
             // The directory format keeps its original `directory` key.
-            let key = if format == PackageFormat::Dir {
-                "directory"
-            } else {
-                "archive"
+            let key = match format {
+                PackageFormat::Dir => "directory",
+                PackageFormat::AppImage => "appimage",
+                PackageFormat::Zip | PackageFormat::TarGz => "archive",
             };
             result[key] = json!(path);
             Ok(Outcome::Json(result))
