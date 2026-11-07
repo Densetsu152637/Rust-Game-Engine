@@ -7,5 +7,6 @@ pub mod cli;
 pub mod compiler;
 pub mod game_location;
 pub mod mcp_tools;
+pub mod packaging;
 pub mod play_host;
 pub mod runtime_entry;

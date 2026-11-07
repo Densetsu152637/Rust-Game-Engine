@@ -14,6 +14,8 @@
 # A per-file minimum keeps one platform from regressing behind the others,
 # which a sum alone would hide.
 set -euo pipefail
+# Byte-wise sorting and character classes keep output identical on every OS.
+export LC_ALL=C
 
 # Regexes stay POSIX: macOS runs BSD sed, which has no \x1b or \b escapes.
 escape=$(printf '\033')

@@ -24,6 +24,11 @@ engine-editor = { path = "../engine-editor" }
 engine-mcp = { path = "../engine-mcp" }
 engine-steam = { path = "../engine-steam" }
 tempfile = "3"
+# Archive output for `project package --format zip|tar.gz`. Default features off: no
+# extended attributes, encryption or extra codecs.
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
+zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2"] }
 
 [features]
 default = []

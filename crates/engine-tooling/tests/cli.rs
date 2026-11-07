@@ -495,6 +495,56 @@ fn package_rejects_unknown_profiles() {
 }
 
 #[test]
+fn package_rejects_unknown_formats_and_keeps_json_output_format() {
+    let (temp, manifest) = fixture();
+    for format in ["tgz", "appimage", ""] {
+        let output = engine(
+            &[
+                OsStr::new("project"),
+                "package".as_ref(),
+                manifest.as_os_str(),
+                temp.path().join("out.zip").as_os_str(),
+                "--format".as_ref(),
+                format.as_ref(),
+            ],
+            temp.path(),
+        );
+        assert_eq!(output.code, 2, "{format}");
+        assert_eq!(failure_code(&output), "command.arguments", "{format}");
+    }
+    let output = engine(
+        &[
+            OsStr::new("project"),
+            "package".as_ref(),
+            manifest.as_os_str(),
+            temp.path().join("out").as_os_str(),
+            "--format".as_ref(),
+            "zip".as_ref(),
+            "--format".as_ref(),
+            "zip".as_ref(),
+        ],
+        temp.path(),
+    );
+    assert_eq!(output.code, 2);
+    // The global `--format json` is still accepted and reaches the destination check.
+    let output = engine(
+        &[
+            OsStr::new("project"),
+            "package".as_ref(),
+            manifest.as_os_str(),
+            temp.path().as_os_str(),
+            "--format".as_ref(),
+            "json".as_ref(),
+            "--format".as_ref(),
+            "tar.gz".as_ref(),
+        ],
+        temp.path(),
+    );
+    assert_eq!(output.code, 1);
+    assert_eq!(failure_code(&output), "tooling.destination.exists");
+}
+
+#[test]
 fn scene_inspect_reports_scene_and_stable_revision() {
     let (temp, manifest) = fixture();
     let root = manifest.parent().unwrap();

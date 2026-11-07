@@ -5,6 +5,7 @@ use super::errors::{compiler_diagnostic, usage};
 use super::options::options;
 use super::{Outcome, USAGE};
 use crate::artifacts;
+use crate::packaging::{self, PackageFormat};
 use engine_core::Result;
 use engine_project::Project;
 use serde_json::{Value, json};
@@ -93,10 +94,13 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             Ok(Outcome::Json(serde_json::to_value(imported)?))
         }
         "package" => {
-            let (args, flags) = options(arguments, &["--profile"])?;
+            // `--format json` stays the global output option; any other value
+            // selects the package format.
+            let (format, arguments) = package_format(arguments)?;
+            let (args, flags) = options(&arguments, &["--profile"])?;
             if args.len() != 2 {
                 return Err(usage(
-                    "Usage: engine project package <manifest> <new-directory> [--profile release|dev]",
+                    "Usage: engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz]",
                 ));
             }
             let release = match flags.get("--profile").map(String::as_str) {
@@ -124,24 +128,63 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
                 destination = %destination.display(),
                 "packaging project"
             );
-            let path = artifacts::package_project(
+            let path = packaging::package(
                 &project,
                 &generation,
                 destination,
                 &request.engine_root,
+                format,
             )?;
-            tracing::info!(directory = %path.display(), "package written");
-            Ok(Outcome::Json(json!({
-                "directory": path,
+            tracing::info!(path = %path.display(), format = format.name(), "package written");
+            let mut result = json!({
+                "format": format.name(),
                 "generation": generation.generation,
                 "fingerprint": generation.fingerprint,
                 "profile": if release { "release" } else { "dev" },
                 "launchers": ["run.cmd", "run.sh"],
-            })))
+            });
+            // The directory format keeps its original `directory` key.
+            let key = if format == PackageFormat::Dir {
+                "directory"
+            } else {
+                "archive"
+            };
+            result[key] = json!(path);
+            Ok(Outcome::Json(result))
         }
         "" => Err(usage(format!("Expected a project command\n{USAGE}"))),
         other => Err(usage(format!("Unknown project command: {other}\n{USAGE}"))),
     }
+}
+
+/// Splits a package `--format <name>` (anything but the global `json`) from the
+/// arguments.
+fn package_format(arguments: &[OsString]) -> Result<(PackageFormat, Vec<OsString>)> {
+    let mut format = None;
+    let mut rest = Vec::new();
+    let mut index = 0;
+    while index < arguments.len() {
+        if arguments[index] == "--format" && arguments.get(index + 1).is_none_or(|v| v != "json") {
+            let name = arguments
+                .get(index + 1)
+                .and_then(|v| v.to_str())
+                .ok_or_else(|| usage("Missing UTF-8 value for --format"))?;
+            let parsed = PackageFormat::parse(name).ok_or_else(|| {
+                usage(format!(
+                    "Unknown package format: {name} (expected {})",
+                    PackageFormat::NAMES
+                ))
+            })?;
+            if format.replace(parsed).is_some() {
+                return Err(usage("Duplicate option: --format"));
+            }
+            index += 2;
+        } else {
+            rest.push(arguments[index].clone());
+            index += 1;
+        }
+    }
+    Ok((format.unwrap_or_default(), rest))
 }
 
 fn single_manifest(arguments: &[OsString], action: &str) -> Result<Project> {
