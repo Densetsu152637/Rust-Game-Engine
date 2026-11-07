@@ -206,14 +206,9 @@ impl PersistenceStore {
                 "Invalid project ID",
             ));
         }
-        #[cfg(windows)]
-        let root = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-        #[cfg(not(windows))]
-        let root = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")));
+        let root = user_data_base(UserDataOs::host(), |name| std::env::var_os(name));
         root.filter(|r| r.is_absolute())
-            .map(|r| r.join("CPPGameEngine"))
+            .map(|r| r.join(USER_DATA_FOLDER))
             .ok_or_else(|| {
                 Error::new(
                     "persistence.root.unavailable",
@@ -468,9 +463,117 @@ impl PersistenceStore {
     }
 }
 
+/// Folder under the platform data directory that holds all player data.
+const USER_DATA_FOLDER: &str = "CPPGameEngine";
+
+/// Operating-system family that selects the user-data base directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UserDataOs {
+    Windows,
+    MacOs,
+    Other,
+}
+
+impl UserDataOs {
+    fn host() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// Pure base-directory choice: `LOCALAPPDATA` on Windows, `~/Library/Application
+/// Support` on macOS, `XDG_DATA_HOME` then `~/.local/share` elsewhere. `env` looks
+/// up an environment variable; the caller applies the absolute-path check.
+pub(crate) fn user_data_base(
+    os: UserDataOs,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    let home = || env("HOME").map(PathBuf::from);
+    match os {
+        UserDataOs::Windows => env("LOCALAPPDATA").map(PathBuf::from),
+        UserDataOs::MacOs => home().map(|h| h.join("Library").join("Application Support")),
+        UserDataOs::Other => env("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home().map(|h| h.join(".local/share"))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env_of(
+        pairs: &[(&'static str, &'static str)],
+    ) -> impl Fn(&str) -> Option<std::ffi::OsString> {
+        let pairs = pairs.to_vec();
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| std::ffi::OsString::from(*value))
+        }
+    }
+
+    #[test]
+    fn user_data_base_per_os() {
+        let env = env_of(&[
+            ("LOCALAPPDATA", "/local"),
+            ("XDG_DATA_HOME", "/xdg"),
+            ("HOME", "/home/u"),
+        ]);
+        assert_eq!(
+            user_data_base(UserDataOs::Windows, &env),
+            Some(PathBuf::from("/local"))
+        );
+        assert_eq!(
+            user_data_base(UserDataOs::MacOs, &env),
+            Some(PathBuf::from("/home/u/Library/Application Support"))
+        );
+        assert_eq!(
+            user_data_base(UserDataOs::Other, &env),
+            Some(PathBuf::from("/xdg"))
+        );
+        let no_xdg = env_of(&[("HOME", "/home/u")]);
+        assert_eq!(
+            user_data_base(UserDataOs::Other, &no_xdg),
+            Some(PathBuf::from("/home/u/.local/share"))
+        );
+        // macOS ignores XDG_DATA_HOME; Windows ignores HOME.
+        assert_eq!(
+            user_data_base(UserDataOs::MacOs, env_of(&[("XDG_DATA_HOME", "/xdg")])),
+            None
+        );
+        assert_eq!(
+            user_data_base(UserDataOs::Windows, env_of(&[("HOME", "/home/u")])),
+            None
+        );
+    }
+
+    #[test]
+    fn host_os_selects_matching_branch() {
+        let (expected, want) = if cfg!(windows) {
+            (UserDataOs::Windows, "/l")
+        } else if cfg!(target_os = "macos") {
+            (UserDataOs::MacOs, "/h/Library/Application Support")
+        } else {
+            (UserDataOs::Other, "/x")
+        };
+        assert_eq!(UserDataOs::host(), expected);
+        let env = env_of(&[
+            ("LOCALAPPDATA", "/l"),
+            ("XDG_DATA_HOME", "/x"),
+            ("HOME", "/h"),
+        ]);
+        assert_eq!(
+            user_data_base(UserDataOs::host(), env),
+            Some(PathBuf::from(want))
+        );
+    }
 
     fn temp_files(dir: &Path) -> Vec<String> {
         fs::read_dir(dir)

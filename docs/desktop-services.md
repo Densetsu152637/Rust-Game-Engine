@@ -62,9 +62,12 @@ tick) and never open a device.
 
 `PersistenceStore::new(PersistenceOptions)` takes a host-selected root and project
 ID. `default_user_data_root(project_id)` returns `%LOCALAPPDATA%\CPPGameEngine` on
-Windows, or `$XDG_DATA_HOME/CPPGameEngine` (falling back to
-`~/.local/share/CPPGameEngine`) elsewhere, and fails with
-`persistence.root.unavailable` when unavailable. The `CPPGameEngine` directory name,
+Windows, `~/Library/Application Support/CPPGameEngine` on macOS (from `HOME`), or
+`$XDG_DATA_HOME/CPPGameEngine` (falling back to `~/.local/share/CPPGameEngine`) on
+Linux and other Unix systems, and fails with `persistence.root.unavailable` when
+the base is unset or not absolute. macOS previously used the Linux path; no
+macOS saves were known to exist, so there is no migration. The per-OS choice is a
+pure function tested on every OS. The `CPPGameEngine` directory name,
 the `content_version` envelope key, the `saves/` and `settings/preferences.json`
 layout and the FNV-derived `project-<decimal>` profile ID from `project_id(name)` are
 kept from the earlier C++ engine, so existing player data stays in place. Under the

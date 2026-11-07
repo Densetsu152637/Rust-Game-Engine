@@ -96,6 +96,10 @@ The compiled runtime's entry (`runtime_entry::run`) parses the same `run`
 arguments, applies an editor scene snapshot if given, runs the desktop runner and
 prints one `run` result. Configure errors are `runtime.failed`, panics are
 `runtime.panic` (exit 3); undeclared injected input is `command.input.unknown`.
+With no project argument (or a leading `--option`) it loads `game/project.json`
+beside the executable, or `../Resources/game/project.json` inside a macOS
+`.app`; `ENGINE_RESOLVE_ONLY=1` prints the resolved path and exits without a
+window, GPU or Steam. See [desktop-packaging.md](../../docs/desktop-packaging.md).
 
 ## Editor play host
 

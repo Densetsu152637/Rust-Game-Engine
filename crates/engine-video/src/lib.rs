@@ -1,5 +1,6 @@
 //! Local file playback through explicitly configured FFmpeg tools.
 mod decoder;
+pub mod tools;
 use engine_audio::{AudioControl, PlayOptions, StreamConfig, StreamState, VoiceHandle};
 use std::{
     path::{Path, PathBuf},
@@ -30,6 +31,18 @@ impl From<engine_audio::AudioError> for VideoError {
 pub struct DecoderTools {
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
+}
+impl DecoderTools {
+    /// Locates the tools for the running process: `ENGINE_VIDEO_FFMPEG` /
+    /// `ENGINE_VIDEO_FFPROBE`, then a `tools` folder next to the executable (and
+    /// `Contents/Resources/tools` inside a macOS `.app`), then `PATH`. `Default`
+    /// still means bare `PATH` names.
+    pub fn discover() -> Self {
+        Self {
+            ffmpeg: tools::discover_tool("ffmpeg", tools::FFMPEG_ENV),
+            ffprobe: tools::discover_tool("ffprobe", tools::FFPROBE_ENV),
+        }
+    }
 }
 impl Default for DecoderTools {
     fn default() -> Self {
