@@ -253,12 +253,25 @@ jobs:
           merge-multiple: true
           path: counts
       # Each OS file is named explicitly with its own minimum, so a missing
-      # artifact fails the gate instead of shrinking the sum.
+      # artifact fails the gate instead of shrinking the sum. Every example has its
+      # own file and minimum too: a new example must be added to this list, or its
+      # tests are not gated. Minimums sit slightly below the counts of run
+      # 42337639780 (desktop-2d 77, first-project 13, moving-entity 10,
+      # native-extension 1, programmable-world 1).
       - name: Require the minimum number of passed tests
         run: |
           set -o pipefail
           ls -l counts
-          bash scripts/ci/test-count.sh gate "$MINIMUM_PASSED_TESTS"             "counts/workspace-windows.count:$MINIMUM_PASSED_TESTS_WINDOWS"             "counts/workspace-linux.count:$MINIMUM_PASSED_TESTS_LINUX"             "counts/workspace-macos.count:$MINIMUM_PASSED_TESTS_MACOS"             counts/example-*.count | tee -a "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/test-count.sh gate "$MINIMUM_PASSED_TESTS" \
+            "counts/workspace-windows.count:$MINIMUM_PASSED_TESTS_WINDOWS" \
+            "counts/workspace-linux.count:$MINIMUM_PASSED_TESTS_LINUX" \
+            "counts/workspace-macos.count:$MINIMUM_PASSED_TESTS_MACOS" \
+            counts/example-desktop-2d.count:70 \
+            counts/example-first-project.count:12 \
+            counts/example-moving-entity.count:9 \
+            counts/example-native-extension.count:1 \
+            counts/example-programmable-world.count:1 \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Portable crates and editor logic on Linux. CI does not open the interactive
   # editor; legacy Win32 controls and their tests remain cfg(windows).
@@ -292,6 +305,29 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo test --workspace
         run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/workspace.log"
+      # Packages a real project as tar.gz with the workspace CLI and runs it from a
+      # fresh extraction on Linux: the exec bit must survive, and the runtime must
+      # start with no project argument (it finds game/project.json beside itself) and
+      # through run.sh. The dev profile and the shared native target directory reuse
+      # the generation build output the workspace tests produced.
+      - name: Package smoke test (tar.gz)
+        if: ${{ !cancelled() }}
+        run: |
+          export ENGINE_NATIVE_TARGET_DIR="$PWD/target/native-generation-shared"
+          out="$RUNNER_TEMP/package-smoke"
+          rm -rf "$out"
+          mkdir -p "$out/extract"
+          cargo run --locked -q -p engine-tooling --bin engine -- \
+            project package examples/first-project/project.json "$out/first-project.tar.gz" \
+            --profile dev --format tar.gz
+          tar -tvzf "$out/first-project.tar.gz" | sed -n 1,12p
+          tar -xzf "$out/first-project.tar.gz" -C "$out/extract"
+          package="$out/extract/first-project"
+          test -x "$package/runtime"
+          test -x "$package/run.sh"
+          cd "$RUNNER_TEMP"
+          "$package/runtime" --headless --ticks 3
+          "$package/run.sh" --headless --ticks 3
       - name: Check standalone desktop entry points
         if: ${{ !cancelled() }}
         run: bash scripts/ci/check-desktop-examples.sh

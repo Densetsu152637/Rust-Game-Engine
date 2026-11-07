@@ -165,93 +165,21 @@ pub fn initialize_project(template_manifest: &Path, destination: &Path) -> Resul
     ))
 }
 
-/// Package the already compiled native game. Launchers require neither Cargo nor
-/// source checkout paths. Gameplay sources remain because authored script assets
-/// are stable content references, while native execution uses the copied binary.
+/// Package the already compiled native game as a directory. See
+/// [`crate::packaging::package`] for the archive formats.
 pub fn package_project(
     project: &Project,
     artifact: &BuildArtifact,
     destination: &Path,
     engine_root: &Path,
 ) -> Result<PathBuf> {
-    let package_host = engine_platform::PackageHost::current()
-        .map_err(|error| Error::new("package.platform.unsupported", error.to_string()))?;
-    reject_source_destination(&project.root, destination, true)?;
-    if !artifact.executable.is_file() {
-        return Err(Error::new(
-            "package.runtime.missing",
-            "Compiled generation executable is missing",
-        ));
-    }
-    let engine_root = engine_root.canonicalize()?;
-    let engine_license = engine_root.join("LICENSE");
-    if !engine_license.is_file() {
-        return Err(Error::new(
-            "package.license.missing",
-            "Engine LICENSE is required",
-        ));
-    }
-    export_new_directory(destination, |staging| {
-        let game = staging.join("game");
-        fs::create_dir(&game)?;
-        copy_tree(&project.root, &game)?;
-        let manifest_name = project
-            .manifest
-            .file_name()
-            .ok_or_else(|| Error::new("package.manifest", "Manifest has no file name"))?;
-        if manifest_name != "project.json" {
-            fs::copy(game.join(manifest_name), game.join("project.json"))?;
-        }
-        Project::load(game.join("project.json"))?;
-        let runtime = if cfg!(windows) {
-            "runtime.exe"
-        } else {
-            "runtime"
-        };
-        fs::copy(&artifact.executable, staging.join(runtime))?;
-        let licenses = staging.join("licenses");
-        fs::create_dir(&licenses)?;
-        fs::copy(&engine_license, licenses.join("engine-LICENSE"))?;
-        fs::copy(
-            artifact.directory.join("Cargo.lock"),
-            licenses.join("runtime-Cargo.lock"),
-        )?;
-        write_dependency_notices(artifact, &licenses)?;
-        fs::write(
-            staging.join("generation.json"),
-            serde_json::to_vec_pretty(artifact)?,
-        )?;
-        fs::write(
-            staging.join("package-host.json"),
-            serde_json::to_vec_pretty(&package_host)?,
-        )?;
-        fs::write(
-            staging.join("run.cmd"),
-            "@echo off\r\n\"%~dp0runtime.exe\" \"%~dp0game\\project.json\" %*\r\nexit /b %errorlevel%\r\n",
-        )?;
-        fs::write(
-            staging.join("run.sh"),
-            "#!/bin/sh\nHERE=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd) || exit 3\nexec \"$HERE/runtime\" \"$HERE/game/project.json\" \"$@\"\n",
-        )?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(staging.join("run.sh"), fs::Permissions::from_mode(0o755))?;
-        }
-        fs::write(
-            staging.join("PACKAGE.txt"),
-            format!(
-                "Native runtime generation {}\nFingerprint {}\nPackaged on {} ({}). Launch {} on this host platform.\nThis is a host-native directory package, not a cross-platform binary, installer, signed application or store bundle.\nPlayer saves/settings remain outside this directory.\nDependency notices are inventoried in licenses/dependencies.json.\n",
-                artifact.generation,
-                artifact.fingerprint,
-                package_host.platform.name(),
-                package_host.architecture,
-                package_host.launcher_filename
-            ),
-        )?;
-        Ok(())
-    })?;
-    Ok(destination.to_path_buf())
+    crate::packaging::package(
+        project,
+        artifact,
+        destination,
+        engine_root,
+        crate::packaging::PackageFormat::Dir,
+    )
 }
 
 /// Checks a package destination without building: it must be new and must not
@@ -305,7 +233,11 @@ pub fn prune_generations(cache: &Path, current: &Path, keep: usize) -> Result<us
     Ok(removed)
 }
 
-fn reject_source_destination(source: &Path, destination: &Path, allow_derived: bool) -> Result<()> {
+pub(crate) fn reject_source_destination(
+    source: &Path,
+    destination: &Path,
+    allow_derived: bool,
+) -> Result<()> {
     let parent = destination
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -330,7 +262,7 @@ fn reject_source_destination(source: &Path, destination: &Path, allow_derived: b
     Ok(())
 }
 
-fn write_dependency_notices(artifact: &BuildArtifact, destination: &Path) -> Result<()> {
+pub(crate) fn write_dependency_notices(artifact: &BuildArtifact, destination: &Path) -> Result<()> {
     let metadata: serde_json::Value =
         serde_json::from_slice(&fs::read(artifact.directory.join("cargo-metadata.json"))?)?;
     let packages = metadata["packages"]
@@ -386,7 +318,7 @@ fn write_dependency_notices(artifact: &BuildArtifact, destination: &Path) -> Res
     Ok(())
 }
 
-fn export_new_directory(
+pub(crate) fn export_new_directory(
     destination: &Path,
     populate: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<()> {
@@ -415,7 +347,7 @@ fn export_new_directory(
     Ok(())
 }
 
-fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let name = entry.file_name();

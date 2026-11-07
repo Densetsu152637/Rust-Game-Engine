@@ -115,7 +115,7 @@ runs, pinned action SHAs and the toolchain installed from `rust-toolchain.toml` 
 | Workspace tests | `windows-latest` | `cargo test --workspace --locked`, `engine project validate` of the data-only `examples/pbr-shadows` project (its renderer example is built by the workspace tests) and a passed-test count |
 | Example tests | `windows-latest`, one job per example | `cargo test --manifest-path` for `desktop-2d`, `first-project`, `native-extension`, `programmable-world` (default features) and `assets/scripts/moving_entity` (plus the desktop-2d fixture validator) and a passed-test count |
 | Test count gate | `ubuntu-latest` | Collects the passed-test counts of the three workspace test jobs and the example jobs; fails when any OS is below its own minimum or the total is below the overall minimum |
-| Workspace tests (Linux) | `ubuntu-latest` | `cargo test --workspace --locked` and standalone desktop entry-point checks after installing ALSA, udev and window-system development packages |
+| Workspace tests (Linux) | `ubuntu-latest` | `cargo test --workspace --locked`, standalone desktop entry-point checks and a package smoke test (`project package --format tar.gz`, extraction with `tar`, `runtime --headless --ticks 3` with no project argument and `run.sh --headless --ticks 3`) after installing ALSA, udev and window-system development packages |
 | Workspace tests (macOS) | `macos-latest` | `cargo test --workspace --locked` and standalone desktop entry-point checks; hardware-dependent tests remain ignored |
 | Portable library compile (WebAssembly) | `ubuntu-latest` | `cargo check --locked --target wasm32-unknown-unknown -p engine-core -p engine-ecs -p engine-render -p engine-platform`; compilation only, no browser host |
 
@@ -124,7 +124,11 @@ stripped); tests that are ignored or filtered out never count as passed. The ove
 minimum is the `MINIMUM_PASSED_TESTS` environment value in the workflow, and each OS
 also has its own (`MINIMUM_PASSED_TESTS_WINDOWS`, `_LINUX`, `_MACOS`), so one platform
 cannot fall behind while the sum still passes. The gate names each OS count file
-explicitly, so a missing count fails the gate. Warnings are denied
+explicitly, so a missing count fails the gate; each example count file has its own
+minimum there too, and a new example must be added to that list. To recalibrate a
+minimum, take the passed counts of a green `main` run and set the value about 1%
+below them; lower a minimum only when tests are legitimately removed, and raise it
+when tests are added. Warnings are denied
 by the lint job (`RUSTFLAGS=-D warnings` and clippy `-D warnings` over every target).
 The example test jobs also build with `RUSTFLAGS=-D warnings`. The Windows
 workspace test job does not set it: `engine-tooling` tests build real crates through
