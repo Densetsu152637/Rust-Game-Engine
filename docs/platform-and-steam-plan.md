@@ -85,8 +85,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: P2, P3.
 - Owned paths: `ci.yml`, `scripts/ci/test-count.sh`.
 - Acceptance checks: `linux-tests` and `macos-tests` upload `test-count-<os>` artifacts and `test-count-gate` `needs` them; `scripts/ci/test-count.sh gate` enforces a per-file minimum for each OS (not only a sum) and its log names all three OS count files; one `main` run with every job above green, including "Test count gate".
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: PR #5 (`ci/p4-count-gate`, `502f662` + `eef4f20`), fast-forwarded to main. Linux/macOS jobs upload `test-count-linux`/`test-count-macos` (Windows renamed `test-count-windows`); the gate `needs` all four jobs and takes `file:minimum` arguments (6000 per OS, calibrated from run 42337639780; total 18000). The first PR run caught a real bug: BSD sed on macOS has no `\b`/`\x1b`, so the macOS count had always been 0; `eef4f20` uses POSIX patterns. Final evidence: main run 42397311903 on `eef4f20`, every job green; gate log Windows 6066, Linux 6060, macOS 6055, total 18283. Critic (opus, 2 rounds) converged with no defects; adopted for the P6 PR: per-example minimums, gate-command line continuations, `LC_ALL=C`, a recalibration note in `docs/testing.md`.
 - Handoff notes: calibrate per-OS minimums from observed counts; a sum alone would let one OS regress behind the others.
 
 ## Stage P5: Platform runtime fixes
@@ -94,8 +94,8 @@ Execution rules: one implementer at a time (user rule); each stage commits on it
 - Depends on: P2, P3.
 - Owned paths: `crates/engine-project/src/persistence/mod.rs`, `crates/engine-video/` (decoder tool lookup), `crates/engine-tooling/src/runtime_entry.rs`, `docs/platforms.md`, `docs/desktop-services.md`, `docs/video.md`.
 - Acceptance checks: path-builder unit tests for each OS root (executed per OS in CI); `tools/` lookup order test (`ENGINE_VIDEO_FFMPEG` > `tools/` > `PATH`); runtime with no arguments finds `../Resources/game/project.json` inside a `.app` layout and `game/project.json` beside the runtime (test with a temp layout); resolve-only mode prints the resolved path and exits 0 for both layouts and exits non-zero when neither exists (test).
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `b05d96e` + `3544c91` (PR #6, run 42397376437 green on all three OSes), merged as `b365316`. Pure per-OS `user_data_base` (macOS `~/Library/Application Support/CPPGameEngine`); `engine_video::tools::resolve_tool` + `DecoderTools::discover()` (env > `tools/` or `.app` `Resources/tools` > `PATH`), delivered as API: no engine host calls it yet (video stays host opt-in); `engine_tooling::game_location`: with no project argument or a leading `--option`, `game/project.json` beside the exe, else `../Resources/game/project.json` in an `X.app/Contents/MacOS` layout; `ENGINE_RESOLVE_ONLY=1` prints the absolute path and exits 0, or 3 when nothing resolves (before logging, window, GPU, Steam). Before P5, no-argument startup failed with `command.arguments` (exit 2). Manual Windows run of a packaged runtime: resolve-only exit 0 / exit 3, `--headless --ticks 3` with no project exit 0. Critic converged (docs findings fixed in `3544c91`); declined an end-to-end resolve-only binary test (P8 runs resolve-only on the built bundle).
 - Handoff notes: macOS root move needs no migration (macOS was unverified, no known saves); document it.
 
 ## Stage S1: `engine-steam` skeleton and no-Steam path
