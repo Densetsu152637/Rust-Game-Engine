@@ -410,22 +410,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Download pinned appimagetool and type2 runtime
         run: |
-          tools="$RUNNER_TEMP/appimage-tools"
-          mkdir -p "$tools"
-          cd "$tools"
-          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
-            --output appimagetool-x86_64.AppImage \
-            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
-          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
-            --output runtime-x86_64 \
-            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
-          sha256sum -c <<'SUMS'
-          ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool-x86_64.AppImage
-          2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  runtime-x86_64
-          SUMS
-          chmod +x appimagetool-x86_64.AppImage
-          echo "ENGINE_APPIMAGETOOL=$tools/appimagetool-x86_64.AppImage" >> "$GITHUB_ENV"
-          echo "ENGINE_APPIMAGE_RUNTIME=$tools/runtime-x86_64" >> "$GITHUB_ENV"
+          # The pins and their checksums live in the script, which P9 reuses.
+          fetched=$(bash scripts/package/fetch-appimagetool.sh "$RUNNER_TEMP/appimage-tools")
+          echo "ENGINE_APPIMAGETOOL=$(sed -n 1p <<<"$fetched")" >> "$GITHUB_ENV"
+          echo "ENGINE_APPIMAGE_RUNTIME=$(sed -n 2p <<<"$fetched")" >> "$GITHUB_ENV"
       - name: Package examples/first-project as an AppImage
         run: |
           out="$RUNNER_TEMP/appimage-smoke"
@@ -434,7 +422,12 @@ jobs:
           cargo run --locked -q -p engine-tooling --bin engine -- \
             project package examples/first-project/project.json "$out/first-project.AppImage" \
             --profile dev --format appimage
-          ls -l "$out"
+          ls -la "$out"
+          # No update information is embedded, so no .zsync may be left behind.
+          if compgen -G "$out/*.zsync" >/dev/null; then
+            echo "unexpected .zsync file" >&2
+            exit 1
+          fi
       # The runners have no FUSE: the file is run by extracting it, from an
       # unrelated working directory. The runtime finds game/project.json inside the
       # image through AppRun, with no project argument.
@@ -453,9 +446,19 @@ jobs:
           test -f squashfs-root/.DirIcon
           test -f squashfs-root/game/project.json
           desktop-file-validate squashfs-root/first-project.desktop
+      # The image is mounted read-only; the game must start from a read-only
+      # tree, from an unrelated directory, with no inherited APPDIR.
+      - name: Run the extracted AppDir read-only
+        run: |
+          cd "$RUNNER_TEMP/appimage-smoke"
+          chmod -R a-w squashfs-root
+          env -u APPDIR squashfs-root/AppRun --headless --ticks 3
+          chmod -R u+w squashfs-root
       - name: Clean up
         if: ${{ always() }}
-        run: rm -rf "$RUNNER_TEMP/appimage-smoke" "$RUNNER_TEMP/appimage-tools"
+        run: |
+          chmod -R u+w "$RUNNER_TEMP/appimage-smoke" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/appimage-smoke" "$RUNNER_TEMP/appimage-tools"
       - name: Disk space (after build)
         if: ${{ always() }}
         run: df -h

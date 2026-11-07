@@ -26,11 +26,34 @@ const ICON_SIZE: u32 = 256;
 /// Id used when a project name has no ASCII letter or digit.
 const FALLBACK_ID: &str = "game";
 
+/// `AppRun` never trusts an inherited `APPDIR` (a nested AppImage or a stale
+/// shell variable would point at another image): the directory is always the
+/// symlink-resolved location of this script. `readlink -f` is in coreutils and
+/// busybox.
 const APP_RUN: &str = "#!/bin/sh\n\
-if [ -z \"$APPDIR\" ]; then\n\
-\tAPPDIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd) || exit 3\n\
-fi\n\
-exec \"$APPDIR/runtime\" \"$@\"\n";
+HERE=$(dirname -- \"$(readlink -f -- \"$0\")\") || exit 3\n\
+exec \"$HERE/runtime\" \"$@\"\n";
+
+/// Variables `appimagetool` 1.9.1 reads from the environment (Travis, GitHub
+/// Actions, GitLab CI, `OWD`; see `src/appimagetool.c`) that would embed update
+/// information, so they are removed from the tool's environment. `GITHUB_ACTIONS`,
+/// `TRAVIS` and `GITLAB_CI` are not read by 1.9.1 but are removed too, so a newer
+/// tool cannot detect CI.
+const TOOL_ENV_REMOVED: &[&str] = &[
+    "GITHUB_ACTIONS",
+    "GITHUB_REPOSITORY",
+    "GITHUB_REPOSITORY_OWNER",
+    "GITHUB_TOKEN",
+    "TRAVIS",
+    "TRAVIS_REPO_SLUG",
+    "TRAVIS_TAG",
+    "TRAVIS_PULL_REQUEST",
+    "GITLAB_CI",
+    "CI_PROJECT_URL",
+    "CI_COMMIT_REF_NAME",
+    "CI_JOB_NAME",
+    "OWD",
+];
 
 /// Where the host runs `appimagetool` from, validated.
 #[derive(Clone, Debug)]
@@ -223,24 +246,25 @@ pub fn export_new_appimage(
     fs::create_dir(&appdir)?;
     populate(&appdir)?;
     write_appdir_files(&appdir, display_name)?;
-    let output = tempfile::Builder::new()
-        .prefix(".engine-export-")
-        .suffix(".partial")
-        .tempfile_in(&parent)?
-        .into_temp_path();
-    run_tool(tooling, &appdir, &output)?;
+    // The tool gets a path that does not exist yet, inside the staging directory
+    // (same file system as the destination), so it never writes over an existing
+    // file; a stray `.zsync` goes away with the staging directory.
+    let built = staging.path().join("output.AppImage");
+    run_tool(tooling, &appdir, &built)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&output, fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(&built, fs::Permissions::from_mode(0o755))?;
     }
-    output.persist_noclobber(destination).map_err(|error| {
-        if destination.exists() {
-            exists()
-        } else {
-            Error::from(error.error)
-        }
-    })?;
+    tempfile::TempPath::try_from_path(&built)?
+        .persist_noclobber(destination)
+        .map_err(|error| {
+            if destination.exists() {
+                exists()
+            } else {
+                Error::from(error.error)
+            }
+        })?;
     Ok(())
 }
 
@@ -248,10 +272,13 @@ fn run_tool(tooling: &AppImageTooling, appdir: &Path, output: &Path) -> Result<(
     let mut command = Command::new(&tooling.tool);
     // Build runners have no FUSE; the tool is itself an AppImage.
     command.env("APPIMAGE_EXTRACT_AND_RUN", "1");
-    if std::env::var_os("ARCH").is_none_or(|value| value.is_empty())
-        && let Some(arch) = tool_arch(std::env::consts::ARCH)
-    {
+    // Always the host architecture; an inherited ARCH could select another one.
+    command.env_remove("ARCH");
+    if let Some(arch) = tool_arch(std::env::consts::ARCH) {
         command.env("ARCH", arch);
+    }
+    for variable in TOOL_ENV_REMOVED {
+        command.env_remove(variable);
     }
     command.arg("--no-appstream");
     if let Some(runtime) = &tooling.runtime_file {
@@ -355,8 +382,10 @@ mod tests {
     #[test]
     fn app_run_derives_appdir_and_forwards_arguments() {
         assert!(APP_RUN.starts_with("#!/bin/sh\n"));
-        assert!(APP_RUN.contains("if [ -z \"$APPDIR\" ]"));
-        assert!(APP_RUN.ends_with("exec \"$APPDIR/runtime\" \"$@\"\n"));
+        assert!(APP_RUN.contains("HERE=$(dirname -- \"$(readlink -f -- \"$0\")\") || exit 3\n"));
+        // An inherited APPDIR is never read.
+        assert!(!APP_RUN.contains("APPDIR"));
+        assert!(APP_RUN.ends_with("exec \"$HERE/runtime\" \"$@\"\n"));
     }
 
     #[test]

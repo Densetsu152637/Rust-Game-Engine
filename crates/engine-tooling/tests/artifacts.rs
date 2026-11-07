@@ -389,12 +389,35 @@ fn degenerate_archive_names_are_refused_before_any_work() {
     assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
 }
 
+/// Serialises the tests that write a script and then execute it: another test
+/// thread forking while a script is open for writing makes the exec fail with
+/// ETXTBSY ("Text file busy"). Held from the script write to the end of the test.
+#[cfg(unix)]
+static SCRIPT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(unix)]
+fn lock_scripts() -> std::sync::MutexGuard<'static, ()> {
+    SCRIPT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Write an executable script and close the file before it can be executed.
+#[cfg(unix)]
+fn write_script(path: &Path, script: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let mut file = fs::File::create(path).unwrap();
+    file.write_all(script.as_bytes()).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 #[cfg(unix)]
 fn fake_tool(fixture: &PackageFixture, script: &str) -> packaging::appimage::AppImageTooling {
-    use std::os::unix::fs::PermissionsExt;
     let tool = fixture.root.join("fake-appimagetool");
-    fs::write(&tool, script).unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&tool, script);
     packaging::appimage::AppImageTooling {
         tool,
         runtime_file: None,
@@ -423,7 +446,8 @@ fn appdir_holds_the_staged_package_and_the_appimage_files() {
     assert!(appdir.join("licenses/engine-LICENSE").is_file());
     let run = fs::read_to_string(appdir.join("AppRun")).unwrap();
     assert!(run.starts_with("#!/bin/sh\n"), "{run}");
-    assert!(run.contains("exec \"$APPDIR/runtime\" \"$@\""), "{run}");
+    assert!(run.contains("exec \"$HERE/runtime\" \"$@\""), "{run}");
+    assert!(!run.contains("APPDIR"), "{run}");
     assert!(!run.contains("project.json"), "{run}");
     let desktop = fs::read_to_string(appdir.join(format!("{id}.desktop"))).unwrap();
     for line in [
@@ -499,6 +523,7 @@ fn appimage_reports_unsupported_host_and_missing_tool_before_staging() {
 #[test]
 fn appimage_runs_the_tool_on_the_appdir_and_publishes_the_output() {
     use std::os::unix::fs::PermissionsExt;
+    let _scripts = lock_scripts();
     let fixture = package_fixture();
     let record = fixture.root.join("tool-record");
     // Records the environment and arguments, checks the AppDir, writes the output.
@@ -509,6 +534,7 @@ fn appimage_runs_the_tool_on_the_appdir_and_publishes_the_output() {
              echo \"extract=$APPIMAGE_EXTRACT_AND_RUN\" > '{record}'\n\
              echo \"args=$#\" >> '{record}'\n\
              for last; do :; done\n\
+             test ! -e \"$last\" || exit 6\n\
              test -x \"$2/AppRun\" || exit 7\n\
              test -x \"$2/runtime\" || exit 8\n\
              ls \"$2\" >> '{record}'\n\
@@ -547,11 +573,10 @@ fn appimage_runs_the_tool_on_the_appdir_and_publishes_the_output() {
     fs::write(&runtime, "rt").unwrap();
     let mut with_runtime = tooling.clone();
     with_runtime.runtime_file = Some(runtime.clone());
-    fs::write(
+    write_script(
         &with_runtime.tool,
         "#!/bin/sh\ncase \"$*\" in *--runtime-file*type2-runtime*) ;; *) exit 9;; esac\nfor last; do :; done\necho SECOND > \"$last\"\n",
-    )
-    .unwrap();
+    );
     let second = fixture.root.join("second.AppImage");
     packaging::package_appimage(
         &fixture.project,
@@ -576,6 +601,7 @@ fn appimage_runs_the_tool_on_the_appdir_and_publishes_the_output() {
 #[cfg(unix)]
 #[test]
 fn appimage_tool_failure_publishes_nothing_and_cleans_up() {
+    let _scripts = lock_scripts();
     let fixture = package_fixture();
     let destination = fixture.root.join("bad.AppImage");
     for (script, needle) in [

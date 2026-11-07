@@ -103,7 +103,7 @@ With an archive format the same tree sits inside the archive's top-level folder.
 staged package becomes an AppDir with these files added at its root:
 
 ```text
-AppRun               POSIX sh, 0755: exec "$APPDIR/runtime" "$@"  (APPDIR is derived from $0 when unset)
+AppRun               POSIX sh, 0755: resolves its own directory with readlink -f on $0, then exec "$HERE/runtime" "$@"
 <id>.desktop         Type=Application, Name=<project name>, Exec=runtime, Icon=<id>, Categories=Game;, Terminal=false
 <id>.png, .DirIcon   the default engine icon (256x256 PNG; the manifest has no icon field yet)
 ```
@@ -113,6 +113,8 @@ run of characters (including non-ASCII ones) becoming one `-`, with leading and
 trailing `-` dropped and at most 64 characters; a name with no ASCII letter or digit
 gives `game` (`First Project` is `first-project`). The runtime finds `game/project.json`
 beside itself (see the lookup rules above), so `AppRun` passes no project argument.
+`AppRun` never reads an inherited `APPDIR` (a nested AppImage or stale variable could
+point at another image); it always locates itself from `$0`.
 
 Building needs a Linux host and
 [`appimagetool`](https://github.com/AppImage/appimagetool/releases):
@@ -122,13 +124,23 @@ Building needs a Linux host and
 | `ENGINE_APPIMAGETOOL` | Path of the `appimagetool` executable. When set and non-empty it is the only candidate. Otherwise `appimagetool` is searched on `PATH`. |
 | `ENGINE_APPIMAGE_RUNTIME` | Optional path of a pinned [type2 runtime](https://github.com/AppImage/type2-runtime/releases), passed as `--runtime-file` so the tool never downloads a runtime while packaging. |
 
+`scripts/package/fetch-appimagetool.sh <dest-dir>` downloads the pinned `appimagetool` 1.9.1 and type2
+runtime 20251108 (x86_64), verifies their SHA-256 checksums and prints the two paths;
+CI and later release workflows use it so the pins live in one place.
+
 Packaging fails before anything is staged, and before the game is compiled, with
 `tooling.appimage.unsupported_host` (not a Linux host, for example Windows or macOS),
 `tooling.appimage.tool_missing` (no executable `appimagetool`) or
 `tooling.appimage.runtime_missing` (`ENGINE_APPIMAGE_RUNTIME` is not a file).
 `tooling.appimage.failed` reports a tool that could not start, exited non-zero or wrote
 no file. The tool runs with `APPIMAGE_EXTRACT_AND_RUN=1` (it needs no FUSE) and
-`--no-appstream`. The output is written next to the destination and published with
+`--no-appstream`. `ARCH` is always set from the host architecture (an inherited
+`ARCH` is ignored), and the CI variables `appimagetool` 1.9.1 reads to guess update
+information (`GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_OWNER`, `GITHUB_TOKEN`,
+`TRAVIS_*`, `CI_PROJECT_URL`, `CI_COMMIT_REF_NAME`, `CI_JOB_NAME`) and `OWD` are
+removed from its environment, so no update information or `.zsync` file is
+produced. The tool is given a not-yet-existing output path in a staging directory
+next to the destination, and the result is published with
 no-clobber, so an existing destination is refused with `tooling.destination.exists`
 and a failure publishes nothing. The result key is `appimage` (not `archive`).
 
