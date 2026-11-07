@@ -55,6 +55,8 @@ const ICNS_256_PNG: &[u8; 4] = b"ic08";
 #[derive(Clone, Debug)]
 pub struct MacosTooling {
     pub lipo: PathBuf,
+    /// Strips extended attributes before signing.
+    pub xattr: PathBuf,
     pub codesign: PathBuf,
     /// A signing identity, or `None` for an ad-hoc signature.
     pub sign_identity: Option<String>,
@@ -74,7 +76,7 @@ impl MacosTooling {
     /// The host and tool lookup with every input injected.
     ///
     /// - `tooling.app.unsupported_host`: not a macOS host.
-    /// - `tooling.app.tool_missing`: `lipo` or `codesign` is not on `PATH`.
+    /// - `tooling.app.tool_missing`: `lipo`, `xattr` or `codesign` is not on `PATH`.
     /// - `tooling.app.identity_invalid`: the identity is not UTF-8.
     pub fn resolve(
         macos_host: bool,
@@ -101,6 +103,7 @@ impl MacosTooling {
                 })
         };
         let lipo = find("lipo")?;
+        let xattr = find("xattr")?;
         let codesign = find("codesign")?;
         let sign_identity = match identity_env.filter(|value| !value.is_empty()) {
             Some(value) => Some(
@@ -118,6 +121,7 @@ impl MacosTooling {
         };
         Ok(Self {
             lipo,
+            xattr,
             codesign,
             sign_identity,
         })
@@ -125,7 +129,8 @@ impl MacosTooling {
 }
 
 /// Fail with `tooling.app.target_missing` unless both Rust targets are installed
-/// for `rustc`. A missing target has no `rustlib/<target>/lib` directory.
+/// for `rustc`. A missing target has no `rustlib/<target>/lib` directory. A
+/// `rustc` that cannot be started is `tooling.app.toolchain_failed`.
 pub fn check_targets(rustc: &Path) -> Result<()> {
     for target in [ARM64_TARGET, X86_64_TARGET] {
         let mut command = Command::new(rustc);
@@ -139,7 +144,7 @@ pub fn check_targets(rustc: &Path) -> Result<()> {
         }
         let output = command.output().map_err(|error| {
             Error::new(
-                "tooling.app.target_missing",
+                "tooling.app.toolchain_failed",
                 format!("Could not run {}: {error}", rustc.display()),
             )
         })?;
@@ -252,7 +257,9 @@ pub fn xml_escape(text: &str) -> String {
             '"' => escaped.push_str("&quot;"),
             '\'' => escaped.push_str("&apos;"),
             '\t' | '\n' | '\r' => escaped.push(character),
-            character if character.is_control() || character == '\u{FFFE}' => escaped.push(' '),
+            character if character.is_control() || matches!(character, '\u{FFFE}' | '\u{FFFF}') => {
+                escaped.push(' ')
+            }
             character => escaped.push(character),
         }
     }
@@ -275,6 +282,7 @@ pub fn info_plist(id: &str, display_name: &str, bundle_id: &str) -> String {
     let display = single_line.trim();
     let display = if display.is_empty() { id } else { display };
     let short: String = display.chars().take(BUNDLE_NAME_LENGTH).collect();
+    let short = short.trim_end().to_owned();
     let entries: [(&str, PlistValue); 14] = [
         ("CFBundleDevelopmentRegion", PlistValue::Text("en")),
         ("CFBundleExecutable", PlistValue::Text("runtime")),
@@ -391,6 +399,16 @@ pub fn make_universal(
         fs::set_permissions(directory.join("runtime"), fs::Permissions::from_mode(0o755))?;
     }
     Ok(())
+}
+
+/// Remove every extended attribute from the staged bundle with `xattr -cr`.
+/// Finder metadata or resource forks copied from the project would make
+/// `codesign` refuse with "detritus not allowed". Fails with
+/// `tooling.app.xattr_failed`.
+pub fn strip_extended_attributes(tooling: &MacosTooling, bundle: &Path) -> Result<()> {
+    let mut command = Command::new(&tooling.xattr);
+    command.arg("-cr").arg(bundle);
+    run_tool(command, "tooling.app.xattr_failed", "xattr", None)
 }
 
 /// The `codesign` arguments before the path: ad-hoc without a timestamp, or the
@@ -569,8 +587,12 @@ mod tests {
         assert!(!plist.contains('\u{1}'));
         // Name: fewer than 16 characters; display name keeps the whole text.
         let plist = info_plist("x", "Extremely Long Project Name", "x.y");
-        assert!(plist.contains("<key>CFBundleName</key>\n\t<string>Extremely Long </string>"));
+        assert!(plist.contains("<key>CFBundleName</key>\n\t<string>Extremely Long</string>"));
         assert!(plist.contains("<string>Extremely Long Project Name</string>"));
+        // A space left at the end by the cut is dropped.
+        let plist = info_plist("x", "12345678901234 tail", "x.y");
+        assert!(plist.contains("<key>CFBundleName</key>\n\t<string>12345678901234</string>"));
+        assert_eq!(xml_escape("a\u{FFFE}b\u{FFFF}c"), "a b c");
         // A blank name falls back to the id.
         let plist = info_plist("game", "  ", "x.y");
         assert!(plist.contains("<key>CFBundleDisplayName</key>\n\t<string>game</string>"));
@@ -679,6 +701,12 @@ mod tests {
             "tooling.app.tool_missing"
         );
         fs::write(temp.path().join("codesign"), "").unwrap();
+        // xattr is still missing.
+        assert_eq!(
+            code(MacosTooling::resolve(true, Some(path.as_os_str()), None)),
+            "tooling.app.tool_missing"
+        );
+        fs::write(temp.path().join("xattr"), "").unwrap();
         let tooling = MacosTooling::resolve(true, Some(path.as_os_str()), None).unwrap();
         assert_eq!(tooling.lipo, temp.path().join("lipo"));
         assert_eq!(tooling.sign_identity, None);

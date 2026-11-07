@@ -76,7 +76,7 @@ directory.
   `PATH`; optional `ENGINE_APPIMAGE_RUNTIME` pins the type2 runtime), or with `--format app` a
   macOS `<Name>.app` bundle (destination ending in `.app`; needs a macOS host with
   both Apple Rust targets installed; builds a universal runtime, ad-hoc signs it, or
-  signs with `ENGINE_MACOS_SIGN_IDENTITY`; `--bundle-id` sets `CFBundleIdentifier`).
+  signs with `ENGINE_MACOS_SIGN_IDENTITY` after clearing extended attributes; `--bundle-id` sets `CFBundleIdentifier`).
   See [Desktop packages](desktop-packaging.md).
 - **`scene inspect`** loads a scene, validates it against the project's asset
   catalog and returns its revision, entity count and contents.

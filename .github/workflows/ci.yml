@@ -532,6 +532,11 @@ jobs:
         if: ${{ always() }}
         run: df -h
       - name: Package examples/first-project as an app bundle
+        id: package
+        # Shared with the rust-cache path, as in linux-tests, so both Apple
+        # generations are saved on main.
+        env:
+          ENGINE_NATIVE_TARGET_DIR: ${{ github.workspace }}/target/native-generation-shared
         run: |
           out="$RUNNER_TEMP/app-smoke"
           rm -rf "$out"
@@ -541,6 +546,7 @@ jobs:
             --profile dev --format app
           ls -laR "$out/First Project.app/Contents"
       - name: Check the bundle files
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         run: |
           bundle="$RUNNER_TEMP/app-smoke/First Project.app"
           plutil -lint "$bundle/Contents/Info.plist"
@@ -561,9 +567,16 @@ jobs:
           # Informational: the icon type and the deployment target of each slice.
           sips -g pixelWidth -g pixelHeight "$bundle/Contents/Resources/first-project.icns" || true
           vtool -arch all -show-build "$bundle/Contents/MacOS/runtime" || true
+      - name: Verify the code signature
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        run: |
+          bundle="$RUNNER_TEMP/app-smoke/First Project.app"
+          codesign --verify --deep --strict --verbose=2 "$bundle"
+          codesign -dvv "$bundle"
       # The runtime resolves the game from the bundle layout with no project
       # argument, from an unrelated working directory.
       - name: Resolve and run the bundle
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         run: |
           bundle="$RUNNER_TEMP/app-smoke/First Project.app"
           cd /
@@ -574,14 +587,10 @@ jobs:
             *) echo "unexpected resolved path" >&2; exit 1 ;;
           esac
           "$bundle/Contents/MacOS/runtime" --headless --ticks 3
-      - name: Verify the code signature
-        run: |
-          bundle="$RUNNER_TEMP/app-smoke/First Project.app"
-          codesign --verify --deep --strict --verbose=2 "$bundle"
-          codesign -dvv "$bundle"
       # Rosetta is not installed on every runner; the slice is only built, not run,
       # when it is missing.
       - name: Run the x86_64 slice under Rosetta when available
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         run: |
           bundle="$RUNNER_TEMP/app-smoke/First Project.app"
           if arch -x86_64 /usr/bin/true 2>/dev/null; then

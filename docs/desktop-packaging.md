@@ -230,16 +230,20 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
 The build runs on a macOS host only. Before anything is compiled, packaging fails with
 `tooling.app.unsupported_host` (not macOS, for example Windows or Linux),
-`tooling.app.tool_missing` (`lipo` or `codesign` not on `PATH`) or
+`tooling.app.tool_missing` (`lipo`, `xattr` or `codesign` not on `PATH`),
 `tooling.app.target_missing` (a Rust target is not installed; the message names the
-`rustup target add` command). `tooling.app.lipo_failed` reports a `lipo` that could not
+`rustup target add` command) or `tooling.app.toolchain_failed` (`rustc` could not be
+started to look for the targets). `tooling.app.lipo_failed` reports a `lipo` that could not
 start, exited non-zero or wrote no file. The two builds go through the normal native
 generation cache (a different fingerprint per target, sharing the usual native target
 directory), so a second package run is fast. A failure at any step publishes nothing.
 
 ### Signing
 
-The finished bundle is always signed. Nested code under `Contents/Frameworks` is signed
+The finished bundle is always signed. First every extended attribute is removed from
+the staged bundle with `xattr -cr <bundle>` (Finder metadata or resource forks copied
+from the project would make `codesign` fail with "detritus not allowed"; failure is
+`tooling.app.xattr_failed`). Nested code under `Contents/Frameworks` is signed
 first, one item at a time in name order, then the bundle; `--deep` is not used to sign.
 
 | Variable | Meaning |
@@ -255,7 +259,11 @@ first, one item at a time in name order, then the bundle; `--deep` is not used t
 
 The bundle is staged in a `.engine-export-*` directory next to the destination under its
 final `<Name>.app` name (`codesign` only treats a `*.app` directory as a bundle),
-signed there, and then renamed into place without overwriting.
+signed there, and then renamed into place. The destination is refused if it exists,
+checked before the build starts and again just before the rename; the rename itself
+is not atomic against another process creating an empty directory at the destination
+in that instant (POSIX `rename` replaces an empty directory), so the export boundary
+is for trusted directories, as for the other formats.
 
 **Gatekeeper.** An ad-hoc signed bundle runs on the machine that built it and runs
 anywhere it was not downloaded. A copy that arrives through a browser, chat or other
@@ -278,11 +286,11 @@ unverified until a signing identity and Apple credentials exist. Archiving a bun
 needs `ditto` (not `zip`), which keeps the extended attributes and symbolic links a
 signature depends on.
 
-Notes for the Steam dylib: it belongs in `Contents/Frameworks/` and is signed there
-with the rest of the nested code. A Developer ID build with the hardened runtime
-loads a library signed by another team only with the
-`com.apple.security.cs.disable-library-validation` entitlement, which packaging does not
-pass yet.
+Notes for the Steam dylib: it belongs in `Contents/Frameworks/`. Packaging signs every
+item there with `--force` and the bundle's own identity, replacing the vendor signature,
+so the hardened runtime's library validation (same team as the executable) passes
+without the `com.apple.security.cs.disable-library-validation` entitlement. That
+entitlement would only be needed if a later step kept the library's original signature.
 
 Limits of the bundle: it is verified only on macOS CI (job "App bundle (macOS)"); the
 file generators, layout, identifier rules and tool error handling are unit tested on

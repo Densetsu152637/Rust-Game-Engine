@@ -786,6 +786,7 @@ fn app_destinations_are_refused_before_any_work() {
     };
     let tooling = packaging::macos::MacosTooling {
         lipo: "lipo-not-run".into(),
+        xattr: "xattr-not-run".into(),
         codesign: "codesign-not-run".into(),
         sign_identity: None,
     };
@@ -864,12 +865,21 @@ fn fake_macos_tooling(
     lipo: &str,
     codesign: &str,
 ) -> packaging::macos::MacosTooling {
+    let xattr_path = fixture.root.join("fake-xattr");
+    write_script(
+        &xattr_path,
+        &format!(
+            "#!/bin/sh\necho \"xattr $*\" >> '{}'\n",
+            fixture.root.join("tool-record").display()
+        ),
+    );
     let lipo_path = fixture.root.join("fake-lipo");
     let codesign_path = fixture.root.join("fake-codesign");
     write_script(&lipo_path, lipo);
     write_script(&codesign_path, codesign);
     packaging::macos::MacosTooling {
         lipo: lipo_path,
+        xattr: xattr_path,
         codesign: codesign_path,
         sign_identity: None,
     }
@@ -938,10 +948,13 @@ fn app_joins_the_slices_signs_and_publishes_the_bundle() {
     );
     let record = fs::read_to_string(&record).unwrap();
     let lines: Vec<&str> = record.lines().collect();
-    assert_eq!(lines.len(), 2, "{record}");
+    // lipo, then xattr strips the bundle, then codesign signs it.
+    assert_eq!(lines.len(), 3, "{record}");
     assert!(lines[0].starts_with("lipo -create -output "), "{record}");
+    assert!(lines[1].starts_with("xattr -cr "), "{record}");
+    assert!(lines[1].ends_with(".app"), "{record}");
     assert!(
-        lines[1].starts_with("codesign --force --sign - --timestamp=none "),
+        lines[2].starts_with("codesign --force --sign - --timestamp=none "),
         "{record}"
     );
     assert!(!record.contains("--deep"), "{record}");

@@ -185,6 +185,7 @@ pub fn package_app(
             &builds.x86_64.executable,
             bundle,
         )?;
+        macos::strip_extended_attributes(tooling, bundle)?;
         macos::sign_bundle(tooling, bundle)
     })
     .map(|()| destination.to_path_buf())
