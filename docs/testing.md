@@ -46,6 +46,17 @@ registry cache on the first run and can take minutes. Run them without
 `RUSTFLAGS=-D warnings`: the spawned builds inherit it, and fixtures that
 intentionally contain warnings then fail to compile.
 
+Cost of unrelated entities is measured, not only argued. In release,
+
+```text
+cargo test -p engine-project --release --test runtime_entity_walk -- --nocapture --test-threads=1
+```
+
+spawns 200,000 entities with no engine component (and again with an unmoving `Transform`)
+into a running project and prints what they add to `Runtime::tick` and
+`extract_scene_frame`; each must stay within 1 ms (best of 80 samples). In a debug build
+(the ordinary `cargo test`) the test uses a tenth of the entities and gates nothing.
+
 ## What the tests establish
 
 Ordinary tests are headless: they use temporary directories, injected input and the
