@@ -52,8 +52,7 @@ impl Skins {
         }
     }
     pub fn sync(&mut self, world: &mut World) -> Result<()> {
-        let requested: Vec<_> = world
-            .iter_entities()
+        let requested: Vec<_> = crate::walk::with_any!(world, SkinBinding, MorphWeights)
             .filter_map(|e| {
                 let skin = e.get::<SkinBinding>();
                 let morph = e.get::<MorphWeights>();

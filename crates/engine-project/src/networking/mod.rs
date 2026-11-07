@@ -155,8 +155,7 @@ pub fn validate_replica(world: &World, entity: Entity) -> Result<()> {
             .get::<AuthoredId>(entity)
             .ok_or_else(|| error("Missing replica ID"))?
             .id;
-        if world
-            .iter_entities()
+        if crate::walk::with::<crate::Parent>(world)
             .any(|e| e.get::<crate::Parent>().is_some_and(|p| p.0 == *id))
         {
             return Err(error("Remote replicas cannot parent local entities"));
@@ -596,9 +595,8 @@ fn with_session(
 
 /// Validate before startup callbacks, as well as each tick after native changes.
 pub fn validate(world: &World) -> Result<()> {
-    for entity in world
-        .iter_entities()
-        .filter(|e| e.contains::<NetworkReplica>())
+    for entity in
+        crate::walk::with::<NetworkReplica>(world).filter(|e| e.contains::<NetworkReplica>())
     {
         validate_replica(world, entity.id())?;
     }
@@ -962,7 +960,7 @@ pub fn after_step(world: &mut World, tick: u64) -> Result<()> {
             return Ok(());
         };
         let mut entities = Vec::new();
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with::<NetworkReplica>(world) {
             if !entity
                 .get::<NetworkReplica>()
                 .is_some_and(|r| r.authority == ReplicaAuthority::Server)

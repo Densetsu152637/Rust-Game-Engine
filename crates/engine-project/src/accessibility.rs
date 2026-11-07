@@ -416,11 +416,11 @@ pub(crate) fn sync(world: &mut World) -> UiScaling {
     if !world.contains_resource::<AccessibilityControl>() {
         return UiScaling::default();
     }
-    let component: Option<AccessibilitySettings> = world
-        .iter_entities()
-        .filter_map(|e| e.get::<AccessibilitySettings>().map(|s| (e.id(), s)))
-        .min_by_key(|(id, _): &(Entity, _)| id.to_bits())
-        .map(|(_, s)| s.clone());
+    let component: Option<AccessibilitySettings> =
+        crate::walk::with::<AccessibilitySettings>(world)
+            .filter_map(|e| e.get::<AccessibilitySettings>().map(|s| (e.id(), s)))
+            .min_by_key(|(id, _): &(Entity, _)| id.to_bits())
+            .map(|(_, s)| s.clone());
     let mut runtime = world
         .remove_resource::<AccessibilityRuntime>()
         .unwrap_or_default();

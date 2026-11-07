@@ -176,8 +176,7 @@ pub(crate) fn report_capacity(
 /// Sends a warning to the settings entity (or to every bound entity without one). Returns
 /// whether it was queued; a full queue keeps the warning pending.
 fn warn(world: &mut World, name: &str, payload: serde_json::Value) -> Result<bool> {
-    let target = world
-        .iter_entities()
+    let target = crate::walk::with::<super::PhysicsSettings>(world)
         .find(|entity| entity.contains::<super::PhysicsSettings>())
         .map(|entity| entity.id());
     let result = crate::emit_event(

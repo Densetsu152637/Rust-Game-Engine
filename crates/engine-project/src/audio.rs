@@ -368,8 +368,7 @@ pub fn instantiate_authored(world: &mut World) -> Result<()> {
             .get::<crate::runtime::AuthoredId>(entity)
             .map_or_else(|| entity.to_bits().to_string(), |a| a.id.clone())
     };
-    let mut emitters: Vec<_> = world
-        .iter_entities()
+    let mut emitters: Vec<_> = crate::walk::with::<AudioEmitter>(world)
         .filter(|e| e.contains::<AudioEmitter>() && !e.contains::<AuthoredEmitter>())
         .map(|e| e.id())
         .collect();
@@ -425,8 +424,7 @@ pub fn instantiate_authored(world: &mut World) -> Result<()> {
             .insert(AuthoredEmitter { source: handle });
     }
     if world.resource::<RuntimeAudio>().listener.is_none() {
-        let mut listeners: Vec<_> = world
-            .iter_entities()
+        let mut listeners: Vec<_> = crate::walk::with::<AudioListener>(world)
             .filter(|e| e.get::<AudioListener>().is_some_and(|l| l.active))
             .map(|e| e.id())
             .collect();
@@ -451,7 +449,7 @@ pub(crate) fn acoustic_voices(world: &World) -> Vec<AcousticVoice> {
         return vec![];
     };
     let mut voices = vec![];
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with::<EntityAudio>(world) {
         let Some(owned) = entity.get::<EntityAudio>() else {
             continue;
         };
@@ -489,8 +487,7 @@ pub fn synchronize(world: &mut World) -> Result<()> {
     if !world.contains_resource::<RuntimeAudio>() {
         return Ok(());
     }
-    let owners: Vec<_> = world
-        .iter_entities()
+    let owners: Vec<_> = crate::walk::with::<EntityAudio>(world)
         .filter(|e| e.contains::<EntityAudio>())
         .map(|e| e.id())
         .collect();
@@ -506,8 +503,7 @@ pub fn synchronize(world: &mut World) -> Result<()> {
             }
         }
     }
-    let updates: Vec<_> = world
-        .iter_entities()
+    let updates: Vec<_> = crate::walk::with::<EntityAudio>(world)
         .filter_map(|e| {
             e.get::<EntityAudio>()
                 .map(|a| (e.id(), a.attachments.clone()))
@@ -569,8 +565,7 @@ pub fn notify_triggers(world: &mut World) -> Result<()> {
     if events.is_empty() {
         return Ok(());
     }
-    let owners: Vec<_> = world
-        .iter_entities()
+    let owners: Vec<_> = crate::walk::with::<EntityAudio>(world)
         .filter(|e| e.contains::<EntityAudio>())
         .map(|e| e.id())
         .collect();
@@ -601,8 +596,7 @@ pub(crate) fn notify_physics_contacts(world: &mut World) -> Result<()> {
     Ok(())
 }
 pub fn shutdown(world: &mut World) -> Result<()> {
-    let owners: Vec<_> = world
-        .iter_entities()
+    let owners: Vec<_> = crate::walk::with::<EntityAudio>(world)
         .filter(|e| e.contains::<EntityAudio>())
         .map(|e| e.id())
         .collect();

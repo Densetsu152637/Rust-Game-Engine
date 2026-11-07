@@ -873,7 +873,7 @@ impl Feature for Destruction {
         crate::register_component::<Destructible3D>(app, "engine.Destructible3D", 1)
     }
     fn validate(&self, world: &World, _settings: &Resolved) -> Result<()> {
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with::<Destructible3D>(world) {
             let Some(config) = entity.get::<Destructible3D>() else {
                 continue;
             };

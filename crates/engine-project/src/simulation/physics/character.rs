@@ -189,7 +189,7 @@ fn shape_allowed(shape: super::Shape, three: bool) -> bool {
     }
 }
 fn check_scene(world: &World) -> Result<()> {
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with_any!(world, CharacterController2D, CharacterController3D) {
         let two = entity.get::<CharacterController2D>();
         let three = entity.get::<CharacterController3D>();
         if two.is_none() && three.is_none() {
@@ -255,7 +255,7 @@ macro_rules! dimension {
                 physics.remove_character(entity.to_bits());
                 links.remove(&entity);
             }
-            for entity in world.iter_entities() {
+            for entity in crate::walk::with::<$component>(world) {
                 let e = entity.id();
                 let Some(config) = entity.get::<$component>() else {
                     continue;

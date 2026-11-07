@@ -116,24 +116,10 @@ impl Crowds {
 
     pub fn sync(&mut self, world: &mut World) -> Result<()> {
         // Gather authored state in entity order.
-        let mut agents = BTreeMap::new();
-        let mut obstacles = BTreeMap::new();
-        let mut links = BTreeMap::new();
-        let mut formations = BTreeMap::new();
-        for e in world.iter_entities() {
-            if let Some(c) = e.get::<CrowdAgent>() {
-                agents.insert(e.id(), c.clone());
-            }
-            if let Some(c) = e.get::<NavigationObstacle>() {
-                obstacles.insert(e.id(), c.clone());
-            }
-            if let Some(c) = e.get::<OffMeshLink>() {
-                links.insert(e.id(), c.clone());
-            }
-            if let Some(c) = e.get::<Formation>() {
-                formations.insert(e.id(), c.clone());
-            }
-        }
+        let agents = crate::walk::cloned::<CrowdAgent>(world);
+        let obstacles = crate::walk::cloned::<NavigationObstacle>(world);
+        let links = crate::walk::cloned::<OffMeshLink>(world);
+        let formations = crate::walk::cloned::<Formation>(world);
         if agents.len() > MAX_AGENTS
             || obstacles.len() > MAX_OBSTACLES
             || links.len() > MAX_LINKS

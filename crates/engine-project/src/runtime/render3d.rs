@@ -7,43 +7,8 @@ impl Runtime {
     /// Extract immutable scene snapshots. A 3D camera redirects mesh renderers to
     /// the depth-tested world pass; sprites and UI retain their 2D behavior.
     pub fn extract_scene_frame(&self) -> Result<SceneRenderFrame> {
-        let mut frame = SceneRenderFrame::from(self.extract_frame()?);
+        let mut frame = self.extract_scene_2d()?;
         let world = self.app.world();
-        for entity in world.iter_entities() {
-            let Some(material) = entity.get::<MeshMaterial>() else {
-                continue;
-            };
-            material.validate()?;
-            let id = entity
-                .get::<AuthoredId>()
-                .map(|id| id.id.clone())
-                .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
-            let shader = self.material_shader(material)?;
-            for prefix in ["sprite", "mesh"] {
-                let draw_id = format!("{prefix}:{id}");
-                if let Some(draw) = frame
-                    .sprites
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.id == draw_id)
-                {
-                    if let Some(texture) = &material.texture {
-                        draw.texture = Some(self.resolve_texture(texture, &mut frame.streams)?);
-                    }
-                    let mut material = material.clone();
-                    material.unlit = true;
-                    frame.materials2d.insert(
-                        draw_id,
-                        MaterialSnapshot {
-                            material,
-                            shader: shader.clone(),
-                        },
-                    );
-                }
-            }
-        }
-        let lighting2d = self.extract_lighting2d(&mut frame)?;
-        frame.lighting2d = lighting2d;
         let Some((entity, camera)) = active_camera3d(world) else {
             return Ok(frame);
         };
@@ -71,30 +36,10 @@ impl Runtime {
             world: crate::world_transform(world, entity)?.matrix,
         });
         let mut mesh_ids = BTreeSet::new();
-        let fragments_drawn =
-            world.contains_resource::<crate::simulation::physics::FragmentRenderer>();
-        for entity in world.iter_entities() {
-            let Some(renderer) = entity.get::<MeshRenderer>() else {
-                continue;
-            };
-            // With a fragment renderer installed a fractured destructible draws only through
-            // its fragments; hide the intact mesh of this entity (children carry their own
-            // `MeshRenderer` and still draw). Without one nothing draws the fragments, so the
-            // intact mesh stays visible rather than the object vanishing.
-            if fragments_drawn && entity.contains::<crate::simulation::physics::Fractured>() {
-                continue;
-            }
-            if entity.get::<Transform>().is_none() {
-                continue;
-            }
-            if let Some(chunk) = entity.get::<crate::world::tilemap::TileChunkRender>()
-                && world
-                    .get::<crate::lighting2d::SpriteLighting2D>(chunk.owner)
-                    .is_some_and(|lighting| lighting.enabled)
-                && frame.lighting2d.is_some()
-            {
-                continue;
-            }
+        for entity in drawn_meshes(world, frame.lighting2d.is_some()) {
+            let renderer = entity
+                .get::<MeshRenderer>()
+                .expect("drawn meshes have a MeshRenderer");
             let id = entity
                 .get::<AuthoredId>()
                 .map(|id| id.id.clone())
@@ -229,11 +174,62 @@ impl Runtime {
         }
         Ok(frame)
     }
+    /// The sprite layer of [`Self::extract_scene_frame`] and nothing else: the 2D draws with
+    /// their material and lit textures, without the 3D meshes, lights and post-processing.
+    /// A presenter that keeps a history of past frames' sprites calls this for every tick
+    /// and extracts the full scene frame once per presented frame.
+    pub fn extract_scene_sprites(&self) -> Result<RenderFrame> {
+        let mut frame = self.extract_scene_2d()?;
+        let world = self.app.world();
+        if active_camera3d(world).is_some() {
+            let mesh_ids: BTreeSet<String> = drawn_meshes(world, frame.lighting2d.is_some())
+                .map(|entity| format!("mesh:{}", entity_key(&entity)))
+                .collect();
+            frame
+                .sprites
+                .draws
+                .retain(|draw| !mesh_ids.contains(&draw.id));
+        }
+        Ok(frame.sprites)
+    }
+    /// The 2D part of a scene frame: sprites and UI draws, the 2D materials and the 2D lighting.
+    fn extract_scene_2d(&self) -> Result<SceneRenderFrame> {
+        let mut frame = SceneRenderFrame::from(self.extract_frame()?);
+        let world = self.app.world();
+        let draws = draw_positions(&frame);
+        for entity in crate::walk::with::<MeshMaterial>(world) {
+            let material = entity
+                .get::<MeshMaterial>()
+                .expect("filtered to MeshMaterial");
+            material.validate()?;
+            let id = entity_key(&entity);
+            let shader = self.material_shader(material)?;
+            for prefix in ["sprite", "mesh"] {
+                let draw_id = format!("{prefix}:{id}");
+                if let Some(&position) = draws.get(draw_id.as_str()) {
+                    if let Some(texture) = &material.texture {
+                        frame.sprites.draws[position].texture =
+                            Some(self.resolve_texture(texture, &mut frame.streams)?);
+                    }
+                    let mut material = material.clone();
+                    material.unlit = true;
+                    frame.materials2d.insert(
+                        draw_id,
+                        MaterialSnapshot {
+                            material,
+                            shader: shader.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        frame.lighting2d = self.extract_lighting2d(&mut frame)?;
+        Ok(frame)
+    }
     fn extract_lighting2d(&self, frame: &mut SceneRenderFrame) -> Result<Option<LightingFrame2D>> {
         use crate::lighting2d::{Light2D, Light2DKind, Lighting2D, SpriteLighting2D};
         let world = self.app.world();
-        let Some(settings) = world
-            .iter_entities()
+        let Some(settings) = crate::walk::with::<Camera2D>(world)
             .find_map(|entity| {
                 entity
                     .get::<Camera2D>()
@@ -245,7 +241,7 @@ impl Runtime {
         };
         settings.validate()?;
         let mut lights = Vec::new();
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with::<Light2D>(world) {
             let Some(light) = entity.get::<Light2D>().filter(|light| light.enabled) else {
                 continue;
             };
@@ -278,7 +274,13 @@ impl Runtime {
         }
         lights.sort_by(|a, b| a.id.cmp(&b.id));
         let mut materials = BTreeMap::new();
-        for entity in world.iter_entities() {
+        let draws = draw_positions(frame);
+        // A lit entity is a sprite carrying the marker or a tile chunk whose owner carries it.
+        for entity in crate::walk::with_any!(
+            world,
+            SpriteLighting2D,
+            crate::world::tilemap::TileChunkRender
+        ) {
             let owner = entity
                 .get::<crate::world::tilemap::TileChunkRender>()
                 .map(|chunk| chunk.owner)
@@ -304,14 +306,10 @@ impl Runtime {
                 continue;
             };
             let draw_id = format!("{prefix}:{id}");
-            let Some(draw) = frame
-                .sprites
-                .draws
-                .iter_mut()
-                .find(|draw| draw.id == draw_id)
-            else {
+            let Some(&position) = draws.get(draw_id.as_str()) else {
                 continue;
             };
+            let draw = &mut frame.sprites.draws[position];
             let material = world
                 .get::<MeshMaterial>(owner)
                 .cloned()
@@ -375,18 +373,48 @@ impl Runtime {
             .get(id)
             .filter(|asset| asset.kind == "graph")
         {
-            let document = crate::graphs::load_graph(&self.project, id)?;
-            if document.kind != engine_material_graph::KIND {
-                return Err(Error::new(
-                    "render.shader.kind",
-                    format!("{id}: graph kind must be material"),
-                ));
-            }
-            return engine_material_graph::compile_material_sprite_lit(&document)
-                .map(|compiled| Some(Arc::<str>::from(compiled.source)))
-                .map_err(|diagnostics| crate::graphs::into_error(diagnostics, &asset.path));
+            return self
+                .cached_shader(id, true, || {
+                    let document = crate::graphs::load_graph(&self.project, id)?;
+                    if document.kind != engine_material_graph::KIND {
+                        return Err(Error::new(
+                            "render.shader.kind",
+                            format!("{id}: graph kind must be material"),
+                        ));
+                    }
+                    engine_material_graph::compile_material_sprite_lit(&document)
+                        .map(|compiled| Arc::<str>::from(compiled.source))
+                        .map_err(|diagnostics| crate::graphs::into_error(diagnostics, &asset.path))
+                })
+                .map(Some);
         }
         self.material_shader(material)
+    }
+    /// The source of shader asset `id` (`lit_2d` selects the lit 2D compilation of a material
+    /// graph), read or compiled by `load` the first time and kept for the runtime's life: the
+    /// project's assets do not change under a running runtime, and the same source is needed
+    /// for every extracted frame. A failed load is not kept. [`Self::reload_shader_asset`]
+    /// drops a source so the next extraction loads it again.
+    fn cached_shader(
+        &self,
+        id: &str,
+        lit_2d: bool,
+        load: impl FnOnce() -> Result<Arc<str>>,
+    ) -> Result<Arc<str>> {
+        let key = (id.to_owned(), lit_2d);
+        if let Some(source) = self.shaders.borrow().get(&key) {
+            return Ok(source.clone());
+        }
+        let source = load()?;
+        self.shaders.borrow_mut().insert(key, source.clone());
+        Ok(source)
+    }
+    /// Forget the cached source of `shader` or `graph` asset `id`, after the host changed its
+    /// file: the next extraction reads or compiles it again.
+    pub fn reload_shader_asset(&self, id: &str) {
+        self.shaders
+            .borrow_mut()
+            .retain(|(cached, _), _| cached != id);
     }
     /// The active camera's `PostProcess`, the enabled volumes and the LUT
     /// files they reference (read bounded; the renderer validates them).
@@ -402,7 +430,7 @@ impl Runtime {
         if let Some(post) = &frame.camera {
             post.validate()?;
         }
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with::<PostProcessVolume>(world) {
             let Some(volume) = entity.get::<PostProcessVolume>().filter(|v| v.enabled) else {
                 continue;
             };
@@ -615,7 +643,7 @@ impl Runtime {
                     .get(id)
                     .ok_or_else(|| Error::new("render.shader.unknown", id))?;
                 match asset.kind.as_str() {
-                    "shader" => {
+                    "shader" => self.cached_shader(id, false, || {
                         let bytes = crate::schema::read_bounded(
                             &self.project.resolve_asset(id)?,
                             16 * 1024 * 1024,
@@ -623,8 +651,8 @@ impl Runtime {
                         String::from_utf8(bytes)
                             .map(Arc::<str>::from)
                             .map_err(|e| Error::new("render.shader.invalid", e.to_string()))
-                    }
-                    "graph" => {
+                    }),
+                    "graph" => self.cached_shader(id, false, || {
                         let document = crate::graphs::load_graph(&self.project, id)?;
                         if document.kind != engine_material_graph::KIND {
                             return Err(Error::new(
@@ -637,7 +665,7 @@ impl Runtime {
                             .map_err(|diagnostics| {
                                 crate::graphs::into_error(diagnostics, &asset.path)
                             })
-                    }
+                    }),
                     _ => Err(Error::new("render.shader.kind", id)),
                 }
             })
@@ -647,8 +675,7 @@ impl Runtime {
 
 /// The first active camera in stable authored-ID order.
 pub(super) fn active_camera3d(world: &World) -> Option<(Entity, &Camera3D)> {
-    world
-        .iter_entities()
+    crate::walk::with::<Camera3D>(world)
         .filter_map(|entity| {
             entity
                 .get::<Camera3D>()
@@ -663,6 +690,49 @@ pub(super) fn active_camera3d(world: &World) -> Option<(Entity, &Camera3D)> {
         })
         .min_by(|a, b| a.0.cmp(&b.0))
         .map(|(_, entity, camera)| (entity, camera))
+}
+
+/// The stable authored ID of an entity, or `entity:<bits>` for one without.
+fn entity_key(entity: &EntityRef) -> String {
+    entity
+        .get::<AuthoredId>()
+        .map(|id| id.id.clone())
+        .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()))
+}
+
+/// Where each draw of the frame stands in `frame.sprites.draws`, by draw ID.
+fn draw_positions(frame: &SceneRenderFrame) -> BTreeMap<String, usize> {
+    let mut positions = BTreeMap::new();
+    for (position, draw) in frame.sprites.draws.iter().enumerate() {
+        positions.entry(draw.id.clone()).or_insert(position);
+    }
+    positions
+}
+
+/// The mesh renderers the 3D pass draws. `lit_2d` tells whether the frame has 2D lighting:
+/// generated tilemap chunks whose owner is lit draw through the 2D lit pass instead.
+fn drawn_meshes(world: &World, lit_2d: bool) -> impl Iterator<Item = EntityRef<'_>> {
+    // With a fragment renderer installed a fractured destructible draws only through
+    // its fragments; hide the intact mesh of this entity (children carry their own
+    // `MeshRenderer` and still draw). Without one nothing draws the fragments, so the
+    // intact mesh stays visible rather than the object vanishing.
+    let fragments_drawn = world.contains_resource::<crate::simulation::physics::FragmentRenderer>();
+    crate::walk::with::<MeshRenderer>(world).filter(move |entity| {
+        if fragments_drawn && entity.contains::<crate::simulation::physics::Fractured>() {
+            return false;
+        }
+        if !entity.contains::<Transform>() {
+            return false;
+        }
+        let lit_chunk = entity
+            .get::<crate::world::tilemap::TileChunkRender>()
+            .is_some_and(|chunk| {
+                world
+                    .get::<crate::lighting2d::SpriteLighting2D>(chunk.owner)
+                    .is_some_and(|lighting| lighting.enabled)
+            });
+        !(lit_chunk && lit_2d)
+    })
 }
 
 /// A native override wins over the camera's authored request.
@@ -690,7 +760,8 @@ fn extract_lights(world: &World) -> Result<Vec<crate::lights::LightInstance3D>> 
         AreaLight, DirectionalLight, LightInstance3D, PointLight, SceneLight, SpotLight,
     };
     let mut lights = Vec::new();
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with_any!(world, DirectionalLight, PointLight, SpotLight, AreaLight)
+    {
         let mut found = Vec::new();
         if let Some(light) = entity.get::<DirectionalLight>().filter(|l| l.enabled) {
             light.validate()?;
@@ -805,7 +876,7 @@ impl Runtime {
         };
         let world = self.app.world();
         let mut emitters = Vec::new();
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with::<ParticleEmitter>(world) {
             let Some(emitter) = entity.get::<ParticleEmitter>().filter(|e| e.enabled) else {
                 continue;
             };

@@ -805,7 +805,7 @@ fn sync_dimension<S: Sim>(
         sim.delete(joint_id(entity));
         live.remove(&entity);
     }
-    for entity_ref in world.iter_entities() {
+    for entity_ref in crate::walk::with::<S::Cfg>(world) {
         let entity = entity_ref.id();
         let Some(config) = entity_ref.get::<S::Cfg>() else {
             continue;
@@ -879,7 +879,7 @@ fn sync_dimension<S: Sim>(
     Ok(())
 }
 fn check_scene<C: Config>(world: &World, has_body: impl Fn(&World, Entity) -> bool) -> Result<()> {
-    for entity_ref in world.iter_entities() {
+    for entity_ref in crate::walk::with::<C>(world) {
         let Some(config) = entity_ref.get::<C>() else {
             continue;
         };

@@ -62,7 +62,7 @@ impl GraphAnimations {
     pub fn sync(&mut self, world: &mut World) -> Result<()> {
         self.players
             .retain(|entity, _| world.get::<AnimationGraphPlayer>(*entity).is_some());
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with::<AnimationGraphPlayer>(world) {
             let Some(config) = entity.get::<AnimationGraphPlayer>() else {
                 continue;
             };

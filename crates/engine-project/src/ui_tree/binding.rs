@@ -1097,8 +1097,7 @@ impl UiBindingState {
         world: &World,
         data: &mut UiDataContext,
     ) -> Result<()> {
-        let mut sources: Vec<(u64, &UiData)> = world
-            .iter_entities()
+        let mut sources: Vec<(u64, &UiData)> = crate::walk::with::<UiData>(world)
             .filter_map(|e| e.get::<UiData>().map(|d| (e.id().to_bits(), d)))
             .collect();
         sources.sort_by_key(|(key, _)| *key);
