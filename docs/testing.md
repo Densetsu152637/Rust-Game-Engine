@@ -57,6 +57,18 @@ into a running project and prints what they add to `Runtime::tick` and
 `extract_scene_frame`; each must stay within 1 ms (best of 80 samples). In a debug build
 (the ordinary `cargo test`) the test uses a tenth of the entities and gates nothing.
 
+Likewise the cost of mesh geometry under a 3D camera:
+
+```text
+cargo test -p engine-project --release --test runtime_mesh_extraction -- --nocapture --test-threads=1
+```
+
+extracts 100 `GeometryOverride` meshes of 200 and of 20,000 vertices each; in release one
+`extract_scene_frame` must stay within 2 ms and the large meshes may add at most 1 ms to it
+(best of 60 samples). It also checks that the frame holds the same `Arc<Mesh>`, with no
+second 2D draw of the mesh, and that a mesh under a 2D camera still draws through the 2D
+path. A debug build gates no time.
+
 ## What the tests establish
 
 Ordinary tests are headless: they use temporary directories, injected input and the

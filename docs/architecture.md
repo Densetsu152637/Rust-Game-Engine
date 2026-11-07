@@ -184,6 +184,19 @@ the sprite layer, which a presenter keeping a history of past frames needs for e
 `runtime_entity_walk` test measures 200,000 such entities against `Runtime::tick` and
 `extract_scene_frame` (see [Testing](testing.md)).
 
+### Cost of mesh geometry
+
+Under an active `Camera3D` the frame carries a mesh as the shared `Arc<Mesh>` (an authored
+asset or an entity's `GeometryOverride`) plus the entity's world matrix, and the renderer
+keys its GPU buffers by that `Arc`, so a mesh is uploaded once and transformed on the GPU.
+The 2D layer of the same frame (`extract_frame`, which clones a mesh and bakes the world
+transform into its vertices) skips every `MeshRenderer` the 3D pass draws, so extracting
+such a mesh costs the entity, never its vertices; only meshes that stay 2D (without a 3D
+camera, or generated tilemap chunks of a lit 2D scene) are baked. The
+`runtime_mesh_extraction` test measures 100 meshes of 200 and of 20,000 vertices (see
+[Testing](testing.md)). A game that rebuilds a mesh keeps the cost of building it, and a new
+`Arc` is uploaded again; reuse the `Arc` while the geometry is unchanged.
+
 ## Desktop host
 
 `engine-desktop` runs a `Runtime` on the process main thread with winit and wgpu.

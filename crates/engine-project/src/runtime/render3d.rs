@@ -35,7 +35,6 @@ impl Runtime {
             camera,
             world: crate::world_transform(world, entity)?.matrix,
         });
-        let mut mesh_ids = BTreeSet::new();
         for entity in drawn_meshes(world, frame.lighting2d.is_some()) {
             let renderer = entity
                 .get::<MeshRenderer>()
@@ -155,13 +154,7 @@ impl Runtime {
                     },
                 );
             }
-            mesh_ids.insert(format!("mesh:{id}"));
         }
-        frame
-            .sprites
-            .draws
-            .retain(|draw| !mesh_ids.contains(&draw.id));
-        frame.materials2d.retain(|id, _| !mesh_ids.contains(id));
         frame.lights = extract_lights(world)?;
         frame.post = self.extract_post(entity, true)?;
         frame.ray_tracing = self
@@ -179,23 +172,23 @@ impl Runtime {
     /// A presenter that keeps a history of past frames' sprites calls this for every tick
     /// and extracts the full scene frame once per presented frame.
     pub fn extract_scene_sprites(&self) -> Result<RenderFrame> {
-        let mut frame = self.extract_scene_2d()?;
-        let world = self.app.world();
-        if active_camera3d(world).is_some() {
-            let mesh_ids: BTreeSet<String> = drawn_meshes(world, frame.lighting2d.is_some())
-                .map(|entity| format!("mesh:{}", entity_key(&entity)))
-                .collect();
-            frame
-                .sprites
-                .draws
-                .retain(|draw| !mesh_ids.contains(&draw.id));
-        }
-        Ok(frame.sprites)
+        Ok(self.extract_scene_2d()?.sprites)
     }
     /// The 2D part of a scene frame: sprites and UI draws, the 2D materials and the 2D lighting.
+    /// Under an active 3D camera the meshes the 3D pass draws are not part of it (they are
+    /// never cloned, transformed or hashed for the 2D layer); meshes that stay 2D are.
     fn extract_scene_2d(&self) -> Result<SceneRenderFrame> {
-        let mut frame = SceneRenderFrame::from(self.extract_frame()?);
         let world = self.app.world();
+        let mut frame = SceneRenderFrame::from(if active_camera3d(world).is_some() {
+            let lit_2d = lighting2d_settings(world).is_some();
+            let fragments_drawn =
+                world.contains_resource::<crate::simulation::physics::FragmentRenderer>();
+            self.extract_frame_without(|entity| {
+                is_drawn_mesh(world, entity, lit_2d, fragments_drawn)
+            })?
+        } else {
+            self.extract_frame()?
+        });
         let draws = draw_positions(&frame);
         for entity in crate::walk::with::<MeshMaterial>(world) {
             let material = entity
@@ -227,16 +220,9 @@ impl Runtime {
         Ok(frame)
     }
     fn extract_lighting2d(&self, frame: &mut SceneRenderFrame) -> Result<Option<LightingFrame2D>> {
-        use crate::lighting2d::{Light2D, Light2DKind, Lighting2D, SpriteLighting2D};
+        use crate::lighting2d::{Light2D, Light2DKind, SpriteLighting2D};
         let world = self.app.world();
-        let Some(settings) = crate::walk::with::<Camera2D>(world)
-            .find_map(|entity| {
-                entity
-                    .get::<Camera2D>()
-                    .map(|_| entity.get::<Lighting2D>().cloned().unwrap_or_default())
-            })
-            .filter(|settings| settings.enabled)
-        else {
+        let Some(settings) = lighting2d_settings(world) else {
             return Ok(None);
         };
         settings.validate()?;
@@ -709,6 +695,20 @@ fn draw_positions(frame: &SceneRenderFrame) -> BTreeMap<String, usize> {
     positions
 }
 
+/// The settings of the 2D lighting of the scene, when the 2D camera enables it.
+fn lighting2d_settings(world: &World) -> Option<crate::lighting2d::Lighting2D> {
+    crate::walk::with::<Camera2D>(world)
+        .find_map(|entity| {
+            entity.get::<Camera2D>().map(|_| {
+                entity
+                    .get::<crate::lighting2d::Lighting2D>()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+        })
+        .filter(|settings| settings.enabled)
+}
+
 /// The mesh renderers the 3D pass draws. `lit_2d` tells whether the frame has 2D lighting:
 /// generated tilemap chunks whose owner is lit draw through the 2D lit pass instead.
 fn drawn_meshes(world: &World, lit_2d: bool) -> impl Iterator<Item = EntityRef<'_>> {
@@ -717,22 +717,30 @@ fn drawn_meshes(world: &World, lit_2d: bool) -> impl Iterator<Item = EntityRef<'
     // `MeshRenderer` and still draw). Without one nothing draws the fragments, so the
     // intact mesh stays visible rather than the object vanishing.
     let fragments_drawn = world.contains_resource::<crate::simulation::physics::FragmentRenderer>();
-    crate::walk::with::<MeshRenderer>(world).filter(move |entity| {
-        if fragments_drawn && entity.contains::<crate::simulation::physics::Fractured>() {
-            return false;
-        }
-        if !entity.contains::<Transform>() {
-            return false;
-        }
-        let lit_chunk = entity
-            .get::<crate::world::tilemap::TileChunkRender>()
-            .is_some_and(|chunk| {
-                world
-                    .get::<crate::lighting2d::SpriteLighting2D>(chunk.owner)
-                    .is_some_and(|lighting| lighting.enabled)
-            });
-        !(lit_chunk && lit_2d)
-    })
+    crate::walk::with::<MeshRenderer>(world)
+        .filter(move |entity| is_drawn_mesh(world, entity, lit_2d, fragments_drawn))
+}
+
+/// Whether the 3D pass draws the mesh of `entity` (see [`drawn_meshes`]); the meshes it does
+/// not draw, when it runs at all, stay in the 2D layer or do not draw.
+fn is_drawn_mesh(world: &World, entity: &EntityRef, lit_2d: bool, fragments_drawn: bool) -> bool {
+    if !entity.contains::<MeshRenderer>() {
+        return false;
+    }
+    if fragments_drawn && entity.contains::<crate::simulation::physics::Fractured>() {
+        return false;
+    }
+    if !entity.contains::<Transform>() {
+        return false;
+    }
+    let lit_chunk = entity
+        .get::<crate::world::tilemap::TileChunkRender>()
+        .is_some_and(|chunk| {
+            world
+                .get::<crate::lighting2d::SpriteLighting2D>(chunk.owner)
+                .is_some_and(|lighting| lighting.enabled)
+        });
+    !(lit_chunk && lit_2d)
 }
 
 /// A native override wins over the camera's authored request.
