@@ -27,9 +27,11 @@ my-package/
   `command.arguments` diagnostic naming the searched paths. Setting
   `ENGINE_RESOLVE_ONLY=1` makes the runtime print the resolved absolute
   `project.json` path to stdout and exit 0 without a window, GPU or Steam session,
-  or exit 3 with a message on stderr when nothing resolves. An optional `tools/`
-  folder next to the executable (or in the bundle's `Resources/tools`) is searched
-  for FFmpeg before `PATH`; see [video.md](video.md).
+  or exit 3 with a message on stderr when nothing resolves. FFmpeg is not bundled; a
+  host that builds its video tools with `DecoderTools::discover()` searches an
+  optional `tools/` folder next to the executable (or the bundle's
+  `Resources/tools`) before `PATH`. The runtime does not do this itself; see
+  [video.md](video.md).
 - **Launchers.** `run.cmd` and `run.sh` derive the package directory from their own
   location and pass `game/project.json` to the runtime, forwarding caller
   arguments, so `run.cmd --headless --ticks 120` works from any working directory
