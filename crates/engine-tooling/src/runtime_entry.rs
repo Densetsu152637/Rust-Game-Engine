@@ -1,6 +1,7 @@
 //! Entry point linked into a native gameplay generation. The callback is a real
 //! Rust function operating on the same public ECS/world types as the engine.
 use crate::arguments::{RunArguments, parse_run, validate_actions};
+use crate::game_location;
 use engine_core::{EngineApp, Result};
 use engine_desktop::RunOptions;
 use engine_project::{Project, Runtime, Scene};
@@ -16,6 +17,16 @@ use std::thread;
 use std::time::Duration;
 
 pub fn run(configure: fn(&mut EngineApp) -> Result<()>) -> i32 {
+    // Resolve-only mode (packaging checks) needs no logging, window, GPU or Steam.
+    if game_location::resolve_only_requested() {
+        return game_location::resolve_only(
+            std::env::args_os().skip(1).collect(),
+            game_location::current_exe_dir().as_deref(),
+            Path::is_file,
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        );
+    }
     // A generation is a host binary, so it installs the logging subscriber that
     // makes engine-core lifecycle `tracing` events visible. Output goes to stderr
     // only: stdout carries the run result that the launcher parses. A logging
@@ -81,7 +92,12 @@ pub fn run(configure: fn(&mut EngineApp) -> Result<()>) -> i32 {
 }
 
 fn execute(configure: fn(&mut EngineApp) -> Result<()>) -> Result<serde_json::Value> {
-    let arguments = parse_run(&std::env::args_os().skip(1).collect::<Vec<_>>())?;
+    let arguments = game_location::with_bundled_project(
+        std::env::args_os().skip(1).collect(),
+        game_location::current_exe_dir().as_deref(),
+        Path::is_file,
+    )?;
+    let arguments = parse_run(&arguments)?;
     let mut project = Project::load(&arguments.manifest)?;
     validate_actions(&project, &arguments)?;
     if let Some(file) = &arguments.scene_override {

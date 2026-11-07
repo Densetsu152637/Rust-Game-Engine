@@ -69,6 +69,16 @@ install `pkg-config`, `libasound2-dev`, `libudev-dev`, `libxkbcommon-dev`,
 `libxcb1-dev`, as the native CI job does. A graphical session and working native
 devices are required only for interactive/device checks.
 
+Player data lives under the OS user-data directory, in a `CPPGameEngine` folder:
+`%LOCALAPPDATA%` on Windows, `~/Library/Application Support` on macOS,
+`$XDG_DATA_HOME` or `~/.local/share` on Linux (details in
+[desktop-services.md](desktop-services.md)). A packaged runtime started without a
+project argument loads `game/project.json` beside the executable, or
+`../Resources/game/project.json` inside a macOS `<X>.app/Contents/MacOS/<exe>`
+bundle, and `ENGINE_RESOLVE_ONLY=1` prints that resolved path and exits without
+opening a window ([desktop-packaging.md](desktop-packaging.md)). FFmpeg is never
+bundled; see [video.md](video.md) for where it is looked up.
+
 Player persistence accepts macOS's standard `/var` and `/tmp` aliases after
 checking their targets, while continuing to reject arbitrary symlinks in data
 paths. See [desktop-services.md](desktop-services.md) for that boundary.
