@@ -15,14 +15,16 @@
 # which a sum alone would hide.
 set -euo pipefail
 
-strip_ansi() { sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g'; }
+# Regexes stay POSIX: macOS runs BSD sed, which has no \x1b or \b escapes.
+escape=$(printf '\033')
+strip_ansi() { sed -E "s/${escape}\[[0-9;]*[A-Za-z]//g"; }
 
 # Sum the number captured before the given label on libtest result lines.
 total() {
     local label=$1
     shift
     cat "$@" | strip_ansi | tr -d '\r' \
-        | sed -nE "s/^test result: .* ([0-9]+) ${label}\b.*/\1/p" \
+        | sed -nE "s/^test result: .* ([0-9]+) ${label}(;.*)?$/\1/p" \
         | awk '{ sum += $1 } END { print sum + 0 }'
 }
 
