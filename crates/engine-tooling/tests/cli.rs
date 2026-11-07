@@ -522,7 +522,7 @@ fn package_rejects_unknown_profiles() {
 #[test]
 fn package_rejects_unknown_formats_and_keeps_json_output_format() {
     let (temp, manifest) = fixture();
-    for format in ["tgz", "AppImage", "app", ""] {
+    for format in ["tgz", "AppImage", "App", ""] {
         let output = engine(
             &[
                 OsStr::new("project"),
@@ -749,4 +749,70 @@ fn mcp_serves_the_project_over_stdio() {
     .unwrap();
     assert_eq!(response["id"], 1);
     assert!(response["result"].is_object(), "{response}");
+}
+
+fn package_app_output(
+    temp: &tempfile::TempDir,
+    manifest: &Path,
+    destination: &Path,
+    extra: &[&str],
+) -> Output {
+    let mut arguments = vec![
+        OsStr::new("project"),
+        "package".as_ref(),
+        manifest.as_os_str(),
+        destination.as_os_str(),
+        "--format".as_ref(),
+        "app".as_ref(),
+    ];
+    arguments.extend(extra.iter().map(OsStr::new));
+    engine(&arguments, temp.path())
+}
+
+// A macOS host would get past the host check, so it is asserted only elsewhere.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn package_app_fails_on_an_unsupported_host_before_compilation() {
+    let (temp, manifest) = fixture();
+    let root = manifest.parent().unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    let output = package_app_output(&temp, &manifest, &root.join("dist/Game.app"), &[]);
+    assert_eq!(output.code, 1, "{}", output.json);
+    assert_eq!(failure_code(&output), "tooling.app.unsupported_host");
+    assert!(!root.join("dist/Game.app").exists());
+    assert!(!root.join(".derived/native").exists());
+}
+
+#[test]
+fn package_app_checks_the_destination_and_bundle_id_before_compilation() {
+    let (temp, manifest) = fixture();
+    let root = manifest.parent().unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    let output = package_app_output(&temp, &manifest, &root.join("dist/game"), &[]);
+    assert_eq!(output.code, 1, "{}", output.json);
+    assert_eq!(failure_code(&output), "tooling.destination.invalid");
+    let output = package_app_output(
+        &temp,
+        &manifest,
+        &root.join("dist/Game.app"),
+        &["--bundle-id", "not valid"],
+    );
+    assert_eq!(output.code, 1, "{}", output.json);
+    assert_eq!(failure_code(&output), "tooling.app.bundle_id_invalid");
+    // --bundle-id belongs to the app format only.
+    let output = engine(
+        &[
+            OsStr::new("project"),
+            "package".as_ref(),
+            manifest.as_os_str(),
+            root.join("dist/out").as_os_str(),
+            "--bundle-id".as_ref(),
+            "com.studio.game".as_ref(),
+        ],
+        temp.path(),
+    );
+    assert_eq!(output.code, 2, "{}", output.json);
+    assert_eq!(failure_code(&output), "command.arguments");
+    assert!(!root.join("dist/Game.app").exists());
+    assert!(!root.join(".derived/native").exists());
 }

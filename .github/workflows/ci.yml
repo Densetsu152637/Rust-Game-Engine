@@ -508,6 +508,101 @@ jobs:
           path: counts/workspace-macos.count
           if-no-files-found: error
 
+  # Packages the macOS .app bundle for real: both Apple Rust targets are built and
+  # joined with lipo, the bundle is ad-hoc signed and then inspected and started.
+  # Unit tests cover the layout and file generators on every OS; only this job runs
+  # lipo, codesign and the bundle itself. Not part of the test-count gate.
+  macos-app:
+    name: App bundle (macOS)
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - name: Install both Apple Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: macos-app
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
+      - name: Package examples/first-project as an app bundle
+        run: |
+          out="$RUNNER_TEMP/app-smoke"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cargo run --locked -q -p engine-tooling --bin engine -- \
+            project package examples/first-project/project.json "$out/First Project.app" \
+            --profile dev --format app
+          ls -laR "$out/First Project.app/Contents"
+      - name: Check the bundle files
+        run: |
+          bundle="$RUNNER_TEMP/app-smoke/First Project.app"
+          plutil -lint "$bundle/Contents/Info.plist"
+          plutil -p "$bundle/Contents/Info.plist"
+          test -f "$bundle/Contents/PkgInfo"
+          test -x "$bundle/Contents/MacOS/runtime"
+          test -f "$bundle/Contents/Resources/game/project.json"
+          test -f "$bundle/Contents/Resources/first-project.icns"
+          test -d "$bundle/Contents/Frameworks"
+          if [ -e "$bundle/run.sh" ] || [ -e "$bundle/run.cmd" ] || [ -e "$bundle/Contents/run.sh" ]; then
+            echo "launcher scripts must not be in a bundle" >&2
+            exit 1
+          fi
+          archs=$(lipo -archs "$bundle/Contents/MacOS/runtime")
+          echo "lipo -archs: $archs"
+          case " $archs " in *" x86_64 "*) ;; *) echo "x86_64 slice missing" >&2; exit 1 ;; esac
+          case " $archs " in *" arm64 "*) ;; *) echo "arm64 slice missing" >&2; exit 1 ;; esac
+          # Informational: the icon type and the deployment target of each slice.
+          sips -g pixelWidth -g pixelHeight "$bundle/Contents/Resources/first-project.icns" || true
+          vtool -arch all -show-build "$bundle/Contents/MacOS/runtime" || true
+      # The runtime resolves the game from the bundle layout with no project
+      # argument, from an unrelated working directory.
+      - name: Resolve and run the bundle
+        run: |
+          bundle="$RUNNER_TEMP/app-smoke/First Project.app"
+          cd /
+          resolved=$(ENGINE_RESOLVE_ONLY=1 "$bundle/Contents/MacOS/runtime")
+          echo "resolved: $resolved"
+          case "$resolved" in
+            */Resources/game/project.json) ;;
+            *) echo "unexpected resolved path" >&2; exit 1 ;;
+          esac
+          "$bundle/Contents/MacOS/runtime" --headless --ticks 3
+      - name: Verify the code signature
+        run: |
+          bundle="$RUNNER_TEMP/app-smoke/First Project.app"
+          codesign --verify --deep --strict --verbose=2 "$bundle"
+          codesign -dvv "$bundle"
+      # Rosetta is not installed on every runner; the slice is only built, not run,
+      # when it is missing.
+      - name: Run the x86_64 slice under Rosetta when available
+        run: |
+          bundle="$RUNNER_TEMP/app-smoke/First Project.app"
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            cd /
+            resolved=$(ENGINE_RESOLVE_ONLY=1 arch -x86_64 "$bundle/Contents/MacOS/runtime")
+            echo "resolved (x86_64): $resolved"
+            case "$resolved" in
+              */Resources/game/project.json) ;;
+              *) echo "unexpected resolved path" >&2; exit 1 ;;
+            esac
+            arch -x86_64 "$bundle/Contents/MacOS/runtime" --headless --ticks 3
+          else
+            echo "Rosetta is not available: the x86_64 slice was built but not executed."
+          fi
+      - name: Clean up
+        if: ${{ always() }}
+        run: rm -rf "$RUNNER_TEMP/app-smoke"
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
+
   wasm-portable-check:
     name: Portable library compile (WebAssembly)
     runs-on: ubuntu-24.04

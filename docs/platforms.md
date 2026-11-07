@@ -18,7 +18,7 @@ cross-compilation target or enable a missing host. Names are `windows`, `linux`,
 | --- | --- | --- |
 | Windows | Native window/GPU, audio, gamepad, directory packaging, CPU profiling | Windows CI; real devices require separate tests |
 | Linux | Native window/GPU, ALSA audio, gamepad, directory packaging, CPU profiling | Linux CI; system development packages required |
-| macOS | Native window/GPU, audio, gamepad, directory packaging, CPU profiling | Native macOS CI; hosted tests and interactive hardware remain separate evidence |
+| macOS | Native window/GPU, audio, gamepad, directory and `.app` bundle packaging, CPU profiling | Native macOS CI; hosted tests and interactive hardware remain separate evidence |
 | WebAssembly | Compile check of core, ECS, backend-neutral render and platform libraries | No browser game host, browser input/audio bridge, or web package |
 | Android / iOS | No complete application host | Lifecycle, device services, platform SDK build and store packaging missing |
 | Console / other | No implemented host | Requires platform access/SDK and host integration; no console support claim |
@@ -45,7 +45,9 @@ The CLI builds for its host. `package_project` also accepts an externally suppli
 ABI. `package-host.json` describes the packager, not verified executable
 provenance. Callers supplying cross-built artifacts must verify their ABI and
 deploy them through a target-specific packaging workflow. There are no installers,
-macOS app bundles/signing/notarization, mobile store bundles, or console packages.
+macOS notarization, DMG images, mobile store bundles, or console packages. A macOS
+`.app` bundle (`--format app`, universal, ad-hoc or identity signed) is built on a macOS
+host only; see [desktop-packaging.md](desktop-packaging.md#macos-app-bundle).
 
 ## CI and local checks
 

@@ -4,7 +4,7 @@
 > `artifacts::package_project` as the directory-format shortcut) and tested by its
 > `tests/artifacts.rs` and `tests/runtime_pipeline.rs`.
 
-`engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage]`
+`engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage|app] [--bundle-id reverse.dns]`
 compiles the project's Rust gameplay crate with the engine into a native generation
 and exports a self-contained package that needs neither Cargo nor the source
 checkout to run.
@@ -20,6 +20,7 @@ output option and is not a package format.
 | `zip` | a new archive file | deflate zip with one top-level folder |
 | `tar.gz` | a new archive file | gzip-compressed tar with one top-level folder |
 | `appimage` | a new `.AppImage` file | Linux AppImage of the layout below (Linux host with `appimagetool` only; see [AppImage](#appimage)) |
+| `app` | a new `<Name>.app` directory | macOS application bundle of the layout below, universal and signed (macOS host only; see [macOS app bundle](#macos-app-bundle)) |
 
 The destination is the path of the thing created and must not exist (an existing
 file or directory is refused with `tooling.destination.exists`, and a failed export
@@ -158,6 +159,135 @@ Limits of an AppImage package:
   (`APPIMAGE_EXTRACT_AND_RUN=1`) where it is missing, as on CI runners.
 - **Not provided.** Signing, update information and bundled shared libraries.
 
+## macOS app bundle
+
+`--format app` arranges the same content as a macOS application bundle. The
+destination is the new `<Name>.app` directory: it must end in `.app` (matched
+case-insensitively, with a name before it) or it is refused with
+`tooling.destination.invalid`, and an existing path is refused with
+`tooling.destination.exists`, as for the other formats. The result key is `app`; the
+result also reports `bundle_id`, `targets`, `signing` (`ad-hoc` or `identity`),
+`generation`/`fingerprint` (the arm64 build, the one recorded in `generation.json`) and
+`x86_64_generation`; `launchers` is empty.
+
+```text
+Name.app/
+  Contents/
+    Info.plist
+    PkgInfo                 APPL????
+    MacOS/runtime           universal (arm64 + x86_64) executable, 0755
+    Resources/
+      game/                 project content (project.json at top)
+      licenses/             engine-LICENSE, runtime-Cargo.lock, notices, dependencies.json
+      generation.json       the arm64 generation
+      package-host.json     platform macos, architecture universal
+      PACKAGE.txt
+      <id>.icns             default engine icon
+    Frameworks/             empty; nested code (such as the Steam dylib) goes here
+```
+
+There is no `run.cmd` or `run.sh`: the bundle starts from Finder or by running
+`Contents/MacOS/runtime`, which resolves `../Resources/game/project.json` from its own
+location (see the lookup rules above), so no project argument is needed. The staging
+code is the same function as for the other formats with a different layout; nothing
+is copied that the directory package would not contain.
+
+`Info.plist` keys: `CFBundleExecutable` (`runtime`), `CFBundleIdentifier`,
+`CFBundleName` (the project name cut to 15 characters, Apple's limit for the short
+name), `CFBundleDisplayName` (the project name), `CFBundleShortVersionString` `0.1.0`
+and `CFBundleVersion` `1` (the manifest has no version field yet), `CFBundlePackageType`
+`APPL`, `CFBundleIconFile` (`<id>.icns`), `LSMinimumSystemVersion` `11.0`,
+`NSHighResolutionCapable`, `LSApplicationCategoryType` `public.app-category.games`, and
+`CFBundleDevelopmentRegion`, `CFBundleInfoDictionaryVersion` and `NSPrincipalClass`.
+All values are XML-escaped. `<id>` is the project name reduced as for the AppImage
+(`First Project` is `first-project`). `LSMinimumSystemVersion` is the higher of the
+deployment targets of the pinned toolchain (`rustc --print deployment-target`, unstable,
+reports 11.0 for `aarch64-apple-darwin` and 10.12 for `x86_64-apple-darwin` on Rust
+1.99.1) so one value is true for both slices; setting `MACOSX_DEPLOYMENT_TARGET`
+changes the binaries but not this key.
+
+The default bundle identifier is `local.engine.<id>`, which claims no real domain.
+Pass `--bundle-id <reverse.dns>` (for example `com.studio.game`) for anything shipped.
+It must have at most 255 characters and two or more dot-separated components, each
+made of ASCII letters, digits and `-` and neither starting nor ending in `-`;
+anything else is refused with `tooling.app.bundle_id_invalid`, before the game is
+compiled. `--bundle-id` with another format is a usage error.
+
+The icon is the default engine icon (the manifest has no icon field) as an Apple Icon
+Image file: the `icns` magic and total length, then one `ic08` entry (256x256 PNG; the
+type table is on the "Apple Icon Image format" Wikipedia page) holding the PNG
+unchanged, with big-endian lengths that include their 8-byte headers.
+
+### Universal build
+
+Packaging builds the generation twice, once per Rust target, and joins the two
+executables with `lipo -create -output Contents/MacOS/runtime`. Both targets must be
+installed before packaging:
+
+```text
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+```
+
+The build runs on a macOS host only. Before anything is compiled, packaging fails with
+`tooling.app.unsupported_host` (not macOS, for example Windows or Linux),
+`tooling.app.tool_missing` (`lipo` or `codesign` not on `PATH`) or
+`tooling.app.target_missing` (a Rust target is not installed; the message names the
+`rustup target add` command). `tooling.app.lipo_failed` reports a `lipo` that could not
+start, exited non-zero or wrote no file. The two builds go through the normal native
+generation cache (a different fingerprint per target, sharing the usual native target
+directory), so a second package run is fast. A failure at any step publishes nothing.
+
+### Signing
+
+The finished bundle is always signed. Nested code under `Contents/Frameworks` is signed
+first, one item at a time in name order, then the bundle; `--deep` is not used to sign.
+
+| Variable | Meaning |
+| --- | --- |
+| `ENGINE_MACOS_SIGN_IDENTITY` | Optional signing identity (a `Developer ID Application: ...` certificate name or SHA-1 hash that is in the keychain). Unset or empty means an ad-hoc signature. The value is not stored in the bundle or written to the result. |
+
+- Unset: `codesign --force --sign - --timestamp=none <path>` (ad-hoc, no certificate
+  needed; this is what CI runs).
+- Set: `codesign --force --sign <identity> --options runtime --timestamp <path>` (hardened
+  runtime and a secure timestamp, as notarisation requires). No entitlements file is
+  passed.
+- `tooling.app.codesign_failed` reports a `codesign` that could not start or failed.
+
+The bundle is staged in a `.engine-export-*` directory next to the destination under its
+final `<Name>.app` name (`codesign` only treats a `*.app` directory as a bundle),
+signed there, and then renamed into place without overwriting.
+
+**Gatekeeper.** An ad-hoc signed bundle runs on the machine that built it and runs
+anywhere it was not downloaded. A copy that arrives through a browser, chat or other
+download carries the quarantine attribute and is blocked as from an unidentified
+developer until the user approves it in System Settings, Privacy and Security (or
+removes the attribute with `xattr -dr com.apple.quarantine <bundle>`). Distribution
+without that prompt needs a Developer ID signature and notarisation.
+
+**Notarisation (documented only, not run or verified).** After signing with a Developer
+ID identity, a release job would run, with Apple credentials supplied from secrets:
+
+```text
+ditto -c -k --keepParent Name.app Name.zip
+xcrun notarytool submit Name.zip --wait --keychain-profile <profile>
+xcrun stapler staple Name.app
+```
+
+`engine` does not run these steps and no part of them has been executed: they stay
+unverified until a signing identity and Apple credentials exist. Archiving a bundle also
+needs `ditto` (not `zip`), which keeps the extended attributes and symbolic links a
+signature depends on.
+
+Notes for the Steam dylib: it belongs in `Contents/Frameworks/` and is signed there
+with the rest of the nested code. A Developer ID build with the hardened runtime
+loads a library signed by another team only with the
+`com.apple.security.cs.disable-library-validation` entitlement, which packaging does not
+pass yet.
+
+Limits of the bundle: it is verified only on macOS CI (job "App bundle (macOS)"); the
+file generators, layout, identifier rules and tool error handling are unit tested on
+every OS with fake tools.
+
 ## Steam variant
 
 A package built by a tooling binary with `--features steam` links the real Steam backend,
@@ -175,8 +305,13 @@ arguments). A packaged run with a real window, GPU playback and audio is a separ
 check that headless launches do not establish. Windows is the validated packaging
 platform; the Linux `tar.gz` round trip (package, extract with `tar`, run the runtime
 with no arguments and `run.sh`, both `--headless --ticks 3`) is exercised in CI
-(job "Workspace tests (Linux)"), while macOS packaging is unverified. The AppImage
+(job "Workspace tests (Linux)"), while the macOS bundle is verified only by CI. The AppImage
 layout, `AppRun`, `.desktop` and icon generation and the tool error codes are unit
 tested on every OS; the real AppImage (`appimagetool` run, then the file started with
 `--appimage-extract-and-run --headless --ticks 3`, `--appimage-extract` and
-`desktop-file-validate`) is built and checked only by the CI job "AppImage (Linux)".
+`desktop-file-validate`) is built and checked only by the CI job "AppImage (Linux)". The
+`.app` layout, `Info.plist`, `.icns`, bundle identifier rules and tool error codes are
+unit tested on every OS (the `lipo`/`codesign` calls with fake tools on Unix); the real
+universal build, `plutil -lint`, `lipo -archs`, the resolve-only and headless launches,
+`codesign --verify` and the Rosetta run of the x86_64 slice happen only in the CI job
+"App bundle (macOS)".
