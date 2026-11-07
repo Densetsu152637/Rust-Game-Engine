@@ -93,6 +93,8 @@ impl StreamObserver {
 }
 pub(crate) struct StreamPlayback {
     shared: Arc<Shared>,
+    /// Offline mixing waits for a producer mid-write so output stays deterministic.
+    blocking: bool,
 }
 fn error(code: &'static str, message: &str) -> AudioError {
     AudioError::new(code, message)
@@ -246,12 +248,16 @@ impl StreamPlayback {
         Ok((
             Self {
                 shared: shared.clone(),
+                blocking: false,
             },
             StreamWriter { shared },
         ))
     }
     pub(crate) fn snapshot(&self) -> Result<StreamSnapshot> {
         snapshot(&self.shared)
+    }
+    pub(crate) fn set_blocking(&mut self, value: bool) {
+        self.blocking = value;
     }
     pub(crate) fn pause(&self, value: bool) {
         self.shared.paused.store(value, Ordering::Release);
@@ -290,7 +296,8 @@ impl StreamPlayback {
         self.shared.underruns.store(0, Ordering::Relaxed);
         Ok(q.generation)
     }
-    /// Calls `put` only for actual PCM; missing frames remain silent. One try-lock per block.
+    /// Calls `put` only for actual PCM; missing frames remain silent. One try-lock per
+    /// block, or one blocking lock when mixing offline.
     pub(crate) fn render(
         &mut self,
         rate: u32,
@@ -298,7 +305,12 @@ impl StreamPlayback {
         count: usize,
         mut put: impl FnMut(usize, [f32; 2]),
     ) -> usize {
-        let Ok(mut q) = self.shared.queue.try_lock() else {
+        let queue = if self.blocking {
+            self.shared.queue.lock().ok()
+        } else {
+            self.shared.queue.try_lock().ok()
+        };
+        let Some(mut q) = queue else {
             self.shared.starved.store(true, Ordering::Release);
             self.shared
                 .underruns
