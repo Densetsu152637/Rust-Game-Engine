@@ -285,6 +285,9 @@ mod lifecycle_regressions {
         fs::write(
             &source,
             r#"fn main(){
+            if std::env::args().any(|a|a=="--warm"){
+                return;
+            }
             if std::env::args().any(|a|a=="--child"){
                 std::thread::sleep(std::time::Duration::from_secs(60));
             }else{
@@ -308,6 +311,15 @@ mod lifecycle_regressions {
                 .unwrap()
                 .success()
         );
+        // The first launch of a freshly linked binary can take seconds on macOS runners while
+        // the system assesses it; launch it once so the timed run measures only cancellation.
+        assert!(
+            Command::new(&executable)
+                .arg("--warm")
+                .status()
+                .unwrap()
+                .success()
+        );
         let cancel = AtomicBool::new(false);
         let started = std::time::Instant::now();
         let output = thread::scope(|scope| {
@@ -318,6 +330,8 @@ mod lifecycle_regressions {
             run_compiler(Command::new(executable), &cancel).unwrap()
         });
         assert!(output.cancelled);
-        assert!(started.elapsed() < Duration::from_secs(5));
+        // A hang guard well under the descendant's 60 s sleep, not a latency bound.
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(20), "{elapsed:?}");
     }
 }

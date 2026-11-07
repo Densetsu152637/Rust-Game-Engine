@@ -374,7 +374,9 @@ fn raw_tls_replay_foreign_owner_oversized_and_malformed_frames_fail() {
 fn pending_connections_are_capped_and_expire_even_without_io_budget() {
     let credentials = Credentials::new();
     let mut security = credentials.server_security();
-    security.limits.handshake_timeout = Duration::from_millis(20);
+    // The idle peer must stay pending from its accept until the cap is checked; a 20 ms timeout
+    // expired it during a single poll on a preempted macOS runner.
+    security.limits.handshake_timeout = Duration::from_secs(2);
     let mut server = Server::bind_secure(
         ServerConfig {
             limits: Limits {
@@ -387,8 +389,10 @@ fn pending_connections_are_capped_and_expire_even_without_io_budget() {
     )
     .unwrap();
     let _idle = TcpStream::connect(server.local_addr().unwrap()).unwrap();
-    server.poll(PollBudget::default()).unwrap();
-    assert_eq!(server.pending_peers(), 1);
+    until(|| {
+        server.poll(PollBudget::default()).unwrap();
+        server.pending_peers() == 1
+    });
     assert_eq!(server.peer_ids().count(), 0);
     assert!(server.assign_owner("hero", 1).is_err());
     server
