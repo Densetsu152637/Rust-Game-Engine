@@ -24,7 +24,8 @@ The destination is the path of the thing created and must not exist (an existing
 file or directory is refused with `tooling.destination.exists`, and a failed export
 publishes nothing). An archive's top-level folder is the destination file name
 without its `.zip` or `.tar.gz` suffix: `dist/mygame-1.0.tar.gz` unpacks to
-`mygame-1.0/`, holding the layout below. Archives are built from the same staged
+`mygame-1.0/`, holding the layout below; a name that would leave `.` or `..` as
+that folder (such as `...zip`) is refused with `tooling.destination.invalid`. Archives are built from the same staged
 directory, so every format has identical content. Inside an archive directories and
 the `runtime[.exe]` and `run.sh` files are mode 0755 and all other files 0644; the
 mode is written into both formats (zip entries are marked as created on Unix), so
