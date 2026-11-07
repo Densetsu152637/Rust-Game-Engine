@@ -2,7 +2,7 @@
 //!
 //! Entries are sorted by path, directories come before their contents, every
 //! entry has a fixed modification time and no owner, directories and the files
-//! named in `executables` (top-level names) are mode 0755 and every other file is
+//! named in `executables` (paths relative to the package root, `/` separated) are mode 0755 and every other file is
 //! 0644. The modes are written explicitly, so an archive built on Windows keeps
 //! the executable bit when extracted on Linux or macOS.
 
@@ -66,6 +66,14 @@ pub fn export_new_archive(
             }
         }
     }
+    // A temporary file is created 0600; published archives are world-readable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(FILE_MODE))?;
+    }
     temporary.as_file().sync_all()?;
     temporary.persist_noclobber(destination).map_err(|error| {
         if destination.exists() {
@@ -96,10 +104,16 @@ fn walk(directory: &Path, prefix: &str, executables: &[&str], out: &mut Vec<Entr
     let mut children = fs::read_dir(directory)?
         .map(|entry| entry.map_err(Error::from))
         .collect::<Result<Vec<_>>>()?;
-    let name = |entry: &fs::DirEntry| entry.file_name().to_string_lossy().into_owned();
-    children.sort_by_key(name);
-    for child in children {
-        let file_name = name(&child);
+    let mut named = Vec::with_capacity(children.len());
+    for child in children.drain(..) {
+        let name = child
+            .file_name()
+            .into_string()
+            .map_err(|_| Error::new("tooling.path", "Package file names must be valid UTF-8"))?;
+        named.push((name, child));
+    }
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    for (file_name, child) in named {
         let relative = if prefix.is_empty() {
             file_name.clone()
         } else {
@@ -115,7 +129,7 @@ fn walk(directory: &Path, prefix: &str, executables: &[&str], out: &mut Vec<Entr
             });
             walk(&child.path(), &relative, executables, out)?;
         } else if kind.is_file() {
-            let executable = prefix.is_empty() && executables.contains(&file_name.as_str());
+            let executable = executables.contains(&relative.as_str());
             out.push(Entry {
                 relative,
                 source: child.path(),
@@ -188,8 +202,11 @@ fn write_zip(sink: impl Write + Seek, folder: &str, entries: &[Entry]) -> Result
         if entry.directory {
             writer.add_directory(path, options).map_err(archive)?;
         } else {
+            let mut file = File::open(&entry.source)?;
+            // Entries of 4 GiB or more need zip64 headers.
+            let options = options.large_file(file.metadata()?.len() >= u64::from(u32::MAX));
             writer.start_file(path, options).map_err(archive)?;
-            std::io::copy(&mut File::open(&entry.source)?, &mut writer)?;
+            std::io::copy(&mut file, &mut writer)?;
         }
     }
     writer.finish().map_err(archive)?.flush()?;

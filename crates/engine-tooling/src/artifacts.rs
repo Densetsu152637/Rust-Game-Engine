@@ -337,6 +337,12 @@ pub(crate) fn export_new_directory(
         .prefix(".engine-export-")
         .tempdir_in(parent)?;
     populate(staging.path())?;
+    // A temporary directory is created 0700; the published one is not private.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o755))?;
+    }
     if destination.exists() {
         return Err(Error::new(
             "tooling.destination.exists",

@@ -352,3 +352,39 @@ fn archive_destination_inside_authored_source_is_refused() {
     assert_eq!(error.diagnostics[0].code, "tooling.destination.source");
     assert!(!inside.exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn published_archive_and_directory_modes_are_not_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = package_fixture();
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    for (format, name) in [
+        (PackageFormat::TarGz, "m.tar.gz"),
+        (PackageFormat::Zip, "m.zip"),
+    ] {
+        assert_eq!(mode(&package_as(&fixture, name, format)), 0o644, "{name}");
+    }
+    assert_eq!(
+        mode(&package_as(&fixture, "m-dir", PackageFormat::Dir)),
+        0o755
+    );
+}
+
+#[test]
+fn degenerate_archive_names_are_refused_before_any_work() {
+    let fixture = package_fixture();
+    for (name, format) in [
+        ("...zip", PackageFormat::Zip),
+        ("..zip", PackageFormat::Zip),
+        ("...tar.gz", PackageFormat::TarGz),
+    ] {
+        let error = try_package(&fixture, &fixture.root.join(name), format).unwrap_err();
+        assert_eq!(
+            error.diagnostics[0].code, "tooling.destination.invalid",
+            "{name}"
+        );
+        assert!(!fixture.root.join(name).exists());
+    }
+    assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
+}

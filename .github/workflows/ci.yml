@@ -310,7 +310,7 @@ jobs:
       # start with no project argument (it finds game/project.json beside itself) and
       # through run.sh. The dev profile and the shared native target directory reuse
       # the generation build output the workspace tests produced.
-      - name: Package smoke test (tar.gz)
+      - name: Package smoke test (tar.gz and zip)
         if: ${{ !cancelled() }}
         run: |
           export ENGINE_NATIVE_TARGET_DIR="$PWD/target/native-generation-shared"
@@ -328,6 +328,22 @@ jobs:
           cd "$RUNNER_TEMP"
           "$package/runtime" --headless --ticks 3
           "$package/run.sh" --headless --ticks 3
+          # The same generation as a zip: the only zip-on-Unix check (unzip is
+          # preinstalled on ubuntu-24.04 runners; the fallback is cheap insurance).
+          command -v unzip >/dev/null || sudo apt-get install --no-install-recommends -y unzip
+          cd "$GITHUB_WORKSPACE"
+          cargo run --locked -q -p engine-tooling --bin engine -- \
+            project package examples/first-project/project.json "$out/first-project.zip" \
+            --profile dev --format zip
+          mkdir "$out/extract-zip"
+          unzip -q "$out/first-project.zip" -d "$out/extract-zip"
+          package="$out/extract-zip/first-project"
+          test -x "$package/runtime"
+          test -x "$package/run.sh"
+          cd "$RUNNER_TEMP"
+          "$package/runtime" --headless --ticks 3
+          "$package/run.sh" --headless --ticks 3
+          rm -rf "$out"
       - name: Check standalone desktop entry points
         if: ${{ !cancelled() }}
         run: bash scripts/ci/check-desktop-examples.sh

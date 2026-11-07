@@ -100,6 +100,7 @@ pub fn package(
             .map(|()| destination.to_path_buf()),
         PackageFormat::Zip | PackageFormat::TarGz => {
             let folder = archive_folder(destination, format)?;
+            // Relative to the package root.
             let executables = [package_host.runtime_filename.as_str(), "run.sh"];
             archive::export_new_archive(destination, &folder, format, &executables, |staging| {
                 stage(&inputs, staging)
@@ -110,7 +111,9 @@ pub fn package(
 }
 
 /// The top-level folder of an archive: the destination file name without the
-/// format suffix (matched case-insensitively), or `package` when nothing is left.
+/// format suffix (matched case-insensitively). A name left as `.` or `..`
+/// (`...zip`, `..zip`) would not be a folder and is refused with
+/// `tooling.destination.invalid`.
 fn archive_folder(destination: &Path, format: PackageFormat) -> Result<String> {
     let name = destination
         .file_name()
@@ -131,11 +134,13 @@ fn archive_folder(destination: &Path, format: PackageFormat) -> Result<String> {
         }
         _ => name,
     };
-    Ok(if stem.is_empty() {
-        "package".to_owned()
-    } else {
-        stem.to_owned()
-    })
+    if matches!(stem, "." | "..") {
+        return Err(Error::new(
+            "tooling.destination.invalid",
+            "Archive name must leave a folder name other than . or ..",
+        ));
+    }
+    Ok(stem.to_owned())
 }
 
 struct Inputs<'a> {
@@ -251,5 +256,11 @@ mod tests {
         assert_eq!(folder("game.zip", PackageFormat::TarGz), "game.zip");
         assert_eq!(folder("game", PackageFormat::Zip), "game");
         assert_eq!(folder(".zip", PackageFormat::Zip), ".zip");
+        for name in ["...zip", "..zip", "a/...zip"] {
+            let error = archive_folder(Path::new(name), PackageFormat::Zip).unwrap_err();
+            assert_eq!(error.diagnostics[0].code, "tooling.destination.invalid");
+        }
+        let error = archive_folder(Path::new("...tar.gz"), PackageFormat::TarGz).unwrap_err();
+        assert_eq!(error.diagnostics[0].code, "tooling.destination.invalid");
     }
 }
