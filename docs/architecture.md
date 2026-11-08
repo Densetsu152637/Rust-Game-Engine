@@ -215,6 +215,46 @@ extraction, the mesh renderers seen, those the 3D pass does not draw, those outs
 frustum, those kept for a shadow and those drawn. Meshes have no visibility flag or render
 layer; when they get one it belongs in the first stage.
 
+**Retained records and dirty copy.** The runtime keeps one render record per mesh renderer
+between extractions (`runtime/retained.rs`): the `MeshDraw3D` the entity contributes, its
+authored LOD/occluder options, its cached world box and the flags the culling needs. An
+extraction walks the mesh renderers with one typed query that compares change ticks and checks
+which components exist, and rebuilds from the world only the records of entities whose
+`MeshRenderer`, `GeometryOverride`, `MeshMaterial`, `MeshLightmap`, `MeshLods`, `HiZOccluder`,
+`AuthoredId`, `Transform` or `Parent` changed since the previous extraction, whose set of those
+components changed, or that have an ancestor whose `Transform` or `Parent` changed. Records of
+entities the walk did not meet (despawned, or without a `MeshRenderer`) are dropped; the culling
+then runs over the records and only the drawn ones are cloned into the frame. A static scene
+therefore costs a tick comparison per mesh renderer plus the clone of what is drawn; moving
+one entity rebuilds one record.
+
+- The change ticks belong to the retained state (the tick of the previous successful
+  extraction, as a system keeps its own), so `extract_scene_frame` stays `&self`, an
+  extraction that was skipped (an occluded window) loses nothing and an extraction that
+  failed is looked at again. A scene transition, a change of the 2D lighting or fragment
+  renderer, `Runtime::reload_shader_asset` or a very long gap in ticks rebuilds every record.
+- Rebuilt on every extraction because they depend on more than the entity: a mesh with a
+  streamed texture, a lightmap (checked against the camera's indirect asset) and a generated
+  tile chunk. The records do not depend on the camera or the lights; the culling does, and it
+  is not retained.
+- Not covered by the change check: an ancestor that loses its `Transform` while a descendant
+  keeps its record (resolving the descendant would fail; the record stays until something about
+  it changes). Authored parents are found through `EntityLookup`, whose change rebuilds every
+  parented record.
+- `Runtime::extract_scene_frame_from_scratch` rebuilds everything first and is the reference
+  the property test compares against. `Runtime::extraction_stats` reports changed, copied,
+  retained, outside the frustum and drawn.
+- Only the 3D mesh draws are retained. Sprites, UI, world text and lights are still rebuilt each
+  frame.
+
+*Shape for a render thread.* The records are the unit a pipelined renderer keeps: a
+`Runtime::extraction_delta()` lists the entities whose record was rebuilt (`upserted`), those
+dropped (`removed`) and whether everything was rebuilt (`reset`), so a render thread holding
+copies of the records is sent only that (the records of the upserted entities, the ids removed)
+plus the per-frame camera, lights and culling inputs, and culls and assembles the frame on its
+own side. `MeshDraw3D` is `Arc`-based and `Send`, so a record crosses threads without copying
+mesh or texture data.
+
 ## Desktop host
 
 `engine-desktop` runs a `Runtime` on the process main thread with winit and wgpu.

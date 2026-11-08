@@ -271,6 +271,13 @@ pub struct ExtractionStats {
     pub kept_for_shadow: usize,
     /// Meshes the frame carries (`SceneRenderFrame::meshes`).
     pub drawn: usize,
+    /// Entities whose render-relevant components changed since the previous extraction.
+    pub changed: usize,
+    /// Records rebuilt from the world: the entities that changed, those that are rebuilt every
+    /// extraction (streamed textures, lightmaps, tile chunks) and, after a reset, all of them.
+    pub copied: usize,
+    /// Records kept after the extraction.
+    pub retained: usize,
     /// The frame was culled against the camera (otherwise nothing was rejected by view).
     pub culled: bool,
 }

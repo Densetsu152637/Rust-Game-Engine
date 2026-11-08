@@ -73,6 +73,19 @@ casts a shadow into the view stays, and a mesh with a custom shader is never rej
 prints the count of every stage (total, not drawn by 3D, outside frustum, kept for shadow,
 drawn). A debug build gates no time.
 
+The dirty-copy rule of the retained mesh records has its own file:
+
+```text
+cargo test -p engine-project --release --test runtime_retained_extraction -- --nocapture --test-threads=1
+```
+
+A static scene's second extraction copies no record, moving one entity copies one, moving a
+parent copies its children, despawn and component removal drop records, changes made while no
+frame was extracted are not lost, a failed extraction is looked at again, and over random edit
+sequences (with and without culling, some frames skipped) the incremental frame equals the one
+rebuilt from scratch. The last test prints changed, copied, retained, outside-frustum and drawn
+counts of a 5,000-mesh static scene and, in release, requires it to cost a third of a rebuild.
+
 ## What the tests establish
 
 Ordinary tests are headless: they use temporary directories, injected input and the

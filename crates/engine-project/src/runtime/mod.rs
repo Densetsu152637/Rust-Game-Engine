@@ -24,6 +24,7 @@ mod locale;
 mod render;
 mod render3d;
 mod resources;
+mod retained;
 mod scene;
 mod scripts;
 
@@ -36,6 +37,7 @@ pub use cull::ExtractionStats;
 use render::Content;
 pub use render::{BlendMode, Draw, DrawMotion, DrawSpace, DrawState, RenderFrame, snap_to_pixels};
 pub use resources::*;
+pub use retained::ExtractionDelta;
 pub use scene::RuntimeSnapshot;
 pub(crate) use scene::collision_from_scene;
 pub(crate) use scene::spawn;
@@ -65,6 +67,12 @@ pub struct Runtime {
     mesh_bounds: RefCell<cull::MeshBounds>,
     /// What the last scene extraction did with the mesh renderers.
     stats: Cell<ExtractionStats>,
+    /// Per-entity render records kept between scene extractions (`retained.rs`).
+    retained: RefCell<retained::Retained>,
+    /// The next scene extraction rebuilds every record ([`Runtime::extract_scene_frame_from_scratch`]).
+    scratch: Cell<bool>,
+    /// Bumped when a shader source is dropped; records hold the sources they were built with.
+    shader_epoch: Cell<u64>,
     /// Localization generation last applied to the text engine, and its locale.
     localized_generation: u64,
     localized_locale: String,
@@ -109,6 +117,7 @@ impl Runtime {
         crate::ai::register(&mut app)?;
         crate::world::register_components(&mut app)?;
         crate::lighting2d::register(&mut app)?;
+        retained::register_components(app.world_mut());
         crate::simulation::install(app.world_mut(), simulation)?;
         crate::world::install(app.world_mut())?;
         app.world_mut().insert_resource(RuntimeLog::default());
@@ -184,6 +193,9 @@ impl Runtime {
             frustum_culling: Cell::new(true),
             mesh_bounds: RefCell::new(cull::MeshBounds::default()),
             stats: Cell::new(ExtractionStats::default()),
+            retained: RefCell::new(retained::Retained::default()),
+            scratch: Cell::new(false),
+            shader_epoch: Cell::new(0),
             localized_generation: u64::MAX,
             localized_locale,
         };

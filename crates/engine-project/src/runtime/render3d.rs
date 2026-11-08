@@ -1,4 +1,5 @@
-use super::cull::{self, Aabb, Culler, Verdict};
+use super::cull::{self, Aabb, Culler};
+use super::retained::Pass;
 use super::*;
 use crate::content::Texture;
 use crate::rendering3d::*;
@@ -40,164 +41,17 @@ impl Runtime {
             camera,
             world: camera_world,
         });
-        let lit_2d = frame.lighting2d.is_some();
-        let fragments_drawn =
-            world.contains_resource::<crate::simulation::physics::FragmentRenderer>();
-        let mut stats = ExtractionStats {
-            culled: culler.is_some(),
-            ..ExtractionStats::default()
+        let indirect = frame.indirect.clone();
+        let pass = Pass {
+            culler: culler.as_ref(),
+            lit_2d: frame.lighting2d.is_some(),
+            fragments_drawn: world
+                .contains_resource::<crate::simulation::physics::FragmentRenderer>(),
+            indirect: indirect.as_deref(),
+            scratch: self.scratch.get(),
         };
-        let mut bounds = self.mesh_bounds.borrow_mut();
-        for entity in crate::walk::with::<MeshRenderer>(world) {
-            stats.meshes += 1;
-            if !is_drawn_mesh(world, &entity, lit_2d, fragments_drawn) {
-                stats.not_3d += 1;
-                continue;
-            }
-            let renderer = entity
-                .get::<MeshRenderer>()
-                .expect("drawn meshes have a MeshRenderer");
-            let mesh = entity
-                .get::<crate::GeometryOverride>()
-                .map(|geometry| &geometry.0)
-                .or_else(|| self.content.meshes.get(&renderer.mesh))
-                .ok_or_else(|| Error::new("render.mesh.unknown", &renderer.mesh))?
-                .clone();
-            let model = crate::world_transform(world, entity.id())?.matrix;
-            // Reject what the camera cannot see before reading or copying anything else.
-            if let Some(culler) = &culler
-                && let Some(local) = self.local_bounds(&mut bounds, &entity, &mesh)
-                && entity
-                    .get::<MeshMaterial>()
-                    .is_none_or(|material| material.shader.is_none())
-            {
-                let world_box = local.transformed(&Mat4::from_cols_array_2d(&model));
-                let casts = entity
-                    .get::<MeshMaterial>()
-                    .is_none_or(|material| material.cast_shadows);
-                match culler.decide(&world_box, casts) {
-                    Verdict::Visible => {}
-                    Verdict::CastsIntoView => stats.kept_for_shadow += 1,
-                    Verdict::Outside => {
-                        stats.outside_frustum += 1;
-                        continue;
-                    }
-                }
-            }
-            let id = entity
-                .get::<AuthoredId>()
-                .map(|id| id.id.clone())
-                .unwrap_or_else(|| format!("entity:{}", entity.id().to_bits()));
-            let material = entity.get::<MeshMaterial>().cloned().unwrap_or_default();
-            material.validate()?;
-            let texture = material
-                .texture
-                .as_ref()
-                .or(renderer.texture.as_ref())
-                .map(|id| self.resolve_texture(id, &mut frame.streams))
-                .transpose()?;
-            let shader = self.material_shader(&material)?;
-            let lightmap = entity
-                .get::<MeshLightmap>()
-                .map(|binding| {
-                    check_lightmap(
-                        &id,
-                        binding,
-                        &mesh,
-                        shader.is_some(),
-                        frame.indirect.as_deref(),
-                    )
-                })
-                .transpose()?
-                .cloned();
-            frame.meshes.push(MeshDraw3D {
-                id: id.clone(),
-                mesh,
-                texture,
-                metallic_roughness_texture: material
-                    .metallic_roughness_texture
-                    .as_ref()
-                    .map(|id| {
-                        self.content
-                            .textures
-                            .get(id)
-                            .cloned()
-                            .ok_or_else(|| Error::new("render.texture.unknown", id))
-                    })
-                    .transpose()?,
-                normal_texture: material
-                    .normal_texture
-                    .as_ref()
-                    .map(|id| {
-                        self.content
-                            .textures
-                            .get(id)
-                            .cloned()
-                            .ok_or_else(|| Error::new("render.texture.unknown", id))
-                    })
-                    .transpose()?,
-                model,
-                material,
-                shader,
-                lightmap: lightmap.clone(),
-            });
-            // A runtime geometry override (skinning, World-generated meshes)
-            // replaces level zero, so authored static levels and the
-            // occluder marker do not apply to it.
-            let overridden = entity.get::<crate::GeometryOverride>().is_some();
-            let authored_lods = entity.get::<MeshLods>().filter(|_| !overridden);
-            let marked = entity
-                .get::<HiZOccluder>()
-                .is_some_and(|marker| marker.enabled)
-                && !overridden;
-            if authored_lods.is_some() || marked {
-                let levels = authored_lods
-                    .map(|lods| {
-                        lods.meshes
-                            .iter()
-                            .map(|id| {
-                                self.content
-                                    .meshes
-                                    .get(id)
-                                    .cloned()
-                                    .ok_or_else(|| Error::new("render.mesh.unknown", id))
-                            })
-                            .collect::<Result<Vec<_>>>()
-                    })
-                    .transpose()?
-                    .unwrap_or_default();
-                if lightmap.is_some()
-                    && let Some(level) = levels.iter().position(|level| level.uv2.is_empty())
-                {
-                    return Err(Error::new(
-                        "render.lightmap.uv2",
-                        format!(
-                            "{id}: MeshLods level {} has no second UV set; a lightmapped mesh needs UV2 on every level",
-                            level + 1
-                        ),
-                    ));
-                }
-                frame.mesh_options.insert(
-                    id.clone(),
-                    MeshDrawOptions3D {
-                        levels,
-                        policy: authored_lods.map_or_else(
-                            || engine_mesh_lod::ScreenSizeLods {
-                                thresholds: vec![1.0],
-                                cull_below: None,
-                                hysteresis: 0.0,
-                            },
-                            MeshLods::policy,
-                        ),
-                        occluder: marked,
-                    },
-                );
-            }
-        }
-        stats.drawn = frame.meshes.len();
+        let stats = self.collect_meshes(&mut frame, &pass)?;
         self.stats.set(stats);
-        bounds.sweep();
-        drop(bounds);
         frame.lights = lights;
         frame.post = self.extract_post(entity, true)?;
         frame.ray_tracing = self
@@ -441,6 +295,7 @@ impl Runtime {
     /// Forget the cached source of `shader` or `graph` asset `id`, after the host changed its
     /// file: the next extraction reads or compiles it again.
     pub fn reload_shader_asset(&self, id: &str) {
+        self.shader_epoch.set(self.shader_epoch.get() + 1);
         self.shaders
             .borrow_mut()
             .retain(|(cached, _), _| cached != id);
@@ -544,7 +399,11 @@ impl Runtime {
     }
     /// A catalog texture, or the current frame of a `stream:<name>` texture
     /// stream (recorded once in `streams`).
-    fn resolve_texture(&self, id: &str, streams: &mut Vec<StreamFrame>) -> Result<Arc<Texture>> {
+    pub(super) fn resolve_texture(
+        &self,
+        id: &str,
+        streams: &mut Vec<StreamFrame>,
+    ) -> Result<Arc<Texture>> {
         if let Some(name) = id.strip_prefix(STREAM_TEXTURE_PREFIX) {
             let stream = self
                 .app
@@ -661,7 +520,7 @@ impl Runtime {
             ..status
         })
     }
-    fn material_shader(&self, material: &MeshMaterial) -> Result<Option<Arc<str>>> {
+    pub(super) fn material_shader(&self, material: &MeshMaterial) -> Result<Option<Arc<str>>> {
         material
             .shader
             .as_ref()
@@ -770,7 +629,7 @@ impl Runtime {
     }
     /// The local box of an entity's mesh, with the boxes of its authored `MeshLods` levels.
     /// `None` when any of them has no finite vertex (the entity is then not culled).
-    fn local_bounds(
+    pub(super) fn local_bounds(
         &self,
         bounds: &mut cull::MeshBounds,
         entity: &EntityRef,
@@ -808,7 +667,12 @@ fn lighting2d_settings(world: &World) -> Option<crate::lighting2d::Lighting2D> {
 /// draw through the 2D lit pass instead. With a fragment renderer installed a fractured
 /// destructible draws only through its fragments (children carry their own `MeshRenderer` and
 /// still draw); without one nothing draws the fragments, so the intact mesh stays visible.
-fn is_drawn_mesh(world: &World, entity: &EntityRef, lit_2d: bool, fragments_drawn: bool) -> bool {
+pub(super) fn is_drawn_mesh(
+    world: &World,
+    entity: &EntityRef,
+    lit_2d: bool,
+    fragments_drawn: bool,
+) -> bool {
     if !entity.contains::<MeshRenderer>() {
         return false;
     }
@@ -913,7 +777,7 @@ fn extract_lights(world: &World) -> Result<Vec<crate::lights::LightInstance3D>> 
 /// indirect asset, so a bad binding is a named extraction error rather than a
 /// renderer failure. `custom_shader` draws are rejected: only the built-in lit
 /// shader samples lightmaps.
-fn check_lightmap<'a>(
+pub(super) fn check_lightmap<'a>(
     id: &str,
     binding: &'a MeshLightmap,
     mesh: &crate::content::Mesh,
