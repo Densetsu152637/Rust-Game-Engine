@@ -6,7 +6,8 @@
 #   <archive.zip> must not exist. macOS uses ditto, which keeps the symbolic links,
 #   extended attributes and permissions an app bundle's code signature depends on.
 #   Every other host uses Python's zipfile module, which stores the Unix modes (the
-#   execute bit of the runtime) and needs no zip command on the Windows runner.
+#   execute bit of the runtime) and needs no zip command on the Windows runner. Its
+#   archive is not byte-reproducible (modification times are kept).
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -39,7 +40,23 @@ case "$(uname -s)" in
     case "$(uname -s)" in
       MINGW* | MSYS* | CYGWIN*) archive=$(cygpath -m "$archive") ;;
     esac
-    (cd "$parent" && "$python" -I -m zipfile -c "$archive" "$name")
+    # strict_timestamps=False: a file older than 1980 (Valve's library keeps the
+    # modification time of the crate it came from) is stored as 1980-01-01 instead of
+    # failing. Entries are sorted; directory entries come first.
+    (cd "$parent" && "$python" -I - "$archive" "$name" <<'PY'
+import os
+import sys
+import zipfile
+
+archive, top = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(archive, "x", zipfile.ZIP_DEFLATED, strict_timestamps=False) as zf:
+    for root, directories, files in os.walk(top):
+        directories.sort()
+        zf.write(root)
+        for name in sorted(files):
+            zf.write(os.path.join(root, name))
+PY
+    )
     ;;
 esac
 ls -l "$archive"
