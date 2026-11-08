@@ -184,6 +184,37 @@ the sprite layer, which a presenter keeping a history of past frames needs for e
 `runtime_entity_walk` test measures 200,000 such entities against `Runtime::tick` and
 `extract_scene_frame` (see [Testing](testing.md)).
 
+### Cost of mesh geometry
+
+Under an active `Camera3D` the frame carries a mesh as the shared `Arc<Mesh>` (an authored
+asset or an entity's `GeometryOverride`) plus the entity's world matrix, and the renderer
+keys its GPU buffers by that `Arc`, so a mesh is uploaded once and transformed on the GPU.
+The 2D layer of the same frame (`extract_frame`, which clones a mesh and bakes the world
+transform into its vertices) skips every `MeshRenderer` the 3D pass draws, so extracting
+such a mesh costs the entity, never its vertices; only meshes that stay 2D (without a 3D
+camera, or generated tilemap chunks of a lit 2D scene) are baked. The
+`runtime_mesh_extraction` test measures 100 meshes of 200 and of 20,000 vertices (see
+[Testing](testing.md)). A game that rebuilds a mesh keeps the cost of building it, and a new
+`Arc` is uploaded again; reuse the `Arc` while the geometry is unchanged.
+
+**Culling before copying.** The 3D pass decides which meshes are drawn before it reads
+or copies anything else of an entity (`runtime/cull.rs`). In order: the entity is not drawn
+by the 3D pass (no `Transform`, the intact mesh of a fractured entity whose fragments draw, a
+chunk of a lit 2D scene), then its world box (the mesh's local box, computed once per mesh
+`Arc` and cached, under the entity's world matrix) against the active camera's frustum. Only
+what passes gets its material, textures, shader and lightmap read into the frame. The test is
+conservative: the frustum is built for an output up to 4:1 wide and widened by 5 cm; a mesh
+outside it stays when it can cast a shadow into it (the ray from the mesh away from each
+shadow-casting light, as long as the light's range, against the frustum widened by the mesh's
+radius); a mesh with a custom material shader is never rejected (the shader may move its
+vertices); nothing is rejected under a camera with `RayTracing`, in an XR session
+(`XrSettings` enabled or an `XrTracking` resource), or after `Runtime::set_frustum_culling(false)`.
+A host that draws the frame from a camera other than the active `Camera3D` (the editor's
+viewport does) must turn the culling off. `Runtime::extraction_stats` reports, for the last
+extraction, the mesh renderers seen, those the 3D pass does not draw, those outside the
+frustum, those kept for a shadow and those drawn. Meshes have no visibility flag or render
+layer; when they get one it belongs in the first stage.
+
 ## Desktop host
 
 `engine-desktop` runs a `Runtime` on the process main thread with winit and wgpu.

@@ -137,6 +137,7 @@ fn volume_generates_deterministic_entities_inside_its_box() {
         assert_eq!(p[1], 0.0, "default surface is flat ground at y = 0");
     }
     // Rendered through the ordinary mesh path.
+    a.set_frustum_culling(false);
     let frame = a.extract_scene_frame().unwrap();
     assert_eq!(frame.meshes.len(), 16);
     let status = a.app().world().resource::<PcgStatus>();

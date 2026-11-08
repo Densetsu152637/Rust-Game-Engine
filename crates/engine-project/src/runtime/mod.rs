@@ -11,13 +11,14 @@ use bevy_ecs::prelude::*;
 use engine_core::EngineApp;
 use serde::Serialize;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::Arc,
 };
 
 mod acoustics;
+mod cull;
 mod events;
 mod locale;
 mod render;
@@ -31,6 +32,7 @@ pub use crate::services::{
     find_entity, gameplay_input, move_entity, refresh_gameplay_input, request_scene, resolve_asset,
     safe_position,
 };
+pub use cull::ExtractionStats;
 use render::Content;
 pub use render::{BlendMode, Draw, DrawMotion, DrawSpace, DrawState, RenderFrame, snap_to_pixels};
 pub use resources::*;
@@ -57,6 +59,12 @@ pub struct Runtime {
     /// Shader sources read from `shader` and compiled from `graph` assets, by asset ID and
     /// whether it is the lit 2D variant. See [`Runtime::cached_shader`].
     shaders: RefCell<BTreeMap<(String, bool), Arc<str>>>,
+    /// Whether `extract_scene_frame` culls against the active camera ([`Runtime::set_frustum_culling`]).
+    frustum_culling: Cell<bool>,
+    /// Local boxes of the meshes the frames carry, by mesh identity.
+    mesh_bounds: RefCell<cull::MeshBounds>,
+    /// What the last scene extraction did with the mesh renderers.
+    stats: Cell<ExtractionStats>,
     /// Localization generation last applied to the text engine, and its locale.
     localized_generation: u64,
     localized_locale: String,
@@ -173,6 +181,9 @@ impl Runtime {
             scene_revision: 0,
             geometry: RefCell::new(BTreeMap::new()),
             shaders: RefCell::new(BTreeMap::new()),
+            frustum_culling: Cell::new(true),
+            mesh_bounds: RefCell::new(cull::MeshBounds::default()),
+            stats: Cell::new(ExtractionStats::default()),
             localized_generation: u64::MAX,
             localized_locale,
         };

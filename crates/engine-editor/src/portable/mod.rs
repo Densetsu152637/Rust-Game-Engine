@@ -173,6 +173,8 @@ impl PortableEditor {
                     .id(),
             );
         }
+        // The preview draws the frame from the editor's navigation camera, not the scene's.
+        runtime.set_frustum_culling(false);
         let mut frame = runtime.extract_scene_frame()?;
         frame.sprites.camera.logical_size = [640, 360];
         frame.sprites.camera.center = [self.navigation.center[0], self.navigation.center[1]];
