@@ -1,0 +1,391 @@
+name: Release
+
+# Packages one project for every desktop platform, smoke-tests each artifact the way
+# a user receives it, and publishes a SHA256SUMS file beside them. A `v*` tag push
+# also creates a DRAFT GitHub release; nothing here publishes a release, signs with a
+# Developer ID or notarises (docs/desktop-packaging.md, "Release workflow").
+#
+# Triggers:
+#   workflow_dispatch  package any project: inputs `project` and `profile`. GitHub
+#                      only offers the button once this file is on the default branch.
+#   push of v* tags    package examples/first-project, then draft a release.
+#   pull_request       only when the pipeline itself changes (paths below), so a change
+#                      to this file or scripts/package is exercised before it merges.
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: Project manifest directory, relative to the repository root (holds project.json)
+        type: string
+        required: false
+        default: examples/first-project
+      profile:
+        description: Build profile for the project's native generation
+        type: choice
+        options: [release, dev]
+        default: release
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/package/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Same runner images and build environment as ci.yml, so the packages are built
+# where the CI package jobs already proved they build.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: "1"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  # Validates the inputs once and derives the artifact name parts for every job.
+  # Inputs reach the script only through env:, never through the shell text.
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      project: ${{ steps.meta.outputs.project }}
+      manifest: ${{ steps.meta.outputs.manifest }}
+      profile: ${{ steps.meta.outputs.profile }}
+      id: ${{ steps.meta.outputs.id }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Validate inputs and derive the artifact name
+        id: meta
+        env:
+          PROJECT: ${{ inputs.project }}
+          PROFILE: ${{ inputs.profile }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: bash scripts/package/release-meta.sh
+
+  windows-zip:
+    name: Windows zip
+    needs: prepare
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+    env:
+      MANIFEST: ${{ needs.prepare.outputs.manifest }}
+      PROFILE: ${{ needs.prepare.outputs.profile }}
+      ARTIFACT: ${{ needs.prepare.outputs.id }}-${{ needs.prepare.outputs.version }}-windows-x86_64.zip
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - name: Move temporary files to the D drive
+        # C has about 30 GB free and D about 147 GB (see ci.yml).
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
+      - name: Package the project as a zip
+        run: |
+          out="${RUNNER_TEMP//\\//}/release"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cargo run --locked -q -p engine-tooling --bin engine -- \
+            project package "$MANIFEST" "$out/$ARTIFACT" \
+            --profile "$PROFILE" --format zip
+          ls -l "$out"
+      - name: Smoke test the zip
+        run: |
+          tmp="${RUNNER_TEMP//\\//}"
+          bash scripts/package/smoke-archive.sh "$tmp/release/$ARTIFACT" "$tmp/release-smoke"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-zip
+          path: ${{ runner.temp }}/release/${{ env.ARTIFACT }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
+
+  linux-tar-gz:
+    name: Linux tar.gz
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MANIFEST: ${{ needs.prepare.outputs.manifest }}
+      PROFILE: ${{ needs.prepare.outputs.profile }}
+      ARTIFACT: ${{ needs.prepare.outputs.id }}-${{ needs.prepare.outputs.version }}-linux-x86_64.tar.gz
+      # Shared with the rust-cache path, as in ci.yml, so the generation is cached.
+      ENGINE_NATIVE_TARGET_DIR: ${{ github.workspace }}/target/native-generation-shared
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-linux-tar-gz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Package the project as a tar.gz
+        run: |
+          out="$RUNNER_TEMP/release"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cargo run --locked -q -p engine-tooling --bin engine -- \
+            project package "$MANIFEST" "$out/$ARTIFACT" \
+            --profile "$PROFILE" --format tar.gz
+          ls -l "$out"
+      - name: Smoke test the tar.gz
+        run: bash scripts/package/smoke-archive.sh "$RUNNER_TEMP/release/$ARTIFACT" "$RUNNER_TEMP/release-smoke"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux-tar-gz
+          path: ${{ runner.temp }}/release/${{ env.ARTIFACT }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
+
+  # Built on the oldest supported glibc (ubuntu-22.04), like the CI "AppImage (Linux)"
+  # job. appimagetool and the type2 runtime come from scripts/package/fetch-appimagetool.sh,
+  # which pins their versions and SHA-256 checksums.
+  linux-appimage:
+    name: Linux AppImage
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      MANIFEST: ${{ needs.prepare.outputs.manifest }}
+      PROFILE: ${{ needs.prepare.outputs.profile }}
+      ID: ${{ needs.prepare.outputs.id }}
+      ARTIFACT: ${{ needs.prepare.outputs.id }}-${{ needs.prepare.outputs.version }}-linux-x86_64.AppImage
+      ENGINE_NATIVE_TARGET_DIR: ${{ github.workspace }}/target/native-generation-shared
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev \
+            desktop-file-utils
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-linux-appimage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Download pinned appimagetool and type2 runtime
+        run: |
+          fetched=$(bash scripts/package/fetch-appimagetool.sh "$RUNNER_TEMP/appimage-tools")
+          echo "ENGINE_APPIMAGETOOL=$(sed -n 1p <<<"$fetched")" >> "$GITHUB_ENV"
+          echo "ENGINE_APPIMAGE_RUNTIME=$(sed -n 2p <<<"$fetched")" >> "$GITHUB_ENV"
+      - name: Package the project as an AppImage
+        run: |
+          out="$RUNNER_TEMP/release"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cargo run --locked -q -p engine-tooling --bin engine -- \
+            project package "$MANIFEST" "$out/$ARTIFACT" \
+            --profile "$PROFILE" --format appimage
+          ls -l "$out"
+      # The runners have no FUSE; the script runs the image by extracting it.
+      - name: Smoke test the AppImage
+        run: bash scripts/package/smoke-appimage.sh "$RUNNER_TEMP/release/$ARTIFACT" "$RUNNER_TEMP/release-smoke" "$ID"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux-appimage
+          path: ${{ runner.temp }}/release/${{ env.ARTIFACT }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Clean up
+        if: ${{ always() }}
+        run: |
+          chmod -R u+w "$RUNNER_TEMP/release-smoke" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/release-smoke" "$RUNNER_TEMP/appimage-tools"
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
+
+  # Universal (arm64 + x86_64), ad-hoc signed bundle. Zipped with ditto, which keeps
+  # the extended attributes and symlinks a signature depends on, then unzipped again
+  # so the smoke test checks the signature of what a user downloads.
+  macos-app:
+    name: macOS app
+    needs: prepare
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      MANIFEST: ${{ needs.prepare.outputs.manifest }}
+      PROFILE: ${{ needs.prepare.outputs.profile }}
+      ID: ${{ needs.prepare.outputs.id }}
+      ARTIFACT: ${{ needs.prepare.outputs.id }}-${{ needs.prepare.outputs.version }}-macos-universal.app.zip
+      ENGINE_NATIVE_TARGET_DIR: ${{ github.workspace }}/target/native-generation-shared
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - name: Install both Apple Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-macos-app
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
+      - name: Package the project as an app bundle and zip it
+        run: |
+          out="$RUNNER_TEMP/release"
+          rm -rf "$out"
+          mkdir -p "$out/bundle"
+          cargo run --locked -q -p engine-tooling --bin engine -- \
+            project package "$MANIFEST" "$out/bundle/$ID.app" \
+            --profile "$PROFILE" --format app
+          ditto -c -k --sequesterRsrc --keepParent "$out/bundle/$ID.app" "$out/$ARTIFACT"
+          ls -l "$out"
+      - name: Smoke test the zipped app
+        run: |
+          out="$RUNNER_TEMP/release"
+          mkdir "$out/extract"
+          ditto -x -k "$out/$ARTIFACT" "$out/extract"
+          ls -la "$out/extract"
+          bash scripts/package/smoke-app.sh "$out/extract/$ID.app"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos-app-zip
+          path: ${{ runner.temp }}/release/${{ env.ARTIFACT }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Clean up
+        if: ${{ always() }}
+        run: rm -rf "$RUNNER_TEMP/release"
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
+
+  checksums:
+    name: SHA256SUMS
+    needs: [prepare, windows-zip, linux-tar-gz, linux-appimage, macos-app]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PREFIX: ${{ needs.prepare.outputs.id }}-${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      # Exactly the four expected files, so a missing or extra artifact fails here.
+      - name: Write and verify SHA256SUMS
+        run: |
+          cd dist
+          files=(
+            "$PREFIX-windows-x86_64.zip"
+            "$PREFIX-linux-x86_64.tar.gz"
+            "$PREFIX-linux-x86_64.AppImage"
+            "$PREFIX-macos-universal.app.zip"
+          )
+          ls -l
+          shopt -s nullglob dotglob
+          present=(*)
+          test "${#present[@]}" -eq "${#files[@]}"
+          sha256sum -- "${files[@]}" > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          {
+            echo "### SHA256SUMS"
+            echo
+            echo '```text'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-sha256sums
+          path: dist/SHA256SUMS
+          if-no-files-found: error
+
+  # Only a v* tag push gets here, and only a draft is created: the release stays
+  # unpublished until a person reviews and publishes it.
+  publish:
+    name: Draft GitHub release
+    needs: [prepare, checksums]
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PREFIX: ${{ needs.prepare.outputs.id }}-${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Create the draft release
+        run: |
+          cd dist
+          ls -l
+          sha256sum -c SHA256SUMS
+          gh release create "$TAG" --draft --verify-tag --title "$TAG" \
+            --notes "Draft created by the Release workflow ($RUN_URL). Every file was smoke tested on its own platform before upload. The macOS app is ad-hoc signed and not notarised, so Gatekeeper blocks a downloaded copy until it is approved. Run chmod +x on the AppImage after downloading it. Verify downloads against SHA256SUMS." \
+            "$PREFIX-windows-x86_64.zip" \
+            "$PREFIX-linux-x86_64.tar.gz" \
+            "$PREFIX-linux-x86_64.AppImage" \
+            "$PREFIX-macos-universal.app.zip" \
+            SHA256SUMS

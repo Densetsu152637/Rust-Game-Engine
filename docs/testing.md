@@ -161,6 +161,11 @@ runs, pinned action SHAs and the toolchain installed from `rust-toolchain.toml` 
 | App bundle (macOS) | `macos-26` | Adds both Apple Rust targets, packages `examples/first-project` with `--format app --profile dev`, then runs `plutil -lint` on `Info.plist`, checks `lipo -archs` lists `x86_64` and `arm64`, runs `ENGINE_RESOLVE_ONLY=1` on the bundle runtime, a headless `--ticks 3` launch with no project argument and `codesign --verify --deep --strict`; the x86_64 slice is also run with `arch -x86_64` when Rosetta is installed. Not part of the test-count gate; uploads nothing |
 | Portable library compile (WebAssembly) | `ubuntu-latest` | `cargo check --locked --target wasm32-unknown-unknown -p engine-core -p engine-ecs -p engine-render -p engine-platform`; compilation only, no browser host |
 
+The package smoke steps of the Linux, AppImage and macOS bundle jobs call
+`scripts/package/smoke-archive.sh`, `smoke-appimage.sh` and `smoke-app.sh`, which
+`.github/workflows/release.yml` also runs on its release artifacts (see
+[desktop packaging](desktop-packaging.md#release-workflow)).
+
 `scripts/ci/test-count.sh` parses libtest `test result:` lines (ANSI colour is
 stripped); tests that are ignored or filtered out never count as passed. The overall
 minimum is the `MINIMUM_PASSED_TESTS` environment value in the workflow, and each OS
