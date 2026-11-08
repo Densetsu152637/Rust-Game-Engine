@@ -402,6 +402,8 @@ fn hybrid_camera_toggle_and_independent_sizes_keep_tile_snapshot_current() -> an
         rendering3d::Camera3D,
     };
     let (_files, mut runtime) = project()?;
+    // The test checks which pass the tile chunks route to, not what the 3D camera sees of them.
+    runtime.set_frustum_culling(false);
     let camera = runtime.entity("camera").unwrap();
     let owner = runtime.entity("map").unwrap();
     let gpu = pollster::block_on(GpuContext::headless())?;
