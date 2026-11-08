@@ -47,6 +47,9 @@ path), whether or not Steam is running. A build without the feature has no such
 requirement. Ship the Steam variant only through Steam, and keep the plain variant for
 other stores and for development without Steam.
 
+`engine project package` places the library for you when the tooling has the backend and
+the manifest has a `steam` block, see [Shipping the Steam variant](#shipping-the-steam-variant).
+
 A running Steam client is a separate, soft condition: when the library loads but Steam
 is not running, the status is `NotRunning` and the game keeps running. Making that a
 hard failure (`steam.required`) is planned for the manifest (stage S3).
@@ -155,7 +158,7 @@ the status is `not_compiled`.
 Runs started by the editor or by `engine run` never touch Steam: both start the generation
 with a readiness handshake (`ENGINE_GENERATION_READY_FILE`), and such generations skip the
 Steam service. Run the Steam variant by launching the compiled runtime directly or from a
-package, see [Shipping the Steam variant on Windows](#shipping-the-steam-variant-on-windows).
+package, see [Shipping the Steam variant](#shipping-the-steam-variant).
 
 The desktop runner knows nothing about Steam. `engine_desktop::run_with_services` takes
 `Vec<Box<dyn HostService>>` (trait in `engine_project::host_service`; `run` and
@@ -746,35 +749,206 @@ A Steam-feature test or example executable needs the `steam_api` library at star
 and Cargo only leaves it in a build-script output directory. `crates/engine-steam/build.rs`
 (feature `steam` only) copies `steam_api64.dll` from the pinned `steamworks-sys` source
 (or `$STEAM_SDK_LOCATION/redistributable_bin/win64`) into `target/<profile>/`, `deps/`
-and `examples/`, and on Linux/macOS adds an rpath to the library directory for test and
-example binaries (not yet exercised on those systems). This helper is for development
-only; a shipped game must place the library next to its executable. `steam_appid.txt` is
+and `examples/` (on macOS the same copy of `libsteam_api.dylib`, because its install name is
+`@loader_path/...`), and on Linux adds an rpath to the library directory for test and
+example binaries (`engine-tooling/build.rs` does the same for the Steam-feature `engine`
+binary). Neither is exercised on those systems except by CI's build rows. This helper is for development
+only; a shipped game gets the library from the package step. `steam_appid.txt` is
 not needed because the tests pass the App ID to `init`.
 
-## Shipping the Steam variant on Windows
+## Shipping the Steam variant
 
-The Steam variant is a separate build (see [Build variants](#build-variants)). On Windows:
+The Steam variant is a separate build (see [Build variants](#build-variants)). Build the
+tooling with the feature, add a `steam` block to `project.json` (`app_id`, optionally
+`required`, `cloud`) and package:
 
-1. Build the tooling with the feature: `cargo build -p engine-tooling --features steam
-   --bin engine`. Generations it compiles depend on `engine-tooling/steam`, so their
-   `runtime_entry` links the real backend. (A facade game that runs itself builds with its
-   own `steam` feature instead.)
-2. Add a `steam` block to `project.json` (`app_id`, optionally `required`, `cloud`).
-3. Package: `engine project package project.json <new-dir>`. The package has `runtime.exe`
-   and `game/`.
-4. Copy `steam_api64.dll` (the redistributable, from the Steamworks SDK you are licensed
-   for, or from the pinned `steamworks-sys` crate for development) **next to `runtime.exe`**.
-   Without it the process cannot start at all (loader error `0xC0000135`, whether or not
-   Steam is running).
-5. Never ship `steam_appid.txt`; the app id comes from the manifest and, for a release,
-   Steam launches the game.
+```text
+cargo build -p engine-tooling --features steam --bin engine
+engine project package project.json <destination> [--format dir|zip|tar.gz|appimage|app|steam-depot]
+```
 
-Depot layout, `app_build.vdf` and uploading (SteamCMD with partner credentials) are not
-automated yet (`--format steam-depot` is deferred, see the [Roadmap](#roadmap-not-yet-implemented)).
+Generations the Steam tooling compiles depend on `engine-tooling/steam`, so their
+`runtime_entry` links the real backend (a facade game that runs itself builds with its own
+`steam` feature instead). When the tooling has the backend **and** the manifest has the
+block, every format also places Valve's library where the runtime loads it, and
+nothing else changes: a default build, or a project without the block, is packaged
+byte for byte as before (no library, no new file, the same generation fingerprint).
+`steam_appid.txt` is never packaged; Steam supplies the app id when it launches the game.
+
+| Format | Library placed at |
+| --- | --- |
+| `dir`, `zip`, `tar.gz` | next to `runtime[.exe]`: `steam_api64.dll`, `libsteam_api.so` (macOS hosts: `libsteam_api.dylib`) |
+| `appimage` | next to `runtime` in the AppDir root (`libsteam_api.so`) |
+| `app` (macOS) | `Contents/Frameworks/libsteam_api.dylib` |
+| `steam-depot` | the table row of the host's package, below `content/<platform>/` |
+
+### Finding the library
+
+The package step needs Valve's redistributable for the host's OS and architecture
+(`win64/steam_api64.dll`, `linux64` or `linuxarm64/libsteam_api.so`, `osx/libsteam_api.dylib`).
+It looks, in this order, and uses the first hit:
+
+1. `ENGINE_STEAM_API_LIB`: the path of the file, which must be named like the platform's
+   library (`tooling.steam.library_invalid` otherwise). Used or refused, never skipped.
+2. `STEAM_SDK_LOCATION`: a Steamworks SDK directory; the file is read from
+   `redistributable_bin/<platform directory>/` below it. When the file is not there the
+   lookup goes on (the same rule as `crates/engine-steam/build.rs`, and the lookup code is the
+   same file, `crates/engine-steam/src/redistributable.rs`).
+3. The `steamworks-sys` source in the Cargo registry (`$CARGO_HOME/registry/src/*/`, highest
+   version), which is there after the `steam` feature has been built once. This is the
+   pinned `steamworks-sys` that ships Valve's files (see
+   [Redistribution terms](#redistribution-terms-for-the-bundled-steam-libraries)).
+
+Nothing found is `tooling.steam.library_missing`, reported before anything is compiled;
+a platform Valve ships no library for is `tooling.steam.platform_unsupported`. The package
+result JSON gets a `steam` object (`app_id`, `library.file`, `library.from`, `library.source`,
+and `depot_id` for a depot) whenever a library was staged. The copy is byte for byte, owner
+writable, and named as the loader asks (the original name).
+
+### How the runtime finds the library on Linux and macOS
+
+Evidence read from the pinned `steamworks-sys` 0.13.0 files (an ELF and a Mach-O parser
+written for the purpose; no Linux or macOS machine was available):
+
+- Linux `linux64/libsteam_api.so` (and `linuxarm64`) has `DT_SONAME` `libsteam_api.so`. A client links
+  with `DT_NEEDED libsteam_api.so`, a bare name, which the loader searches for in
+  `LD_LIBRARY_PATH`, the run path and the system directories, not in the executable's own directory.
+  So the generated runtime project gets a build script (Steam tooling only; a default
+  generation has none and keeps its fingerprint) that adds `-Wl,-rpath,$ORIGIN`, the
+  directory of the runtime itself. The library placed beside the runtime then resolves with
+  no `LD_LIBRARY_PATH`; `ldd` shows it in the smoke test.
+- macOS `osx/libsteam_api.dylib` is a universal file (x86_64 and arm64) whose install name
+  (`LC_ID_DYLIB`) is `@loader_path/libsteam_api.dylib`. A client records that name as
+  its dependency, so dyld looks beside the *runtime*, in `Contents/MacOS` of a bundle, and an
+  rpath cannot change that. For a plain directory or archive the library sits beside the runtime and
+  loads as is. For the `.app` the library lives in `Contents/Frameworks` (Apple's place
+  for nested code), so the packager rewrites the *runtime's* reference with
+  `install_name_tool -change @loader_path/libsteam_api.dylib @rpath/libsteam_api.dylib`
+  (the old name is read from the library file, not assumed; the new one is shorter, so no
+  header padding is needed) and the generation's build script has added the rpath
+  `@executable_path/../Frameworks`. Valve's file is not touched. The rewrite happens on the
+  universal runtime before signing.
+
+Windows needs nothing: a DLL beside the executable is found by the loader. Without the
+file the process cannot start at all (loader error `0xC0000135`), whether or not Steam runs.
+For development, `engine-steam/build.rs` copies the library beside Cargo's test and example
+binaries (Windows, and now macOS for the reason above) or adds an rpath (Linux), and
+`engine-tooling/build.rs` adds the run path to the Steam-feature `engine` binary on Linux.
+
+### macOS signing outcome
+
+Valve's `libsteam_api.dylib` already carries a signature: both architectures have a code
+signature with a CMS blob (a certificate-backed signature, not ad-hoc), the code
+directory flag `0x10000` (hardened runtime) and the identifier `com.valvesoftware.steam`.
+It must not be modified, so the packager keeps it: `sign_bundle` skips it, and the bundle
+(executable and resources) is signed around it. After signing, a Steam bundle is verified
+with `codesign --verify --deep --strict`; if that fails the build stops with
+`tooling.app.steam_signature_invalid` (nothing is published) rather than re-signing Valve's file. The
+outcome of that verification on a real Mac is established only by the release workflow's Steam
+macOS row (`codesign --verify --deep --strict` on the bundle and on the library alone, plus
+the identifier check); it was not run when this was written. With the default ad-hoc
+signature the executable has no library validation, so the library loads; with
+`ENGINE_MACOS_SIGN_IDENTITY` the hardened runtime is on and Valve's library, signed by another
+team, needs the `com.apple.security.cs.disable-library-validation` entitlement on the
+executable, which the packager does not add (Developer ID signing stays unverified, see
+[Desktop packages](desktop-packaging.md#signing)).
+
+### `--format steam-depot`
+
+```text
+engine project package project.json dist/depot --format steam-depot [--depot-id <n>]
+```
+
+`<destination>` is a new directory (an existing one is `tooling.destination.exists`):
+
+```text
+dist/depot/
+  content/<windows|linux|macos>/   Windows, Linux: the directory package plus the library;
+                                   macOS: <id>.app (universal, signed, library in Frameworks)
+  scripts/app_build_<app id>.vdf
+  scripts/depot_build_<depot id>.vdf
+  README.txt
+```
+
+One platform per invocation: the host's (`content/windows`, `content/linux` or
+`content/macos`; macOS needs both Apple Rust targets and the macOS tools, as for `--format app`).
+`<id>` is the project id (the manifest name reduced like the AppImage id). The result key is
+`depot`. The app id is the manifest's `steam.app_id`. The depot id is `--depot-id <n>`, else
+**app id + 1**. That default is the engine's convention, not a Steamworks rule: Valve's
+[uploading guide](https://partner.steamgames.com/doc/sdk/uploading) numbers depots after the
+app in its examples (app 1000, depots 1001 and 1002) and says nothing about how ids are
+assigned, and the [depot page](https://partner.steamgames.com/doc/store/application/depots)
+does not either. Check the id against the depot you created in the partner site and pass
+`--depot-id` when it differs, and always for a second or third platform depot.
+
+Refusals, all before anything is compiled: `tooling.steam_depot.manifest_missing` (no `steam`
+block), `tooling.steam_depot.backend_missing` (tooling built without `--features steam`),
+`tooling.steam_depot.depot_id_invalid` (zero or the app id), the library codes above, and
+`--depot-id` with another format is a usage error.
+
+`app_build_<app id>.vdf` (template; `SetLive` is empty, so a build is uploaded without
+changing a branch; paths are relative to the script):
+
+```text
+"AppBuild"
+{
+	"AppID" "480"
+	"Desc" "TODO: describe this build"
+	"Preview" "0"
+	"SetLive" ""
+	"ContentRoot" "../content/"
+	"BuildOutput" "../output/"
+	"Depots"
+	{
+		"481" "depot_build_481.vdf"
+	}
+}
+```
+
+`depot_build_<depot id>.vdf`:
+
+```text
+"DepotBuildConfig"
+{
+	"DepotID" "481"
+	"FileMapping"
+	{
+		"LocalPath" "windows/*"
+		"DepotPath" "."
+		"Recursive" "1"
+	}
+	"FileExclusion" "*.pdb"
+	"FileExclusion" "*.debug"
+	"FileExclusion" "*.dSYM"
+}
+```
+
+Values are written as VDF quoted tokens (backslash, quote, line feed and tab escaped);
+forward slashes keep paths free of escapes. No password, token or account name is ever written.
+
+**Uploading** is manual (SteamCMD with partner credentials; the depot `README.txt` repeats this):
+
+```text
+steamcmd +login <account> +run_app_build "<absolute path>/dist/depot/scripts/app_build_480.vdf" +quit
+```
+
+SteamCMD asks for the password and Steam Guard code itself. Restrict each depot to its OS in the
+partner site, and set the launch option there (`runtime.exe`, `runtime` or `<id>.app`).
+
+**Combining the depots of three hosts.** Package on each host into its own directory with its own
+depot id, for example `--depot-id 481` on Windows, `482` on Linux and `483` on macOS. Move
+the three directories to one machine as archives that keep Unix permissions (tar, or zip with
+modes; `ditto` for the `.app`, whose signature needs its links and attributes), then put every
+`content/<platform>/` folder under one `content/`, every `scripts/depot_build_<id>.vdf` into
+one `scripts/`, and keep a single `app_build_<app id>.vdf` with one `"<depot id>"
+"depot_build_<depot id>.vdf"` line per depot inside `"Depots"`. The release workflow's three Steam rows
+(`<id>-<version>-steam-<os>-<arch>.zip`) are exactly such per-host depots (built for app 480).
+
+### Recorded runs
 
 Windows run recorded on 2026-11-03 with Steam running, App ID 480, using the first-project
 example with `"steam": {"app_id": 480}` added and a package built by the Steam-feature
-tooling:
+tooling (the library copied by hand):
 
 ```text
 runtime.exe game/project.json --headless --ticks 3        (no steam_api64.dll)  -> does not start
@@ -782,9 +956,30 @@ runtime.exe game/project.json --headless --ticks 3        (dll next to the exe) 
   "steam": {"app_id": 480, "state": "ready", "user": {"id": "<SteamID64>", "name": "<persona>"}}
 ```
 
+Windows depot run recorded on 2026-11-08, Steam running, App ID 480, a copy of the
+first-project example with `"steam": {"app_id": 480}` (made by
+`scripts/package/prepare-steam-project.sh`), dev profile, tooling built with
+`cargo build -p engine-tooling --features steam --bin engine`:
+
+```text
+engine project package <copy>/project.json <dir> --profile dev --format steam-depot
+  result: "format": "steam-depot", "steam": {"app_id": 480, "depot_id": 481,
+          "library": {"file": "steam_api64.dll", "source": "steamworks-sys", ...}}
+<dir>/README.txt
+<dir>/scripts/app_build_480.vdf, depot_build_481.vdf
+<dir>/content/windows/{runtime.exe, steam_api64.dll, game/, licenses/, generation.json,
+                       package-host.json, PACKAGE.txt, run.cmd, run.sh}
+   steam_api64.dll is byte for byte the steamworks-sys file (same SHA-256); no steam_appid.txt
+content/windows/runtime.exe --headless --ticks 3   (from another directory) -> exit 0
+  "steam": {"app_id": 480, "state": "ready", "user": {"id": "<SteamID64>", "name": "<persona>"}}
+```
+
 The run report's `steam` object carries the status; with Steam closed the same command
-is expected to report `"state": "not_running"` and exit 0 (unless `required` is set); that
-case was not run here because Steam must stay open.
+reports `"state": "not_running"` and exits 0 (unless `required` is set). That case is not run
+locally because Steam must stay open; the release workflow's Steam rows check it on runners
+that have no Steam client (`scripts/package/smoke-steam-depot.sh` requires `not_running`).
+The Linux and macOS depots have not been run by a person: they are built, loaded and run only
+by those rows.
 
 ## MCP `steam_status`
 
@@ -804,8 +999,10 @@ prebuilt `steam_api` redistributable libraries for Windows, Linux and macOS. Tho
 files are Valve's, not covered by the Rust crates' licences, and are governed by the
 Steamworks SDK Access Agreement that every Steamworks partner accepts:
 
-- Ship the `steam_api` library next to the game executable in your Steam builds. Use
-  the redistributable that comes with the SDK; do not modify it.
+- Ship the `steam_api` library next to the game executable in your Steam builds (the package
+  step does, and in a macOS bundle puts it in `Contents/Frameworks`). Use the redistributable
+  that comes with the SDK; do not modify it. The package step copies the file byte for byte and
+  never re-signs it.
 - The libraries may be distributed only as part of a game published through Steam
   under your Steamworks partner agreement. Do not redistribute the SDK itself or use
   the libraries in unrelated products.
@@ -824,5 +1021,9 @@ advice.
 Everything below is planned in `docs/platform-and-steam-plan.md` and is not implemented
 at this stage.
 
-- S11 (remaining): `--format steam-depot` packaging (per-platform depot directories,
-  `app_build.vdf` templates), and the Linux and macOS CI rows and release smoke runs.
+- Evidence from real Linux and macOS runs: the CI rows lint and build the feature there,
+  and the release workflow's Steam rows package, load and run the depots, but results are
+  recorded in this document only after a `workflow_dispatch` run has been read.
+- Developer ID signing and notarisation of the Steam `.app`, including the library-validation
+  entitlement (see [macOS signing outcome](#macos-signing-outcome)).
+- Uploading to SteamPipe stays manual by design (SteamCMD with partner credentials).

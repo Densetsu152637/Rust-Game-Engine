@@ -28,7 +28,7 @@ engine project init <template-manifest> <new-directory>
 engine project validate <manifest> [--no-rust]
 engine project assets <manifest>
 engine project shaders <manifest>
-engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage|app] [--bundle-id reverse.dns]
+engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage|app|steam-depot] [--bundle-id reverse.dns] [--depot-id n]
 engine scene inspect <scene> --project-root <project-directory>
 engine run <manifest> [--headless] [--ticks N] [--input action:tick]... [--user-data dir] [--scene-override file] [--render-backend api] [--acoustics-backend tier] [--screenshot file.png [--screenshot-size WxH]]
 engine editor <manifest>
@@ -76,8 +76,15 @@ directory.
   `PATH`; optional `ENGINE_APPIMAGE_RUNTIME` pins the type2 runtime), or with `--format app` a
   macOS `<Name>.app` bundle (destination ending in `.app`; needs a macOS host with
   both Apple Rust targets installed; builds a universal runtime, ad-hoc signs it, or
-  signs with `ENGINE_MACOS_SIGN_IDENTITY` after clearing extended attributes; `--bundle-id` sets `CFBundleIdentifier`).
-  See [Desktop packages](desktop-packaging.md).
+  signs with `ENGINE_MACOS_SIGN_IDENTITY` after clearing extended attributes; `--bundle-id` sets `CFBundleIdentifier`),
+  or with `--format steam-depot` a new directory holding a SteamPipe layout for the host
+  platform (`content/<platform>/`, `scripts/app_build_<app id>.vdf`,
+  `scripts/depot_build_<depot id>.vdf`, `README.txt`; needs the `steam` block in the
+  manifest and tooling built with `--features steam`; `--depot-id n` sets the depot id,
+  default app id + 1). With the Steam backend and a `steam` block every format also
+  places Valve's `steam_api` library beside the runtime (`ENGINE_STEAM_API_LIB`,
+  `STEAM_SDK_LOCATION`). See [Desktop packages](desktop-packaging.md) and
+  [Steam](steam.md#shipping-the-steam-variant).
 - **`scene inspect`** loads a scene, validates it against the project's asset
   catalog and returns its revision, entity count and contents.
 - **`run`** compiles and launches the native generation. `--headless` runs fixed

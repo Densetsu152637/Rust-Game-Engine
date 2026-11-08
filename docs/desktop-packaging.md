@@ -4,7 +4,7 @@
 > `artifacts::package_project` as the directory-format shortcut) and tested by its
 > `tests/artifacts.rs` and `tests/runtime_pipeline.rs`.
 
-`engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage|app] [--bundle-id reverse.dns]`
+`engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage|app|steam-depot] [--bundle-id reverse.dns] [--depot-id n]`
 compiles the project's Rust gameplay crate with the engine into a native generation
 and exports a self-contained package that needs neither Cargo nor the source
 checkout to run.
@@ -21,6 +21,7 @@ output option and is not a package format.
 | `tar.gz` | a new archive file | gzip-compressed tar with one top-level folder |
 | `appimage` | a new `.AppImage` file | Linux AppImage of the layout below (Linux host with `appimagetool` only; see [AppImage](#appimage)) |
 | `app` | a new `<Name>.app` directory | macOS application bundle of the layout below, universal and signed (macOS host only; see [macOS app bundle](#macos-app-bundle)) |
+| `steam-depot` | a new directory | SteamPipe layout for the host platform: `content/<platform>/`, `scripts/*.vdf`, `README.txt` (Steam-backend tooling and a `steam` manifest block only; see [Steam variant](#steam-variant)) |
 
 The destination is the path of the thing created and must not exist (an existing
 file or directory is refused with `tooling.destination.exists`, and a failed export
@@ -183,7 +184,7 @@ Name.app/
       package-host.json     platform macos, architecture universal
       PACKAGE.txt
       <id>.icns             default engine icon
-    Frameworks/             empty; nested code (such as the Steam dylib) goes here
+    Frameworks/             empty; nested code goes here (the Steam variant: libsteam_api.dylib)
 ```
 
 There is no `run.cmd` or `run.sh`: the bundle starts from Finder or by running
@@ -286,11 +287,18 @@ unverified until a signing identity and Apple credentials exist. Archiving a bun
 needs `ditto` (not `zip`), which keeps the extended attributes and symbolic links a
 signature depends on.
 
-Notes for the Steam dylib: it belongs in `Contents/Frameworks/`. Packaging signs every
-item there with `--force` and the bundle's own identity, replacing the vendor signature,
-so the hardened runtime's library validation (same team as the executable) passes
-without the `com.apple.security.cs.disable-library-validation` entitlement. That
-entitlement would only be needed if a later step kept the library's original signature.
+Notes for the Steam dylib: it belongs in `Contents/Frameworks/` and is never signed by
+the packager. Valve's `libsteam_api.dylib` is already signed (a Developer ID class
+signature with the hardened-runtime flag, identifier `com.valvesoftware.steam`) and its
+redistribution terms forbid modifying the file, so `sign_bundle` skips it and signs the
+bundle around it; the bundle seal covers the library file and `codesign --verify --deep
+--strict` checks its own signature. The packager runs that verification itself for a
+Steam bundle and stops with `tooling.app.steam_signature_invalid` instead of re-signing
+Valve's file. With an ad-hoc bundle signature (the default) the executable has no
+library validation, so the library loads. With `ENGINE_MACOS_SIGN_IDENTITY` the
+hardened runtime is on and library validation would reject a library of another team:
+that case needs the `com.apple.security.cs.disable-library-validation` entitlement on the
+executable, which the packager does not add yet (Developer ID signing is unverified).
 
 Limits of the bundle: it is verified only on macOS CI (job "App bundle (macOS)"); the
 file generators, layout, identifier rules and tool error handling are unit tested on
@@ -325,8 +333,9 @@ empty, `.` or `..` component and no component starting with `-`, an existing dir
 must be `release` or `dev`. The values reach the scripts and build steps only through
 `env:`, never through `${{ }}` text inside a shell script.
 
-**Jobs.** `prepare` validates and derives the names; four independent package jobs then
-run on the runners CI uses; `checksums` needs all four; `publish` needs `checksums`.
+**Jobs.** `prepare` validates and derives the names; seven independent package jobs
+(four plain, three Steam variant) then run on the runners CI uses; `checksums` needs all
+seven; `publish` needs `checksums`.
 
 | Job | Runner | Format | Artifact (`<id>-<version>-` then) |
 | --- | --- | --- | --- |
@@ -334,6 +343,9 @@ run on the runners CI uses; `checksums` needs all four; `publish` needs `checksu
 | Linux tar.gz | `ubuntu-24.04` | `tar.gz` | `linux-x86_64.tar.gz` |
 | Linux AppImage | `ubuntu-22.04` (oldest supported glibc) | `appimage` | `linux-x86_64.AppImage` |
 | macOS app | `macos-26` | `app`, zipped | `macos-universal.app.zip` |
+| Steam depot (Windows) | `windows-2025-vs2026` | `steam-depot`, zipped | `steam-windows-x86_64.zip` |
+| Steam depot (Linux) | `ubuntu-22.04` | `steam-depot`, zipped | `steam-linux-x86_64.zip` |
+| Steam depot (macOS) | `macos-26` | `steam-depot`, zipped with `ditto` | `steam-macos-universal.zip` |
 
 Each job uses the CI setup: pinned action SHAs, the toolchain from `rust-toolchain.toml`
 (`scripts/ci/install-toolchain.sh`) and `Swatinem/rust-cache` with its own cache key
@@ -374,11 +386,25 @@ even when an earlier one failed, and the script fails if any did.
   `arch -x86_64` when Rosetta is installed (otherwise the slice is built but not run).
   `ditto` is used because `zip` drops the extended attributes and symbolic links a
   signature depends on.
+- Steam depots (`scripts/package/smoke-steam-depot.sh`, after `zip-depot.sh` made the zip:
+  Python's `zipfile` on Windows and Linux, `ditto` on macOS): the zip is extracted, one
+  top-level folder, only the host's `content/<platform>/`, `README.txt`, the app build
+  script for app 480 and exactly one depot build script that the app script names, the
+  runtime and `game/project.json`, Valve's library where the runtime loads it, and no
+  `steam_appid.txt` anywhere. Linux checks the runtime's `NEEDED` entry and `$ORIGIN`
+  run path with `readelf` and that `ldd` (with `LD_LIBRARY_PATH` unset) resolves
+  `libsteam_api.so` to the depot copy; macOS checks `otool -L`/`-l` for the `@rpath`
+  reference and the Frameworks rpath, that the library is universal, `codesign --verify
+  --deep --strict` on the bundle and on the library alone, and that the library still
+  carries Valve's identifier. Last, the runtime runs `--headless --ticks 3` from an
+  unrelated directory with no Steam client (the runners have none) and must exit 0 with
+  the run report's `steam.state` equal to `not_running`.
 
 **Checksums and artifacts.** Every package job uploads its file with `actions/upload-artifact`
 (artifacts `release-windows-zip`, `release-linux-tar-gz`, `release-linux-appimage`,
-`release-macos-app-zip`; the files are already compressed, so they are stored as is).
-`checksums` downloads them, fails unless exactly the four expected files exist, writes
+`release-macos-app-zip`, `release-windows-steam-zip`, `release-linux-steam-zip`,
+`release-macos-steam-zip`; the files are already compressed, so they are stored as is).
+`checksums` downloads them, fails unless exactly the seven expected files exist, writes
 `SHA256SUMS` (`sha256sum` format, verified with `sha256sum -c`) and uploads it as
 `sha256sums` (a name the `release-*` download pattern cannot match, so a re-run of the job
 never sees the file of an earlier attempt). Actions artifacts do not keep file modes, so a downloaded AppImage
@@ -396,7 +422,9 @@ request never creates a release.
 - Developer ID signing and notarisation of the macOS app (see Signing above): the
   workflow ships the ad-hoc signed bundle, so a downloaded copy is quarantined by
   Gatekeeper until the user approves it.
-- Steam depot upload and the Steam variants of the packages (see [Steam](steam.md)).
+- Steam depot upload (SteamCMD with partner credentials; see [Steam](steam.md)). The
+  Steam rows build and smoke-test the depot layout for Valve's test app 480; a shipped
+  game repackages with its own app id.
 - Publishing the draft release and writing its notes.
 - Real-window, GPU and audio checks: the smoke runs are headless.
 
@@ -407,9 +435,24 @@ pipeline, a dispatch or a tag afterwards).
 
 ## Steam variant
 
-A package built by a tooling binary with `--features steam` links the real Steam backend,
-and then needs `steam_api64.dll` (Windows) next to `runtime.exe` and no `steam_appid.txt`.
-See [Steam](steam.md#shipping-the-steam-variant-on-windows). Depot layout is not packaged yet.
+A package built by a tooling binary with `--features steam` for a manifest with a `steam`
+block links the real Steam backend, so every format also places Valve's unmodified
+`steam_api` library where the runtime loads it, and never `steam_appid.txt`:
+
+| Format | Library |
+| --- | --- |
+| `dir`, `zip`, `tar.gz`, `appimage` | next to `runtime[.exe]` (`steam_api64.dll`, `libsteam_api.so`) |
+| `app` | `Contents/Frameworks/libsteam_api.dylib` |
+| `steam-depot` | the same place as the host's package, below `content/<platform>/` |
+
+The library is found through `ENGINE_STEAM_API_LIB`, then `STEAM_SDK_LOCATION`, then the
+pinned `steamworks-sys` source; a missing one is `tooling.steam.library_missing` before
+anything is compiled. `--format steam-depot` writes the SteamPipe layout (`content/`,
+`scripts/app_build_<app id>.vdf`, `scripts/depot_build_<depot id>.vdf`, `README.txt`) for
+the host platform. Details, the loading evidence, the macOS signing outcome and how to
+combine the depots of three hosts are in
+[Steam](steam.md#shipping-the-steam-variant). A default build (no `steam` feature, or a
+manifest without the block) is packaged exactly as before.
 
 ## Verification status
 
@@ -424,7 +467,11 @@ platform; the Linux `tar.gz` round trip (package, extract with `tar`, run the ru
 with no arguments and `run.sh`, both `--headless --ticks 3`) is exercised in CI
 (job "Workspace tests (Linux)"), while the macOS bundle is verified only by CI. The AppImage
 layout, `AppRun`, `.desktop` and icon generation and the tool error codes are unit
-tested on every OS; the real AppImage (`appimagetool` run, then the file started with
+tested on every OS; the Steam library staging and the depot layout and VDF text are unit
+tested on every OS with a fake runtime and a fake library, the Windows depot was also built
+and run locally with the real library, and the Linux and macOS depots (the `$ORIGIN`
+and `@rpath` loading, Valve's dylib signature) are verified only by the release workflow's
+Steam rows; the real AppImage (`appimagetool` run, then the file started with
 `--appimage-extract-and-run --headless --ticks 3`, `--appimage-extract` and
 `desktop-file-validate`) is built and checked only by the CI job "AppImage (Linux)". The
 `.app` layout, `Info.plist`, `.icns`, bundle identifier rules and tool error codes are
