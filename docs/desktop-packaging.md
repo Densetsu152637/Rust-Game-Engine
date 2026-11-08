@@ -333,9 +333,10 @@ empty, `.` or `..` component and no component starting with `-`, an existing dir
 must be `release` or `dev`. The values reach the scripts and build steps only through
 `env:`, never through `${{ }}` text inside a shell script.
 
-**Jobs.** `prepare` validates and derives the names; seven independent package jobs
-(four plain, three Steam variant) then run on the runners CI uses; `checksums` needs all
-seven; `publish` needs `checksums`.
+**Jobs.** `prepare` validates and derives the names; four independent package jobs and
+three Steam smoke jobs then run on the runners CI uses; `checksums` needs the four package
+jobs; `publish` needs `checksums` and the three Steam jobs (a failing Steam smoke test
+blocks the draft release, but no Steam file is part of it).
 
 | Job | Runner | Format | Artifact (`<id>-<version>-` then) |
 | --- | --- | --- | --- |
@@ -343,9 +344,15 @@ seven; `publish` needs `checksums`.
 | Linux tar.gz | `ubuntu-24.04` | `tar.gz` | `linux-x86_64.tar.gz` |
 | Linux AppImage | `ubuntu-22.04` (oldest supported glibc) | `appimage` | `linux-x86_64.AppImage` |
 | macOS app | `macos-26` | `app`, zipped | `macos-universal.app.zip` |
-| Steam depot (Windows) | `windows-2025-vs2026` | `steam-depot`, zipped | `steam-windows-x86_64.zip` |
-| Steam depot (Linux) | `ubuntu-22.04` | `steam-depot`, zipped | `steam-linux-x86_64.zip` |
-| Steam depot (macOS) | `macos-26` | `steam-depot`, zipped with `ditto` | `steam-macos-universal.zip` |
+| Steam depot (Windows) | `windows-2025-vs2026` | `steam-depot`, zipped | none: smoke test only |
+| Steam depot (Linux) | `ubuntu-22.04` | `steam-depot`, zipped | none: smoke test only |
+| Steam depot (macOS) | `macos-26` | `steam-depot`, zipped with `ditto` | none: smoke test only |
+
+The Steam rows build and smoke-test only. A Steam depot holds Valve's `steam_api` library,
+which Valve allows to be distributed only as part of a game published through Steam under
+your Steamworks agreement ([Steam](steam.md#redistribution-terms-for-the-bundled-steam-libraries)),
+so those zips are neither uploaded as artifacts, nor checksummed, nor attached to a release;
+they exist for the length of the job.
 
 Each job uses the CI setup: pinned action SHAs, the toolchain from `rust-toolchain.toml`
 (`scripts/ci/install-toolchain.sh`) and `Swatinem/rust-cache` with its own cache key
@@ -402,9 +409,8 @@ even when an earlier one failed, and the script fails if any did.
 
 **Checksums and artifacts.** Every package job uploads its file with `actions/upload-artifact`
 (artifacts `release-windows-zip`, `release-linux-tar-gz`, `release-linux-appimage`,
-`release-macos-app-zip`, `release-windows-steam-zip`, `release-linux-steam-zip`,
-`release-macos-steam-zip`; the files are already compressed, so they are stored as is).
-`checksums` downloads them, fails unless exactly the seven expected files exist, writes
+`release-macos-app-zip`; the files are already compressed, so they are stored as is).
+`checksums` downloads them, fails unless exactly the four expected files exist, writes
 `SHA256SUMS` (`sha256sum` format, verified with `sha256sum -c`) and uploads it as
 `sha256sums` (a name the `release-*` download pattern cannot match, so a re-run of the job
 never sees the file of an earlier attempt). Actions artifacts do not keep file modes, so a downloaded AppImage
@@ -423,8 +429,8 @@ request never creates a release.
   workflow ships the ad-hoc signed bundle, so a downloaded copy is quarantined by
   Gatekeeper until the user approves it.
 - Steam depot upload (SteamCMD with partner credentials; see [Steam](steam.md)). The
-  Steam rows build and smoke-test the depot layout for Valve's test app 480; a shipped
-  game repackages with its own app id.
+  Steam rows only build and smoke-test the depot layout for Valve's test app 480 and keep
+  nothing; a shipped game packages its own depot with its own app id.
 - Publishing the draft release and writing its notes.
 - Real-window, GPU and audio checks: the smoke runs are headless.
 

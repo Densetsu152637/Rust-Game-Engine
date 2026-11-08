@@ -100,7 +100,10 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             // selects the package format.
             let (format, arguments) = package_format(arguments)?;
             let (args, flags) = options(&arguments, &["--profile", "--bundle-id", "--depot-id"])?;
-            let bundled = matches!(format, PackageFormat::App | PackageFormat::SteamDepot);
+            let apple_host = cfg!(target_os = "macos");
+            // Only a macOS depot is an app bundle that takes a bundle identifier.
+            let bundled =
+                format == PackageFormat::App || (format == PackageFormat::SteamDepot && apple_host);
             if flags.contains_key("--bundle-id") && !bundled {
                 return Err(usage(
                     "--bundle-id applies to --format app (and to --format steam-depot on macOS) only",
@@ -132,8 +135,7 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             packaging::check_destination_name(format, destination)?;
             artifacts::check_package_destination(&project, destination)?;
             let bundle_id = flags.get("--bundle-id").map(String::as_str);
-            let apple_host = cfg!(target_os = "macos");
-            if format == PackageFormat::App || (format == PackageFormat::SteamDepot && apple_host) {
+            if bundled {
                 macos::bundle_identifier(&project.name, bundle_id)?;
             }
             packaging::check_format_available(format)?;
@@ -143,9 +145,12 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
                     let (plan, library) = steam::check_depot(&project, depot_id)?;
                     AppTarget::Depot(plan, library)
                 }
-                _ => AppTarget::Bundle(steam::library_for_package(&project)?),
+                _ => {
+                    steam::require_manifest(&project, steam::BACKEND_COMPILED)?;
+                    AppTarget::Bundle(steam::library_for_package(&project)?)
+                }
             };
-            if format == PackageFormat::App || (format == PackageFormat::SteamDepot && apple_host) {
+            if bundled {
                 return package_app(&project, destination, release, bundle_id, target);
             }
             if rust_crate(&project)?.is_none() {
@@ -256,6 +261,11 @@ fn package_app(
     target: AppTarget,
 ) -> Result<Outcome> {
     let tooling = MacosTooling::from_process()?;
+    let has_library = match &target {
+        AppTarget::Bundle(library) => library.is_some(),
+        AppTarget::Depot(..) => true,
+    };
+    macos::check_steam_bundle(&tooling, has_library)?;
     let bundle_id = macos::bundle_identifier(&project.name, bundle_id)?;
     if rust_crate(project)?.is_none() {
         return Err(engine_project::Error::new(

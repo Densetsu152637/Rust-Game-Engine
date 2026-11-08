@@ -470,6 +470,39 @@ pub fn sign_bundle(tooling: &MacosTooling, bundle: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Refuse, before anything is compiled, a Steam bundle this host cannot build or
+/// whose result would not launch:
+///
+/// - `tooling.app.tool_missing`: `install_name_tool` is not on `PATH` (needed to point
+///   the runtime at `Contents/Frameworks`).
+/// - `tooling.app.steam_identity_unsupported`: `ENGINE_MACOS_SIGN_IDENTITY` is set. A
+///   signing identity turns on the hardened runtime, whose library validation rejects
+///   Valve's library (another team); that needs the
+///   `com.apple.security.cs.disable-library-validation` entitlement, which is not wired.
+///   Use the default ad-hoc signature.
+///
+/// Does nothing when no Steam library will be staged.
+pub fn check_steam_bundle(tooling: &MacosTooling, steam_library: bool) -> Result<()> {
+    if !steam_library {
+        return Ok(());
+    }
+    if tooling.install_name_tool.is_none() {
+        return Err(Error::new(
+            "tooling.app.tool_missing",
+            "install_name_tool was not found on PATH (a Steam bundle needs it)",
+        ));
+    }
+    if tooling.sign_identity.is_some() {
+        return Err(Error::new(
+            "tooling.app.steam_identity_unsupported",
+            format!(
+                "A Steam bundle cannot be signed with {SIGN_IDENTITY_ENV}: the hardened runtime would reject Valve's library at launch (library validation); unset it to use the ad-hoc signature"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Verify the finished bundle with `codesign --verify --deep --strict`. A Steam
 /// bundle holds Valve's own signed library next to our ad-hoc (or identity)
 /// signature; if the two cannot verify together the build stops with
@@ -711,6 +744,31 @@ mod tests {
         assert_eq!(dylib_install_name(b"MZ not a macho"), None);
         assert_eq!(dylib_install_name(&thin[..40]), None);
         assert_eq!(dylib_install_name(&[]), None);
+    }
+
+    #[test]
+    fn steam_bundles_need_install_name_tool_and_an_ad_hoc_signature() {
+        let tooling = |install_name_tool: Option<&str>, identity: Option<&str>| MacosTooling {
+            lipo: "lipo".into(),
+            xattr: "xattr".into(),
+            codesign: "codesign".into(),
+            install_name_tool: install_name_tool.map(PathBuf::from),
+            sign_identity: identity.map(str::to_owned),
+        };
+        check_steam_bundle(&tooling(Some("int"), None), true).unwrap();
+        // Plain bundles are never affected.
+        check_steam_bundle(&tooling(None, Some("Developer ID")), false).unwrap();
+        assert_eq!(
+            code(check_steam_bundle(&tooling(None, None), true)),
+            "tooling.app.tool_missing"
+        );
+        assert_eq!(
+            code(check_steam_bundle(
+                &tooling(Some("int"), Some("Developer ID")),
+                true
+            )),
+            "tooling.app.steam_identity_unsupported"
+        );
     }
 
     fn code<T>(result: Result<T>) -> String {

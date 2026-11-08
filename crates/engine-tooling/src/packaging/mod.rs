@@ -252,6 +252,7 @@ pub fn package_app_with_library(
 ) -> Result<PathBuf> {
     macos::bundle_file_stem(destination)?;
     macos::bundle_identifier(&project.name, bundle_id)?;
+    macos::check_steam_bundle(tooling, library.is_some())?;
     check_app_builds(project, builds, destination, engine_root)?;
     macos::export_new_app(destination, |bundle| {
         build_app(
@@ -460,6 +461,7 @@ pub fn package_steam_depot_app_with(
     library: &steam::SteamLibrary,
 ) -> Result<PathBuf> {
     macos::bundle_identifier(&project.name, bundle_id)?;
+    macos::check_steam_bundle(tooling, true)?;
     check_app_builds(project, builds, destination, engine_root)?;
     let app_name = format!("{}.app", appimage::sanitize_id(&project.name));
     export_new_directory(destination, |staging| {

@@ -213,6 +213,21 @@ pub fn library_for_package(project: &Project) -> Result<Option<SteamLibrary>> {
     }
 }
 
+/// With the real Steam backend compiled in, a package must carry a `steam` block:
+/// the runtime links the backend whatever the manifest says, and a package without
+/// the matching library could not start. Refused with `tooling.steam.manifest_missing`
+/// (`backend_compiled` is [`BACKEND_COMPILED`] in production; tests inject it). Call
+/// before compiling. A tooling build without the backend never refuses.
+pub fn require_manifest(project: &Project, backend_compiled: bool) -> Result<()> {
+    if backend_compiled && project.steam.is_none() {
+        return Err(Error::new(
+            "tooling.steam.manifest_missing",
+            "This tooling is built with the Steam backend, so its packages need a steam block with app_id in the project manifest (otherwise the package could not start); package with tooling built without --features steam, or add the block",
+        ));
+    }
+    Ok(())
+}
+
 /// What a depot build needs from the manifest and the options.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepotPlan {
@@ -474,6 +489,34 @@ mod tests {
             assert!(vdf.contains("\t\"FileExclusion\" \"*.pdb\"\n"), "{vdf}");
             assert!(!vdf.contains('\\'), "{vdf}");
         }
+    }
+
+    #[test]
+    fn a_steam_backend_needs_the_manifest_block() {
+        let write = |steam: &str| {
+            let temp = tempfile::tempdir().unwrap();
+            let manifest = temp.path().join("project.json");
+            fs::write(
+                &manifest,
+                format!(
+                    r#"{{"schema":1,"name":"g","startup_scene":"m.scene.json","assets":[]{steam}}}"#
+                ),
+            )
+            .unwrap();
+            fs::write(
+                temp.path().join("m.scene.json"),
+                r#"{"schema":1,"scene_id":"scene:main","entities":[]}"#,
+            )
+            .unwrap();
+            (Project::load(&manifest).unwrap(), temp)
+        };
+        let (without, _a) = write("");
+        let (with, _b) = write(r#","steam":{"app_id":480}"#);
+        let error = require_manifest(&without, true).unwrap_err();
+        assert_eq!(error.diagnostics[0].code, "tooling.steam.manifest_missing");
+        require_manifest(&without, false).unwrap();
+        require_manifest(&with, true).unwrap();
+        require_manifest(&with, false).unwrap();
     }
 
     #[test]

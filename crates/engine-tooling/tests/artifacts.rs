@@ -1543,3 +1543,78 @@ fn macos_steam_signature_that_does_not_verify_stops_the_build() {
     );
     assert!(!destination.exists());
 }
+
+#[test]
+fn steam_bundles_are_refused_before_any_work_without_the_tool_or_with_an_identity() {
+    let fixture = package_fixture();
+    let second = second_artifact(&fixture);
+    let builds = packaging::AppBuilds {
+        arm64: &fixture.artifact,
+        x86_64: &second,
+    };
+    let library = fake_library(&fixture, "libsteam_api.dylib");
+    let tooling =
+        |install_name_tool: Option<&str>, identity: Option<&str>| packaging::macos::MacosTooling {
+            lipo: "lipo-not-run".into(),
+            xattr: "xattr-not-run".into(),
+            codesign: "codesign-not-run".into(),
+            install_name_tool: install_name_tool.map(Into::into),
+            sign_identity: identity.map(str::to_owned),
+        };
+    let plan = packaging::steam::DepotPlan {
+        app_id: 480,
+        depot_id: 481,
+    };
+    for (tool, identity, code) in [
+        (None, None, "tooling.app.tool_missing"),
+        (
+            Some("int"),
+            Some("Developer ID Application: Test"),
+            "tooling.app.steam_identity_unsupported",
+        ),
+    ] {
+        let tooling = tooling(tool, identity);
+        let bundle = fixture.root.join("Steam.app");
+        let result = packaging::package_app_with_library(
+            &fixture.project,
+            &builds,
+            &bundle,
+            &fixture.engine,
+            None,
+            &tooling,
+            Some(&library),
+        );
+        assert_eq!(error_code(result), code);
+        assert!(!bundle.exists());
+        let depot = fixture.root.join("depot");
+        let result = packaging::package_steam_depot_app_with(
+            &fixture.project,
+            &builds,
+            &depot,
+            &fixture.engine,
+            None,
+            &tooling,
+            plan,
+            &library,
+        );
+        assert_eq!(error_code(result), code);
+        assert!(!depot.exists());
+        assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
+    }
+    // A plain bundle is not affected by an identity or a missing install_name_tool: it
+    // gets past the Steam check and fails later on the fake tools instead.
+    let bundle = fixture.root.join("Plain.app");
+    let result = packaging::package_app_with_library(
+        &fixture.project,
+        &builds,
+        &bundle,
+        &fixture.engine,
+        None,
+        &tooling(None, Some("Developer ID Application: Test")),
+        None,
+    );
+    assert_ne!(
+        result.err().map(|error| error.diagnostics[0].code.clone()),
+        Some("tooling.app.steam_identity_unsupported".to_owned())
+    );
+}

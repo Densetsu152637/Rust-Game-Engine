@@ -799,6 +799,12 @@ It looks, in this order, and uses the first hit:
    pinned `steamworks-sys` that ships Valve's files (see
    [Redistribution terms](#redistribution-terms-for-the-bundled-steam-libraries)).
 
+Tooling built with the Steam backend refuses any package of a manifest without a `steam` block,
+before compiling (`tooling.steam.manifest_missing`; `--format steam-depot` reports
+`tooling.steam_depot.manifest_missing`): the runtime links the backend whatever the manifest says,
+so such a package would be missing the library and could not start. Use tooling built without
+`--features steam` for a project without Steam.
+
 Nothing found is `tooling.steam.library_missing`, reported before anything is compiled;
 a platform Valve ships no library for is `tooling.steam.platform_unsupported`. The package
 result JSON gets a `steam` object (`app_id`, `library.file`, `library.from`, `library.source`,
@@ -851,7 +857,11 @@ signature the executable has no library validation, so the library loads; with
 `ENGINE_MACOS_SIGN_IDENTITY` the hardened runtime is on and Valve's library, signed by another
 team, needs the `com.apple.security.cs.disable-library-validation` entitlement on the
 executable, which the packager does not add (Developer ID signing stays unverified, see
-[Desktop packages](desktop-packaging.md#signing)).
+[Desktop packages](desktop-packaging.md#signing)). That combination is therefore refused before
+compiling with `tooling.app.steam_identity_unsupported`: a Steam bundle (`--format app` or
+`steam-depot` on macOS) is built with the ad-hoc signature only. A Steam bundle also needs
+`install_name_tool` on `PATH` (`tooling.app.tool_missing` otherwise, also before compiling).
+`--bundle-id` is accepted for `steam-depot` on a macOS host only.
 
 ### `--format steam-depot`
 
@@ -942,7 +952,8 @@ modes; `ditto` for the `.app`, whose signature needs its links and attributes), 
 `content/<platform>/` folder under one `content/`, every `scripts/depot_build_<id>.vdf` into
 one `scripts/`, and keep a single `app_build_<app id>.vdf` with one `"<depot id>"
 "depot_build_<depot id>.vdf"` line per depot inside `"Depots"`. The release workflow's three Steam rows
-(`<id>-<version>-steam-<os>-<arch>.zip`) are exactly such per-host depots (built for app 480).
+build exactly such per-host depots (for app 480) but only to smoke-test them: the zips are not uploaded, checksummed or
+released, because the library inside may be distributed only as part of a game published through Steam.
 
 ### Recorded runs
 
@@ -1022,7 +1033,7 @@ Everything below is planned in `docs/platform-and-steam-plan.md` and is not impl
 at this stage.
 
 - Evidence from real Linux and macOS runs: the CI rows lint and build the feature there,
-  and the release workflow's Steam rows package, load and run the depots, but results are
+  and the release workflow's Steam rows (smoke tests only, nothing is uploaded) package, load and run the depots, but results are
   recorded in this document only after a `workflow_dispatch` run has been read.
 - Developer ID signing and notarisation of the Steam `.app`, including the library-validation
   entitlement (see [macOS signing outcome](#macos-signing-outcome)).

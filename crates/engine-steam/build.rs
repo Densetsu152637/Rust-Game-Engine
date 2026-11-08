@@ -58,8 +58,10 @@ fn main() {
         }
     } else {
         let rpath = format!("-Wl,-rpath,{}", lib_dir.display());
-        println!("cargo:rustc-link-arg-tests={rpath}");
-        println!("cargo:rustc-link-arg-examples={rpath}");
+        // A plain link argument, not `-tests`/`-examples`: Cargo rejects a per-kind
+        // instruction for a target kind the package does not have (this crate has no
+        // examples), and the plain one covers the lib's unit tests and tests/ as well.
+        println!("cargo:rustc-link-arg={rpath}");
     }
 }
 
