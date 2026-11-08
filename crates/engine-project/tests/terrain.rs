@@ -123,6 +123,8 @@ fn tick(runtime: &mut Runtime, n: usize) {
     }
 }
 fn chunk_meshes(runtime: &Runtime) -> Vec<engine_project::rendering3d::MeshDraw3D> {
+    // The tests inspect the terrain's chunks, not what a camera sees of them.
+    runtime.set_frustum_culling(false);
     runtime
         .extract_scene_frame()
         .unwrap()

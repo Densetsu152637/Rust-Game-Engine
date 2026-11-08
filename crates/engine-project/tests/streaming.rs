@@ -668,6 +668,7 @@ fn hlod_proxy_is_visible_exactly_when_the_cell_is_not_loaded() {
     let dir = fixture(&options);
     let mut runtime = start(&dir, [0.0; 3]);
     let proxy_ids = |runtime: &Runtime| -> Vec<i32> {
+        runtime.set_frustum_culling(false);
         let frame = runtime.extract_scene_frame().unwrap();
         let mut found: Vec<i32> = frame
             .meshes
@@ -920,6 +921,7 @@ fn hlod_proxies_are_capped_nearest_first_and_cached_meshes_are_not_reread() {
     let dir = fixture(&options);
     let mut runtime = start(&dir, [0.0; 3]);
     let proxies = |runtime: &Runtime| -> Vec<i32> {
+        runtime.set_frustum_culling(false);
         let frame = runtime.extract_scene_frame().unwrap();
         let mut found: Vec<i32> = frame
             .meshes

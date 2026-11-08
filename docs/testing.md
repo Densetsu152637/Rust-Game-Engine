@@ -67,7 +67,11 @@ extracts 100 `GeometryOverride` meshes of 200 and of 20,000 vertices each; in re
 `extract_scene_frame` must stay within 2 ms and the large meshes may add at most 1 ms to it
 (best of 60 samples). It also checks that the frame holds the same `Arc<Mesh>`, with no
 second 2D draw of the mesh, and that a mesh under a 2D camera still draws through the 2D
-path. A debug build gates no time.
+path. The same test file covers culling before copying: meshes outside the camera's frustum
+are not copied and the visible frame is identical to the unculled one, an outside mesh that
+casts a shadow into the view stays, and a mesh with a custom shader is never rejected. It
+prints the count of every stage (total, not drawn by 3D, outside frustum, kept for shadow,
+drawn). A debug build gates no time.
 
 ## What the tests establish
 
