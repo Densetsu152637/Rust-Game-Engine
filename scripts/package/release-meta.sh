@@ -50,6 +50,7 @@ IFS=/ read -r -a parts <<<"$project"
 for part in "${parts[@]}"; do
   case "$part" in
     '' | . | ..) fail "project must not contain empty, '.' or '..' components" ;;
+    -*) fail "project components must not start with '-'" ;;
   esac
 done
 [ -d "$root/$project" ] || fail "project directory not found: $project"
@@ -87,7 +88,7 @@ else
   [ -n "$sha" ] || fail "SHA is required outside tag runs"
   version="dev-${sha:0:7}"
 fi
-[[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || fail "version '$version' is not usable in a file name (tag names may use letters, digits, '.', '_', '+' and '-')"
+[[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "version '$version' is not usable in a file name (tag names may use letters, digits, '.', '_' and '-')"
 
 emit() {
   if [ -n "${GITHUB_OUTPUT:-}" ]; then

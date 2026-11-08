@@ -320,7 +320,7 @@ formats with the dev profile and uploads nothing.
 
 **Inputs are validated** by `scripts/package/release-meta.sh` before any build: the
 project must be a relative path of letters, digits, `.`, `_`, `-` and `/` with no
-empty, `.` or `..` component and no leading `-`, an existing directory holding
+empty, `.` or `..` component and no component starting with `-`, an existing directory holding
 `project.json`, and must resolve (symlinks included) inside the checkout. The profile
 must be `release` or `dev`. The values reach the scripts and build steps only through
 `env:`, never through `${{ }}` text inside a shell script.
@@ -346,7 +346,7 @@ request runs are cancelled by a newer push) and every job has a `timeout-minutes
 when nothing is left: `First Project` is `first-project`). The manifest has no version
 field (an unknown key is rejected), so `<version>` is the tag without its leading `v` on
 a tag run and `dev-<first 7 characters of the commit>` otherwise; a tag with characters
-other than letters, digits, `.`, `_`, `+` and `-` is refused. An archive's top-level
+other than letters, digits, `.`, `_` and `-` is refused. An archive's top-level
 folder is its file name without `.zip` or `.tar.gz`. The macOS bundle inside the zip is
 `<id>.app`, built with the default bundle identifier `local.engine.<id>`; shipping a
 game needs a `--bundle-id` of its own, which the workflow does not pass yet.
@@ -355,20 +355,20 @@ game needs a `--bundle-id` of its own, which the workflow does not pass yet.
 `smoke-appimage.sh` and `smoke-app.sh`, which `ci.yml` calls too. Each check group runs
 even when an earlier one failed, and the script fails if any did.
 
-- Archives (zip, tar.gz): extracted into a fresh directory (Windows uses
-  `Expand-Archive`, Linux `tar`); exactly one top-level folder; `runtime[.exe]`,
+- Archives (zip, tar.gz): extracted into a fresh directory (Windows zips use
+  `Expand-Archive` with errors made fatal, Linux zips `unzip`, tar.gz `tar`); exactly one top-level folder; `runtime[.exe]`,
   `run.sh`/`run.cmd`, `game/project.json`, `generation.json`, `PACKAGE.txt` and
   `licenses/` present; on Linux `runtime` and `run.sh` are executable; the runtime, started
   with no project argument from an unrelated directory, and the launcher both exit 0 with
   `--headless --ticks 3`.
 - AppImage: no `.zsync` file next to it; `--appimage-extract-and-run --headless --ticks 3`
   (the runners have no FUSE); `--appimage-extract` gives an AppDir with `AppRun`,
-  `runtime`, `game/project.json`, `.DirIcon`, `<id>.png` and an `<id>.desktop` that passes
+  `runtime`, `game/project.json`, `.DirIcon`, `<id>.png` and exactly one `.desktop` file, `<id>.desktop`, that passes
   `desktop-file-validate` (the id must equal the one in the artifact name); the extracted
   `AppRun` starts from a read-only tree with `APPDIR` unset.
 - macOS app: the zip, made with `ditto -c -k --sequesterRsrc --keepParent`, is unpacked
   with `ditto -x -k` so the signature of what a user downloads is what is checked:
-  `plutil -lint`, no launcher scripts, `lipo -archs` lists `x86_64` and `arm64`,
+  `plutil -lint`, `Contents/Resources/<id>.icns` is the only icon, no launcher scripts, `lipo -archs` lists `x86_64` and `arm64`,
   `codesign --verify --deep --strict`, a resolve-only run that prints
   `.../Resources/game/project.json`, a headless run, and the same two runs under
   `arch -x86_64` when Rosetta is installed (otherwise the slice is built but not run).
@@ -380,7 +380,8 @@ even when an earlier one failed, and the script fails if any did.
 `release-macos-app-zip`; the files are already compressed, so they are stored as is).
 `checksums` downloads them, fails unless exactly the four expected files exist, writes
 `SHA256SUMS` (`sha256sum` format, verified with `sha256sum -c`) and uploads it as
-`release-sha256sums`. Actions artifacts do not keep file modes, so a downloaded AppImage
+`sha256sums` (a name the `release-*` download pattern cannot match, so a re-run of the job
+never sees the file of an earlier attempt). Actions artifacts do not keep file modes, so a downloaded AppImage
 needs `chmod +x`.
 
 **Tag to draft release.** A pushed `v*` tag runs the whole workflow, and when every job
@@ -399,8 +400,8 @@ request never creates a release.
 - Publishing the draft release and writing its notes.
 - Real-window, GPU and audio checks: the smoke runs are headless.
 
-The workflow file is checked locally with `actionlint` and its scripts with
-`shellcheck`, but the behaviour of the four jobs, the caches, the uploads and the draft
+Static checks (`actionlint` for the workflow, `shellcheck` for the scripts) do not cover
+the behaviour; the behaviour of the four jobs, the caches, the uploads and the draft
 release is established only by a run on GitHub (the pull request run for changes to the
 pipeline, a dispatch or a tag afterwards).
 

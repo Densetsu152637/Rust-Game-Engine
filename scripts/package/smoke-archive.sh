@@ -52,10 +52,12 @@ do_extract() {
       ;;
     *.zip)
       if is_windows; then
+        # Windows PowerShell 5.1 reports Expand-Archive errors as non-terminating, so a
+        # partly corrupt zip would exit 0; "Stop" turns them into a failing exit code.
         # shellcheck disable=SC2016  # $env: is PowerShell syntax, not a shell expansion
         SMOKE_ZIP=$(cygpath -w "$archive") SMOKE_DEST=$(cygpath -w "$extract") \
           powershell.exe -NoProfile -NonInteractive -Command \
-          'Expand-Archive -LiteralPath $env:SMOKE_ZIP -DestinationPath $env:SMOKE_DEST'
+          '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:SMOKE_ZIP -DestinationPath $env:SMOKE_DEST'
       else
         unzip -q "$archive" -d "$extract"
       fi

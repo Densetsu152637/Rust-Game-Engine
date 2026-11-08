@@ -35,7 +35,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  # Dispatches for different projects or profiles must not replace each other.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.project }}-${{ inputs.profile }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Same runner images and build environment as ci.yml, so the packages are built
@@ -299,7 +300,7 @@ jobs:
           mkdir "$out/extract"
           ditto -x -k "$out/$ARTIFACT" "$out/extract"
           ls -la "$out/extract"
-          bash scripts/package/smoke-app.sh "$out/extract/$ID.app"
+          bash scripts/package/smoke-app.sh "$out/extract/$ID.app" "$ID"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-macos-app-zip
@@ -351,7 +352,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-sha256sums
+          name: sha256sums
           path: dist/SHA256SUMS
           if-no-files-found: error
 
@@ -376,6 +377,10 @@ jobs:
         with:
           pattern: release-*
           merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sha256sums
           path: dist
       - name: Create the draft release
         run: |

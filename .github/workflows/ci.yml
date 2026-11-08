@@ -514,7 +514,7 @@ jobs:
       # an unrelated directory, and the Rosetta run of the x86_64 slice when available.
       - name: Smoke test the app bundle
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
-        run: bash scripts/package/smoke-app.sh "$RUNNER_TEMP/app-smoke/First Project.app"
+        run: bash scripts/package/smoke-app.sh "$RUNNER_TEMP/app-smoke/First Project.app" first-project
       - name: Clean up
         if: ${{ always() }}
         run: rm -rf "$RUNNER_TEMP/app-smoke"

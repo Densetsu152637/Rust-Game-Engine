@@ -3,15 +3,17 @@
 # the code signature, the layout lookup with no project argument, a headless run and,
 # when Rosetta is installed, a headless run of the x86_64 slice. macOS only.
 #
-# usage: smoke-app.sh <bundle.app>
+# usage: smoke-app.sh <bundle.app> [expected-id]
+#   With [expected-id] the bundle must hold Contents/Resources/<id>.icns; without it
+#   exactly one .icns file must be there.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=scripts/package/smoke-lib.sh
 . "$here/smoke-lib.sh"
 
-if [ "$#" -ne 1 ]; then
-  echo "usage: smoke-app.sh <bundle.app>" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  echo "usage: smoke-app.sh <bundle.app> [expected-id]" >&2
   exit 2
 fi
 if [ ! -d "$1" ]; then
@@ -19,6 +21,7 @@ if [ ! -d "$1" ]; then
   exit 2
 fi
 bundle=$(cd "$1" && pwd)
+expected_id=${2:-}
 
 check_files() {
   plutil -lint "$bundle/Contents/Info.plist"
@@ -26,10 +29,19 @@ check_files() {
   test -f "$bundle/Contents/PkgInfo"
   test -x "$bundle/Contents/MacOS/runtime"
   test -f "$bundle/Contents/Resources/game/project.json"
-  # Exactly the one icon the bundle generator writes (<id>.icns).
-  icons=$(compgen -G "$bundle/Contents/Resources/*.icns")
-  test -n "$icons"
-  test "$(printf '%s\n' "$icons" | wc -l)" -eq 1
+  # Exactly the one icon the bundle generator writes (<id>.icns). A plain glob loop
+  # keeps this working on macOS's bash 3.2 and with spaces in the bundle path.
+  icons=""
+  icon_count=0
+  for icon in "$bundle"/Contents/Resources/*.icns; do
+    [ -e "$icon" ] || continue
+    icons=$icon
+    icon_count=$((icon_count + 1))
+  done
+  test "$icon_count" -eq 1
+  if [ -n "$expected_id" ]; then
+    test "$icons" = "$bundle/Contents/Resources/$expected_id.icns"
+  fi
   test -d "$bundle/Contents/Frameworks"
   if [ -e "$bundle/run.sh" ] || [ -e "$bundle/run.cmd" ] || [ -e "$bundle/Contents/run.sh" ]; then
     echo "launcher scripts must not be in a bundle" >&2

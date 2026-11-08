@@ -6,9 +6,9 @@
 # usage: smoke-appimage.sh <file.AppImage> <work-dir> [expected-id]
 #   <work-dir> must not exist; the runs start there (an unrelated directory) and the
 #   extraction goes to <work-dir>/squashfs-root. Write permission is restored on exit
-#   so the caller can delete the directory. With [expected-id] the AppDir must hold
-#   exactly <id>.desktop, <id>.png and .DirIcon for that id; without it the id is
-#   taken from the single .desktop file found.
+#   so the caller can delete the directory. The AppDir must hold exactly one
+#   .desktop file, <id>.desktop, plus <id>.png and .DirIcon; with [expected-id] that
+#   id must be the expected one.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -38,10 +38,13 @@ trap 'chmod -R u+w "$work" 2>/dev/null || true' EXIT
 
 check_file() {
   # No update information is embedded, so no .zsync may be left beside the image.
-  if compgen -G "$(dirname "$image")/*.zsync" >/dev/null; then
-    echo "unexpected .zsync file" >&2
-    return 1
-  fi
+  local leftover
+  for leftover in "$(dirname "$image")"/*.zsync; do
+    if [ -e "$leftover" ]; then
+      echo "unexpected .zsync file: $leftover" >&2
+      return 1
+    fi
+  done
   test -x "$image"
 }
 
@@ -58,18 +61,19 @@ check_appdir() {
   test -x squashfs-root/runtime
   test -f squashfs-root/game/project.json
   test -f squashfs-root/.DirIcon
-  local desktop id
-  if [ -n "$expected_id" ]; then
-    id=$expected_id
-    test -f "squashfs-root/$id.desktop"
-  else
-    desktop=$(compgen -G 'squashfs-root/*.desktop')
-    if [ "$(printf '%s\n' "$desktop" | wc -l)" -ne 1 ]; then
-      echo "expected exactly one .desktop file, found:" >&2
-      printf '%s\n' "$desktop" >&2
-      return 1
-    fi
+  local desktop id="" count=0
+  for desktop in squashfs-root/*.desktop; do
+    [ -e "$desktop" ] || continue
     id=$(basename "$desktop" .desktop)
+    count=$((count + 1))
+  done
+  if [ "$count" -ne 1 ]; then
+    echo "expected exactly one .desktop file, found $count" >&2
+    return 1
+  fi
+  if [ -n "$expected_id" ] && [ "$id" != "$expected_id" ]; then
+    echo "expected $expected_id.desktop, found $id.desktop" >&2
+    return 1
   fi
   test -f "squashfs-root/$id.png"
   desktop-file-validate "squashfs-root/$id.desktop"
