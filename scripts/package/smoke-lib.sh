@@ -44,3 +44,22 @@ is_windows() {
 neutral_dir() {
   printf '%s' "${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 }
+
+# extract_zip <archive.zip> <destination>: extract a zip into an existing directory.
+# Windows uses PowerShell's Expand-Archive; macOS uses ditto (which restores the links,
+# extended attributes and modes a code signature depends on); other Unix hosts use unzip,
+# which restores the Unix modes stored in the archive.
+extract_zip() {
+  if is_windows; then
+    # Windows PowerShell 5.1 reports Expand-Archive errors as non-terminating, so a
+    # partly corrupt zip would exit 0; "Stop" turns them into a failing exit code.
+    # shellcheck disable=SC2016  # $env: is PowerShell syntax, not a shell expansion
+    SMOKE_ZIP=$(cygpath -w "$1") SMOKE_DEST=$(cygpath -w "$2") \
+      powershell.exe -NoProfile -NonInteractive -Command \
+      '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:SMOKE_ZIP -DestinationPath $env:SMOKE_DEST'
+  elif [ "$(uname -s)" = Darwin ]; then
+    ditto -x -k "$1" "$2"
+  else
+    unzip -q "$1" -d "$2"
+  fi
+}

@@ -5,6 +5,12 @@ name: Release
 # also creates a DRAFT GitHub release; nothing here publishes a release, signs with a
 # Developer ID or notarises (docs/desktop-packaging.md, "Release workflow").
 #
+# Besides the four plain packages there is one Steam-variant row per OS: the tooling is
+# built with `--features steam`, a copy of the project with a `steam` block for Valve's
+# test app 480 is packaged as a SteamPipe depot, zipped and smoke-tested with no Steam
+# client (docs/steam.md). Those depots are for checking the pipeline; ship your own app
+# id by running `engine project package --format steam-depot` yourself.
+#
 # Triggers:
 #   workflow_dispatch  package any project: inputs `project` and `profile`. GitHub
 #                      only offers the button once this file is on the default branch.
@@ -314,9 +320,188 @@ jobs:
         if: ${{ always() }}
         run: df -h
 
+  # ---- Steam variant rows -------------------------------------------------------
+  # Tooling built with --features steam; the project copy and its `steam` block are made
+  # by scripts/package/prepare-steam-project.sh (untracked, App ID 480). The depot
+  # directory is zipped by scripts/package/zip-depot.sh and smoke-tested by
+  # scripts/package/smoke-steam-depot.sh: layout, library placement, no steam_appid.txt,
+  # and a headless run with no Steam client that must report steam.state not_running.
+  steam-windows:
+    name: Steam depot (Windows)
+    needs: prepare
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+    env:
+      PROJECT: ${{ needs.prepare.outputs.project }}
+      PROFILE: ${{ needs.prepare.outputs.profile }}
+      ID: ${{ needs.prepare.outputs.id }}
+      STEM: ${{ needs.prepare.outputs.id }}-${{ needs.prepare.outputs.version }}-steam-windows-x86_64
+      STEAM_APP_ID: "480"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - name: Move temporary files to the D drive
+        # C has about 30 GB free and D about 147 GB (see ci.yml).
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-steam-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
+      - name: Package the Steam-variant depot
+        run: |
+          manifest=$(bash scripts/package/prepare-steam-project.sh "$PROJECT" "$STEAM_APP_ID")
+          out="${RUNNER_TEMP//\\//}/release"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cargo run --locked -q -p engine-tooling --features steam --bin engine -- \
+            project package "$manifest" "$out/$STEM" \
+            --profile "$PROFILE" --format steam-depot
+          bash scripts/package/zip-depot.sh "$out/$STEM" "$out/$STEM.zip"
+      - name: Smoke test the depot
+        run: |
+          tmp="${RUNNER_TEMP//\\//}"
+          bash scripts/package/smoke-steam-depot.sh "$tmp/release/$STEM.zip" "$tmp/release-smoke" "$ID" "$STEAM_APP_ID"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-steam-zip
+          path: ${{ runner.temp }}/release/${{ env.STEM }}.zip
+          if-no-files-found: error
+          compression-level: 0
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
+
+  # Built on the oldest supported glibc (ubuntu-22.04), like the AppImage row.
+  steam-linux:
+    name: Steam depot (Linux)
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      PROJECT: ${{ needs.prepare.outputs.project }}
+      PROFILE: ${{ needs.prepare.outputs.profile }}
+      ID: ${{ needs.prepare.outputs.id }}
+      STEM: ${{ needs.prepare.outputs.id }}-${{ needs.prepare.outputs.version }}-steam-linux-x86_64
+      STEAM_APP_ID: "480"
+      ENGINE_NATIVE_TARGET_DIR: ${{ github.workspace }}/target/native-generation-shared
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev unzip
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-steam-linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Package the Steam-variant depot
+        run: |
+          manifest=$(bash scripts/package/prepare-steam-project.sh "$PROJECT" "$STEAM_APP_ID")
+          out="$RUNNER_TEMP/release"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cargo run --locked -q -p engine-tooling --features steam --bin engine -- \
+            project package "$manifest" "$out/$STEM" \
+            --profile "$PROFILE" --format steam-depot
+          bash scripts/package/zip-depot.sh "$out/$STEM" "$out/$STEM.zip"
+      - name: Smoke test the depot
+        run: bash scripts/package/smoke-steam-depot.sh "$RUNNER_TEMP/release/$STEM.zip" "$RUNNER_TEMP/release-smoke" "$ID" "$STEAM_APP_ID"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux-steam-zip
+          path: ${{ runner.temp }}/release/${{ env.STEM }}.zip
+          if-no-files-found: error
+          compression-level: 0
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
+
+  # Universal (arm64 + x86_64) .app inside the depot. Valve's libsteam_api.dylib keeps
+  # its own signature; the smoke test verifies the bundle and the library separately.
+  steam-macos:
+    name: Steam depot (macOS)
+    needs: prepare
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      PROJECT: ${{ needs.prepare.outputs.project }}
+      PROFILE: ${{ needs.prepare.outputs.profile }}
+      ID: ${{ needs.prepare.outputs.id }}
+      STEM: ${{ needs.prepare.outputs.id }}-${{ needs.prepare.outputs.version }}-steam-macos-universal
+      STEAM_APP_ID: "480"
+      ENGINE_NATIVE_TARGET_DIR: ${{ github.workspace }}/target/native-generation-shared
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: bash scripts/ci/install-toolchain.sh
+      - name: Install both Apple Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-steam-macos
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Disk space (before build)
+        if: ${{ always() }}
+        run: df -h
+      - name: Package the Steam-variant depot
+        run: |
+          manifest=$(bash scripts/package/prepare-steam-project.sh "$PROJECT" "$STEAM_APP_ID")
+          out="$RUNNER_TEMP/release"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cargo run --locked -q -p engine-tooling --features steam --bin engine -- \
+            project package "$manifest" "$out/$STEM" \
+            --profile "$PROFILE" --format steam-depot
+          bash scripts/package/zip-depot.sh "$out/$STEM" "$out/$STEM.zip"
+      - name: Smoke test the depot
+        run: bash scripts/package/smoke-steam-depot.sh "$RUNNER_TEMP/release/$STEM.zip" "$RUNNER_TEMP/release-smoke" "$ID" "$STEAM_APP_ID"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos-steam-zip
+          path: ${{ runner.temp }}/release/${{ env.STEM }}.zip
+          if-no-files-found: error
+          compression-level: 0
+      - name: Clean up
+        if: ${{ always() }}
+        run: rm -rf "$RUNNER_TEMP/release" "$RUNNER_TEMP/release-smoke"
+      - name: Disk space (after build)
+        if: ${{ always() }}
+        run: df -h
+
   checksums:
     name: SHA256SUMS
-    needs: [prepare, windows-zip, linux-tar-gz, linux-appimage, macos-app]
+    needs:
+      - prepare
+      - windows-zip
+      - linux-tar-gz
+      - linux-appimage
+      - macos-app
+      - steam-windows
+      - steam-linux
+      - steam-macos
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -327,7 +512,7 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: dist
-      # Exactly the four expected files, so a missing or extra artifact fails here.
+      # Exactly the seven expected files, so a missing or extra artifact fails here.
       - name: Write and verify SHA256SUMS
         run: |
           cd dist
@@ -336,6 +521,9 @@ jobs:
             "$PREFIX-linux-x86_64.tar.gz"
             "$PREFIX-linux-x86_64.AppImage"
             "$PREFIX-macos-universal.app.zip"
+            "$PREFIX-steam-windows-x86_64.zip"
+            "$PREFIX-steam-linux-x86_64.zip"
+            "$PREFIX-steam-macos-universal.zip"
           )
           ls -l
           shopt -s nullglob dotglob
@@ -388,9 +576,12 @@ jobs:
           ls -l
           sha256sum -c SHA256SUMS
           gh release create "$TAG" --draft --verify-tag --title "$TAG" \
-            --notes "Draft created by the Release workflow ($RUN_URL). Every file was smoke tested on its own platform before upload. The macOS app is ad-hoc signed and not notarised, so Gatekeeper blocks a downloaded copy until it is approved. Run chmod +x on the AppImage after downloading it. Verify downloads against SHA256SUMS." \
+            --notes "Draft created by the Release workflow ($RUN_URL). Every file was smoke tested on its own platform before upload. The macOS app is ad-hoc signed and not notarised, so Gatekeeper blocks a downloaded copy until it is approved. Run chmod +x on the AppImage after downloading it. The three -steam- zips are SteamPipe depot layouts (Steam variant, built for Valve test app 480, smoke tested with no Steam client); repackage with your own app id before uploading to Steam. Verify downloads against SHA256SUMS." \
             "$PREFIX-windows-x86_64.zip" \
             "$PREFIX-linux-x86_64.tar.gz" \
             "$PREFIX-linux-x86_64.AppImage" \
             "$PREFIX-macos-universal.app.zip" \
+            "$PREFIX-steam-windows-x86_64.zip" \
+            "$PREFIX-steam-linux-x86_64.zip" \
+            "$PREFIX-steam-macos-universal.zip" \
             SHA256SUMS

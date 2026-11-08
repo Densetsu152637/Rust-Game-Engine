@@ -92,8 +92,8 @@ jobs:
       # Compiles the whole template, including src/main.rs, against this checkout.
       - name: cargo check (game template)
         run: bash scripts/ci/check-template.sh
-      # The Steam variant is opt-in (docs/steam.md). The Linux and macOS rows join after the
-      # platform stages.
+      # The Steam variant is opt-in (docs/steam.md). The Linux and macOS test jobs run
+      # the same four steps.
       - name: cargo clippy (Steam feature)
         run: cargo clippy -p engine-steam --features steam,online --all-targets --locked -- -D warnings
       - name: cargo build (Steam feature)
@@ -333,6 +333,27 @@ jobs:
       - name: Check standalone desktop entry points
         if: ${{ !cancelled() }}
         run: bash scripts/ci/check-desktop-examples.sh
+      # The Steam variant is opt-in (docs/steam.md). The same four steps run in the
+      # Windows lint job and here; they reuse this job's checkout, toolchain, system
+      # packages and cache, which a job of their own would set up again.
+      - name: cargo clippy (Steam feature)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p engine-steam --features steam,online --all-targets --locked -- -D warnings
+      - name: cargo build (Steam feature)
+        if: ${{ !cancelled() }}
+        run: cargo build -p engine-steam --features steam --all-targets --locked
+      - name: cargo check (facade Steam feature)
+        if: ${{ !cancelled() }}
+        run: cargo check -p engine --features steam --locked
+      # A default build must not contain steamworks (see the Windows lint job).
+      - name: Default features exclude steamworks
+        if: ${{ !cancelled() }}
+        run: |
+          tree=$(cargo tree -p engine -p engine-desktop -p engine-mcp -p engine-tooling -e normal --locked)
+          count=$(printf '%s\n' "$tree" | grep -c steamworks || true)
+          echo "steamworks entries in the default dependency tree: $count"
+          test -n "$tree"
+          test "$count" = "0"
       - name: Disk space (after build)
         if: ${{ always() }}
         run: df -h
@@ -447,6 +468,27 @@ jobs:
       - name: Check standalone desktop entry points
         if: ${{ !cancelled() }}
         run: bash scripts/ci/check-desktop-examples.sh
+      # The Steam variant is opt-in (docs/steam.md). The same four steps run in the
+      # Windows lint job and here; they reuse this job's checkout, toolchain, system
+      # packages and cache, which a job of their own would set up again.
+      - name: cargo clippy (Steam feature)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p engine-steam --features steam,online --all-targets --locked -- -D warnings
+      - name: cargo build (Steam feature)
+        if: ${{ !cancelled() }}
+        run: cargo build -p engine-steam --features steam --all-targets --locked
+      - name: cargo check (facade Steam feature)
+        if: ${{ !cancelled() }}
+        run: cargo check -p engine --features steam --locked
+      # A default build must not contain steamworks (see the Windows lint job).
+      - name: Default features exclude steamworks
+        if: ${{ !cancelled() }}
+        run: |
+          tree=$(cargo tree -p engine -p engine-desktop -p engine-mcp -p engine-tooling -e normal --locked)
+          count=$(printf '%s\n' "$tree" | grep -c steamworks || true)
+          echo "steamworks entries in the default dependency tree: $count"
+          test -n "$tree"
+          test "$count" = "0"
       - name: Disk space (after build)
         if: ${{ always() }}
         run: df -h

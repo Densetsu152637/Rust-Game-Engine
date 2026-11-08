@@ -10,3 +10,6 @@ agents.*.md
 build/
 target/
 **/.derived/
+
+# untracked Steam-variant project copies (scripts/package/prepare-steam-project.sh)
+**/.steam-*/
