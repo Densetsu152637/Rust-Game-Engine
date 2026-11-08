@@ -342,7 +342,7 @@ impl Bodies {
                 || world.get::<super::PhysicsJoint2D>(*e).is_some()
                 || world.get::<super::PhysicsJoint3D>(*e).is_some()
         });
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with_any!(world, PhysicsBody2D, PhysicsBody3D) {
             let e = entity.id();
             if let Some(config) = entity.get::<PhysicsBody2D>() {
                 self.sync2(worlds, settings, world, e, config)?;

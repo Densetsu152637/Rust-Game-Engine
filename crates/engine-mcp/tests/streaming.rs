@@ -751,6 +751,7 @@ fn partitioned_scene_streams_in_the_runtime_with_proxies_and_layers() {
         [50.5, 0.0, 30.0]
     );
     // The unloaded cells show their proxies; the loaded one does not.
+    runtime.set_frustum_culling(false);
     let proxies: Vec<String> = runtime
         .extract_scene_frame()
         .unwrap()

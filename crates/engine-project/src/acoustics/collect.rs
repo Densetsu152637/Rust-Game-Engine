@@ -122,7 +122,7 @@ pub struct Collected {
 /// The single environment of the world, if any.
 pub fn find_environment(world: &World) -> Result<Option<(Entity, AcousticEnvironment)>> {
     let mut found: Option<(Entity, AcousticEnvironment)> = None;
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with::<AcousticEnvironment>(world) {
         if let Some(env) = entity.get::<AcousticEnvironment>() {
             if found.is_some() {
                 return Err(Error::new(
@@ -486,8 +486,7 @@ pub fn collect(world: &World, lookup: &MeshLookup) -> Result<Option<Collected>> 
             side_material: materials.preset(settings.side_material),
         });
     }
-    let mut entities: Vec<_> = world
-        .iter_entities()
+    let mut entities: Vec<_> = crate::walk::with::<WorldTransform>(world)
         .filter(|e| e.contains::<WorldTransform>())
         .map(|e| (entity_key(&e), e))
         .collect();

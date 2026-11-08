@@ -2,7 +2,7 @@ use super::*;
 use crate::events::{EngineEvent, EventBindings, EventHandlers, EventLimits};
 impl Runtime {
     pub(super) fn validate_event_bindings(&self) -> Result<()> {
-        for entity in self.app.world().iter_entities() {
+        for entity in crate::walk::with::<EventBindings>(self.app.world()) {
             if let Some(bindings) = entity.get::<EventBindings>() {
                 for binding in &bindings.bindings {
                     if !self
@@ -35,20 +35,18 @@ impl Runtime {
             let targets: Vec<_> = if let Some(target) = event.target {
                 vec![target]
             } else {
-                let mut targets: Vec<_> = self
-                    .app
-                    .world()
-                    .iter_entities()
-                    .filter(|e| e.contains::<EventBindings>() || e.contains::<Script>())
-                    .map(|e| {
-                        (
-                            e.get::<AuthoredId>()
-                                .map(|a| a.id.clone())
-                                .unwrap_or_else(|| format!("{:?}", e.id())),
-                            e.id(),
-                        )
-                    })
-                    .collect();
+                let mut targets: Vec<_> =
+                    crate::walk::with_any!(self.app.world(), EventBindings, Script)
+                        .filter(|e| e.contains::<EventBindings>() || e.contains::<Script>())
+                        .map(|e| {
+                            (
+                                e.get::<AuthoredId>()
+                                    .map(|a| a.id.clone())
+                                    .unwrap_or_else(|| format!("{:?}", e.id())),
+                                e.id(),
+                            )
+                        })
+                        .collect();
                 targets.sort_by(|a, b| a.0.cmp(&b.0));
                 targets.into_iter().map(|(_, e)| e).collect()
             };

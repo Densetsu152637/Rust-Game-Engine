@@ -206,7 +206,7 @@ pub(super) fn validate(world: &World) -> Result<()> {
     };
     let physics = &services.physics;
     let resolved = Resolved::new(&physics.config, found)?;
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with_any!(world, PhysicsBody2D, PhysicsBody3D) {
         let material = entity
             .get::<PhysicsBody2D>()
             .map(|b| &b.material)
@@ -461,8 +461,7 @@ fn substep(
 }
 /// Delivers `physics.step.clamped` to the settings entity, if the scene has one.
 fn emit_step_clamped(world: &mut World, status: &StepStatus, max_substeps: usize) -> Result<()> {
-    let Some(target) = world
-        .iter_entities()
+    let Some(target) = crate::walk::with::<PhysicsSettings>(world)
         .find(|entity| entity.contains::<PhysicsSettings>())
         .map(|entity| entity.id())
     else {

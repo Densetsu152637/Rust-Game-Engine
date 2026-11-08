@@ -207,10 +207,7 @@ impl Runtime {
     }
     /// The camera [`Self::extract_frame`] would use, without building draws.
     pub fn extract_camera(&self) -> Camera2D {
-        let mut camera = self
-            .app
-            .world()
-            .iter_entities()
+        let mut camera = crate::walk::with::<Camera2D>(self.app.world())
             .find_map(|e| e.get::<Camera2D>().cloned())
             .unwrap_or_default();
         if let Some(position) = camera.follow.as_ref().and_then(|id| self.position(id)) {
@@ -219,15 +216,28 @@ impl Runtime {
         camera
     }
     pub fn extract_frame(&self) -> Result<RenderFrame> {
+        self.extract_frame_without(|_| false)
+    }
+    /// [`Self::extract_frame`] without the mesh draw of every entity `skip_mesh` selects.
+    /// The scene extraction passes the entities the 3D pass draws, so a mesh is never
+    /// cloned, transformed and hashed for the 2D layer only to be dropped from it.
+    pub(super) fn extract_frame_without(
+        &self,
+        skip_mesh: impl Fn(&EntityRef) -> bool,
+    ) -> Result<RenderFrame> {
         let world = self.app.world();
         let camera = self.extract_camera();
         let mut draws = Vec::new();
         let fragments_drawn =
             world.contains_resource::<crate::simulation::physics::FragmentRenderer>();
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with_any!(world, SpriteRenderer, MeshRenderer) {
             let Some(_) = entity.get::<Transform>() else {
                 continue;
             };
+            let skipped_mesh = entity.contains::<MeshRenderer>() && skip_mesh(&entity);
+            if skipped_mesh && !entity.contains::<SpriteRenderer>() {
+                continue;
+            }
             let transform = crate::world_transform(world, entity.id())?;
             let id = entity
                 .get::<AuthoredId>()
@@ -288,7 +298,9 @@ impl Runtime {
                 });
             }
             if let Some(renderer) = entity.get::<MeshRenderer>().filter(|_| {
-                !(fragments_drawn && entity.contains::<crate::simulation::physics::Fractured>())
+                !skipped_mesh
+                    && !(fragments_drawn
+                        && entity.contains::<crate::simulation::physics::Fractured>())
             }) {
                 let original = entity
                     .get::<crate::GeometryOverride>()

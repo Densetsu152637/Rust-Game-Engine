@@ -88,7 +88,7 @@ fn find_theme<'a>(
     name: &str,
 ) -> Result<&'a UiTheme> {
     let mut found: Option<&UiTheme> = None;
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with::<UiTheme>(world) {
         if let Some(theme) = entity.get::<UiTheme>()
             && theme.name == name
             && found.replace(theme).is_some()

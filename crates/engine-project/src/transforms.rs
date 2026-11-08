@@ -1,6 +1,7 @@
 //! Local TRS authoring and resolved world-space transforms shared by consumers.
+use crate::runtime::EntityLookup;
 use crate::{Error, Result, Transform};
-use bevy_ecs::prelude::*;
+use bevy_ecs::{prelude::*, system::SystemState};
 use glam::{Mat4, Quat, Vec3};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -78,23 +79,130 @@ pub fn world_transform(world: &World, entity: Entity) -> Result<WorldTransform> 
             .to_cols_array_2d(),
     })
 }
+/// What `refresh_world_transforms` watches. The query state remembers the tick of the previous
+/// refresh, so a refresh visits exactly the entities whose `Transform` or `Parent` changed since.
+type Watch = SystemState<(
+    Query<'static, 'static, Entity, Or<(Changed<Transform>, Changed<Parent>)>>,
+    Query<'static, 'static, Entity, (With<Transform>, Without<WorldTransform>)>,
+    Query<'static, 'static, Entity, (With<WorldTransform>, Without<Transform>)>,
+    Query<'static, 'static, Entity, With<Transform>>,
+    Query<'static, 'static, Entity, (With<Transform>, With<Parent>)>,
+    RemovedComponents<'static, 'static, Transform>,
+    RemovedComponents<'static, 'static, Parent>,
+    Option<Res<'static, EntityLookup>>,
+)>;
+
+/// Change detection for [`refresh_world_transforms`].
+#[derive(Resource)]
+struct TransformWatch {
+    state: Watch,
+    /// The previous refresh failed part-way: resolve every entity on the next one.
+    resolve_all: bool,
+}
+
+/// The entities whose world transform must be recomputed, and the world transforms that no
+/// longer have a local `Transform`.
+struct Refresh {
+    stale: Vec<Entity>,
+    dirty: BTreeSet<Entity>,
+}
+
+/// Whether a parent of `entity`, at any depth, is in `dirty`. A parent that cannot be resolved
+/// counts: resolving the entity reports the error.
+fn parent_chain_dirty(world: &World, entity: Entity, dirty: &BTreeSet<Entity>) -> bool {
+    let mut current = entity;
+    for _ in 0..257 {
+        let Some(parent) = world.get::<Parent>(current) else {
+            return false;
+        };
+        let Some(next) = crate::services::find_entity(world, &parent.0) else {
+            return true;
+        };
+        if dirty.contains(&next) {
+            return true;
+        }
+        current = next;
+    }
+    true
+}
+
+fn plan_refresh(world: &World, watch: &mut TransformWatch) -> Result<Refresh> {
+    let resolve_all = std::mem::take(&mut watch.resolve_all);
+    let (changed, unsynced, stale, all, parented, mut removed, mut unparented, lookup) = watch
+        .state
+        .get(world)
+        .map_err(|e| error(format!("transform refresh: {e}")))?;
+    let stale: Vec<_> = stale.iter().collect();
+    let removed = removed.read().count() > 0;
+    // A child whose parent entity was replaced, renamed or lost its `Transform` does not
+    // change itself, so those events re-resolve every parented entity.
+    let structural = resolve_all
+        || removed
+        || !stale.is_empty()
+        || lookup.is_some_and(|lookup| lookup.is_changed());
+    let mut dirty: BTreeSet<Entity> = if resolve_all {
+        all.iter().collect()
+    } else {
+        changed.iter().chain(unsynced.iter()).collect()
+    };
+    // An entity that lost its `Parent` is a root now.
+    dirty.extend(
+        unparented
+            .read()
+            .filter(|entity| world.get::<Transform>(*entity).is_some()),
+    );
+    if structural {
+        dirty.extend(parented.iter());
+    } else if !dirty.is_empty() {
+        let descendants: Vec<_> = parented
+            .iter()
+            .filter(|entity| !dirty.contains(entity) && parent_chain_dirty(world, *entity, &dirty))
+            .collect();
+        dirty.extend(descendants);
+    }
+    Ok(Refresh { stale, dirty })
+}
+
+/// Brings every `WorldTransform` up to date with the local `Transform`s and `Parent`s.
+///
+/// Only entities that changed since the previous refresh, and their descendants, are
+/// recomputed: a static entity costs nothing per tick, and an entity without a `Transform`
+/// is never visited. An error leaves every `WorldTransform` as it was and makes the next
+/// refresh resolve all entities again.
 pub fn refresh_world_transforms(world: &mut World) -> Result<()> {
-    let removed: Vec<_> = world
-        .iter_entities()
-        .filter(|e| e.contains::<WorldTransform>() && !e.contains::<Transform>())
-        .map(|e| e.id())
-        .collect();
-    for entity in removed {
+    if !world.contains_resource::<TransformWatch>() {
+        let state = SystemState::new(world);
+        world.insert_resource(TransformWatch {
+            state,
+            resolve_all: false,
+        });
+    }
+    let plan = world
+        .resource_scope(|world, mut watch: Mut<TransformWatch>| plan_refresh(world, &mut watch))?;
+    let result = apply_refresh(world, plan);
+    if result.is_err() {
+        world.resource_mut::<TransformWatch>().resolve_all = true;
+    }
+    result
+}
+
+fn apply_refresh(world: &mut World, plan: Refresh) -> Result<()> {
+    for entity in plan.stale {
         world.entity_mut(entity).remove::<WorldTransform>();
     }
     let mut cache = BTreeMap::new();
-    for entity in world.iter_entities().filter(|e| e.contains::<Transform>()) {
-        resolve(world, entity.id(), &mut BTreeSet::new(), &mut cache)?;
+    for entity in plan.dirty {
+        if world.get::<Transform>(entity).is_some() {
+            resolve(world, entity, &mut BTreeSet::new(), &mut cache)?;
+        }
     }
     for (entity, matrix) in cache {
-        world.entity_mut(entity).insert(WorldTransform {
+        let resolved = WorldTransform {
             matrix: matrix.to_cols_array_2d(),
-        });
+        };
+        if world.get::<WorldTransform>(entity) != Some(&resolved) {
+            world.entity_mut(entity).insert(resolved);
+        }
     }
     Ok(())
 }

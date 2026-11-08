@@ -802,7 +802,7 @@ impl Feature for Ragdolls {
     }
     fn validate(&self, world: &World, _settings: &Resolved) -> Result<()> {
         let mut owners: BTreeMap<Entity, Entity> = BTreeMap::new();
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with::<Ragdoll>(world) {
             let Some(config) = entity.get::<Ragdoll>() else {
                 continue;
             };
@@ -853,8 +853,7 @@ impl Feature for Ragdolls {
             *layers != settings.layers || *materials != settings.materials
         });
         self.groups = Some((settings.layers.clone(), settings.materials.clone()));
-        let mut present: Vec<(Entity, Ragdoll)> = world
-            .iter_entities()
+        let mut present: Vec<(Entity, Ragdoll)> = crate::walk::with::<Ragdoll>(world)
             .filter_map(|e| Some((e.id(), e.get::<Ragdoll>()?.clone())))
             .collect();
         present.sort_by_key(|(e, _)| *e);

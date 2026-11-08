@@ -146,10 +146,10 @@ fn with_state(
 }
 
 fn sync(world: &mut World, state: &mut BehaviorTrees) -> Result<()> {
-    let configs: BTreeMap<Entity, BehaviorTreeAgent> = world
-        .iter_entities()
-        .filter_map(|e| e.get::<BehaviorTreeAgent>().cloned().map(|c| (e.id(), c)))
-        .collect();
+    let configs: BTreeMap<Entity, BehaviorTreeAgent> =
+        crate::walk::with::<BehaviorTreeAgent>(world)
+            .filter_map(|e| e.get::<BehaviorTreeAgent>().cloned().map(|c| (e.id(), c)))
+            .collect();
     if configs.len() > MAX_AGENTS {
         return Err(invalid(
             "behavior_tree.capacity",

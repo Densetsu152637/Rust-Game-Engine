@@ -174,7 +174,7 @@ impl Animations {
     pub fn sync(&mut self, world: &World) -> Result<()> {
         self.players
             .retain(|e, _| world.get::<AnimationPlayer>(*e).is_some());
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with::<AnimationPlayer>(world) {
             if let Some(config) = entity.get::<AnimationPlayer>() {
                 let targets = bindings(world, entity.id(), config)?;
                 if self

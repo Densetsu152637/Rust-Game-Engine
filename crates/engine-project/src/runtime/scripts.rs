@@ -15,7 +15,9 @@ pub(super) fn invoke_owned<T>(
     owner: Entity,
     callback: impl FnOnce(&mut World) -> Result<T>,
 ) -> Result<T> {
-    let before: BTreeSet<_> = world.iter_entities().map(|e| e.id()).collect();
+    // Entities the callback spawns are recognised by their spawn tick, so an unrelated entity
+    // is never recorded or looked up.
+    let before = world.increment_change_tick();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(world)))
         .unwrap_or_else(|_| {
             Err(Error::new(
@@ -23,15 +25,14 @@ pub(super) fn invoke_owned<T>(
                 "Native script callback panicked",
             ))
         });
-    let created: Vec<_> = world
-        .iter_entities()
-        .filter(|e| {
-            !before.contains(&e.id())
-                && !e.contains::<OwnedBy>()
-                && !e.contains::<bevy_ecs::resource::IsResource>()
-        })
-        .map(|e| e.id())
-        .collect();
+    let created: Vec<Entity> = world.last_change_tick_scope(before, |world| {
+        let mut spawned = world.query_filtered::<Entity, (
+            bevy_ecs::query::Spawned,
+            Without<OwnedBy>,
+            Without<bevy_ecs::resource::IsResource>,
+        )>();
+        spawned.iter(world).collect()
+    });
     for entity in created {
         world.entity_mut(entity).insert(OwnedBy(owner));
     }
@@ -39,8 +40,7 @@ pub(super) fn invoke_owned<T>(
     result
 }
 pub(super) fn despawn_owned(world: &mut World, owner: Entity) {
-    let children: Vec<_> = world
-        .iter_entities()
+    let children: Vec<_> = crate::walk::with::<OwnedBy>(world)
         .filter(|e| e.get::<OwnedBy>().is_some_and(|o| o.0 == owner))
         .map(|e| e.id())
         .collect();
@@ -131,10 +131,7 @@ impl Runtime {
         Ok(())
     }
     pub(super) fn attach_scripts(&mut self) -> Result<()> {
-        let mut pending: Vec<_> = self
-            .app
-            .world()
-            .iter_entities()
+        let mut pending: Vec<_> = crate::walk::with::<Script>(self.app.world())
             .filter_map(|e| e.get::<Script>().map(|s| (e.id(), s.asset.clone())))
             .filter(|(owner, asset)| {
                 !self

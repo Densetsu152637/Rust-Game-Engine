@@ -65,7 +65,7 @@ impl LagState {
     pub(crate) fn record(&mut self, world: &World, tick: u64) {
         let mut poses = Vec::new();
         let mut seen = Vec::new();
-        for entity in world.iter_entities() {
+        for entity in crate::walk::with::<NetworkHitboxes>(world) {
             let (Some(hitboxes), Some(id)) =
                 (entity.get::<NetworkHitboxes>(), entity.get::<AuthoredId>())
             else {

@@ -260,7 +260,7 @@ fn place_all(
 ) -> Result<Vec<PlacedWorldText>> {
     let mut out = vec![];
     let localization = world.get_resource::<crate::localization::Localization>();
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with_both::<WorldText, Transform>(world) {
         let (Some(text), Some(_)) = (entity.get::<WorldText>(), entity.get::<Transform>()) else {
             continue;
         };

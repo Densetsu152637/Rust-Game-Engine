@@ -156,8 +156,7 @@ fn with_state(
 }
 
 fn sync(world: &mut World, state: &mut StateTrees) -> Result<()> {
-    let configs: BTreeMap<Entity, StateTreeAgent> = world
-        .iter_entities()
+    let configs: BTreeMap<Entity, StateTreeAgent> = crate::walk::with::<StateTreeAgent>(world)
         .filter_map(|e| e.get::<StateTreeAgent>().cloned().map(|c| (e.id(), c)))
         .collect();
     if configs.len() > MAX_AGENTS {

@@ -298,7 +298,7 @@ fn local_direction(world: &World, bone: Entity, candidates: &[Entity]) -> Option
 /// ids and no physics bodies.
 pub fn ragdoll_from_hierarchy(world: &World, root: Entity) -> Result<Ragdoll> {
     let mut found: Vec<(usize, String, Entity)> = vec![];
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with_both::<crate::AuthoredId, crate::Transform>(world) {
         let (Some(id), true) = (
             entity.get::<crate::AuthoredId>(),
             entity.contains::<crate::Transform>(),

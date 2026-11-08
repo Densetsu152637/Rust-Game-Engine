@@ -71,8 +71,7 @@ pub(super) fn root_key(entity: &EntityRef) -> String {
 
 /// Screen-space roots; entities with a `UiWorldPanel` are drawn in the world.
 fn roots(world: &World) -> Vec<(String, Entity, UiRoot)> {
-    let mut roots: Vec<_> = world
-        .iter_entities()
+    let mut roots: Vec<_> = crate::walk::with::<UiRoot>(world)
         .filter_map(|e| {
             let root = e.get::<UiRoot>()?;
             if e.get::<UiWorldPanel>().is_some() {

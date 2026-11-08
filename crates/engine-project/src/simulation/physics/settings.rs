@@ -227,7 +227,7 @@ impl Resolved {
 /// The single settings component in `world`, rejecting duplicates.
 pub(crate) fn find(world: &World) -> Result<Option<&PhysicsSettings>> {
     let mut found = None;
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with::<PhysicsSettings>(world) {
         if let Some(settings) = entity.get::<PhysicsSettings>() {
             if found.is_some() {
                 return Err(invalid("At most one engine.PhysicsSettings per scene"));

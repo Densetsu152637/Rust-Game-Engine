@@ -158,6 +158,8 @@ fn move_camera(runtime: &mut Runtime, position: [f32; 3]) {
         .position = position;
 }
 fn plants(runtime: &Runtime) -> Vec<engine_project::rendering3d::MeshDraw3D> {
+    // The tests count the scene's foliage, not what a camera sees of it.
+    runtime.set_frustum_culling(false);
     runtime
         .extract_scene_frame()
         .unwrap()

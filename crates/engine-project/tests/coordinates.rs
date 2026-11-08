@@ -922,6 +922,7 @@ fn view_space(base: [f64; 3], rebasing: bool) -> Vec<(String, [[f32; 4]; 4])> {
     let fixture = Fixture::new(entities, vec![]);
     let mut runtime = fixture.runtime();
     tick(&mut runtime, 1, 0.1);
+    runtime.set_frustum_culling(false);
     let frame = runtime.extract_scene_frame().unwrap();
     let camera = frame.camera3d.expect("camera");
     let view = Mat4::from_cols_array_2d(&camera.world).inverse();

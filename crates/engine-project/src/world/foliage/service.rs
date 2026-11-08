@@ -171,8 +171,7 @@ fn owner_id(world: &World, entity: Entity) -> Result<String> {
 }
 
 fn sorted_owners(world: &mut World) -> Vec<Entity> {
-    let mut owners: Vec<(String, Entity)> = world
-        .iter_entities()
+    let mut owners: Vec<(String, Entity)> = crate::walk::with::<FoliageComponent>(world)
         .filter(|e| e.contains::<FoliageComponent>())
         .map(|e| {
             (
@@ -228,8 +227,7 @@ fn remove_stale(world: &mut World, owners: &[Entity]) {
     }
     let orphans: Vec<Entity> = {
         let foliages = world.resource::<Foliages>();
-        world
-            .iter_entities()
+        crate::walk::with::<FoliageGenerated>(world)
             .filter(|e| {
                 e.get::<FoliageGenerated>()
                     .is_some_and(|g| !foliages.states.contains_key(&g.owner))
@@ -493,8 +491,7 @@ pub fn sync_foliage(world: &mut World) -> Result<()> {
 // ---- rendering -----------------------------------------------------------------------------
 
 fn active_camera_position(world: &mut World) -> Option<Vec3> {
-    let mut cameras: Vec<(String, Entity)> = world
-        .iter_entities()
+    let mut cameras: Vec<(String, Entity)> = crate::walk::with::<Camera3D>(world)
         .filter(|e| e.get::<Camera3D>().is_some_and(|c| c.active))
         .map(|e| {
             (

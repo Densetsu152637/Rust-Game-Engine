@@ -65,7 +65,22 @@ pub(super) fn pose_authority(world: &World, target: Entity) -> Result<()> {
     world
         .get_entity(target)
         .map_err(|_| invalid("Sequence target removed"))?;
-    for other in world.iter_entities() {
+    for other in crate::walk::with_any!(
+        world,
+        crate::networking::NetworkReplica,
+        simulation::PhysicsBody2D,
+        simulation::PhysicsBody3D,
+        simulation::NavigationAgent,
+        simulation::CrowdAgent,
+        physics::CharacterController2D,
+        physics::CharacterController3D,
+        physics::Vehicle3D,
+        physics::Cloth,
+        physics::SoftBody,
+        simulation::AnimationPlayer,
+        simulation::AnimationGraphPlayer,
+        physics::Ragdoll
+    ) {
         let physical = crate::networking::is_remote_replica(world, other.id())
             || other.contains::<simulation::PhysicsBody2D>()
             || other.contains::<simulation::PhysicsBody3D>()
@@ -228,7 +243,7 @@ impl Capture {
                     return Err(invalid("Camera cut target lacks Camera3D"));
                 }
             }
-            for entity in world.iter_entities() {
+            for entity in crate::walk::with::<Camera3D>(world) {
                 if let Some(camera) = entity.get::<Camera3D>() {
                     if crate::networking::is_remote_replica(world, entity.id()) {
                         return Err(invalid(
@@ -292,8 +307,7 @@ impl Capture {
                     "An external writer changed sequence camera activation",
                 ));
             }
-            let cameras: BTreeSet<_> = world
-                .iter_entities()
+            let cameras: BTreeSet<_> = crate::walk::with::<Camera3D>(world)
                 .filter(|e| e.contains::<Camera3D>())
                 .map(|e| e.id())
                 .collect();

@@ -532,7 +532,7 @@ impl Vehicles {
 }
 
 fn check_scene(world: &World) -> Result<()> {
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with::<Vehicle3D>(world) {
         let Some(config) = entity.get::<Vehicle3D>() else {
             continue;
         };
@@ -583,7 +583,7 @@ fn sync_vehicles(
         links.remove(&entity);
     }
     let frame = world.get_resource::<ActionFrame>();
-    for entity in world.iter_entities() {
+    for entity in crate::walk::with::<Vehicle3D>(world) {
         let e = entity.id();
         let Some(config) = entity.get::<Vehicle3D>() else {
             continue;

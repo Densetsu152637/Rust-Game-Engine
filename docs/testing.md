@@ -46,6 +46,46 @@ registry cache on the first run and can take minutes. Run them without
 `RUSTFLAGS=-D warnings`: the spawned builds inherit it, and fixtures that
 intentionally contain warnings then fail to compile.
 
+Cost of unrelated entities is measured, not only argued. In release,
+
+```text
+cargo test -p engine-project --release --test runtime_entity_walk -- --nocapture --test-threads=1
+```
+
+spawns 200,000 entities with no engine component (and again with an unmoving `Transform`)
+into a running project and prints what they add to `Runtime::tick` and
+`extract_scene_frame`; each must stay within 1 ms (best of 80 samples). In a debug build
+(the ordinary `cargo test`) the test uses a tenth of the entities and gates nothing.
+
+Likewise the cost of mesh geometry under a 3D camera:
+
+```text
+cargo test -p engine-project --release --test runtime_mesh_extraction -- --nocapture --test-threads=1
+```
+
+extracts 100 `GeometryOverride` meshes of 200 and of 20,000 vertices each; in release one
+`extract_scene_frame` must stay within 2 ms and the large meshes may add at most 1 ms to it
+(best of 60 samples). It also checks that the frame holds the same `Arc<Mesh>`, with no
+second 2D draw of the mesh, and that a mesh under a 2D camera still draws through the 2D
+path. The same test file covers culling before copying: meshes outside the camera's frustum
+are not copied and the visible frame is identical to the unculled one, an outside mesh that
+casts a shadow into the view stays, and a mesh with a custom shader is never rejected. It
+prints the count of every stage (total, not drawn by 3D, outside frustum, kept for shadow,
+drawn). A debug build gates no time.
+
+The dirty-copy rule of the retained mesh records has its own file:
+
+```text
+cargo test -p engine-project --release --test runtime_retained_extraction -- --nocapture --test-threads=1
+```
+
+A static scene's second extraction copies no record, moving one entity copies one, moving a
+parent copies its children, despawn and component removal drop records, changes made while no
+frame was extracted are not lost, a failed extraction is looked at again, and over random edit
+sequences (with and without culling, some frames skipped) the incremental frame equals the one
+rebuilt from scratch. The last test prints changed, copied, retained, outside-frustum and drawn
+counts of a 5,000-mesh static scene and, in release, requires it to cost a third of a rebuild.
+
 ## What the tests establish
 
 Ordinary tests are headless: they use temporary directories, injected input and the

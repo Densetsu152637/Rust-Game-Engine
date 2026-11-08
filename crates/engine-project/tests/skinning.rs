@@ -123,6 +123,7 @@ fn runtime_deforms_mesh_before_extraction_preserving_uv_and_color() {
         engine_project::rendering3d::Camera3D::default(),
         engine_project::Transform::default(),
     ));
+    runtime.set_frustum_culling(false);
     let frame3d = runtime.extract_scene_frame().unwrap();
     let draw3d = frame3d
         .meshes
