@@ -623,3 +623,447 @@ fn appimage_tool_failure_publishes_nothing_and_cleans_up() {
     }
     assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
 }
+
+fn second_artifact(fixture: &PackageFixture) -> BuildArtifact {
+    let executable = fixture.root.join("fake-runtime-x86_64");
+    fs::write(&executable, "second slice").unwrap();
+    BuildArtifact {
+        executable,
+        generation: "g2".into(),
+        ..fixture.artifact.clone()
+    }
+}
+
+fn error_code<T>(result: engine_project::Result<T>) -> String {
+    match result {
+        Ok(_) => panic!("expected an error"),
+        Err(error) => error.diagnostics[0].code.clone(),
+    }
+}
+
+fn walk(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(walk(&path));
+        }
+        found.push(path);
+    }
+    found
+}
+
+#[test]
+fn bundle_holds_the_staged_package_in_the_app_layout() {
+    let fixture = package_fixture();
+    let bundle = fixture.root.join("First.app");
+    fs::create_dir(&bundle).unwrap();
+    let bundle_id = packaging::stage_bundle(
+        &fixture.project,
+        &fixture.artifact,
+        &bundle,
+        &fixture.engine,
+        None,
+    )
+    .unwrap();
+    let id = packaging::appimage::sanitize_id(&fixture.project.name);
+    assert_eq!(bundle_id, format!("local.engine.{id}"));
+    let contents = bundle.join("Contents");
+    assert_eq!(
+        fs::read(contents.join("MacOS/runtime")).unwrap(),
+        b"not a real executable"
+    );
+    assert!(contents.join("Resources/game/project.json").is_file());
+    assert!(contents.join("Resources/licenses/engine-LICENSE").is_file());
+    assert!(
+        contents
+            .join("Resources/licenses/runtime-Cargo.lock")
+            .is_file()
+    );
+    assert!(contents.join("Resources/generation.json").is_file());
+    assert!(contents.join("Frameworks").is_dir());
+    assert_eq!(
+        fs::read_dir(contents.join("Frameworks")).unwrap().count(),
+        0
+    );
+    assert_eq!(fs::read(contents.join("PkgInfo")).unwrap(), b"APPL????");
+    let plist = fs::read_to_string(contents.join("Info.plist")).unwrap();
+    assert!(
+        plist.contains("<key>CFBundleExecutable</key>\n\t<string>runtime</string>"),
+        "{plist}"
+    );
+    assert!(plist.contains(&format!("<string>local.engine.{id}</string>")));
+    assert!(plist.contains(&format!(
+        "<key>CFBundleIconFile</key>\n\t<string>{id}.icns</string>"
+    )));
+    let icns = fs::read(contents.join(format!("Resources/{id}.icns"))).unwrap();
+    assert_eq!(&icns[..4], b"icns");
+    assert_eq!(
+        u32::from_be_bytes(icns[4..8].try_into().unwrap()) as usize,
+        icns.len()
+    );
+    let host: serde_json::Value =
+        serde_json::from_slice(&fs::read(contents.join("Resources/package-host.json")).unwrap())
+            .unwrap();
+    assert_eq!(host["platform"], "macos");
+    assert_eq!(host["architecture"], "universal");
+    let notes = fs::read_to_string(contents.join("Resources/PACKAGE.txt")).unwrap();
+    assert!(notes.contains("application bundle"), "{notes}");
+    // Nothing of the flat layout, and no launcher scripts anywhere in the bundle.
+    for name in [
+        "runtime",
+        "game",
+        "licenses",
+        "generation.json",
+        "package-host.json",
+        "PACKAGE.txt",
+        "run.cmd",
+        "run.sh",
+    ] {
+        assert!(!bundle.join(name).exists(), "{name}");
+    }
+    for entry in walk(&bundle) {
+        assert!(
+            !matches!(
+                entry.file_name().and_then(|n| n.to_str()),
+                Some("run.cmd" | "run.sh")
+            ),
+            "{}",
+            entry.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(contents.join("MacOS/runtime"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+}
+
+#[test]
+fn bundle_identifier_override_is_validated_and_used() {
+    let fixture = package_fixture();
+    let bundle = fixture.root.join("Over.app");
+    fs::create_dir(&bundle).unwrap();
+    let id = packaging::stage_bundle(
+        &fixture.project,
+        &fixture.artifact,
+        &bundle,
+        &fixture.engine,
+        Some("com.studio.game"),
+    )
+    .unwrap();
+    assert_eq!(id, "com.studio.game");
+    let plist = fs::read_to_string(bundle.join("Contents/Info.plist")).unwrap();
+    assert!(
+        plist.contains("<string>com.studio.game</string>"),
+        "{plist}"
+    );
+    let other = fixture.root.join("Bad.app");
+    fs::create_dir(&other).unwrap();
+    assert_eq!(
+        error_code(packaging::stage_bundle(
+            &fixture.project,
+            &fixture.artifact,
+            &other,
+            &fixture.engine,
+            Some("not valid")
+        )),
+        "tooling.app.bundle_id_invalid"
+    );
+}
+
+#[test]
+fn app_destinations_are_refused_before_any_work() {
+    let fixture = package_fixture();
+    let second = second_artifact(&fixture);
+    let builds = packaging::AppBuilds {
+        arm64: &fixture.artifact,
+        x86_64: &second,
+    };
+    let tooling = packaging::macos::MacosTooling {
+        lipo: "lipo-not-run".into(),
+        xattr: "xattr-not-run".into(),
+        codesign: "codesign-not-run".into(),
+        sign_identity: None,
+    };
+    let package = |destination: &Path, bundle_id: Option<&str>| {
+        packaging::package_app(
+            &fixture.project,
+            &builds,
+            destination,
+            &fixture.engine,
+            bundle_id,
+            &tooling,
+        )
+    };
+    for name in ["plain", "plain.zip", ".app", "x/..app"] {
+        let destination = fixture.root.join(name);
+        assert_eq!(
+            error_code(package(&destination, None)),
+            "tooling.destination.invalid",
+            "{name}"
+        );
+        assert_eq!(
+            error_code(packaging::check_destination_name(
+                PackageFormat::App,
+                &destination
+            )),
+            "tooling.destination.invalid",
+            "{name}"
+        );
+        assert!(!destination.exists());
+    }
+    packaging::check_destination_name(PackageFormat::App, Path::new("Game.APP")).unwrap();
+    packaging::check_destination_name(PackageFormat::Zip, Path::new("game")).unwrap();
+    // An existing destination is kept.
+    let existing = fixture.root.join("Existing.app");
+    fs::create_dir(&existing).unwrap();
+    fs::write(existing.join("keep"), "x").unwrap();
+    assert_eq!(
+        error_code(package(&existing, None)),
+        "tooling.destination.exists"
+    );
+    assert!(existing.join("keep").is_file());
+    // A bad bundle identifier fails before staging.
+    assert_eq!(
+        error_code(package(&fixture.root.join("Id.app"), Some("x"))),
+        "tooling.app.bundle_id_invalid"
+    );
+    // The generic entry point cannot build a bundle from one executable.
+    assert_eq!(
+        error_code(try_package(
+            &fixture,
+            &fixture.root.join("Gen.app"),
+            PackageFormat::App
+        )),
+        "package.format.app"
+    );
+    assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
+}
+
+#[test]
+fn app_reports_unsupported_host_before_staging() {
+    assert_eq!(
+        error_code(packaging::macos::MacosTooling::resolve(false, None, None)),
+        "tooling.app.unsupported_host"
+    );
+    if !cfg!(target_os = "macos") {
+        assert_eq!(
+            error_code(packaging::check_format_available(PackageFormat::App)),
+            "tooling.app.unsupported_host"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn fake_macos_tooling(
+    fixture: &PackageFixture,
+    lipo: &str,
+    codesign: &str,
+) -> packaging::macos::MacosTooling {
+    let xattr_path = fixture.root.join("fake-xattr");
+    write_script(
+        &xattr_path,
+        &format!(
+            "#!/bin/sh\necho \"xattr $*\" >> '{}'\n",
+            fixture.root.join("tool-record").display()
+        ),
+    );
+    let lipo_path = fixture.root.join("fake-lipo");
+    let codesign_path = fixture.root.join("fake-codesign");
+    write_script(&lipo_path, lipo);
+    write_script(&codesign_path, codesign);
+    packaging::macos::MacosTooling {
+        lipo: lipo_path,
+        xattr: xattr_path,
+        codesign: codesign_path,
+        sign_identity: None,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn app_joins_the_slices_signs_and_publishes_the_bundle() {
+    use std::os::unix::fs::PermissionsExt;
+    let _scripts = lock_scripts();
+    let fixture = package_fixture();
+    let second = second_artifact(&fixture);
+    let record = fixture.root.join("tool-record");
+    // lipo -create -output OUT IN1 IN2 joins the inputs; codesign must see a
+    // complete bundle named *.app.
+    let tooling = fake_macos_tooling(
+        &fixture,
+        &format!(
+            "#!/bin/sh\necho \"lipo $*\" >> '{record}'\n\
+             test \"$1\" = -create || exit 6\ntest \"$2\" = -output || exit 6\n\
+             cat \"$4\" \"$5\" > \"$3\"\n",
+            record = record.display()
+        ),
+        &format!(
+            "#!/bin/sh\necho \"codesign $*\" >> '{record}'\n\
+             for last; do :; done\n\
+             case \"$last\" in *.app) test -f \"$last/Contents/Info.plist\" || exit 7;; esac\n\
+             test \"$1 $2 $3 $4\" = '--force --sign - --timestamp=none' || exit 8\n",
+            record = record.display()
+        ),
+    );
+    let destination = fixture.root.join("out/Game.app");
+    fs::create_dir(fixture.root.join("out")).unwrap();
+    let builds = packaging::AppBuilds {
+        arm64: &fixture.artifact,
+        x86_64: &second,
+    };
+    let path = packaging::package_app(
+        &fixture.project,
+        &builds,
+        &destination,
+        &fixture.engine,
+        None,
+        &tooling,
+    )
+    .unwrap();
+    assert_eq!(path, destination);
+    let runtime = destination.join("Contents/MacOS/runtime");
+    assert_eq!(
+        fs::read_to_string(&runtime).unwrap(),
+        "not a real executablesecond slice"
+    );
+    assert_eq!(
+        fs::metadata(&runtime).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert!(
+        !destination
+            .join("Contents/MacOS/runtime.universal")
+            .exists()
+    );
+    // The published bundle is not private (the staging directory was).
+    assert_eq!(
+        fs::metadata(&destination).unwrap().permissions().mode() & 0o005,
+        0o005
+    );
+    let record = fs::read_to_string(&record).unwrap();
+    let lines: Vec<&str> = record.lines().collect();
+    // lipo, then xattr strips the bundle, then codesign signs it.
+    assert_eq!(lines.len(), 3, "{record}");
+    assert!(lines[0].starts_with("lipo -create -output "), "{record}");
+    assert!(lines[1].starts_with("xattr -cr "), "{record}");
+    assert!(lines[1].ends_with(".app"), "{record}");
+    assert!(
+        lines[2].starts_with("codesign --force --sign - --timestamp=none "),
+        "{record}"
+    );
+    assert!(!record.contains("--deep"), "{record}");
+    assert_eq!(
+        staging_leftovers(&fixture.root.join("out")),
+        Vec::<String>::new()
+    );
+    // Publishing is no-clobber.
+    let error = packaging::package_app(
+        &fixture.project,
+        &builds,
+        &destination,
+        &fixture.engine,
+        None,
+        &tooling,
+    )
+    .unwrap_err();
+    assert_eq!(error.diagnostics[0].code, "tooling.destination.exists");
+}
+
+#[cfg(unix)]
+#[test]
+fn app_tool_failures_publish_nothing_and_name_the_tool() {
+    let _scripts = lock_scripts();
+    let fixture = package_fixture();
+    let second = second_artifact(&fixture);
+    let destination = fixture.root.join("Bad.app");
+    let ok = "#!/bin/sh\nexit 0\n";
+    let lipo_ok = "#!/bin/sh\ncat \"$4\" \"$5\" > \"$3\"\n";
+    for (lipo, codesign, code, needle) in [
+        (
+            "#!/bin/sh\necho boom >&2\nexit 5\n",
+            ok,
+            "tooling.app.lipo_failed",
+            "boom",
+        ),
+        (
+            "#!/bin/sh\nexit 0\n",
+            ok,
+            "tooling.app.lipo_failed",
+            "wrote no file",
+        ),
+        (
+            lipo_ok,
+            "#!/bin/sh\necho unsigned >&2\nexit 1\n",
+            "tooling.app.codesign_failed",
+            "unsigned",
+        ),
+    ] {
+        let tooling = fake_macos_tooling(&fixture, lipo, codesign);
+        let error = packaging::package_app(
+            &fixture.project,
+            &packaging::AppBuilds {
+                arm64: &fixture.artifact,
+                x86_64: &second,
+            },
+            &destination,
+            &fixture.engine,
+            None,
+            &tooling,
+        )
+        .unwrap_err();
+        assert_eq!(error.diagnostics[0].code, code);
+        assert!(error.diagnostics[0].message.contains(needle), "{error:?}");
+        assert!(!destination.exists());
+    }
+    assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn signing_covers_nested_code_first_and_uses_the_identity_when_set() {
+    let _scripts = lock_scripts();
+    let fixture = package_fixture();
+    let record = fixture.root.join("sign-record");
+    let mut tooling = fake_macos_tooling(
+        &fixture,
+        "#!/bin/sh\nexit 0\n",
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{record}'\n",
+            record = record.display()
+        ),
+    );
+    tooling.sign_identity = Some("Developer ID Application: Test".into());
+    let bundle = fixture.root.join("Nested.app");
+    let frameworks = bundle.join("Contents/Frameworks");
+    fs::create_dir_all(&frameworks).unwrap();
+    fs::write(frameworks.join("libb.dylib"), "").unwrap();
+    fs::write(frameworks.join("liba.dylib"), "").unwrap();
+    packaging::macos::sign_bundle(&tooling, &bundle).unwrap();
+    let record = fs::read_to_string(record).unwrap();
+    let paths: Vec<&str> = record
+        .lines()
+        .map(|line| line.rsplit(' ').next().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            frameworks.join("liba.dylib").to_str().unwrap(),
+            frameworks.join("libb.dylib").to_str().unwrap(),
+            bundle.to_str().unwrap()
+        ]
+    );
+    for line in record.lines() {
+        assert!(
+            line.starts_with(
+                "--force --sign Developer ID Application: Test --options runtime --timestamp "
+            ),
+            "{line}"
+        );
+    }
+}

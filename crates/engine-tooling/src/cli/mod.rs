@@ -30,7 +30,7 @@ project validate <manifest> [--no-rust]\n  \
 project assets <manifest>\n  \
 project import-model <manifest> <project-relative-source> --prefix <unique-name>\n  \
 project shaders <manifest>\n  \
-project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage]\n  \
+project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage|app] [--bundle-id reverse.dns]\n  \
 scene inspect <scene> --project-root <project-directory>\n  \
 run <manifest> [--headless] [--ticks N] [--input action:tick]... [--events schedule.json] [--user-data dir] [--scene-override file] [--render-backend primary|vulkan|dx12|metal|gl|all] [--acoustics-backend auto|ray_query|compute|cpu] [--screenshot file.png [--screenshot-size WxH]]\n  \
 editor <manifest>\n  \

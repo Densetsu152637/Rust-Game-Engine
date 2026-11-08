@@ -5,6 +5,7 @@ use super::errors::{compiler_diagnostic, usage};
 use super::options::options;
 use super::{Outcome, USAGE};
 use crate::artifacts;
+use crate::packaging::macos::{self, MacosTooling};
 use crate::packaging::{self, PackageFormat};
 use engine_core::Result;
 use engine_project::Project;
@@ -97,10 +98,13 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             // `--format json` stays the global output option; any other value
             // selects the package format.
             let (format, arguments) = package_format(arguments)?;
-            let (args, flags) = options(&arguments, &["--profile"])?;
+            let (args, flags) = options(&arguments, &["--profile", "--bundle-id"])?;
+            if flags.contains_key("--bundle-id") && format != PackageFormat::App {
+                return Err(usage("--bundle-id applies to --format app only"));
+            }
             if args.len() != 2 {
                 return Err(usage(
-                    "Usage: engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage]",
+                    "Usage: engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage|app] [--bundle-id reverse.dns]",
                 ));
             }
             let release = match flags.get("--profile").map(String::as_str) {
@@ -111,8 +115,16 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             let project = Project::load(&args[0])?;
             let destination = Path::new(&args[1]);
             // Reject unusable destinations before spending time compiling.
+            packaging::check_destination_name(format, destination)?;
             artifacts::check_package_destination(&project, destination)?;
+            let bundle_id = flags.get("--bundle-id").map(String::as_str);
+            if format == PackageFormat::App {
+                macos::bundle_identifier(&project.name, bundle_id)?;
+            }
             packaging::check_format_available(format)?;
+            if format == PackageFormat::App {
+                return package_app(&project, destination, release, bundle_id);
+            }
             if rust_crate(&project)?.is_none() {
                 return Err(engine_project::Error::new(
                     "project.rust.missing",
@@ -148,6 +160,7 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             let key = match format {
                 PackageFormat::Dir => "directory",
                 PackageFormat::AppImage => "appimage",
+                PackageFormat::App => "app",
                 PackageFormat::Zip | PackageFormat::TarGz => "archive",
             };
             result[key] = json!(path);
@@ -156,6 +169,67 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
         "" => Err(usage(format!("Expected a project command\n{USAGE}"))),
         other => Err(usage(format!("Unknown project command: {other}\n{USAGE}"))),
     }
+}
+
+/// `--format app`: one generation per Apple architecture, joined by `lipo` into a
+/// signed `.app`. The host, tools, bundle identifier and Rust targets are checked
+/// before the first compile.
+fn package_app(
+    project: &Project,
+    destination: &Path,
+    release: bool,
+    bundle_id: Option<&str>,
+) -> Result<Outcome> {
+    let tooling = MacosTooling::from_process()?;
+    let bundle_id = macos::bundle_identifier(&project.name, bundle_id)?;
+    if rust_crate(project)?.is_none() {
+        return Err(engine_project::Error::new(
+            "project.rust.missing",
+            "Packaging requires the project's Rust gameplay crate",
+        )
+        .into());
+    }
+    let (mut compiler, mut request) = compile_request(project)?;
+    request.release = release;
+    macos::check_targets(&compiler.rustc)?;
+    let mut build = |target: &str| {
+        let mut request = request.clone();
+        request.target = Some(target.to_owned());
+        compiler.compile(&request, &AtomicBool::new(false))
+    };
+    let arm64 = build(macos::ARM64_TARGET)?;
+    let x86_64 = build(macos::X86_64_TARGET)?;
+    prune(&request, &x86_64.directory);
+    tracing::info!(
+        arm64 = %arm64.generation,
+        x86_64 = %x86_64.generation,
+        destination = %destination.display(),
+        "packaging project as an app bundle"
+    );
+    let path = packaging::package_app(
+        project,
+        &packaging::AppBuilds {
+            arm64: &arm64,
+            x86_64: &x86_64,
+        },
+        destination,
+        &request.engine_root,
+        Some(&bundle_id),
+        &tooling,
+    )?;
+    tracing::info!(path = %path.display(), "app bundle written");
+    Ok(Outcome::Json(json!({
+        "format": PackageFormat::App.name(),
+        "app": path,
+        "bundle_id": bundle_id,
+        "generation": arm64.generation,
+        "fingerprint": arm64.fingerprint,
+        "x86_64_generation": x86_64.generation,
+        "targets": [macos::ARM64_TARGET, macos::X86_64_TARGET],
+        "profile": if release { "release" } else { "dev" },
+        "signing": if tooling.sign_identity.is_some() { "identity" } else { "ad-hoc" },
+        "launchers": [],
+    })))
 }
 
 /// Splits a package `--format <name>` (anything but the global `json`) from the
