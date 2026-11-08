@@ -127,7 +127,7 @@ Building needs a Linux host and
 
 `scripts/package/fetch-appimagetool.sh <dest-dir>` downloads the pinned `appimagetool` 1.9.1 and type2
 runtime 20251108 (x86_64), verifies their SHA-256 checksums and prints the two paths;
-CI and later release workflows use it so the pins live in one place.
+CI and the [release workflow](#release-workflow) both use it so the pins live in one place.
 
 Packaging fails before anything is staged, and before the game is compiled, with
 `tooling.appimage.unsupported_host` (not a Linux host, for example Windows or macOS),
@@ -296,6 +296,115 @@ Limits of the bundle: it is verified only on macOS CI (job "App bundle (macOS)")
 file generators, layout, identifier rules and tool error handling are unit tested on
 every OS with fake tools.
 
+## Release workflow
+
+`.github/workflows/release.yml` packages one project for every desktop platform,
+smoke-tests each artifact the way a user receives it and uploads it. It is the only
+place where all four release artifacts are built; `ci.yml` keeps testing the same
+formats with the dev profile and uploads nothing.
+
+**Triggers.**
+
+- `workflow_dispatch` (Actions, "Release", Run workflow) with two inputs: `project`,
+  the project's manifest directory relative to the repository root (it holds
+  `project.json`; default `examples/first-project`), and `profile`, `release` (default)
+  or `dev`, the two values `engine project package --profile` accepts. GitHub offers the
+  button only once the file is on the default branch; after that,
+  `gh workflow run release.yml --ref <branch> -f project=<dir> -f profile=<profile>`
+  also runs it from another branch.
+- A push of a tag matching `v*` packages `examples/first-project` with the release
+  profile and then drafts a GitHub release (below).
+- `pull_request`, only when `.github/workflows/release.yml` or `scripts/package/**`
+  changes, so a change to the pipeline runs end to end before it merges (with the
+  default project and profile). It is not a required check.
+
+**Inputs are validated** by `scripts/package/release-meta.sh` before any build: the
+project must be a relative path of letters, digits, `.`, `_`, `-` and `/` with no
+empty, `.` or `..` component and no component starting with `-`, an existing directory holding
+`project.json`, and must resolve (symlinks included) inside the checkout. The profile
+must be `release` or `dev`. The values reach the scripts and build steps only through
+`env:`, never through `${{ }}` text inside a shell script.
+
+**Jobs.** `prepare` validates and derives the names; four independent package jobs then
+run on the runners CI uses; `checksums` needs all four; `publish` needs `checksums`.
+
+| Job | Runner | Format | Artifact (`<id>-<version>-` then) |
+| --- | --- | --- | --- |
+| Windows zip | `windows-2025-vs2026` | `zip` | `windows-x86_64.zip` |
+| Linux tar.gz | `ubuntu-24.04` | `tar.gz` | `linux-x86_64.tar.gz` |
+| Linux AppImage | `ubuntu-22.04` (oldest supported glibc) | `appimage` | `linux-x86_64.AppImage` |
+| macOS app | `macos-26` | `app`, zipped | `macos-universal.app.zip` |
+
+Each job uses the CI setup: pinned action SHAs, the toolchain from `rust-toolchain.toml`
+(`scripts/ci/install-toolchain.sh`) and `Swatinem/rust-cache` with its own cache key
+(saved only on `main`). Workflow permissions are `contents: read`; only `publish` has
+`contents: write`. Runs of the same event and ref share a concurrency group (only pull
+request runs are cancelled by a newer push) and every job has a `timeout-minutes`.
+
+**Artifact names.** `<id>` is the manifest `name` reduced exactly like the AppImage id
+(lowercase ASCII letters and digits, other runs one `-`, at most 64 characters, `game`
+when nothing is left: `First Project` is `first-project`). The manifest has no version
+field (an unknown key is rejected), so `<version>` is the tag without its leading `v` on
+a tag run and `dev-<first 7 characters of the commit>` otherwise; a tag with characters
+other than letters, digits, `.`, `_` and `-` is refused. An archive's top-level
+folder is its file name without `.zip` or `.tar.gz`. The macOS bundle inside the zip is
+`<id>.app`, built with the default bundle identifier `local.engine.<id>`; shipping a
+game needs a `--bundle-id` of its own, which the workflow does not pass yet.
+
+**Smoke checks** run on the artifact itself, in `scripts/package/smoke-archive.sh`,
+`smoke-appimage.sh` and `smoke-app.sh`, which `ci.yml` calls too. Each check group runs
+even when an earlier one failed, and the script fails if any did.
+
+- Archives (zip, tar.gz): extracted into a fresh directory (Windows zips use
+  `Expand-Archive` with errors made fatal, Linux zips `unzip`, tar.gz `tar`); exactly one top-level folder; `runtime[.exe]`,
+  `run.sh`/`run.cmd`, `game/project.json`, `generation.json`, `PACKAGE.txt` and
+  `licenses/` present; on Linux `runtime` and `run.sh` are executable; the runtime, started
+  with no project argument from an unrelated directory, and the launcher both exit 0 with
+  `--headless --ticks 3`.
+- AppImage: no `.zsync` file next to it; `--appimage-extract-and-run --headless --ticks 3`
+  (the runners have no FUSE); `--appimage-extract` gives an AppDir with `AppRun`,
+  `runtime`, `game/project.json`, `.DirIcon`, `<id>.png` and exactly one `.desktop` file, `<id>.desktop`, that passes
+  `desktop-file-validate` (the id must equal the one in the artifact name); the extracted
+  `AppRun` starts from a read-only tree with `APPDIR` unset.
+- macOS app: the zip, made with `ditto -c -k --sequesterRsrc --keepParent`, is unpacked
+  with `ditto -x -k` so the signature of what a user downloads is what is checked:
+  `plutil -lint`, `Contents/Resources/<id>.icns` is the only icon, no launcher scripts, `lipo -archs` lists `x86_64` and `arm64`,
+  `codesign --verify --deep --strict`, a resolve-only run that prints
+  `.../Resources/game/project.json`, a headless run, and the same two runs under
+  `arch -x86_64` when Rosetta is installed (otherwise the slice is built but not run).
+  `ditto` is used because `zip` drops the extended attributes and symbolic links a
+  signature depends on.
+
+**Checksums and artifacts.** Every package job uploads its file with `actions/upload-artifact`
+(artifacts `release-windows-zip`, `release-linux-tar-gz`, `release-linux-appimage`,
+`release-macos-app-zip`; the files are already compressed, so they are stored as is).
+`checksums` downloads them, fails unless exactly the four expected files exist, writes
+`SHA256SUMS` (`sha256sum` format, verified with `sha256sum -c`) and uploads it as
+`sha256sums` (a name the `release-*` download pattern cannot match, so a re-run of the job
+never sees the file of an earlier attempt). Actions artifacts do not keep file modes, so a downloaded AppImage
+needs `chmod +x`.
+
+**Tag to draft release.** A pushed `v*` tag runs the whole workflow, and when every job
+passes, `publish` runs `gh release create <tag> --draft --verify-tag` with the four
+files and `SHA256SUMS`. The release stays a draft: someone reviews the files and
+publishes it by hand. After a failed run the draft, if one was created, has to be deleted
+before the run is repeated, because the release already exists. A dispatch or a pull
+request never creates a release.
+
+**What stays manual.**
+
+- Developer ID signing and notarisation of the macOS app (see Signing above): the
+  workflow ships the ad-hoc signed bundle, so a downloaded copy is quarantined by
+  Gatekeeper until the user approves it.
+- Steam depot upload and the Steam variants of the packages (see [Steam](steam.md)).
+- Publishing the draft release and writing its notes.
+- Real-window, GPU and audio checks: the smoke runs are headless.
+
+Static checks (`actionlint` for the workflow, `shellcheck` for the scripts) do not cover
+the behaviour; the behaviour of the four jobs, the caches, the uploads and the draft
+release is established only by a run on GitHub (the pull request run for changes to the
+pipeline, a dispatch or a tag afterwards).
+
 ## Steam variant
 
 A package built by a tooling binary with `--features steam` links the real Steam backend,
@@ -323,3 +432,5 @@ unit tested on every OS (the `lipo`/`codesign` calls with fake tools on Unix); t
 universal build, `plutil -lint`, `lipo -archs`, the resolve-only and headless launches,
 `codesign --verify` and the Rosetta run of the x86_64 slice happen only in the CI job
 "App bundle (macOS)".
+The release workflow runs the same smoke scripts on its release-profile
+artifacts (see [Release workflow](#release-workflow)).
