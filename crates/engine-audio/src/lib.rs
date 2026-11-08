@@ -262,6 +262,7 @@ impl AudioEngine {
     /// back to offline success. The device must support the requested stereo rate.
     pub fn device(config: AudioConfig) -> Result<Self> {
         let mut engine = Self::offline(config)?;
+        engine.control.lock()?.realtime = true;
         engine.stream = Some(device::open(&engine.control, engine.device_frames.clone())?);
         engine.control.lock()?.ready()?;
         Ok(engine)

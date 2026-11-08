@@ -8,7 +8,10 @@
 //! [`PackageFormat::Dir`], the archive file for the archive formats. It must not
 //! exist. Archives hold one top-level folder named after the destination file
 //! name without its format suffix (`dist/game-1.0.tar.gz` holds `game-1.0/`).
+//! [`PackageFormat::AppImage`] writes one executable file: the staged tree plus
+//! the AppImage files ([`appimage`]) is the AppDir that `appimagetool` packs.
 
+pub mod appimage;
 pub mod archive;
 
 use crate::artifacts::{copy_tree, export_new_directory, reject_source_destination};
@@ -27,17 +30,20 @@ pub enum PackageFormat {
     Zip,
     /// A gzip-compressed tar archive with one top-level folder.
     TarGz,
+    /// A Linux AppImage file, built with `appimagetool` on a Linux host.
+    AppImage,
 }
 
 impl PackageFormat {
     /// Names accepted by `--format`, for usage messages.
-    pub const NAMES: &'static str = "dir|zip|tar.gz";
+    pub const NAMES: &'static str = "dir|zip|tar.gz|appimage";
 
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "dir" => Some(Self::Dir),
             "zip" => Some(Self::Zip),
             "tar.gz" => Some(Self::TarGz),
+            "appimage" => Some(Self::AppImage),
             _ => None,
         }
     }
@@ -47,13 +53,14 @@ impl PackageFormat {
             Self::Dir => "dir",
             Self::Zip => "zip",
             Self::TarGz => "tar.gz",
+            Self::AppImage => "appimage",
         }
     }
 
     /// File name suffix of the archive, `None` for a directory.
     fn suffix(self) -> Option<&'static str> {
         match self {
-            Self::Dir => None,
+            Self::Dir | Self::AppImage => None,
             Self::Zip => Some(".zip"),
             Self::TarGz => Some(".tar.gz"),
         }
@@ -71,23 +78,14 @@ pub fn package(
     engine_root: &Path,
     format: PackageFormat,
 ) -> Result<PathBuf> {
+    if format == PackageFormat::AppImage {
+        // The host and tool are checked before anything is staged.
+        let tooling = appimage::AppImageTooling::from_process()?;
+        return package_appimage(project, artifact, destination, engine_root, &tooling);
+    }
     let package_host = engine_platform::PackageHost::current()
         .map_err(|error| Error::new("package.platform.unsupported", error.to_string()))?;
-    reject_source_destination(&project.root, destination, true)?;
-    if !artifact.executable.is_file() {
-        return Err(Error::new(
-            "package.runtime.missing",
-            "Compiled generation executable is missing",
-        ));
-    }
-    let engine_root = engine_root.canonicalize()?;
-    let engine_license = engine_root.join("LICENSE");
-    if !engine_license.is_file() {
-        return Err(Error::new(
-            "package.license.missing",
-            "Engine LICENSE is required",
-        ));
-    }
+    let engine_license = validate_inputs(project, artifact, destination, engine_root)?;
     let inputs = Inputs {
         project,
         artifact,
@@ -98,6 +96,7 @@ pub fn package(
     match format {
         PackageFormat::Dir => export_new_directory(destination, |staging| stage(&inputs, staging))
             .map(|()| destination.to_path_buf()),
+        PackageFormat::AppImage => unreachable!("returned above"),
         PackageFormat::Zip | PackageFormat::TarGz => {
             let folder = archive_folder(destination, format)?;
             // Relative to the package root.
@@ -108,6 +107,104 @@ pub fn package(
             .map(|()| destination.to_path_buf())
         }
     }
+}
+
+/// Fail early when `format` cannot be produced on this host: AppImage needs a
+/// Linux host and `appimagetool` (see [`appimage::AppImageTooling`]). Other formats
+/// need nothing.
+pub fn check_format_available(format: PackageFormat) -> Result<()> {
+    if format == PackageFormat::AppImage {
+        appimage::AppImageTooling::from_process()?;
+    }
+    Ok(())
+}
+
+/// Package as an AppImage with the host and tool already resolved (tests inject a
+/// fake tool; [`package`] resolves them from the process). `destination` is the
+/// `.AppImage` file to create.
+pub fn package_appimage(
+    project: &Project,
+    artifact: &BuildArtifact,
+    destination: &Path,
+    engine_root: &Path,
+    tooling: &appimage::AppImageTooling,
+) -> Result<PathBuf> {
+    let package_host = appimage_host();
+    let engine_license = validate_inputs(project, artifact, destination, engine_root)?;
+    let inputs = Inputs {
+        project,
+        artifact,
+        package_host: &package_host,
+        engine_license: &engine_license,
+        format: PackageFormat::AppImage,
+    };
+    appimage::export_new_appimage(destination, &project.name, tooling, |appdir| {
+        stage(&inputs, appdir)
+    })
+    .map(|()| destination.to_path_buf())
+}
+
+/// Common checks before staging; returns the canonical engine LICENSE path.
+fn validate_inputs(
+    project: &Project,
+    artifact: &BuildArtifact,
+    destination: &Path,
+    engine_root: &Path,
+) -> Result<PathBuf> {
+    reject_source_destination(&project.root, destination, true)?;
+    if !artifact.executable.is_file() {
+        return Err(Error::new(
+            "package.runtime.missing",
+            "Compiled generation executable is missing",
+        ));
+    }
+    engine_license(engine_root)
+}
+
+/// An AppImage always holds a Linux runtime, named `runtime`, whatever host
+/// generated the AppDir files (the AppDir step is testable on every OS).
+fn appimage_host() -> engine_platform::PackageHost {
+    engine_platform::PackageHost {
+        schema: 1,
+        platform: engine_platform::HostPlatform::Linux,
+        architecture: std::env::consts::ARCH.into(),
+        runtime_filename: "runtime".into(),
+        launcher_filename: "run.sh".into(),
+    }
+}
+
+fn engine_license(engine_root: &Path) -> Result<PathBuf> {
+    let engine_license = engine_root.canonicalize()?.join("LICENSE");
+    if !engine_license.is_file() {
+        return Err(Error::new(
+            "package.license.missing",
+            "Engine LICENSE is required",
+        ));
+    }
+    Ok(engine_license)
+}
+
+/// The pure part of an AppImage build: stage the package and the AppImage files
+/// (`AppRun`, `.desktop`, icons) into the empty directory `appdir`, as
+/// `package` does before it runs `appimagetool`. Needs neither the tool nor a
+/// Linux host. Returns the sanitised project id.
+pub fn stage_appdir(
+    project: &Project,
+    artifact: &BuildArtifact,
+    appdir: &Path,
+    engine_root: &Path,
+) -> Result<String> {
+    let package_host = appimage_host();
+    let engine_license = engine_license(engine_root)?;
+    let inputs = Inputs {
+        project,
+        artifact,
+        package_host: &package_host,
+        engine_license: &engine_license,
+        format: PackageFormat::AppImage,
+    };
+    stage(&inputs, appdir)?;
+    appimage::write_appdir_files(appdir, &project.name)
 }
 
 /// The top-level folder of an archive: the destination file name without the
@@ -217,6 +314,9 @@ fn package_notes(inputs: &Inputs<'_>) -> String {
     } = inputs;
     let kind = match format {
         PackageFormat::Dir => "directory package".to_owned(),
+        PackageFormat::AppImage => {
+            "directory package packed as an AppImage; run the .AppImage file (AppRun starts the runtime)".to_owned()
+        }
         archive => format!(
             "directory package distributed as a {} archive; extract it before launching",
             archive.name()
@@ -238,9 +338,15 @@ mod tests {
 
     #[test]
     fn formats_parse_and_name_round_trip() {
-        for format in [PackageFormat::Dir, PackageFormat::Zip, PackageFormat::TarGz] {
+        for format in [
+            PackageFormat::Dir,
+            PackageFormat::Zip,
+            PackageFormat::TarGz,
+            PackageFormat::AppImage,
+        ] {
             assert_eq!(PackageFormat::parse(format.name()), Some(format));
         }
+        assert_eq!(PackageFormat::parse("AppImage"), None);
         assert_eq!(PackageFormat::parse("tgz"), None);
         assert_eq!(PackageFormat::parse("json"), None);
     }

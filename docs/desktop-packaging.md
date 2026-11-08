@@ -4,7 +4,7 @@
 > `artifacts::package_project` as the directory-format shortcut) and tested by its
 > `tests/artifacts.rs` and `tests/runtime_pipeline.rs`.
 
-`engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz]`
+`engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage]`
 compiles the project's Rust gameplay crate with the engine into a native generation
 and exports a self-contained package that needs neither Cargo nor the source
 checkout to run.
@@ -19,6 +19,7 @@ output option and is not a package format.
 | `dir` (default) | a new directory | the layout below, unchanged |
 | `zip` | a new archive file | deflate zip with one top-level folder |
 | `tar.gz` | a new archive file | gzip-compressed tar with one top-level folder |
+| `appimage` | a new `.AppImage` file | Linux AppImage of the layout below (Linux host with `appimagetool` only; see [AppImage](#appimage)) |
 
 The destination is the path of the thing created and must not exist (an existing
 file or directory is refused with `tooling.destination.exists`, and a failed export
@@ -95,6 +96,68 @@ With an archive format the same tree sits inside the archive's top-level folder.
   trusted host directories, not a sandbox against another process racing file system
   entries.
 
+## AppImage
+
+`--format appimage` packs the same staged layout into one executable
+`<destination>` file (name it `*.AppImage`; any new file name is accepted). The
+staged package becomes an AppDir with these files added at its root:
+
+```text
+AppRun               POSIX sh, 0755: resolves its own directory with readlink -f on $0, then exec "$HERE/runtime" "$@"
+<id>.desktop         Type=Application, Name=<project name>, Exec=runtime, Icon=<id>, Categories=Game;, Terminal=false
+<id>.png, .DirIcon   the default engine icon (256x256 PNG; the manifest has no icon field yet)
+```
+
+`<id>` is the project name reduced to lowercase ASCII letters and digits, each other
+run of characters (including non-ASCII ones) becoming one `-`, with leading and
+trailing `-` dropped and at most 64 characters; a name with no ASCII letter or digit
+gives `game` (`First Project` is `first-project`). The runtime finds `game/project.json`
+beside itself (see the lookup rules above), so `AppRun` passes no project argument.
+`AppRun` never reads an inherited `APPDIR` (a nested AppImage or stale variable could
+point at another image); it always locates itself from `$0`.
+
+Building needs a Linux host and
+[`appimagetool`](https://github.com/AppImage/appimagetool/releases):
+
+| Variable | Meaning |
+| --- | --- |
+| `ENGINE_APPIMAGETOOL` | Path of the `appimagetool` executable. When set and non-empty it is the only candidate. Otherwise `appimagetool` is searched on `PATH`. |
+| `ENGINE_APPIMAGE_RUNTIME` | Optional path of a pinned [type2 runtime](https://github.com/AppImage/type2-runtime/releases), passed as `--runtime-file` so the tool never downloads a runtime while packaging. |
+
+`scripts/package/fetch-appimagetool.sh <dest-dir>` downloads the pinned `appimagetool` 1.9.1 and type2
+runtime 20251108 (x86_64), verifies their SHA-256 checksums and prints the two paths;
+CI and later release workflows use it so the pins live in one place.
+
+Packaging fails before anything is staged, and before the game is compiled, with
+`tooling.appimage.unsupported_host` (not a Linux host, for example Windows or macOS),
+`tooling.appimage.tool_missing` (no executable `appimagetool`) or
+`tooling.appimage.runtime_missing` (`ENGINE_APPIMAGE_RUNTIME` is not a file).
+`tooling.appimage.failed` reports a tool that could not start, exited non-zero or wrote
+no file. The tool runs with `APPIMAGE_EXTRACT_AND_RUN=1` (it needs no FUSE) and
+`--no-appstream`. `ARCH` is always set from the host architecture (an inherited
+`ARCH` is ignored), and the CI variables `appimagetool` 1.9.1 reads to guess update
+information (`GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_OWNER`, `GITHUB_TOKEN`,
+`TRAVIS_*`, `CI_PROJECT_URL`, `CI_COMMIT_REF_NAME`, `CI_JOB_NAME`) and `OWD` are
+removed from its environment, so no update information or `.zsync` file is
+produced. The tool is given a not-yet-existing output path in a staging directory
+next to the destination, and the result is published with
+no-clobber, so an existing destination is refused with `tooling.destination.exists`
+and a failure publishes nothing. The result key is `appimage` (not `archive`).
+
+Limits of an AppImage package:
+
+- **Host libraries.** The AppImage bundles only the runtime and the game. Vulkan
+  (`libvulkan`), ALSA, X11 and Wayland libraries come from the host; `libvulkan` is
+  deliberately not bundled because it must match the host GPU driver.
+- **glibc.** The runtime links the glibc of the machine that built it, so it runs on
+  that glibc or newer. CI builds on `ubuntu-22.04`, the oldest supported baseline.
+- **Read-only mount.** An AppImage is a read-only squashfs mounted at run time, so the
+  game must not write beside the executable. Player saves and settings already go to
+  the user-data root (see Player data), never into the package.
+- **FUSE.** Running the file needs FUSE 2, or `--appimage-extract-and-run`
+  (`APPIMAGE_EXTRACT_AND_RUN=1`) where it is missing, as on CI runners.
+- **Not provided.** Signing, update information and bundled shared libraries.
+
 ## Steam variant
 
 A package built by a tooling binary with `--features steam` links the real Steam backend,
@@ -112,4 +175,8 @@ arguments). A packaged run with a real window, GPU playback and audio is a separ
 check that headless launches do not establish. Windows is the validated packaging
 platform; the Linux `tar.gz` round trip (package, extract with `tar`, run the runtime
 with no arguments and `run.sh`, both `--headless --ticks 3`) is exercised in CI
-(job "Workspace tests (Linux)"), while macOS packaging is unverified.
+(job "Workspace tests (Linux)"), while macOS packaging is unverified. The AppImage
+layout, `AppRun`, `.desktop` and icon generation and the tool error codes are unit
+tested on every OS; the real AppImage (`appimagetool` run, then the file started with
+`--appimage-extract-and-run --headless --ticks 3`, `--appimage-extract` and
+`desktop-file-validate`) is built and checked only by the CI job "AppImage (Linux)".

@@ -388,3 +388,238 @@ fn degenerate_archive_names_are_refused_before_any_work() {
     }
     assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
 }
+
+/// Serialises the tests that write a script and then execute it: another test
+/// thread forking while a script is open for writing makes the exec fail with
+/// ETXTBSY ("Text file busy"). Held from the script write to the end of the test.
+#[cfg(unix)]
+static SCRIPT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(unix)]
+fn lock_scripts() -> std::sync::MutexGuard<'static, ()> {
+    SCRIPT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Write an executable script and close the file before it can be executed.
+#[cfg(unix)]
+fn write_script(path: &Path, script: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let mut file = fs::File::create(path).unwrap();
+    file.write_all(script.as_bytes()).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+fn fake_tool(fixture: &PackageFixture, script: &str) -> packaging::appimage::AppImageTooling {
+    let tool = fixture.root.join("fake-appimagetool");
+    write_script(&tool, script);
+    packaging::appimage::AppImageTooling {
+        tool,
+        runtime_file: None,
+    }
+}
+
+#[test]
+fn appdir_holds_the_staged_package_and_the_appimage_files() {
+    let fixture = package_fixture();
+    let appdir = fixture.root.join("First.AppDir");
+    fs::create_dir(&appdir).unwrap();
+    let id = packaging::stage_appdir(
+        &fixture.project,
+        &fixture.artifact,
+        &appdir,
+        &fixture.engine,
+    )
+    .unwrap();
+    assert_eq!(id, packaging::appimage::sanitize_id(&fixture.project.name));
+    // The runtime is named `runtime` whatever host generated the AppDir.
+    assert_eq!(
+        fs::read(appdir.join("runtime")).unwrap(),
+        b"not a real executable"
+    );
+    assert!(appdir.join("game/project.json").is_file());
+    assert!(appdir.join("licenses/engine-LICENSE").is_file());
+    let run = fs::read_to_string(appdir.join("AppRun")).unwrap();
+    assert!(run.starts_with("#!/bin/sh\n"), "{run}");
+    assert!(run.contains("exec \"$HERE/runtime\" \"$@\""), "{run}");
+    assert!(!run.contains("APPDIR"), "{run}");
+    assert!(!run.contains("project.json"), "{run}");
+    let desktop = fs::read_to_string(appdir.join(format!("{id}.desktop"))).unwrap();
+    for line in [
+        "[Desktop Entry]",
+        "Type=Application",
+        &format!("Name={}", fixture.project.name),
+        "Exec=runtime",
+        &format!("Icon={id}"),
+        "Categories=Game;",
+        "Terminal=false",
+    ] {
+        assert!(desktop.lines().any(|l| l == line), "{line}: {desktop}");
+    }
+    let icon = fs::read(appdir.join(format!("{id}.png"))).unwrap();
+    assert_eq!(&icon[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(fs::read(appdir.join(".DirIcon")).unwrap(), icon);
+    let notes = fs::read_to_string(appdir.join("PACKAGE.txt")).unwrap();
+    assert!(notes.contains("AppImage"), "{notes}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |name: &str| {
+            fs::metadata(appdir.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("AppRun"), 0o755);
+        assert_eq!(mode("runtime"), 0o755);
+    }
+}
+
+#[test]
+fn appimage_reports_unsupported_host_and_missing_tool_before_staging() {
+    let fixture = package_fixture();
+    fn code<T>(result: engine_project::Result<T>) -> String {
+        match result {
+            Ok(_) => panic!("expected an error"),
+            Err(error) => error.diagnostics[0].code.clone(),
+        }
+    }
+    assert_eq!(
+        code(packaging::appimage::AppImageTooling::resolve(
+            false, None, None, None
+        )),
+        "tooling.appimage.unsupported_host"
+    );
+    assert_eq!(
+        code(packaging::appimage::AppImageTooling::resolve(
+            true, None, None, None
+        )),
+        "tooling.appimage.tool_missing"
+    );
+    // The process-level check agrees on a host that is not Linux, before staging.
+    if !cfg!(target_os = "linux") {
+        assert_eq!(
+            code(packaging::check_format_available(PackageFormat::AppImage)),
+            "tooling.appimage.unsupported_host"
+        );
+        let destination = fixture.root.join("g.AppImage");
+        assert_eq!(
+            code(try_package(&fixture, &destination, PackageFormat::AppImage)),
+            "tooling.appimage.unsupported_host"
+        );
+        assert!(!destination.exists());
+    }
+    packaging::check_format_available(PackageFormat::Zip).unwrap();
+    assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn appimage_runs_the_tool_on_the_appdir_and_publishes_the_output() {
+    use std::os::unix::fs::PermissionsExt;
+    let _scripts = lock_scripts();
+    let fixture = package_fixture();
+    let record = fixture.root.join("tool-record");
+    // Records the environment and arguments, checks the AppDir, writes the output.
+    let tooling = fake_tool(
+        &fixture,
+        &format!(
+            "#!/bin/sh\n\
+             echo \"extract=$APPIMAGE_EXTRACT_AND_RUN\" > '{record}'\n\
+             echo \"args=$#\" >> '{record}'\n\
+             for last; do :; done\n\
+             test ! -e \"$last\" || exit 6\n\
+             test -x \"$2/AppRun\" || exit 7\n\
+             test -x \"$2/runtime\" || exit 8\n\
+             ls \"$2\" >> '{record}'\n\
+             echo APPIMAGE > \"$last\"\n",
+            record = record.display()
+        ),
+    );
+    let destination = fixture.root.join("out/game.AppImage");
+    fs::create_dir(fixture.root.join("out")).unwrap();
+    let path = packaging::package_appimage(
+        &fixture.project,
+        &fixture.artifact,
+        &destination,
+        &fixture.engine,
+        &tooling,
+    )
+    .unwrap();
+    assert_eq!(path, destination);
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "APPIMAGE\n");
+    assert_eq!(
+        fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    let record = fs::read_to_string(record).unwrap();
+    assert!(record.contains("extract=1"), "{record}");
+    // --no-appstream, AppDir, output.
+    assert!(record.contains("args=3"), "{record}");
+    assert!(record.contains("AppRun"), "{record}");
+    assert_eq!(
+        staging_leftovers(&fixture.root.join("out")),
+        Vec::<String>::new()
+    );
+
+    // The runtime file is passed to the tool, and an existing destination is kept.
+    let runtime = fixture.root.join("type2-runtime");
+    fs::write(&runtime, "rt").unwrap();
+    let mut with_runtime = tooling.clone();
+    with_runtime.runtime_file = Some(runtime.clone());
+    write_script(
+        &with_runtime.tool,
+        "#!/bin/sh\ncase \"$*\" in *--runtime-file*type2-runtime*) ;; *) exit 9;; esac\nfor last; do :; done\necho SECOND > \"$last\"\n",
+    );
+    let second = fixture.root.join("second.AppImage");
+    packaging::package_appimage(
+        &fixture.project,
+        &fixture.artifact,
+        &second,
+        &fixture.engine,
+        &with_runtime,
+    )
+    .unwrap();
+    let error = packaging::package_appimage(
+        &fixture.project,
+        &fixture.artifact,
+        &second,
+        &fixture.engine,
+        &with_runtime,
+    )
+    .unwrap_err();
+    assert_eq!(error.diagnostics[0].code, "tooling.destination.exists");
+    assert_eq!(fs::read_to_string(&second).unwrap(), "SECOND\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn appimage_tool_failure_publishes_nothing_and_cleans_up() {
+    let _scripts = lock_scripts();
+    let fixture = package_fixture();
+    let destination = fixture.root.join("bad.AppImage");
+    for (script, needle) in [
+        ("#!/bin/sh\necho boom >&2\nexit 5\n", "boom"),
+        ("#!/bin/sh\nexit 0\n", "wrote no file"),
+    ] {
+        let tooling = fake_tool(&fixture, script);
+        let error = packaging::package_appimage(
+            &fixture.project,
+            &fixture.artifact,
+            &destination,
+            &fixture.engine,
+            &tooling,
+        )
+        .unwrap_err();
+        assert_eq!(error.diagnostics[0].code, "tooling.appimage.failed");
+        assert!(error.diagnostics[0].message.contains(needle), "{error:?}");
+        assert!(!destination.exists());
+    }
+    assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
+}

@@ -71,6 +71,8 @@ pub(crate) struct Mixer {
     /// DSP states retired by the audio thread, freed by the next control call.
     retired: Vec<Box<VoiceDsp>>,
     frame_cursor: u64,
+    /// A device callback mixes; it must never wait on a stream producer.
+    pub(crate) realtime: bool,
 }
 impl Mixer {
     pub(crate) fn new(config: AudioConfig) -> Self {
@@ -86,6 +88,7 @@ impl Mixer {
             engine: AcousticEngine::new(config.sample_rate),
             retired: Vec::with_capacity(config.max_voices),
             frame_cursor: 0,
+            realtime: false,
         }
     }
     pub(crate) fn ready(&self) -> Result<()> {
@@ -510,7 +513,8 @@ impl AudioControl {
                 "Concurrent voice limit reached",
             ));
         }
-        let (stream, writer) = StreamPlayback::new(config)?;
+        let (mut stream, writer) = StreamPlayback::new(config)?;
+        stream.set_blocking(!mixer.realtime);
         let handle = VoiceHandle(allocate_handle()?);
         let (dsp, capped) = mixer.attach_dsp(&options, None, false);
         let acoustic = dsp.is_some();
