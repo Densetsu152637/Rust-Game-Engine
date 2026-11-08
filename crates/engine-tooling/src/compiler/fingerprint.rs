@@ -1,7 +1,7 @@
 //! Source fingerprinting that defines generation identity.
 
 use super::cargo::cargo_home;
-use super::workspace::STARTUP_WRAPPER;
+use super::workspace::{STARTUP_WRAPPER, STEAM_BUILD_SCRIPT};
 use super::{BuildFailure, CompileRequest, failure, io_error};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -78,6 +78,11 @@ pub(super) fn fingerprint(
         )
         .as_bytes(),
     );
+    if cfg!(feature = "steam") {
+        // Only Steam-variant generations have this script; default fingerprints are
+        // computed exactly as before.
+        field(&mut hash, STEAM_BUILD_SCRIPT.as_bytes());
+    }
     for (name, value) in fingerprint_environment() {
         field(&mut hash, name.as_bytes());
         field(&mut hash, value.to_string_lossy().as_bytes());

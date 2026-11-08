@@ -260,6 +260,9 @@ impl NativeCompiler {
             .map_err(io_error)?;
             fs::write(directory.join("src/entry.rs"), &request.main_source).map_err(io_error)?;
             fs::write(directory.join("src/main.rs"), STARTUP_WRAPPER).map_err(io_error)?;
+            if cfg!(feature = "steam") {
+                fs::write(directory.join("build.rs"), STEAM_BUILD_SCRIPT).map_err(io_error)?;
+            }
             // Seed dependency versions without ever changing the authored lockfile.
             for lock in [
                 project_root.join("Cargo.lock"),

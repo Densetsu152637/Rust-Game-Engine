@@ -20,6 +20,24 @@ fn main() {
 }
 "#;
 
+/// Build script of a Steam-variant generation (tooling built with `--features
+/// steam`); default generations have none. The runtime links Valve's `steam_api`
+/// library dynamically, so a package can only start it from the directory it is
+/// staged in: an `$ORIGIN` run path on Linux (beside the runtime) and
+/// `@executable_path/../Frameworks` on macOS (inside the `.app`; a plain directory
+/// package there finds the library through the dylib's own `@loader_path` install
+/// name). Windows finds a DLL beside the executable without help.
+pub(super) const STEAM_BUILD_SCRIPT: &str = r#"
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("linux") => println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN"),
+        Ok("macos") => println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path/../Frameworks"),
+        _ => {}
+    }
+}
+"#;
+
 pub(super) fn package_name(manifest: &Path) -> Result<String, BuildFailure> {
     let value: toml::Value = fs::read_to_string(manifest)
         .map_err(io_error)?

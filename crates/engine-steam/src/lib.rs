@@ -45,6 +45,7 @@ mod real_net;
     any(windows, target_os = "linux", target_os = "macos")
 ))]
 mod real_ugc;
+pub mod redistributable;
 mod session;
 mod stats;
 mod transport;
