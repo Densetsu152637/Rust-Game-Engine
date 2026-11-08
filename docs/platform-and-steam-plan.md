@@ -226,8 +226,8 @@ Steam S8-S10 implementation-gate critic converged (round 4; fixes `5304192`, `dc
 - Depends on: P7, P8.
 - Owned paths: `.github/workflows/release.yml`, `docs/desktop-packaging.md`.
 - Acceptance checks: a `workflow_dispatch` run uploads all artifacts with passing smoke steps; actions pinned to SHAs like `ci.yml`.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `a9d86b5` + `c20cdeb` (PR #13, CI and release run 42459194744 green), merged as `57bc0a7`; `workflow_dispatch` run 42462203751 on `main` green, uploading `release-windows-zip` (24.8 MB), `release-linux-tar-gz` (28.8 MB), `release-linux-appimage` (26.8 MB), `release-macos-app-zip` (48.3 MB) and `sha256sums`. `release.yml`: `prepare` (inputs `project`, `profile`; `scripts/package/release-meta.sh` validates them from `env:` and derives `<id>` like `sanitize_id` and `<version>` = tag without `v`, else `dev-<sha7>`; `+` refused), four package jobs on the CI runners, `checksums` (exactly four files, `SHA256SUMS` as artifact `sha256sums`), `publish` (draft release, `v*` tags only, the one `contents: write` job). Triggers: dispatch, `v*` tags, PRs touching `release.yml` or `scripts/package/**`. Shared smoke scripts `scripts/package/smoke-{archive,appimage,app}.sh` (+ `smoke-lib.sh`, which runs each check group and fails at the end) are also used by `ci.yml`; Windows extraction errors are fatal; the `.app` is zipped with `ditto` and its signature verified after the round trip. Also touched `docs/testing.md` (shared scripts note).
 - Handoff notes: keep `ci.yml` unchanged except shared scripts.
 
 ## Stage S11: Steam packaging, facade, tooling and CI
