@@ -142,7 +142,10 @@ check_loading() {
       otool -l "$runtime" | grep -A2 LC_RPATH | grep -F '@executable_path/../Frameworks'
       archs=$(lipo -archs "$content/../Frameworks/$library")
       echo "library archs: $archs"
-      case " $archs " in *" x86_64 "*" arm64 "* | *" arm64 "*" x86_64 "*) ;; *) echo "library is not universal" >&2; return 1 ;; esac
+      # Two separate tests: adjacent names share one space, so a single pattern
+      # with " x86_64 "*" arm64 " never matches "x86_64 arm64".
+      case " $archs " in *" x86_64 "*) ;; *) echo "library is not universal (no x86_64)" >&2; return 1 ;; esac
+      case " $archs " in *" arm64 "*) ;; *) echo "library is not universal (no arm64)" >&2; return 1 ;; esac
       ;;
     windows)
       test -f "$content/$library"
