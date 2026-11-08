@@ -986,9 +986,11 @@ content/windows/runtime.exe --headless --ticks 3   (from another directory) -> e
 ```
 
 The run report's `steam` object carries the status; with Steam closed the same command
-reports `"state": "not_running"` and exits 0 (unless `required` is set). That case is not run
-locally because Steam must stay open; the release workflow's Steam rows check it on runners
-that have no Steam client (`scripts/package/smoke-steam-depot.sh` requires `not_running`).
+reports `"state": "not_running"` and exits 0 (unless `required` is set). On a machine with no
+Steam client installed at all, Steam reports a failed initialisation instead, so the state is
+`init_failed` (still soft, exit 0). Neither case is run locally because Steam must stay open;
+the release workflow's Steam rows run on runners with no Steam client installed and accept
+either state (`scripts/package/smoke-steam-depot.sh`).
 The Linux and macOS depots have not been run by a person: they are built, loaded and run only
 by those rows.
 

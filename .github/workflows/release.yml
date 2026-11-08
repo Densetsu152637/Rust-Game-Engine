@@ -327,7 +327,8 @@ jobs:
   # by scripts/package/prepare-steam-project.sh (untracked, App ID 480). The depot
   # directory is zipped by scripts/package/zip-depot.sh and smoke-tested by
   # scripts/package/smoke-steam-depot.sh: layout, library placement, no steam_appid.txt,
-  # and a headless run with no Steam client that must report steam.state not_running.
+  # and a headless run with no Steam client that must exit 0 with a soft steam.state
+  # (not_running, or init_failed when no client is installed at all).
   steam-windows:
     name: Steam depot (Windows)
     needs: prepare

@@ -10,8 +10,9 @@
 #   <id> is the project id (the .app is named <id>.app on macOS); <app-id> is the
 #   Steam app id the depot was built for.
 # Environment:
-#   SMOKE_EXPECT_STEAM_STATE  the run report's steam.state to require (default
-#                             not_running: CI runners have no Steam client)
+#   SMOKE_EXPECT_STEAM_STATE  comma-separated steam.state values to accept (default
+#                             not_running,init_failed: CI runners have no Steam
+#                             client installed, which Steam reports as a failed init)
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -26,7 +27,7 @@ archive=$1
 extract=$2
 id=$3
 app_id=$4
-expect_state=${SMOKE_EXPECT_STEAM_STATE:-not_running}
+expect_state=${SMOKE_EXPECT_STEAM_STATE:-not_running,init_failed}
 if [ ! -f "$archive" ]; then
   echo "archive not found: $archive" >&2
   exit 2
@@ -169,7 +170,7 @@ run_runtime() {
 import json
 import sys
 
-wanted = sys.argv[2]
+wanted = [state for state in sys.argv[2].split(",") if state]
 found = None
 with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
     for line in handle:
@@ -184,8 +185,8 @@ with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
             if isinstance(candidate, dict) and isinstance(candidate.get("steam"), dict):
                 found = candidate["steam"]
 print("steam report:", found)
-if found is None or found.get("state") != wanted:
-    sys.exit(f"expected steam.state {wanted!r}")
+if found is None or found.get("state") not in wanted:
+    sys.exit(f"expected steam.state in {wanted!r}")
 PY
 }
 

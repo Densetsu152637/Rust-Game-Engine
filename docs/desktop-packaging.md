@@ -405,7 +405,10 @@ even when an earlier one failed, and the script fails if any did.
   --deep --strict` on the bundle and on the library alone, and that the library still
   carries Valve's identifier. Last, the runtime runs `--headless --ticks 3` from an
   unrelated directory with no Steam client (the runners have none) and must exit 0 with
-  the run report's `steam.state` equal to `not_running`.
+  the run report's `steam.state` either `not_running` or `init_failed`. The runners have
+  no Steam client installed, which Steam reports as a failed initialisation ("could not
+  determine Steam client install directory" on Windows, no `steamclient.so` on Linux)
+  rather than as a client that is not running; both are soft states.
 
 **Checksums and artifacts.** Every package job uploads its file with `actions/upload-artifact`
 (artifacts `release-windows-zip`, `release-linux-tar-gz`, `release-linux-appimage`,
