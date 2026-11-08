@@ -816,3 +816,79 @@ fn package_app_checks_the_destination_and_bundle_id_before_compilation() {
     assert!(!root.join("dist/Game.app").exists());
     assert!(!root.join(".derived/native").exists());
 }
+
+fn package_args<'a>(
+    manifest: &'a Path,
+    destination: &'a Path,
+    extra: &[&'a str],
+) -> Vec<&'a OsStr> {
+    let mut args: Vec<&OsStr> = vec![
+        OsStr::new("project"),
+        "package".as_ref(),
+        manifest.as_os_str(),
+        destination.as_os_str(),
+    ];
+    args.extend(extra.iter().map(|value| OsStr::new(*value)));
+    args
+}
+
+#[test]
+fn steam_depot_needs_a_steam_block_and_is_refused_before_compiling() {
+    let (temp, manifest) = fixture();
+    let root = manifest.parent().unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    let destination = root.join("dist/depot");
+    let output = engine(
+        &package_args(&manifest, &destination, &["--format", "steam-depot"]),
+        temp.path(),
+    );
+    assert_eq!(output.code, 1, "{}", output.json);
+    assert_eq!(
+        failure_code(&output),
+        "tooling.steam_depot.manifest_missing"
+    );
+    assert!(!destination.exists());
+    assert!(!root.join(".derived/native").exists());
+}
+
+// A default build has no Steam backend; the depot is refused even for a project that
+// declares `steam` (tooling built with --features steam goes on to compile).
+#[cfg(not(feature = "steam"))]
+#[test]
+fn steam_depot_needs_tooling_built_with_the_steam_backend() {
+    let (temp, manifest) = fixture();
+    let root = manifest.parent().unwrap();
+    let text = fs::read_to_string(&manifest).unwrap().replacen(
+        "\"name\":\"cli fixture\",",
+        "\"name\":\"cli fixture\",\"steam\":{\"app_id\":480},",
+        1,
+    );
+    fs::write(&manifest, text).unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    let destination = root.join("dist/depot");
+    let output = engine(
+        &package_args(&manifest, &destination, &["--format", "steam-depot"]),
+        temp.path(),
+    );
+    assert_eq!(output.code, 1, "{}", output.json);
+    assert_eq!(failure_code(&output), "tooling.steam_depot.backend_missing");
+    assert!(!destination.exists());
+    assert!(!root.join(".derived/native").exists());
+}
+
+#[test]
+fn depot_and_bundle_options_are_checked_per_format() {
+    let (temp, manifest) = fixture();
+    let destination = temp.path().join("out");
+    for extra in [
+        vec!["--depot-id", "5"],
+        vec!["--format", "zip", "--depot-id", "5"],
+        vec!["--format", "steam-depot", "--depot-id", "five"],
+        vec!["--format", "steam-depot", "--depot-id", "-1"],
+        vec!["--format", "zip", "--bundle-id", "com.example.game"],
+    ] {
+        let output = engine(&package_args(&manifest, &destination, &extra), temp.path());
+        assert_eq!(output.code, 2, "{extra:?}");
+        assert_eq!(failure_code(&output), "command.arguments", "{extra:?}");
+    }
+}

@@ -6,6 +6,7 @@ use super::options::options;
 use super::{Outcome, USAGE};
 use crate::artifacts;
 use crate::packaging::macos::{self, MacosTooling};
+use crate::packaging::steam::{self, DepotPlan, SteamLibrary};
 use crate::packaging::{self, PackageFormat};
 use engine_core::Result;
 use engine_project::Project;
@@ -98,13 +99,19 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
             // `--format json` stays the global output option; any other value
             // selects the package format.
             let (format, arguments) = package_format(arguments)?;
-            let (args, flags) = options(&arguments, &["--profile", "--bundle-id"])?;
-            if flags.contains_key("--bundle-id") && format != PackageFormat::App {
-                return Err(usage("--bundle-id applies to --format app only"));
+            let (args, flags) = options(&arguments, &["--profile", "--bundle-id", "--depot-id"])?;
+            let bundled = matches!(format, PackageFormat::App | PackageFormat::SteamDepot);
+            if flags.contains_key("--bundle-id") && !bundled {
+                return Err(usage(
+                    "--bundle-id applies to --format app (and to --format steam-depot on macOS) only",
+                ));
+            }
+            if flags.contains_key("--depot-id") && format != PackageFormat::SteamDepot {
+                return Err(usage("--depot-id applies to --format steam-depot only"));
             }
             if args.len() != 2 {
                 return Err(usage(
-                    "Usage: engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage|app] [--bundle-id reverse.dns]",
+                    "Usage: engine project package <manifest> <destination> [--profile release|dev] [--format dir|zip|tar.gz|appimage|app|steam-depot] [--bundle-id reverse.dns] [--depot-id n]",
                 ));
             }
             let release = match flags.get("--profile").map(String::as_str) {
@@ -112,18 +119,34 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
                 Some("dev") => false,
                 Some(other) => return Err(usage(format!("Unknown profile: {other}"))),
             };
+            let depot_id =
+                match flags.get("--depot-id") {
+                    None => None,
+                    Some(value) => Some(value.parse::<u32>().map_err(|_| {
+                        usage(format!("--depot-id must be a number, got {value:?}"))
+                    })?),
+                };
             let project = Project::load(&args[0])?;
             let destination = Path::new(&args[1]);
             // Reject unusable destinations before spending time compiling.
             packaging::check_destination_name(format, destination)?;
             artifacts::check_package_destination(&project, destination)?;
             let bundle_id = flags.get("--bundle-id").map(String::as_str);
-            if format == PackageFormat::App {
+            let apple_host = cfg!(target_os = "macos");
+            if format == PackageFormat::App || (format == PackageFormat::SteamDepot && apple_host) {
                 macos::bundle_identifier(&project.name, bundle_id)?;
             }
             packaging::check_format_available(format)?;
-            if format == PackageFormat::App {
-                return package_app(&project, destination, release, bundle_id);
+            // Manifest, Steam backend and library are checked before the first compile.
+            let target = match format {
+                PackageFormat::SteamDepot => {
+                    let (plan, library) = steam::check_depot(&project, depot_id)?;
+                    AppTarget::Depot(plan, library)
+                }
+                _ => AppTarget::Bundle(steam::library_for_package(&project)?),
+            };
+            if format == PackageFormat::App || (format == PackageFormat::SteamDepot && apple_host) {
+                return package_app(&project, destination, release, bundle_id, target);
             }
             if rust_crate(&project)?.is_none() {
                 return Err(engine_project::Error::new(
@@ -141,13 +164,33 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
                 destination = %destination.display(),
                 "packaging project"
             );
-            let path = packaging::package(
-                &project,
-                &generation,
-                destination,
-                &request.engine_root,
-                format,
-            )?;
+            let path = match &target {
+                AppTarget::Depot(plan, library) => {
+                    let host = engine_platform::PackageHost::current().map_err(|error| {
+                        engine_project::Error::new(
+                            "package.platform.unsupported",
+                            error.to_string(),
+                        )
+                    })?;
+                    packaging::package_steam_depot_with(
+                        &project,
+                        &generation,
+                        destination,
+                        &request.engine_root,
+                        *plan,
+                        &host,
+                        library,
+                    )?
+                }
+                AppTarget::Bundle(library) => packaging::package_with_library(
+                    &project,
+                    &generation,
+                    destination,
+                    &request.engine_root,
+                    format,
+                    library.as_ref(),
+                )?,
+            };
             tracing::info!(path = %path.display(), format = format.name(), "package written");
             let mut result = json!({
                 "format": format.name(),
@@ -161,9 +204,13 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
                 PackageFormat::Dir => "directory",
                 PackageFormat::AppImage => "appimage",
                 PackageFormat::App => "app",
+                PackageFormat::SteamDepot => "depot",
                 PackageFormat::Zip | PackageFormat::TarGz => "archive",
             };
             result[key] = json!(path);
+            if let Some(steam) = steam_summary(&project, &target) {
+                result["steam"] = steam;
+            }
             Ok(Outcome::Json(result))
         }
         "" => Err(usage(format!("Expected a project command\n{USAGE}"))),
@@ -171,14 +218,42 @@ pub(super) fn project(action: &str, arguments: &[OsString]) -> Result<Outcome> {
     }
 }
 
-/// `--format app`: one generation per Apple architecture, joined by `lipo` into a
-/// signed `.app`. The host, tools, bundle identifier and Rust targets are checked
-/// before the first compile.
+/// What a package run does with Valve's library: the plain formats stage it when the
+/// project is a Steam variant; a `steam-depot` run always has a plan and a library.
+enum AppTarget {
+    Bundle(Option<SteamLibrary>),
+    Depot(DepotPlan, SteamLibrary),
+}
+
+/// The `steam` object of the result JSON, present only when a library was staged.
+fn steam_summary(project: &Project, target: &AppTarget) -> Option<Value> {
+    let (library, depot) = match target {
+        AppTarget::Bundle(library) => (library.as_ref()?, None),
+        AppTarget::Depot(plan, library) => (library, Some(plan.depot_id)),
+    };
+    let mut summary = json!({
+        "app_id": project.steam.as_ref().map(|steam| steam.app_id),
+        "library": {
+            "file": library.file,
+            "from": library.path,
+            "source": library.source.name(),
+        },
+    });
+    if let Some(depot) = depot {
+        summary["depot_id"] = json!(depot);
+    }
+    Some(summary)
+}
+
+/// `--format app` (and `steam-depot` on macOS): one generation per Apple
+/// architecture, joined by `lipo` into a signed `.app`. The host, tools, bundle
+/// identifier and Rust targets are checked before the first compile.
 fn package_app(
     project: &Project,
     destination: &Path,
     release: bool,
     bundle_id: Option<&str>,
+    target: AppTarget,
 ) -> Result<Outcome> {
     let tooling = MacosTooling::from_process()?;
     let bundle_id = macos::bundle_identifier(&project.name, bundle_id)?;
@@ -206,21 +281,42 @@ fn package_app(
         destination = %destination.display(),
         "packaging project as an app bundle"
     );
-    let path = packaging::package_app(
-        project,
-        &packaging::AppBuilds {
-            arm64: &arm64,
-            x86_64: &x86_64,
-        },
-        destination,
-        &request.engine_root,
-        Some(&bundle_id),
-        &tooling,
-    )?;
+    let builds = packaging::AppBuilds {
+        arm64: &arm64,
+        x86_64: &x86_64,
+    };
+    let (format, key, path) = match &target {
+        AppTarget::Bundle(library) => (
+            PackageFormat::App,
+            "app",
+            packaging::package_app_with_library(
+                project,
+                &builds,
+                destination,
+                &request.engine_root,
+                Some(&bundle_id),
+                &tooling,
+                library.as_ref(),
+            )?,
+        ),
+        AppTarget::Depot(plan, library) => (
+            PackageFormat::SteamDepot,
+            "depot",
+            packaging::package_steam_depot_app_with(
+                project,
+                &builds,
+                destination,
+                &request.engine_root,
+                Some(&bundle_id),
+                &tooling,
+                *plan,
+                library,
+            )?,
+        ),
+    };
     tracing::info!(path = %path.display(), "app bundle written");
-    Ok(Outcome::Json(json!({
-        "format": PackageFormat::App.name(),
-        "app": path,
+    let mut result = json!({
+        "format": format.name(),
         "bundle_id": bundle_id,
         "generation": arm64.generation,
         "fingerprint": arm64.fingerprint,
@@ -229,7 +325,12 @@ fn package_app(
         "profile": if release { "release" } else { "dev" },
         "signing": if tooling.sign_identity.is_some() { "identity" } else { "ad-hoc" },
         "launchers": [],
-    })))
+    });
+    result[key] = json!(path);
+    if let Some(steam) = steam_summary(project, &target) {
+        result["steam"] = steam;
+    }
+    Ok(Outcome::Json(result))
 }
 
 /// Splits a package `--format <name>` (anything but the global `json`) from the
