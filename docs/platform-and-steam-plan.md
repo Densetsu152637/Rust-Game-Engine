@@ -208,8 +208,8 @@ Steam S8-S10 implementation-gate critic converged (round 4; fixes `5304192`, `dc
 - Depends on: P6.
 - Owned paths: packaging module, `scripts/package/`, CI job.
 - Acceptance checks: AppImage built in CI runs `--headless --ticks 3` via `--appimage-extract-and-run`; `appimagetool` download pinned by version and checksum.
-- Status: pending
-- Outcome:
+- Status: done
+- Outcome: `1f3db66` + `d37e1c4` + `813a667` + `b20755b` (PR #8, run 42426913894 green on all three OSes incl. the gate), merged as `de25aa5`. `packaging/appimage.rs`: AppDir = staged package + `AppRun` (resolves its own directory with `readlink -f`, ignores an inherited `APPDIR`), `<id>.desktop` (`Exec=runtime`, `Categories=Game;`), generated 256x256 default icon + `.DirIcon`; id = lowercase ASCII alphanumerics, other runs become `-`, at most 64, fallback `game`. Tool from `ENGINE_APPIMAGETOOL` or `PATH`, `ENGINE_APPIMAGE_RUNTIME` passed as `--runtime-file`; runs with `APPIMAGE_EXTRACT_AND_RUN=1`, `--no-appstream`, host-derived `ARCH`, CI/update-info variables removed (no `.zsync`); output written to a fresh staging path and published no-clobber 0755. Codes `tooling.appimage.{unsupported_host,tool_missing,runtime_missing,failed}`. `scripts/package/fetch-appimagetool.sh` pins appimagetool 1.9.1 (sha256 `ed4ce84f…eb0`) and type2 runtime 20251108 (sha256 `2fca8b44…260d`). CI `appimage` job (ubuntu-22.04) runs the AppImage headless, extracts it, `desktop-file-validate`s the entry and runs `AppRun` read-only; green first run. Also fixed the offline audio mixer race (offline engines lock the stream queue; device callbacks keep the try-lock) that made `source_kinds` flaky on macOS.
 - Handoff notes: host provides Vulkan/ALSA/X11/Wayland; do not bundle libvulkan.
 
 ## Stage P8: macOS `.app` bundle
