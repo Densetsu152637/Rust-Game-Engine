@@ -15,7 +15,8 @@
 //! <Name>.app/Contents/Resources/licenses/          engine and dependency notices
 //! <Name>.app/Contents/Resources/<id>.icns          the application icon
 //! <Name>.app/Contents/Resources/{generation.json,package-host.json,PACKAGE.txt}
-//! <Name>.app/Contents/Frameworks/                  nested code (empty for now)
+//! <Name>.app/Contents/Frameworks/                  nested code (Valve's libsteam_api.dylib
+//!                                                  in a Steam variant, otherwise empty)
 //! ```
 
 use super::appimage::{default_icon, sanitize_id};
@@ -58,6 +59,9 @@ pub struct MacosTooling {
     /// Strips extended attributes before signing.
     pub xattr: PathBuf,
     pub codesign: PathBuf,
+    /// Points the runtime at the Steam library in `Contents/Frameworks`; only a Steam
+    /// variant needs it, so a host without it still builds plain bundles.
+    pub install_name_tool: Option<PathBuf>,
     /// A signing identity, or `None` for an ad-hoc signature.
     pub sign_identity: Option<String>,
 }
@@ -105,6 +109,7 @@ impl MacosTooling {
         let lipo = find("lipo")?;
         let xattr = find("xattr")?;
         let codesign = find("codesign")?;
+        let install_name_tool = find("install_name_tool").ok();
         let sign_identity = match identity_env.filter(|value| !value.is_empty()) {
             Some(value) => Some(
                 value
@@ -123,6 +128,7 @@ impl MacosTooling {
             lipo,
             xattr,
             codesign,
+            install_name_tool,
             sign_identity,
         })
     }
@@ -428,15 +434,29 @@ pub fn codesign_arguments(identity: Option<&str>) -> Vec<OsString> {
     arguments
 }
 
+/// Nested code in `Contents/Frameworks` that carries its vendor's signature and is
+/// never signed again. Valve's redistribution terms forbid modifying
+/// `libsteam_api.dylib`, and signing replaces its signature; its own
+/// (Developer ID, hardened runtime, `com.valvesoftware.steam`) stays valid in place.
+pub const VENDOR_SIGNED: &[&str] = &["libsteam_api.dylib"];
+
 /// Sign the bundle: each top-level item of `Contents/Frameworks` (nested code)
-/// first, in name order, then the bundle itself. Never `--deep`. Fails with
-/// `tooling.app.codesign_failed`.
+/// first, in name order, then the bundle itself. Items in [`VENDOR_SIGNED`] are
+/// skipped. Never `--deep`. Fails with `tooling.app.codesign_failed`.
 pub fn sign_bundle(tooling: &MacosTooling, bundle: &Path) -> Result<()> {
     let mut nested = Vec::new();
     let frameworks = bundle.join("Contents/Frameworks");
     if frameworks.is_dir() {
         for entry in fs::read_dir(&frameworks)? {
-            nested.push(entry?.path());
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| VENDOR_SIGNED.contains(&name))
+            {
+                continue;
+            }
+            nested.push(entry.path());
         }
         nested.sort();
     }
@@ -448,6 +468,155 @@ pub fn sign_bundle(tooling: &MacosTooling, bundle: &Path) -> Result<()> {
         run_tool(command, "tooling.app.codesign_failed", "codesign", None)?;
     }
     Ok(())
+}
+
+/// Refuse, before anything is compiled, a Steam bundle this host cannot build or
+/// whose result would not launch:
+///
+/// - `tooling.app.tool_missing`: `install_name_tool` is not on `PATH` (needed to point
+///   the runtime at `Contents/Frameworks`).
+/// - `tooling.app.steam_identity_unsupported`: `ENGINE_MACOS_SIGN_IDENTITY` is set. A
+///   signing identity turns on the hardened runtime, whose library validation rejects
+///   Valve's library (another team); that needs the
+///   `com.apple.security.cs.disable-library-validation` entitlement, which is not wired.
+///   Use the default ad-hoc signature.
+///
+/// Does nothing when no Steam library will be staged.
+pub fn check_steam_bundle(tooling: &MacosTooling, steam_library: bool) -> Result<()> {
+    if !steam_library {
+        return Ok(());
+    }
+    if tooling.install_name_tool.is_none() {
+        return Err(Error::new(
+            "tooling.app.tool_missing",
+            "install_name_tool was not found on PATH (a Steam bundle needs it)",
+        ));
+    }
+    if tooling.sign_identity.is_some() {
+        return Err(Error::new(
+            "tooling.app.steam_identity_unsupported",
+            format!(
+                "A Steam bundle cannot be signed with {SIGN_IDENTITY_ENV}: the hardened runtime would reject Valve's library at launch (library validation); unset it to use the ad-hoc signature"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Verify the finished bundle with `codesign --verify --deep --strict`. A Steam
+/// bundle holds Valve's own signed library next to our ad-hoc (or identity)
+/// signature; if the two cannot verify together the build stops with
+/// `tooling.app.steam_signature_invalid` rather than re-signing Valve's file.
+pub fn verify_bundle(tooling: &MacosTooling, bundle: &Path) -> Result<()> {
+    let mut command = Command::new(&tooling.codesign);
+    command.args(["--verify", "--deep", "--strict"]).arg(bundle);
+    run_tool(
+        command,
+        "tooling.app.steam_signature_invalid",
+        "codesign --verify (Valve's signed library is never re-signed; use a signing identity that can seal the bundle around it)",
+        None,
+    )
+}
+
+/// Make the universal runtime load the Steam library from `Contents/Frameworks`.
+///
+/// Valve's `libsteam_api.dylib` has the install name `@loader_path/libsteam_api.dylib`
+/// (its `LC_ID_DYLIB`), which every client records at link time; dyld would look for
+/// it beside the runtime in `Contents/MacOS`, and an `LC_RPATH` cannot change that.
+/// The runtime is ours, so its reference is rewritten with `install_name_tool
+/// -change` to `@rpath/libsteam_api.dylib`; the generation's build script added
+/// `@executable_path/../Frameworks` as an rpath. The library is not touched.
+/// Fails with `tooling.app.tool_missing` (no `install_name_tool`) or
+/// `tooling.app.install_name_failed`.
+pub fn point_runtime_at_frameworks(
+    tooling: &MacosTooling,
+    bundle: &Path,
+    library: &super::steam::SteamLibrary,
+) -> Result<()> {
+    let install_name_tool = tooling.install_name_tool.as_ref().ok_or_else(|| {
+        Error::new(
+            "tooling.app.tool_missing",
+            "install_name_tool was not found on PATH",
+        )
+    })?;
+    let shipped = bundle.join("Contents/Frameworks").join(library.file);
+    let original = dylib_install_name(&fs::read(&shipped)?).ok_or_else(|| {
+        Error::new(
+            "tooling.app.install_name_failed",
+            format!("{} has no readable install name", library.file),
+        )
+    })?;
+    let wanted = format!("@rpath/{}", library.file);
+    if original == wanted {
+        return Ok(());
+    }
+    let mut command = Command::new(install_name_tool);
+    command
+        .arg("-change")
+        .arg(&original)
+        .arg(&wanted)
+        .arg(bundle.join("Contents/MacOS/runtime"));
+    run_tool(
+        command,
+        "tooling.app.install_name_failed",
+        "install_name_tool",
+        None,
+    )
+}
+
+/// The install name (`LC_ID_DYLIB`) of a Mach-O dynamic library, read from the first
+/// architecture of a universal (fat) file or from a thin 64-bit or 32-bit
+/// little-endian one. `None` when the bytes are not such a library.
+pub fn dylib_install_name(bytes: &[u8]) -> Option<String> {
+    const LC_ID_DYLIB: u32 = 0xd;
+    let read = |offset: usize, big: bool| -> Option<u32> {
+        let raw: [u8; 4] = bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
+        Some(if big {
+            u32::from_be_bytes(raw)
+        } else {
+            u32::from_le_bytes(raw)
+        })
+    };
+    let mut base = 0usize;
+    let magic = read(0, true)?;
+    // Fat headers are big-endian: 0xcafebabe (32-bit offsets), 0xcafebabf (64-bit).
+    if magic == 0xcafe_babe || magic == 0xcafe_babf {
+        if read(4, true)? == 0 {
+            return None;
+        }
+        base = if magic == 0xcafe_babe {
+            read(16, true)? as usize
+        } else {
+            // fat_arch_64: cputype, cpusubtype, offset (u64), size, align, reserved.
+            let high = read(16, true)? as usize;
+            let low = read(20, true)? as usize;
+            high.checked_shl(32)?.checked_add(low)?
+        };
+    }
+    let header = match read(base, false)? {
+        0xfeed_facf => 32,
+        0xfeed_face => 28,
+        _ => return None,
+    };
+    let command_count = read(base.checked_add(16)?, false)?;
+    let mut offset = base.checked_add(header)?;
+    for _ in 0..command_count {
+        let command = read(offset, false)?;
+        let size = read(offset.checked_add(4)?, false)? as usize;
+        if size < 8 {
+            return None;
+        }
+        if command == LC_ID_DYLIB {
+            // dylib_command: cmd, cmdsize, name offset, ...; the name is inside the command.
+            let name_at = offset.checked_add(read(offset.checked_add(8)?, false)? as usize)?;
+            let end = offset.checked_add(size)?;
+            let name = bytes.get(name_at..end)?;
+            let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())];
+            return String::from_utf8(name.to_vec()).ok();
+        }
+        offset = offset.checked_add(size)?;
+    }
+    None
 }
 
 fn run_tool(
@@ -530,6 +699,77 @@ fn exists(message: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A thin 64-bit little-endian Mach-O dylib with `name` as `LC_ID_DYLIB`.
+    fn fake_dylib(name: &str) -> Vec<u8> {
+        let padded = (24 + name.len() + 1).div_ceil(8) * 8;
+        let mut command = Vec::new();
+        command.extend_from_slice(&0xdu32.to_le_bytes());
+        command.extend_from_slice(&(padded as u32).to_le_bytes());
+        command.extend_from_slice(&24u32.to_le_bytes());
+        command.extend_from_slice(&[0; 12]);
+        command.extend_from_slice(name.as_bytes());
+        command.resize(padded, 0);
+        let mut file = Vec::new();
+        file.extend_from_slice(&0xfeed_facfu32.to_le_bytes());
+        file.extend_from_slice(&[0; 12]);
+        file.extend_from_slice(&1u32.to_le_bytes());
+        file.extend_from_slice(&(padded as u32).to_le_bytes());
+        file.extend_from_slice(&[0; 8]);
+        file.extend_from_slice(&command);
+        file
+    }
+
+    #[test]
+    fn install_name_is_read_from_thin_and_fat_dylibs() {
+        let thin = fake_dylib("@loader_path/libsteam_api.dylib");
+        assert_eq!(
+            dylib_install_name(&thin).as_deref(),
+            Some("@loader_path/libsteam_api.dylib")
+        );
+        // A fat file: header, one arch entry (offset 4096), payload there.
+        let mut fat = Vec::new();
+        fat.extend_from_slice(&0xcafe_babeu32.to_be_bytes());
+        fat.extend_from_slice(&1u32.to_be_bytes());
+        fat.extend_from_slice(&[0, 0, 0, 7, 0, 0, 0, 3]);
+        fat.extend_from_slice(&4096u32.to_be_bytes());
+        fat.extend_from_slice(&(thin.len() as u32).to_be_bytes());
+        fat.extend_from_slice(&12u32.to_be_bytes());
+        fat.resize(4096, 0);
+        fat.extend_from_slice(&thin);
+        assert_eq!(
+            dylib_install_name(&fat).as_deref(),
+            Some("@loader_path/libsteam_api.dylib")
+        );
+        assert_eq!(dylib_install_name(b"MZ not a macho"), None);
+        assert_eq!(dylib_install_name(&thin[..40]), None);
+        assert_eq!(dylib_install_name(&[]), None);
+    }
+
+    #[test]
+    fn steam_bundles_need_install_name_tool_and_an_ad_hoc_signature() {
+        let tooling = |install_name_tool: Option<&str>, identity: Option<&str>| MacosTooling {
+            lipo: "lipo".into(),
+            xattr: "xattr".into(),
+            codesign: "codesign".into(),
+            install_name_tool: install_name_tool.map(PathBuf::from),
+            sign_identity: identity.map(str::to_owned),
+        };
+        check_steam_bundle(&tooling(Some("int"), None), true).unwrap();
+        // Plain bundles are never affected.
+        check_steam_bundle(&tooling(None, Some("Developer ID")), false).unwrap();
+        assert_eq!(
+            code(check_steam_bundle(&tooling(None, None), true)),
+            "tooling.app.tool_missing"
+        );
+        assert_eq!(
+            code(check_steam_bundle(
+                &tooling(Some("int"), Some("Developer ID")),
+                true
+            )),
+            "tooling.app.steam_identity_unsupported"
+        );
+    }
 
     fn code<T>(result: Result<T>) -> String {
         result.err().expect("expected an error").diagnostics[0]

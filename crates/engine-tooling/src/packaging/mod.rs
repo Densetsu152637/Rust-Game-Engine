@@ -13,10 +13,16 @@
 //! [`PackageFormat::App`] arranges the same content as a macOS application bundle
 //! ([`macos`]): `stage` chooses the layout by format, so what is copied stays in
 //! one place.
+//!
+//! A project with a `steam` manifest block packaged by tooling built with the real
+//! Steam backend also gets Valve's `steam_api` library beside the runtime
+//! ([`steam::SteamLibrary`]); [`PackageFormat::SteamDepot`] arranges the package as
+//! a SteamPipe depot ([`steam`]).
 
 pub mod appimage;
 pub mod archive;
 pub mod macos;
+pub mod steam;
 
 use crate::artifacts::{copy_tree, export_new_directory, reject_source_destination};
 use crate::compiler::BuildArtifact;
@@ -38,11 +44,14 @@ pub enum PackageFormat {
     AppImage,
     /// A macOS `<Name>.app` bundle with a universal runtime, built on a macOS host.
     App,
+    /// A SteamPipe depot directory (`content/<platform>/`, `scripts/`, `README.txt`)
+    /// for the host platform, from Steam-backend tooling and a `steam` manifest block.
+    SteamDepot,
 }
 
 impl PackageFormat {
     /// Names accepted by `--format`, for usage messages.
-    pub const NAMES: &'static str = "dir|zip|tar.gz|appimage|app";
+    pub const NAMES: &'static str = "dir|zip|tar.gz|appimage|app|steam-depot";
 
     pub fn parse(name: &str) -> Option<Self> {
         match name {
@@ -51,6 +60,7 @@ impl PackageFormat {
             "tar.gz" => Some(Self::TarGz),
             "appimage" => Some(Self::AppImage),
             "app" => Some(Self::App),
+            "steam-depot" => Some(Self::SteamDepot),
             _ => None,
         }
     }
@@ -62,13 +72,14 @@ impl PackageFormat {
             Self::TarGz => "tar.gz",
             Self::AppImage => "appimage",
             Self::App => "app",
+            Self::SteamDepot => "steam-depot",
         }
     }
 
     /// File name suffix of the archive, `None` for a directory.
     fn suffix(self) -> Option<&'static str> {
         match self {
-            Self::Dir | Self::AppImage | Self::App => None,
+            Self::Dir | Self::AppImage | Self::App | Self::SteamDepot => None,
             Self::Zip => Some(".zip"),
             Self::TarGz => Some(".tar.gz"),
         }
@@ -78,7 +89,9 @@ impl PackageFormat {
 /// Package the already compiled native game in `format` at `destination`.
 /// Launchers require neither Cargo nor source checkout paths. Gameplay sources
 /// remain because authored script assets are stable content references, while
-/// native execution uses the copied binary.
+/// native execution uses the copied binary. For a Steam-variant package the
+/// `steam_api` library is located from the process environment first
+/// ([`steam::library_for_package`]).
 pub fn package(
     project: &Project,
     artifact: &BuildArtifact,
@@ -86,16 +99,52 @@ pub fn package(
     engine_root: &Path,
     format: PackageFormat,
 ) -> Result<PathBuf> {
+    let library = steam::library_for_package(project)?;
+    package_with_library(
+        project,
+        artifact,
+        destination,
+        engine_root,
+        format,
+        library.as_ref(),
+    )
+}
+
+/// As [`package`] with the Steam library already resolved (`None` stages none).
+/// [`PackageFormat::App`] and [`PackageFormat::SteamDepot`] are refused
+/// (`package.format.app`, `package.format.steam_depot`): they need
+/// [`package_app`] and [`package_steam_depot`].
+pub fn package_with_library(
+    project: &Project,
+    artifact: &BuildArtifact,
+    destination: &Path,
+    engine_root: &Path,
+    format: PackageFormat,
+    library: Option<&steam::SteamLibrary>,
+) -> Result<PathBuf> {
     if format == PackageFormat::App {
         return Err(Error::new(
             "package.format.app",
             "--format app needs one build per architecture; use package_app",
         ));
     }
+    if format == PackageFormat::SteamDepot {
+        return Err(Error::new(
+            "package.format.steam_depot",
+            "--format steam-depot writes a depot layout; use package_steam_depot",
+        ));
+    }
     if format == PackageFormat::AppImage {
         // The host and tool are checked before anything is staged.
         let tooling = appimage::AppImageTooling::from_process()?;
-        return package_appimage(project, artifact, destination, engine_root, &tooling);
+        return package_appimage_with_library(
+            project,
+            artifact,
+            destination,
+            engine_root,
+            &tooling,
+            library,
+        );
     }
     let package_host = engine_platform::PackageHost::current()
         .map_err(|error| Error::new("package.platform.unsupported", error.to_string()))?;
@@ -106,11 +155,14 @@ pub fn package(
         package_host: &package_host,
         engine_license: &engine_license,
         format,
+        steam_library: library,
     };
     match format {
         PackageFormat::Dir => export_new_directory(destination, |staging| stage(&inputs, staging))
             .map(|()| destination.to_path_buf()),
-        PackageFormat::AppImage | PackageFormat::App => unreachable!("returned above"),
+        PackageFormat::AppImage | PackageFormat::App | PackageFormat::SteamDepot => {
+            unreachable!("returned above")
+        }
         PackageFormat::Zip | PackageFormat::TarGz => {
             let folder = archive_folder(destination, format)?;
             // Relative to the package root.
@@ -135,7 +187,13 @@ pub fn check_format_available(format: PackageFormat) -> Result<()> {
         PackageFormat::App => {
             macos::MacosTooling::from_process()?;
         }
-        PackageFormat::Dir | PackageFormat::Zip | PackageFormat::TarGz => {}
+        PackageFormat::SteamDepot if cfg!(target_os = "macos") => {
+            macos::MacosTooling::from_process()?;
+        }
+        PackageFormat::Dir
+        | PackageFormat::Zip
+        | PackageFormat::TarGz
+        | PackageFormat::SteamDepot => {}
     }
     Ok(())
 }
@@ -159,7 +217,9 @@ pub struct AppBuilds<'a> {
 
 /// Package a macOS `.app` bundle at `destination` (a new directory ending in
 /// `.app`) with the host and tools already resolved: stage the bundle, join the
-/// two runtimes with `lipo`, sign it and publish it with a no-clobber rename.
+/// two runtimes with `lipo`, sign it and publish it with a no-clobber rename. A
+/// Steam-variant project also gets Valve's library in `Contents/Frameworks`
+/// ([`steam::library_for_package`]).
 pub fn package_app(
     project: &Project,
     builds: &AppBuilds<'_>,
@@ -168,27 +228,97 @@ pub fn package_app(
     bundle_id: Option<&str>,
     tooling: &macos::MacosTooling,
 ) -> Result<PathBuf> {
+    let library = steam::library_for_package(project)?;
+    package_app_with_library(
+        project,
+        builds,
+        destination,
+        engine_root,
+        bundle_id,
+        tooling,
+        library.as_ref(),
+    )
+}
+
+/// As [`package_app`] with the Steam library already resolved.
+pub fn package_app_with_library(
+    project: &Project,
+    builds: &AppBuilds<'_>,
+    destination: &Path,
+    engine_root: &Path,
+    bundle_id: Option<&str>,
+    tooling: &macos::MacosTooling,
+    library: Option<&steam::SteamLibrary>,
+) -> Result<PathBuf> {
     macos::bundle_file_stem(destination)?;
     macos::bundle_identifier(&project.name, bundle_id)?;
+    macos::check_steam_bundle(tooling, library.is_some())?;
+    check_app_builds(project, builds, destination, engine_root)?;
+    macos::export_new_app(destination, |bundle| {
+        build_app(
+            project,
+            builds,
+            bundle,
+            engine_root,
+            bundle_id,
+            tooling,
+            library,
+        )
+    })
+    .map(|()| destination.to_path_buf())
+}
+
+fn check_app_builds(
+    project: &Project,
+    builds: &AppBuilds<'_>,
+    destination: &Path,
+    engine_root: &Path,
+) -> Result<()> {
     if !builds.x86_64.executable.is_file() {
         return Err(Error::new(
             "package.runtime.missing",
             "Compiled x86_64 generation executable is missing",
         ));
     }
-    validate_inputs(project, builds.arm64, destination, engine_root)?;
-    macos::export_new_app(destination, |bundle| {
-        stage_bundle(project, builds.arm64, bundle, engine_root, bundle_id)?;
-        macos::make_universal(
-            tooling,
-            &builds.arm64.executable,
-            &builds.x86_64.executable,
-            bundle,
-        )?;
-        macos::strip_extended_attributes(tooling, bundle)?;
-        macos::sign_bundle(tooling, bundle)
-    })
-    .map(|()| destination.to_path_buf())
+    validate_inputs(project, builds.arm64, destination, engine_root).map(|_| ())
+}
+
+/// Everything that goes into the empty directory `bundle` (named `*.app`): the
+/// staged package, the universal runtime, the Steam library when there is one,
+/// then the signature. The Steam library is signed by Valve and is never signed
+/// again (see [`macos::sign_bundle`]).
+fn build_app(
+    project: &Project,
+    builds: &AppBuilds<'_>,
+    bundle: &Path,
+    engine_root: &Path,
+    bundle_id: Option<&str>,
+    tooling: &macos::MacosTooling,
+    library: Option<&steam::SteamLibrary>,
+) -> Result<()> {
+    stage_bundle_with_library(
+        project,
+        builds.arm64,
+        bundle,
+        engine_root,
+        bundle_id,
+        library,
+    )?;
+    macos::make_universal(
+        tooling,
+        &builds.arm64.executable,
+        &builds.x86_64.executable,
+        bundle,
+    )?;
+    if let Some(library) = library {
+        macos::point_runtime_at_frameworks(tooling, bundle, library)?;
+    }
+    macos::strip_extended_attributes(tooling, bundle)?;
+    macos::sign_bundle(tooling, bundle)?;
+    if library.is_some() {
+        macos::verify_bundle(tooling, bundle)?;
+    }
+    Ok(())
 }
 
 /// The pure part of an app bundle build: stage the package, `Info.plist`,
@@ -202,6 +332,18 @@ pub fn stage_bundle(
     engine_root: &Path,
     bundle_id: Option<&str>,
 ) -> Result<String> {
+    stage_bundle_with_library(project, artifact, bundle, engine_root, bundle_id, None)
+}
+
+/// As [`stage_bundle`], also placing `library` in `Contents/Frameworks`.
+pub fn stage_bundle_with_library(
+    project: &Project,
+    artifact: &BuildArtifact,
+    bundle: &Path,
+    engine_root: &Path,
+    bundle_id: Option<&str>,
+    library: Option<&steam::SteamLibrary>,
+) -> Result<String> {
     let bundle_id = macos::bundle_identifier(&project.name, bundle_id)?;
     let package_host = app_host();
     let engine_license = engine_license(engine_root)?;
@@ -211,10 +353,134 @@ pub fn stage_bundle(
         package_host: &package_host,
         engine_license: &engine_license,
         format: PackageFormat::App,
+        steam_library: library,
     };
     stage(&inputs, bundle)?;
     macos::write_bundle_files(bundle, &project.name, &bundle_id)?;
     Ok(bundle_id)
+}
+
+/// Package a SteamPipe depot for the host platform at `destination` (a new
+/// directory) from one compiled generation, for Windows and Linux. The Steam
+/// backend, the manifest and the library are resolved from the process
+/// ([`steam::check_depot`]); a macOS host uses [`package_steam_depot_app`].
+pub fn package_steam_depot(
+    project: &Project,
+    artifact: &BuildArtifact,
+    destination: &Path,
+    engine_root: &Path,
+    depot_id: Option<u32>,
+) -> Result<PathBuf> {
+    let (plan, library) = steam::check_depot(project, depot_id)?;
+    let host = engine_platform::PackageHost::current()
+        .map_err(|error| Error::new("package.platform.unsupported", error.to_string()))?;
+    package_steam_depot_with(
+        project,
+        artifact,
+        destination,
+        engine_root,
+        plan,
+        &host,
+        &library,
+    )
+}
+
+/// As [`package_steam_depot`] with the plan, host and library injected (tests run
+/// every platform's layout on any OS). `host` must be Windows or Linux.
+pub fn package_steam_depot_with(
+    project: &Project,
+    artifact: &BuildArtifact,
+    destination: &Path,
+    engine_root: &Path,
+    plan: steam::DepotPlan,
+    host: &engine_platform::PackageHost,
+    library: &steam::SteamLibrary,
+) -> Result<PathBuf> {
+    let platform = steam::DepotPlatform::of(host)
+        .filter(|platform| *platform != steam::DepotPlatform::Macos)
+        .ok_or_else(|| {
+            Error::new(
+                "tooling.steam.platform_unsupported",
+                "A flat steam-depot is built on Windows or Linux; macOS uses the app bundle",
+            )
+        })?;
+    let engine_license = validate_inputs(project, artifact, destination, engine_root)?;
+    let inputs = Inputs {
+        project,
+        artifact,
+        package_host: host,
+        engine_license: &engine_license,
+        format: PackageFormat::SteamDepot,
+        steam_library: Some(library),
+    };
+    export_new_directory(destination, |staging| {
+        let content = staging.join("content").join(platform.name());
+        fs::create_dir_all(&content)?;
+        stage(&inputs, &content)?;
+        steam::write_depot_files(staging, plan, platform, &host.runtime_filename)
+    })
+    .map(|()| destination.to_path_buf())
+}
+
+/// Package a SteamPipe depot on a macOS host: the universal, signed app bundle goes
+/// to `content/macos/<id>.app` (`<id>` is the sanitised project id), with Valve's
+/// library in `Contents/Frameworks`. Backend, manifest and library are resolved
+/// from the process.
+pub fn package_steam_depot_app(
+    project: &Project,
+    builds: &AppBuilds<'_>,
+    destination: &Path,
+    engine_root: &Path,
+    bundle_id: Option<&str>,
+    tooling: &macos::MacosTooling,
+    depot_id: Option<u32>,
+) -> Result<PathBuf> {
+    let (plan, library) = steam::check_depot(project, depot_id)?;
+    package_steam_depot_app_with(
+        project,
+        builds,
+        destination,
+        engine_root,
+        bundle_id,
+        tooling,
+        plan,
+        &library,
+    )
+}
+
+/// As [`package_steam_depot_app`] with the plan and library injected.
+#[allow(clippy::too_many_arguments)]
+pub fn package_steam_depot_app_with(
+    project: &Project,
+    builds: &AppBuilds<'_>,
+    destination: &Path,
+    engine_root: &Path,
+    bundle_id: Option<&str>,
+    tooling: &macos::MacosTooling,
+    plan: steam::DepotPlan,
+    library: &steam::SteamLibrary,
+) -> Result<PathBuf> {
+    macos::bundle_identifier(&project.name, bundle_id)?;
+    macos::check_steam_bundle(tooling, true)?;
+    check_app_builds(project, builds, destination, engine_root)?;
+    let app_name = format!("{}.app", appimage::sanitize_id(&project.name));
+    export_new_directory(destination, |staging| {
+        let content = staging.join("content/macos");
+        fs::create_dir_all(&content)?;
+        let bundle = content.join(&app_name);
+        fs::create_dir(&bundle)?;
+        build_app(
+            project,
+            builds,
+            &bundle,
+            engine_root,
+            bundle_id,
+            tooling,
+            Some(library),
+        )?;
+        steam::write_depot_files(staging, plan, steam::DepotPlatform::Macos, &app_name)
+    })
+    .map(|()| destination.to_path_buf())
 }
 
 /// Package as an AppImage with the host and tool already resolved (tests inject a
@@ -227,6 +493,26 @@ pub fn package_appimage(
     engine_root: &Path,
     tooling: &appimage::AppImageTooling,
 ) -> Result<PathBuf> {
+    let library = steam::library_for_package(project)?;
+    package_appimage_with_library(
+        project,
+        artifact,
+        destination,
+        engine_root,
+        tooling,
+        library.as_ref(),
+    )
+}
+
+/// As [`package_appimage`] with the Steam library already resolved.
+pub fn package_appimage_with_library(
+    project: &Project,
+    artifact: &BuildArtifact,
+    destination: &Path,
+    engine_root: &Path,
+    tooling: &appimage::AppImageTooling,
+    library: Option<&steam::SteamLibrary>,
+) -> Result<PathBuf> {
     let package_host = appimage_host();
     let engine_license = validate_inputs(project, artifact, destination, engine_root)?;
     let inputs = Inputs {
@@ -235,6 +521,7 @@ pub fn package_appimage(
         package_host: &package_host,
         engine_license: &engine_license,
         format: PackageFormat::AppImage,
+        steam_library: library,
     };
     appimage::export_new_appimage(destination, &project.name, tooling, |appdir| {
         stage(&inputs, appdir)
@@ -304,6 +591,17 @@ pub fn stage_appdir(
     appdir: &Path,
     engine_root: &Path,
 ) -> Result<String> {
+    stage_appdir_with_library(project, artifact, appdir, engine_root, None)
+}
+
+/// As [`stage_appdir`], also placing `library` beside the runtime.
+pub fn stage_appdir_with_library(
+    project: &Project,
+    artifact: &BuildArtifact,
+    appdir: &Path,
+    engine_root: &Path,
+    library: Option<&steam::SteamLibrary>,
+) -> Result<String> {
     let package_host = appimage_host();
     let engine_license = engine_license(engine_root)?;
     let inputs = Inputs {
@@ -312,6 +610,7 @@ pub fn stage_appdir(
         package_host: &package_host,
         engine_license: &engine_license,
         format: PackageFormat::AppImage,
+        steam_library: library,
     };
     stage(&inputs, appdir)?;
     appimage::write_appdir_files(appdir, &project.name)
@@ -356,11 +655,15 @@ struct Inputs<'a> {
     package_host: &'a engine_platform::PackageHost,
     engine_license: &'a Path,
     format: PackageFormat,
+    /// Valve's `steam_api` library, for a Steam-variant package.
+    steam_library: Option<&'a steam::SteamLibrary>,
 }
 
 /// Where [`stage`] puts each part of the package, chosen by format.
 struct Layout {
     runtime: PathBuf,
+    /// Where the Steam library goes: where the loader finds it for this layout.
+    library: PathBuf,
     game: PathBuf,
     licenses: PathBuf,
     /// `generation.json`, `package-host.json` and `PACKAGE.txt`.
@@ -377,6 +680,7 @@ impl Layout {
                 let resources = root.join("Contents/Resources");
                 Self {
                     runtime: root.join("Contents/MacOS").join(runtime_filename),
+                    library: root.join("Contents/Frameworks"),
                     game: resources.join("game"),
                     licenses: resources.join("licenses"),
                     metadata: resources,
@@ -385,6 +689,7 @@ impl Layout {
             }
             _ => Self {
                 runtime: root.join(runtime_filename),
+                library: root.to_path_buf(),
                 game: root.join("game"),
                 licenses: root.join("licenses"),
                 metadata: root.to_path_buf(),
@@ -403,9 +708,11 @@ fn stage(inputs: &Inputs<'_>, staging: &Path) -> Result<()> {
         package_host,
         engine_license,
         format,
+        steam_library,
     } = inputs;
     let Layout {
         runtime,
+        library,
         game,
         licenses,
         metadata,
@@ -427,6 +734,10 @@ fn stage(inputs: &Inputs<'_>, staging: &Path) -> Result<()> {
     }
     Project::load(game.join("project.json"))?;
     fs::copy(&artifact.executable, &runtime)?;
+    if let Some(steam_library) = steam_library {
+        fs::create_dir_all(&library)?;
+        steam_library.copy_into(&library)?;
+    }
     fs::copy(engine_license, licenses.join("engine-LICENSE"))?;
     fs::copy(
         artifact.directory.join("Cargo.lock"),
@@ -465,6 +776,18 @@ fn stage(inputs: &Inputs<'_>, staging: &Path) -> Result<()> {
 }
 
 fn package_notes(inputs: &Inputs<'_>) -> String {
+    let mut notes = base_notes(inputs);
+    if let Some(library) = inputs.steam_library {
+        notes.push_str(&format!(
+            "Steam variant: {} is Valve's unmodified redistributable library, placed where the runtime loads it. It is distributed only as part of a game published through Steam under your Steamworks agreement (see docs/steam.md). No steam_appid.txt is included; Steam supplies the app id.
+",
+            library.file
+        ));
+    }
+    notes
+}
+
+fn base_notes(inputs: &Inputs<'_>) -> String {
     let Inputs {
         artifact,
         package_host,
@@ -473,6 +796,9 @@ fn package_notes(inputs: &Inputs<'_>) -> String {
     } = inputs;
     let kind = match format {
         PackageFormat::Dir => "directory package".to_owned(),
+        PackageFormat::SteamDepot => {
+            "directory package staged as a SteamPipe depot; upload it with SteamCMD (see README.txt at the depot root)".to_owned()
+        }
         PackageFormat::AppImage => {
             "directory package packed as an AppImage; run the .AppImage file (AppRun starts the runtime)".to_owned()
         }

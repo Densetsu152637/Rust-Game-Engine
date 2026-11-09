@@ -788,6 +788,7 @@ fn app_destinations_are_refused_before_any_work() {
         lipo: "lipo-not-run".into(),
         xattr: "xattr-not-run".into(),
         codesign: "codesign-not-run".into(),
+        install_name_tool: None,
         sign_identity: None,
     };
     let package = |destination: &Path, bundle_id: Option<&str>| {
@@ -881,6 +882,7 @@ fn fake_macos_tooling(
         lipo: lipo_path,
         xattr: xattr_path,
         codesign: codesign_path,
+        install_name_tool: None,
         sign_identity: None,
     }
 }
@@ -1066,4 +1068,553 @@ fn signing_covers_nested_code_first_and_uses_the_identity_when_set() {
             "{line}"
         );
     }
+}
+
+// ---- Steam variant: library staging and the steam-depot layout -------------------
+
+/// A fake Valve library: bytes that are not valid text or a real library.
+const FAKE_LIBRARY_BYTES: &[u8] = &[0, 159, 146, 150, 255, b'v', b'a', b'l', b'v', b'e'];
+
+fn fake_library(fixture: &PackageFixture, file: &'static str) -> packaging::steam::SteamLibrary {
+    let source = fixture.root.join("valve-source").join(file);
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, FAKE_LIBRARY_BYTES).unwrap();
+    packaging::steam::SteamLibrary {
+        path: source,
+        file,
+        source: packaging::steam::LibrarySource::Explicit,
+    }
+}
+
+fn host_library_name() -> &'static str {
+    if cfg!(windows) {
+        "steam_api64.dll"
+    } else if cfg!(target_os = "macos") {
+        "libsteam_api.dylib"
+    } else {
+        "libsteam_api.so"
+    }
+}
+
+fn runtime_name() -> &'static str {
+    if cfg!(windows) {
+        "runtime.exe"
+    } else {
+        "runtime"
+    }
+}
+
+fn package_host(platform: engine_platform::HostPlatform) -> engine_platform::PackageHost {
+    let windows = platform == engine_platform::HostPlatform::Windows;
+    engine_platform::PackageHost {
+        schema: 1,
+        platform,
+        architecture: "x86_64".into(),
+        runtime_filename: if windows { "runtime.exe" } else { "runtime" }.into(),
+        launcher_filename: if windows { "run.cmd" } else { "run.sh" }.into(),
+    }
+}
+
+fn package_with(
+    fixture: &PackageFixture,
+    name: &str,
+    format: PackageFormat,
+    library: Option<&packaging::steam::SteamLibrary>,
+) -> std::path::PathBuf {
+    packaging::package_with_library(
+        &fixture.project,
+        &fixture.artifact,
+        &fixture.root.join(name),
+        &fixture.engine,
+        format,
+        library,
+    )
+    .unwrap()
+}
+
+#[test]
+fn steam_library_sits_beside_the_runtime_in_dir_zip_and_tar_gz() {
+    let fixture = package_fixture();
+    let library = fake_library(&fixture, host_library_name());
+    let plain = package_with(&fixture, "plain", PackageFormat::Dir, None);
+    let steam = package_with(&fixture, "steam", PackageFormat::Dir, Some(&library));
+    // The library is the only difference: same runtime, same files, same notes apart
+    // from the Steam paragraph. A package with no library is exactly as before.
+    let names = |root: &Path| -> Vec<String> {
+        let mut names: Vec<String> = walk(root)
+            .iter()
+            .map(|path| {
+                path.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        names.sort();
+        names
+    };
+    let mut expected = names(&plain);
+    assert!(!expected.iter().any(|name| name.contains("steam")));
+    expected.push(host_library_name().to_owned());
+    expected.sort();
+    assert_eq!(names(&steam), expected);
+    assert_eq!(
+        fs::read(steam.join(host_library_name())).unwrap(),
+        FAKE_LIBRARY_BYTES
+    );
+    assert!(steam.join(runtime_name()).is_file());
+    assert!(
+        !names(&steam)
+            .iter()
+            .any(|name| name.ends_with("steam_appid.txt"))
+    );
+    let notes = fs::read_to_string(steam.join("PACKAGE.txt")).unwrap();
+    assert!(notes.contains("Steam variant"), "{notes}");
+    assert!(notes.contains("No steam_appid.txt"), "{notes}");
+    let plain_notes = fs::read_to_string(plain.join("PACKAGE.txt")).unwrap();
+    assert!(!plain_notes.contains("Steam"), "{plain_notes}");
+    assert_eq!(notes.lines().count(), plain_notes.lines().count() + 1);
+    assert!(notes.starts_with(&plain_notes));
+
+    let archive_name = host_library_name();
+    let tar = package_with(
+        &fixture,
+        "steam.tar.gz",
+        PackageFormat::TarGz,
+        Some(&library),
+    );
+    let (listing, _) = tar_listing(&tar);
+    let entry = format!("steam/{archive_name}");
+    assert!(
+        listing
+            .iter()
+            .any(|(name, mode, dir)| *name == entry && *mode == 0o644 && !*dir),
+        "{listing:?}"
+    );
+    let zip = package_with(&fixture, "steam.zip", PackageFormat::Zip, Some(&library));
+    assert!(
+        zip_listing(&zip)
+            .iter()
+            .any(|(name, mode, dir)| *name == entry && *mode == 0o644 && !*dir)
+    );
+    let mut archive = zip::ZipArchive::new(fs::File::open(&zip).unwrap()).unwrap();
+    let mut bytes = Vec::new();
+    archive
+        .by_name(&entry)
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes, FAKE_LIBRARY_BYTES);
+}
+
+#[test]
+fn steam_library_lands_in_the_appdir_root_and_the_bundle_frameworks() {
+    let fixture = package_fixture();
+    let appdir = fixture.root.join("Game.AppDir");
+    fs::create_dir(&appdir).unwrap();
+    let library = fake_library(&fixture, "libsteam_api.so");
+    packaging::stage_appdir_with_library(
+        &fixture.project,
+        &fixture.artifact,
+        &appdir,
+        &fixture.engine,
+        Some(&library),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(appdir.join("libsteam_api.so")).unwrap(),
+        FAKE_LIBRARY_BYTES
+    );
+    assert!(appdir.join("AppRun").is_file());
+
+    let bundle = fixture.root.join("Game.app");
+    fs::create_dir(&bundle).unwrap();
+    let library = fake_library(&fixture, "libsteam_api.dylib");
+    packaging::stage_bundle_with_library(
+        &fixture.project,
+        &fixture.artifact,
+        &bundle,
+        &fixture.engine,
+        None,
+        Some(&library),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(bundle.join("Contents/Frameworks/libsteam_api.dylib")).unwrap(),
+        FAKE_LIBRARY_BYTES
+    );
+    assert!(!bundle.join("Contents/MacOS/libsteam_api.dylib").exists());
+    assert!(!bundle.join("libsteam_api.dylib").exists());
+}
+
+fn depot_tree(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = walk(root)
+        .iter()
+        .filter(|path| path.is_file())
+        .map(|path| {
+            path.strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn steam_depot_lays_out_content_scripts_and_readme_for_windows_and_linux() {
+    use engine_platform::HostPlatform;
+    for (platform, runtime, library_file) in [
+        (HostPlatform::Windows, "runtime.exe", "steam_api64.dll"),
+        (HostPlatform::Linux, "runtime", "libsteam_api.so"),
+    ] {
+        let fixture = package_fixture();
+        let library = fake_library(&fixture, library_file);
+        let destination = fixture.root.join("depot");
+        let plan = packaging::steam::DepotPlan {
+            app_id: 480,
+            depot_id: 481,
+        };
+        let path = packaging::package_steam_depot_with(
+            &fixture.project,
+            &fixture.artifact,
+            &destination,
+            &fixture.engine,
+            plan,
+            &package_host(platform),
+            &library,
+        )
+        .unwrap();
+        assert_eq!(path, destination);
+        let name = if platform == HostPlatform::Windows {
+            "windows"
+        } else {
+            "linux"
+        };
+        let tree = depot_tree(&destination);
+        for required in [
+            format!("content/{name}/{runtime}"),
+            format!("content/{name}/{library_file}"),
+            format!("content/{name}/game/project.json"),
+            format!("content/{name}/PACKAGE.txt"),
+            "scripts/app_build_480.vdf".to_owned(),
+            "scripts/depot_build_481.vdf".to_owned(),
+            "README.txt".to_owned(),
+        ] {
+            assert!(tree.contains(&required), "{required} in {tree:?}");
+        }
+        // Everything else is the game; nothing belongs to Steam development.
+        assert!(!tree.iter().any(|entry| entry.ends_with("steam_appid.txt")));
+        assert!(
+            tree.iter()
+                .all(|entry| entry.starts_with(&format!("content/{name}/"))
+                    || entry.starts_with("scripts/")
+                    || entry == "README.txt"),
+            "{tree:?}"
+        );
+        assert_eq!(
+            fs::read(destination.join(format!("content/{name}/{library_file}"))).unwrap(),
+            FAKE_LIBRARY_BYTES
+        );
+        let app = fs::read_to_string(destination.join("scripts/app_build_480.vdf")).unwrap();
+        assert!(app.contains("\"AppID\" \"480\""), "{app}");
+        assert!(app.contains("\"481\" \"depot_build_481.vdf\""), "{app}");
+        assert!(app.contains("\"SetLive\" \"\""), "{app}");
+        let depot = fs::read_to_string(destination.join("scripts/depot_build_481.vdf")).unwrap();
+        assert!(
+            depot.contains(&format!("\"LocalPath\" \"{name}/*\"")),
+            "{depot}"
+        );
+        assert!(depot.contains("\"FileExclusion\" \"*.pdb\""), "{depot}");
+        let readme = fs::read_to_string(destination.join("README.txt")).unwrap();
+        assert!(
+            readme.contains("+login <account> +run_app_build"),
+            "{readme}"
+        );
+        assert!(readme.contains(runtime), "{readme}");
+        assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
+    }
+}
+
+#[test]
+fn steam_depot_refuses_macos_hosts_existing_destinations_and_source_overlap() {
+    use engine_platform::HostPlatform;
+    let fixture = package_fixture();
+    let library = fake_library(&fixture, "libsteam_api.so");
+    let plan = packaging::steam::DepotPlan {
+        app_id: 480,
+        depot_id: 481,
+    };
+    let depot = |destination: &Path, platform| {
+        packaging::package_steam_depot_with(
+            &fixture.project,
+            &fixture.artifact,
+            destination,
+            &fixture.engine,
+            plan,
+            &package_host(platform),
+            &library,
+        )
+    };
+    let destination = fixture.root.join("depot");
+    assert_eq!(
+        error_code(depot(&destination, HostPlatform::Macos)),
+        "tooling.steam.platform_unsupported"
+    );
+    assert!(!destination.exists());
+    depot(&destination, HostPlatform::Linux).unwrap();
+    assert_eq!(
+        error_code(depot(&destination, HostPlatform::Linux)),
+        "tooling.destination.exists"
+    );
+    assert_eq!(
+        error_code(depot(
+            &fixture.project.root.join("depot"),
+            HostPlatform::Linux
+        )),
+        "tooling.destination.source"
+    );
+    // The plain formats refuse the depot and app formats.
+    assert_eq!(
+        error_code(try_package(
+            &fixture,
+            &fixture.root.join("x"),
+            PackageFormat::SteamDepot
+        )),
+        "package.format.steam_depot"
+    );
+}
+
+/// A thin Mach-O dylib whose `LC_ID_DYLIB` is `@loader_path/libsteam_api.dylib`.
+#[cfg(unix)]
+fn fake_valve_dylib() -> Vec<u8> {
+    let name = b"@loader_path/libsteam_api.dylib";
+    let padded = (24 + name.len() + 1).div_ceil(8) * 8;
+    let mut file = Vec::new();
+    file.extend_from_slice(&0xfeed_facfu32.to_le_bytes());
+    file.extend_from_slice(&[0; 12]);
+    file.extend_from_slice(&1u32.to_le_bytes());
+    file.extend_from_slice(&(padded as u32).to_le_bytes());
+    file.extend_from_slice(&[0; 8]);
+    file.extend_from_slice(&0xdu32.to_le_bytes());
+    file.extend_from_slice(&(padded as u32).to_le_bytes());
+    file.extend_from_slice(&24u32.to_le_bytes());
+    file.extend_from_slice(&[0; 12]);
+    file.extend_from_slice(name);
+    file.resize(file.len() + padded - 24 - name.len(), 0);
+    file
+}
+
+#[cfg(unix)]
+fn steam_app_tooling(fixture: &PackageFixture, verify_exit: i32) -> packaging::macos::MacosTooling {
+    let record = fixture.root.join("tool-record");
+    let mut tooling = fake_macos_tooling(
+        fixture,
+        &format!(
+            "#!/bin/sh\necho \"lipo $*\" >> '{record}'\ncat \"$4\" \"$5\" > \"$3\"\n",
+            record = record.display()
+        ),
+        &format!(
+            "#!/bin/sh\necho \"codesign $*\" >> '{record}'\ncase \"$1\" in --verify) exit {verify_exit};; esac\n",
+            record = record.display()
+        ),
+    );
+    let install_name_tool = fixture.root.join("fake-install-name-tool");
+    write_script(
+        &install_name_tool,
+        &format!(
+            "#!/bin/sh\necho \"install_name_tool $*\" >> '{record}'\n",
+            record = record.display()
+        ),
+    );
+    tooling.install_name_tool = Some(install_name_tool);
+    tooling
+}
+
+#[cfg(unix)]
+#[test]
+fn macos_steam_depot_points_the_runtime_at_frameworks_and_never_resigns_valves_library() {
+    let _scripts = lock_scripts();
+    let fixture = package_fixture();
+    let second = second_artifact(&fixture);
+    let tooling = steam_app_tooling(&fixture, 0);
+    let dylib = fixture.root.join("valve/libsteam_api.dylib");
+    fs::create_dir_all(dylib.parent().unwrap()).unwrap();
+    fs::write(&dylib, fake_valve_dylib()).unwrap();
+    let library = packaging::steam::SteamLibrary {
+        path: dylib,
+        file: "libsteam_api.dylib",
+        source: packaging::steam::LibrarySource::Explicit,
+    };
+    let builds = packaging::AppBuilds {
+        arm64: &fixture.artifact,
+        x86_64: &second,
+    };
+    let destination = fixture.root.join("depot");
+    packaging::package_steam_depot_app_with(
+        &fixture.project,
+        &builds,
+        &destination,
+        &fixture.engine,
+        None,
+        &tooling,
+        packaging::steam::DepotPlan {
+            app_id: 480,
+            depot_id: 481,
+        },
+        &library,
+    )
+    .unwrap();
+    let id = packaging::appimage::sanitize_id(&fixture.project.name);
+    let bundle = destination.join(format!("content/macos/{id}.app"));
+    assert_eq!(
+        fs::read(bundle.join("Contents/Frameworks/libsteam_api.dylib")).unwrap(),
+        fs::read(&library.path).unwrap(),
+        "Valve's file is copied byte for byte"
+    );
+    assert!(bundle.join("Contents/MacOS/runtime").is_file());
+    assert!(destination.join("scripts/depot_build_481.vdf").is_file());
+    assert!(
+        fs::read_to_string(destination.join("scripts/depot_build_481.vdf"))
+            .unwrap()
+            .contains("\"LocalPath\" \"macos/*\"")
+    );
+    let record = fs::read_to_string(fixture.root.join("tool-record")).unwrap();
+    let lines: Vec<&str> = record.lines().collect();
+    assert!(lines[0].starts_with("lipo -create"), "{record}");
+    assert!(
+        lines[1].starts_with(
+            "install_name_tool -change @loader_path/libsteam_api.dylib @rpath/libsteam_api.dylib "
+        ),
+        "{record}"
+    );
+    assert!(lines[1].ends_with("Contents/MacOS/runtime"), "{record}");
+    assert!(lines[2].starts_with("xattr -cr "), "{record}");
+    let signed: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.starts_with("codesign --force"))
+        .collect();
+    assert_eq!(signed.len(), 1, "only the bundle is signed: {record}");
+    assert!(signed[0].ends_with(".app"), "{record}");
+    assert!(!record.contains("libsteam_api.dylib\n"), "{record}");
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .starts_with("codesign --verify --deep --strict "),
+        "{record}"
+    );
+    assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn macos_steam_signature_that_does_not_verify_stops_the_build() {
+    let _scripts = lock_scripts();
+    let fixture = package_fixture();
+    let second = second_artifact(&fixture);
+    let tooling = steam_app_tooling(&fixture, 1);
+    let dylib = fixture.root.join("libsteam_api.dylib");
+    fs::write(&dylib, fake_valve_dylib()).unwrap();
+    let library = packaging::steam::SteamLibrary {
+        path: dylib,
+        file: "libsteam_api.dylib",
+        source: packaging::steam::LibrarySource::Explicit,
+    };
+    let builds = packaging::AppBuilds {
+        arm64: &fixture.artifact,
+        x86_64: &second,
+    };
+    let destination = fixture.root.join("Steam.app");
+    let error = packaging::package_app_with_library(
+        &fixture.project,
+        &builds,
+        &destination,
+        &fixture.engine,
+        None,
+        &tooling,
+        Some(&library),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.diagnostics[0].code,
+        "tooling.app.steam_signature_invalid"
+    );
+    assert!(!destination.exists());
+}
+
+#[test]
+fn steam_bundles_are_refused_before_any_work_without_the_tool_or_with_an_identity() {
+    let fixture = package_fixture();
+    let second = second_artifact(&fixture);
+    let builds = packaging::AppBuilds {
+        arm64: &fixture.artifact,
+        x86_64: &second,
+    };
+    let library = fake_library(&fixture, "libsteam_api.dylib");
+    let tooling =
+        |install_name_tool: Option<&str>, identity: Option<&str>| packaging::macos::MacosTooling {
+            lipo: "lipo-not-run".into(),
+            xattr: "xattr-not-run".into(),
+            codesign: "codesign-not-run".into(),
+            install_name_tool: install_name_tool.map(Into::into),
+            sign_identity: identity.map(str::to_owned),
+        };
+    let plan = packaging::steam::DepotPlan {
+        app_id: 480,
+        depot_id: 481,
+    };
+    for (tool, identity, code) in [
+        (None, None, "tooling.app.tool_missing"),
+        (
+            Some("int"),
+            Some("Developer ID Application: Test"),
+            "tooling.app.steam_identity_unsupported",
+        ),
+    ] {
+        let tooling = tooling(tool, identity);
+        let bundle = fixture.root.join("Steam.app");
+        let result = packaging::package_app_with_library(
+            &fixture.project,
+            &builds,
+            &bundle,
+            &fixture.engine,
+            None,
+            &tooling,
+            Some(&library),
+        );
+        assert_eq!(error_code(result), code);
+        assert!(!bundle.exists());
+        let depot = fixture.root.join("depot");
+        let result = packaging::package_steam_depot_app_with(
+            &fixture.project,
+            &builds,
+            &depot,
+            &fixture.engine,
+            None,
+            &tooling,
+            plan,
+            &library,
+        );
+        assert_eq!(error_code(result), code);
+        assert!(!depot.exists());
+        assert_eq!(staging_leftovers(&fixture.root), Vec::<String>::new());
+    }
+    // A plain bundle is not affected by an identity or a missing install_name_tool: it
+    // gets past the Steam check and fails later on the fake tools instead.
+    let bundle = fixture.root.join("Plain.app");
+    let result = packaging::package_app_with_library(
+        &fixture.project,
+        &builds,
+        &bundle,
+        &fixture.engine,
+        None,
+        &tooling(None, Some("Developer ID Application: Test")),
+        None,
+    );
+    assert_ne!(
+        result.err().map(|error| error.diagnostics[0].code.clone()),
+        Some("tooling.app.steam_identity_unsupported".to_owned())
+    );
 }

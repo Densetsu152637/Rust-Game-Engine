@@ -69,6 +69,25 @@ fn project(root: &Path) -> PathBuf {
     root.join("project.json")
 }
 
+/// Tooling built with the Steam backend refuses a manifest without a `steam` block
+/// before anything else, so tests of other early refusals add one in that build.
+fn steam_block() -> &'static str {
+    if cfg!(feature = "steam") {
+        r#","steam":{"app_id":480}"#
+    } else {
+        ""
+    }
+}
+
+fn with_steam_block(manifest: &Path) {
+    let text = fs::read_to_string(manifest).unwrap().replacen(
+        "\"name\":\"cli fixture\",",
+        &format!("\"name\":\"cli fixture\"{},", steam_block()),
+        1,
+    );
+    fs::write(manifest, text).unwrap();
+}
+
 fn fixture() -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let manifest = project(&temp.path().join("game"));
@@ -273,7 +292,7 @@ fn script_assets_without_a_rust_crate_are_reported() {
     let root = manifest.parent().unwrap();
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("src/lib.rs"), "pub fn configure() {}\n").unwrap();
-    fs::write(&manifest, r#"{"schema":1,"name":"scripted","startup_scene":"main.scene.json","assets":[{"id":"asset:player","kind":"script","path":"src/lib.rs"}],"inputActions":{"jump":"Space"}}"#).unwrap();
+    fs::write(&manifest, format!(r#"{{"schema":1,"name":"scripted","startup_scene":"main.scene.json","assets":[{{"id":"asset:player","kind":"script","path":"src/lib.rs"}}],"inputActions":{{"jump":"Space"}}{}}}"#, steam_block())).unwrap();
     for command in ["validate", "package"] {
         let mut args = vec![
             OsStr::new("project"),
@@ -450,6 +469,7 @@ fn init_refuses_existing_and_source_overlapping_destinations() {
 fn package_destination_is_checked_before_compilation() {
     let (temp, manifest) = fixture();
     let root = manifest.parent().unwrap();
+    with_steam_block(&manifest);
     let cases = [
         (root.join("exports"), "tooling.destination.source"),
         (root.to_path_buf(), "tooling.destination.source"),
@@ -815,4 +835,117 @@ fn package_app_checks_the_destination_and_bundle_id_before_compilation() {
     assert_eq!(failure_code(&output), "command.arguments");
     assert!(!root.join("dist/Game.app").exists());
     assert!(!root.join(".derived/native").exists());
+}
+
+fn package_args<'a>(
+    manifest: &'a Path,
+    destination: &'a Path,
+    extra: &[&'a str],
+) -> Vec<&'a OsStr> {
+    let mut args: Vec<&OsStr> = vec![
+        OsStr::new("project"),
+        "package".as_ref(),
+        manifest.as_os_str(),
+        destination.as_os_str(),
+    ];
+    args.extend(extra.iter().map(|value| OsStr::new(*value)));
+    args
+}
+
+#[test]
+fn steam_depot_needs_a_steam_block_and_is_refused_before_compiling() {
+    let (temp, manifest) = fixture();
+    let root = manifest.parent().unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    let destination = root.join("dist/depot");
+    let output = engine(
+        &package_args(&manifest, &destination, &["--format", "steam-depot"]),
+        temp.path(),
+    );
+    assert_eq!(output.code, 1, "{}", output.json);
+    assert_eq!(
+        failure_code(&output),
+        "tooling.steam_depot.manifest_missing"
+    );
+    assert!(!destination.exists());
+    assert!(!root.join(".derived/native").exists());
+}
+
+// A default build has no Steam backend; the depot is refused even for a project that
+// declares `steam` (tooling built with --features steam goes on to compile).
+#[cfg(not(feature = "steam"))]
+#[test]
+fn steam_depot_needs_tooling_built_with_the_steam_backend() {
+    let (temp, manifest) = fixture();
+    let root = manifest.parent().unwrap();
+    let text = fs::read_to_string(&manifest).unwrap().replacen(
+        "\"name\":\"cli fixture\",",
+        "\"name\":\"cli fixture\",\"steam\":{\"app_id\":480},",
+        1,
+    );
+    fs::write(&manifest, text).unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    let destination = root.join("dist/depot");
+    let output = engine(
+        &package_args(&manifest, &destination, &["--format", "steam-depot"]),
+        temp.path(),
+    );
+    assert_eq!(output.code, 1, "{}", output.json);
+    assert_eq!(failure_code(&output), "tooling.steam_depot.backend_missing");
+    assert!(!destination.exists());
+    assert!(!root.join(".derived/native").exists());
+}
+
+#[test]
+fn depot_and_bundle_options_are_checked_per_format() {
+    let (temp, manifest) = fixture();
+    let destination = temp.path().join("out");
+    for extra in [
+        vec!["--depot-id", "5"],
+        vec!["--format", "zip", "--depot-id", "5"],
+        vec!["--format", "steam-depot", "--depot-id", "five"],
+        vec!["--format", "steam-depot", "--depot-id", "-1"],
+        vec!["--format", "zip", "--bundle-id", "com.example.game"],
+    ] {
+        let output = engine(&package_args(&manifest, &destination, &extra), temp.path());
+        assert_eq!(output.code, 2, "{extra:?}");
+        assert_eq!(failure_code(&output), "command.arguments", "{extra:?}");
+    }
+}
+
+// With the Steam backend compiled in, a package without a `steam` block could not start,
+// so every format is refused before compiling.
+#[cfg(feature = "steam")]
+#[test]
+fn steam_tooling_refuses_every_format_without_a_steam_block() {
+    let (temp, manifest) = fixture();
+    let root = manifest.parent().unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    for (format, name) in [("dir", "pkg"), ("zip", "pkg.zip"), ("tar.gz", "pkg.tar.gz")] {
+        let destination = root.join("dist").join(name);
+        let output = engine(
+            &package_args(&manifest, &destination, &["--format", format]),
+            temp.path(),
+        );
+        assert_eq!(output.code, 1, "{format}: {}", output.json);
+        assert_eq!(failure_code(&output), "tooling.steam.manifest_missing");
+        assert!(!destination.exists());
+    }
+    assert!(!root.join(".derived/native").exists());
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn bundle_id_is_refused_for_steam_depot_off_macos() {
+    let (temp, manifest) = fixture();
+    let output = engine(
+        &package_args(
+            &manifest,
+            &temp.path().join("out"),
+            &["--format", "steam-depot", "--bundle-id", "com.example.game"],
+        ),
+        temp.path(),
+    );
+    assert_eq!(output.code, 2, "{}", output.json);
+    assert_eq!(failure_code(&output), "command.arguments");
 }
